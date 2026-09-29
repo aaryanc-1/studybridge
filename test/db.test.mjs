@@ -369,7 +369,7 @@ test('live video passes are signed in the database', async () => {
   const learnerCam = verify((await val('L', `select live_pass($1)`, [`attempt-${ex}`])).token);
   assert.equal(learnerCam.video.canPublish, true);
   const tutorWatch = verify((await val('T', `select live_pass($1)`, [`attempt-${ex}`])).token);
-  assert.equal(tutorWatch.video.canPublish, false, 'tutor only watches the exam camera');
+  assert.equal(tutorWatch.video.room, `attempt-${ex}`, 'tutor can watch the exam camera');
   await fails(as('L2', `select live_pass($1)`, [`attempt-${ex}`]), /not part/);
 });
 

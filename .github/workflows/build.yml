@@ -1,0 +1,93 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm ci
+        working-directory: connector
+      - run: npx playwright install --with-deps chromium
+      - name: Database, server, maths checker and Claude connector tests
+        run: npm test
+      - run: npm run build
+      - name: Full walkthrough in the browser (tutor + learner + phone + offline)
+        run: node test/walkthrough.mjs
+        env:
+          SHOTS: screenshots
+      - name: Desktop lockdown check (Electron)
+        run: xvfb-run -a node test/electron-lockdown.mjs
+        env:
+          SHOTS: screenshots
+      - name: Web version (for your phone)
+        run: cd dist && zip -qr ../StudyBridge-web.zip .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studybridge-web
+          path: StudyBridge-web.zip
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: studybridge-${{ runner.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            build/studybridge.mcpb
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Publish the latest build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(find out -type f \( -name '*.exe' -o -name '*.dmg' -o -name 'StudyBridge-web.zip' \))
+          mcpb=$(find out -name 'studybridge.mcpb' | head -1)
+          cp "$mcpb" "out/StudyBridge-for-Claude.mcpb"
+          gh release delete latest-build --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
+          gh release create latest-build $files out/StudyBridge-for-Claude.mcpb \
+            --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --prerelease \
+            --title "StudyBridge (latest build)" \
+            --notes "Built from $(echo ${GITHUB_SHA} | cut -c1-7). Windows: StudyBridge-Setup-*.exe. Mac: the .dmg for your chip (arm64 = Apple silicon, x64 = Intel). Phone: StudyBridge-web.zip (see the setup guide). The Claude connector is also inside the desktop app (Settings → Claude)."

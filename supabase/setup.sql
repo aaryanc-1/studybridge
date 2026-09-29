@@ -1050,7 +1050,6 @@ create or replace function public.live_pass(p_room text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_tutor uuid;
-  v_publish boolean := true;
   v_id uuid;
   v_url text;
   v_key text;
@@ -1065,7 +1064,6 @@ begin
     select tutor_id into v_tutor from public.sessions where id = v_id and (tutor_id = auth.uid() or auth.uid() = any (learner_ids));
   elsif p_room like 'attempt-%' then
     select tutor_id into v_tutor from public.attempts where id = v_id and (tutor_id = auth.uid() or learner_id = auth.uid());
-    v_publish := v_tutor is not null and v_tutor <> auth.uid(); -- the learner sends camera; the tutor only watches
   end if;
   if v_tutor is null then raise exception 'You are not part of this room.'; end if;
   select s.livekit_url, k.livekit_api_key, k.livekit_api_secret into v_url, v_key, v_secret
@@ -1076,7 +1074,7 @@ begin
   select display_name into v_name from public.profiles where id = auth.uid();
   return jsonb_build_object('url', v_url, 'token', public._jwt_hs256(jsonb_build_object(
     'iss', v_key, 'sub', auth.uid()::text, 'name', coalesce(v_name, ''), 'nbf', v_now - 10, 'exp', v_now + 6 * 3600,
-    'video', jsonb_build_object('room', p_room, 'roomJoin', true, 'canPublish', v_publish, 'canSubscribe', true, 'canPublishData', true)
+    'video', jsonb_build_object('room', p_room, 'roomJoin', true, 'canPublish', true, 'canSubscribe', true, 'canPublishData', true)
   ), v_secret));
 end $$;
 

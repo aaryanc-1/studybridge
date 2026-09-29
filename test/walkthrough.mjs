@@ -61,7 +61,7 @@ function watchErrors(page, label) {
 
 const srv = await startFakeSupabase();
 const web = await serveDist();
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium', args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined), args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
 const tutorCtx = await browser.newContext({ viewport: { width: 1400, height: 900 }, timezoneId: 'America/New_York' });
 const learnerCtx = await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'Africa/Lusaka', permissions: ['camera'] });
 const T = await tutorCtx.newPage();
