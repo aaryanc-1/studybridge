@@ -13,6 +13,12 @@ import { createClient } from '@supabase/supabase-js';
 import { startFakeSupabase } from './fake-supabase.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
+for (const ev of ['uncaughtException', 'unhandledRejection'])
+  process.on(ev, (e) => {
+    console.error(e);
+    if (process.env.GITHUB_ACTIONS) console.log(`::error title=electron-lockdown (${ev})::${String(e?.message || e).replace(/\n/g, ' ').slice(0, 900)}`);
+    process.exit(1);
+  });
 const SHOTS = process.env.SHOTS || join(ROOT, 'test', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 const srv = await startFakeSupabase();
@@ -137,6 +143,7 @@ try {
 } catch (e) {
   await win.screenshot({ path: join(SHOTS, 'desktop-FAIL.png') }).catch(() => {});
   console.error('FAILED:', e.message);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=electron-lockdown.mjs::${String(e.message).replace(/\n/g, ' ').slice(0, 900)}`);
   process.exitCode = 1;
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});

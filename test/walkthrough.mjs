@@ -386,6 +386,7 @@ try {
   await shot(T, 'FAIL-tutor', true).catch(() => {});
   await shot(L, 'FAIL-learner', true).catch(() => {});
   console.error('\nWalkthrough FAILED:', e.message);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=walkthrough::${String(e.message).replace(/\n/g, ' ').slice(0, 900)}`);
   process.exitCode = 1;
 } finally {
   const all = [...errT, ...errL, ...errors];
