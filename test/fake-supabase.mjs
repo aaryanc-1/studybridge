@@ -13,7 +13,8 @@ const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'u
 export const STUBS = `
 create role authenticated nologin; create role anon nologin; create role service_role nologin;
 create schema auth;
-create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}');
+create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
+  encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now());
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 grant usage on schema auth to authenticated, anon;
@@ -183,7 +184,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       }
       const call = `public."${parts[3]}"(${list.join(', ')})`;
       const rows = await as(uid, async (tx) => {
-        if (info.typtype === 'c') return (await tx.query(`select * from ${call}`, vals)).rows;
+        if (info.typtype === 'c' || info.typname === 'record') return (await tx.query(`select * from ${call}`, vals)).rows;
         return (await tx.query(`select ${call} as v`, vals)).rows.map((r) => r.v);
       });
       if (info.proretset) return [200, rows];
@@ -308,7 +309,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
     if (route === 'signup') {
       if (!b.email || !b.password || b.password.length < 6) return [422, { code: 422, error_code: 'weak_password', msg: 'Password should be at least 6 characters.' }];
       if (users.has(b.email.toLowerCase())) return [422, { code: 422, error_code: 'user_already_exists', msg: 'User already registered' }];
-      const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [b.email.toLowerCase(), b.data || {}]);
+      const r = await db.query(`insert into auth.users (email, raw_user_meta_data, encrypted_password) values ($1, $2, extensions.crypt($3, extensions.gen_salt('bf'))) returning id`, [b.email.toLowerCase(), b.data || {}, b.password]);
       const u = { id: r.rows[0].id, email: b.email.toLowerCase(), password: b.password, meta: b.data || {} };
       users.set(u.email, u);
       return [200, session(u)];
@@ -316,8 +317,15 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
     if (route === 'token') {
       const gt = url.searchParams.get('grant_type');
       if (gt === 'password') {
-        const u = users.get((b.email || '').toLowerCase());
-        if (!u || u.password !== b.password) return [400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }];
+        // Checked against the database, like the real thing (so password resets done in SQL count)
+        const r = await db.query(
+          `update auth.users set last_sign_in_at = now() where lower(email) = lower($1) and encrypted_password = extensions.crypt($2, encrypted_password) returning id, email, raw_user_meta_data`,
+          [b.email || '', b.password || ''],
+        );
+        const row = r.rows[0];
+        if (!row) return [400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }];
+        const u = users.get(row.email) || { id: row.id, email: row.email, meta: row.raw_user_meta_data };
+        users.set(row.email, u);
         return [200, session(u)];
       }
       if (gt === 'refresh_token') {
@@ -331,7 +339,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       const u = [...users.values()].find((x) => x.id === uid);
       if (!u) return [401, { code: 401, msg: 'Not signed in' }];
       if (req.method === 'PUT') {
-        if (b.password) u.password = b.password;
+        if (b.password) await db.query(`update auth.users set encrypted_password = extensions.crypt($2, extensions.gen_salt('bf')) where id = $1`, [u.id, b.password]);
         if (b.data) u.meta = { ...u.meta, ...b.data };
       }
       return [200, userJson(u)];

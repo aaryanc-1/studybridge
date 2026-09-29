@@ -14,6 +14,7 @@ import { Thread } from '../shared/Messages.jsx';
 import { FileBody } from '../shared/FileView.jsx';
 import { joinRoom } from '../shared/Live.jsx';
 import AnswerInput from './AnswerInputs.jsx';
+import { confetti } from '../../ui/confetti.js';
 
 export default function Attempt({ id }) {
   const app = useApp();
@@ -176,6 +177,7 @@ export default function Attempt({ id }) {
         if (desktop) await desktop.lockdown.exit();
         invalidate('myattempts', 'attempt');
         setDone({ queued: !!r.queued, auto });
+        confetti();
       } catch (e) {
         toast({ title: 'Couldn’t hand in', body: e.message, tone: 'bad' });
         setSubmitting(false);
@@ -195,8 +197,9 @@ export default function Attempt({ id }) {
   if (done)
     return (
       <CenterMessage
-        icon="checkCircle"
-        title={done.auto ? 'Time’s up. Handed in.' : 'Handed in!'}
+        icon="trophy"
+        medal
+        title={done.auto ? 'Time’s up. Handed in.' : 'Handed in. Well done!'}
         body={done.queued ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.' : 'Your tutor has been told. You’ll get a notification when it’s marked.'}
         action={
           <button className="btn primary big" onClick={() => go(done.queued ? '/work' : `/results/${id}`)}>
@@ -415,11 +418,17 @@ export default function Attempt({ id }) {
   );
 }
 
-function CenterMessage({ icon = 'info', title, body, action }) {
+function CenterMessage({ icon = 'info', title, body, action, medal }) {
   return (
     <div className="lock-screen">
-      <div className="card" style={{ maxWidth: 520, alignItems: 'center', textAlign: 'center', padding: 36 }}>
-        <Icon name={icon} size={44} style={{ color: 'var(--accent)' }} />
+      <div className="card celebrate" style={{ maxWidth: 520, alignItems: 'center', textAlign: 'center', padding: 36 }}>
+        {medal ? (
+          <div className="medal">
+            <Icon name={icon} size={46} />
+          </div>
+        ) : (
+          <Icon name={icon} size={44} style={{ color: 'var(--accent)' }} />
+        )}
         <h1 style={{ fontFamily: 'var(--serif)', fontSize: 28 }}>{title}</h1>
         {body && <div className="muted">{body}</div>}
         {action}

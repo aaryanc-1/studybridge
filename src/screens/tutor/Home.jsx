@@ -50,7 +50,7 @@ export default function Home() {
         <Kpi n={toMark.length} l="Ready to mark" to="/marking" />
         <Kpi n={notes.length} l="New notes" to="/messages" />
         <Kpi n={soon.length} l="Due in the next week" to="/assignments" />
-        <Kpi n={dur(weekSeconds())} l="Studied this week" to="/learners" />
+        <Kpi n={dur(weekSeconds())} l={lk.learners.length === 1 ? `${lk.learners[0].display_name.split(' ')[0]} studied this week` : 'Your learners studied this week'} to={lk.learners.length === 1 ? `/learners/${lk.learners[0].id}` : '/learners'} />
       </div>
 
       {setupLeft > 0 && (

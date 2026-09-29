@@ -210,3 +210,13 @@ export const discardDraft = (id) => run(sb().from('claude_drafts').update({ stat
 // ---------------- settings ----------------
 export const getSettings = () => run(sb().from('tutor_settings').select('*').eq('tutor_id', uid()).maybeSingle());
 export const saveSettings = (patch) => run(sb().from('tutor_settings').update(patch).eq('tutor_id', uid()));
+
+// ---------------- tutor admin ----------------
+export const learnerAccounts = () => run(sb().rpc('learner_accounts'));
+export const setLearnerPassword = (id, password) => run(sb().rpc('set_learner_password', { p_learner: id, p_password: password }));
+export async function deleteLearnerAccount(id) {
+  // Their uploaded work first (storage rules only let you remove it while they're still your learner)
+  const paths = (await run(sb().rpc('learner_work_paths', { p_learner: id }))) || [];
+  for (let i = 0; i < paths.length; i += 100) await sb().storage.from('work').remove(paths.slice(i, i + 100));
+  await run(sb().rpc('delete_learner_account', { p_learner: id }));
+}

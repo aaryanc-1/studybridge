@@ -57,13 +57,13 @@ try {
   await win.getByLabel('Email').fill('anaya@example.com');
   await win.getByLabel('Password').fill('secret123');
   await win.getByRole('button', { name: 'Sign in' }).click();
-  await win.getByText('Hi Anaya').waitFor();
+  await win.getByText(/, Anaya!/).waitFor();
   assert.equal(await win.evaluate(() => !!window.studybridge?.desktop), true, 'desktop bridge available');
 
   await win.getByText('Algebra test').first().click();
   await win.getByText('locked to StudyBridge').waitFor();
   await win.screenshot({ path: join(SHOTS, 'desktop-before-test.png') });
-  await win.getByRole('button', { name: 'Start' }).click();
+  await win.getByRole('button', { name: 'Start', exact: true }).click();
   await win.getByRole('button', { name: /Start test/ }).click();
   await win.getByText('Locked until you hand in').waitFor();
   assert.equal(await isKiosk(), true, 'window locked (kiosk)');
@@ -131,7 +131,7 @@ try {
   await win.getByText('All saved').waitFor();
   await win.getByRole('button', { name: 'Hand in' }).first().click();
   await win.getByRole('dialog').getByRole('button', { name: 'Hand in' }).click();
-  await win.getByText('Handed in!').waitFor();
+  await win.getByText(/Handed in\. Well done/).waitFor();
   await win.waitForTimeout(500);
   assert.equal(await isKiosk(), false, 'unlocked after handing in');
   console.log('• Unlocked after handing in');

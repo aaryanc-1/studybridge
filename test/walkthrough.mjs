@@ -115,7 +115,7 @@ try {
   await T.getByText(/Join me on StudyBridge/).waitFor();
   await shot(T, 'tutor-invite');
   const inviteText = await T.locator('.code-box').first().innerText();
-  const invite = inviteText.match(/SB1\.[A-Za-z0-9_-]+/)[0];
+  const invite = inviteText.match(/SB1[.-][A-Za-z0-9_-]+/)[0];
   await T.keyboard.press('Escape');
 
   // ---------------- learner joins ----------------
@@ -129,7 +129,7 @@ try {
   await L.getByLabel('Email').fill('anaya@example.com');
   await L.getByLabel('Password').fill('secret123');
   await L.getByRole('button', { name: 'Create account' }).click();
-  await L.getByText('Hi Anaya').waitFor();
+  await L.getByText(/, Anaya!/).waitFor();
   await shot(L, 'learner-today-empty');
   assert.ok(invite.length > 20);
 
@@ -180,12 +180,11 @@ try {
   await T.getByRole('button', { name: 'New lesson' }).first().click();
   await T.getByLabel('Title').fill('Solving linear equations');
   await T.locator('textarea').first().fill('## The idea\nDo the **same thing to both sides**.\n\n## Worked example\nSolve $2x + 3 = 11$.\n\n$$2x = 8 \\Rightarrow x = 4$$\n\n- Subtract 3\n- Divide by 2');
-  await T.getByRole('button', { name: 'Visible now' }).click();
   await T.getByRole('combobox').nth(0).selectOption({ label: 'Mathematics (Extended)' });
   await T.getByRole('button', { name: 'Preview' }).click();
   await shot(T, 'tutor-lesson-editor');
-  await T.getByRole('button', { name: 'Save' }).click();
-  await T.getByText('Lesson saved').waitFor();
+  await T.getByRole('button', { name: 'Post' }).click();
+  await T.getByText('Posted: Solving linear equations').waitFor();
 
   // ---------------- assignment ----------------
   step('Tutor builds homework with every kind of question');
@@ -223,21 +222,25 @@ try {
   await T.getByRole('button', { name: /Photo of work/ }).click();
   await T.getByLabel('Question 6', { exact: true }).fill('Solve Practice Q2 on paper and upload a photo.');
   // Settings
-  await T.getByRole('button', { name: 'Visible now' }).click();
   await T.getByLabel('Due').fill('2030-01-10T17:00');
   await T.getByLabel('Topic', { exact: true }).last().selectOption({ label: 'Algebra' });
   await T.getByText('algebra-chapter-3.pdf').last().click();
-  await T.getByRole('button', { name: 'Save', exact: true }).click();
-  await T.getByText('All changes saved').waitFor();
+  await T.getByText(/Goes to: Anaya/).waitFor();
   await shot(T, 'tutor-assignment-editor', true);
+  // Post publishes it and goes back to the list
+  await T.getByRole('button', { name: 'Post', exact: true }).click();
+  await T.getByText('Posted: Linear equations 1').waitFor();
+  await T.getByRole('heading', { name: 'Assignments' }).waitFor();
+  await shot(T, 'tutor-assignment-posted');
 
   // ---------------- learner does it ----------------
   step('Learner opens the homework, answers every question');
   await nav(L, 'Today').click();
   await L.reload();
-  await L.getByText('Linear equations 1').first().click();
+  await shot(L, 'learner-today');
+  await L.getByRole('button', { name: /Let’s start/ }).click();
   await shot(L, 'learner-work-detail');
-  await L.getByRole('button', { name: 'Start' }).click();
+  await L.getByRole('button', { name: 'Start', exact: true }).click();
   await L.getByText('Which value of').waitFor();
   await L.locator('.qcard').nth(0).locator('label.opt').nth(1).click();
   await L.getByLabel('Your answer').first().fill('12.5');
@@ -266,6 +269,18 @@ try {
   // photo
   await L.locator('.qcard').nth(5).locator('input[type=file]').setInputFiles({ name: 'working.png', mimeType: 'image/png', buffer: readFileSync(join(ROOT, 'build', 'icon.png')) });
   await L.locator('.qcard').nth(5).locator('.thumb img').waitFor();
+  // work it out on the whiteboard as well
+  await L.locator('.qcard').nth(2).getByRole('button', { name: 'Use the whiteboard' }).click();
+  const wb = L.locator('.workboard canvas');
+  await wb.waitFor();
+  const wbb = await wb.boundingBox();
+  await L.mouse.move(wbb.x + 80, wbb.y + 120);
+  await L.mouse.down();
+  for (let i = 1; i <= 20; i++) await L.mouse.move(wbb.x + 80 + i * 18, wbb.y + 120 + Math.sin(i / 2) * 40);
+  await L.mouse.up();
+  await shot(L, 'learner-whiteboard');
+  await L.getByRole('button', { name: 'Add to my answer' }).click();
+  await L.locator('.qcard').nth(2).locator('.thumb img').waitFor();
   // a note to the tutor
   await L.locator('.qcard').nth(2).getByText('Leave a note for your tutor').click();
   await L.locator('.qcard').nth(2).getByPlaceholder('Leave a note for your tutor…').fill('Is it OK to divide straight away?');
@@ -278,7 +293,7 @@ try {
   await L.getByRole('button', { name: 'Hand in' }).first().click();
   await shot(L, 'learner-hand-in-confirm');
   await L.getByRole('dialog').getByRole('button', { name: 'Hand in' }).click();
-  await L.getByText('Handed in!').waitFor();
+  await L.getByText(/Handed in\. Well done/).waitFor();
   await shot(L, 'learner-handed-in');
 
   // ---------------- tutor marks ----------------
@@ -344,6 +359,32 @@ try {
   await T.getByText('Dividing first works').waitFor();
   await shot(T, 'tutor-messages');
 
+  step('Admin: tutor sets a new password for the learner, who signs in with it');
+  await nav(T, 'Learners').click();
+  await T.locator('.content').getByText('Anaya').first().click();
+  await T.getByRole('button', { name: 'Account' }).click();
+  await T.getByText('anaya@example.com').waitFor();
+  await T.getByLabel('New password').fill('Mango-River-42');
+  await T.getByRole('button', { name: 'Save new password' }).click();
+  await T.getByText('Tell Anaya').waitFor();
+  await shot(T, 'tutor-learner-account');
+  await T.keyboard.press('Escape');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+    const X = await ctx.newPage();
+    await X.goto(web.url);
+    await X.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+    await X.reload();
+    await X.getByLabel('Email').fill('anaya@example.com');
+    await X.getByLabel('Password').fill('secret123');
+    await X.getByRole('button', { name: 'Sign in' }).click();
+    await X.getByText(/don’t match/).waitFor();
+    await X.getByLabel('Password').fill('Mango-River-42');
+    await X.getByRole('button', { name: 'Sign in' }).click();
+    await X.getByText(/, Anaya!/).waitFor();
+    await ctx.close();
+  }
+
   step('Offline: learner answers and hands in with no connection, it syncs later');
   const tc = (await import('@supabase/supabase-js')).createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await tc.auth.signInWithPassword({ email: 'aaryan@example.com', password: 'secret123' });
@@ -352,8 +393,8 @@ try {
   await tc.from('question_keys').insert({ question_id: oq.id, answer: { value: '42', tolerance: '0' } });
   await nav(L, 'Today').click();
   await L.reload();
-  await L.getByText('Offline quiz').first().click();
-  await L.getByRole('button', { name: 'Start' }).click();
+  await L.locator('.work-card', { hasText: 'Offline quiz' }).first().click();
+  await L.getByRole('button', { name: 'Start', exact: true }).click();
   await L.getByText('What is').waitFor();
   await learnerCtx.setOffline(true);
   await L.getByLabel('Your answer').fill('42');
@@ -392,6 +433,10 @@ try {
 
   console.log('\nWalkthrough passed. Screenshots in', SHOTS);
 } catch (e) {
+  for (const [n, pg] of [['tutor', T], ['learner', L]]) {
+    const t = await pg.locator('.toasts').innerText().catch(() => '');
+    if (t.trim()) console.log(`${n} toasts:`, t.replace(/\n/g, ' | '));
+  }
   await shot(T, 'FAIL-tutor', true).catch(() => {});
   await shot(L, 'FAIL-learner', true).catch(() => {});
   console.error('\nWalkthrough FAILED:', e.message);

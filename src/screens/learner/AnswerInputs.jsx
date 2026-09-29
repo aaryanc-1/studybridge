@@ -3,6 +3,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Markdown, Modal, useToast } from '../../ui/kit.jsx';
 import MathField from '../../ui/MathField.jsx';
 import DrawingPad from '../../ui/DrawingPad.jsx';
+import WorkBoard from '../../ui/WorkBoard.jsx';
 import { WorkThumb, Lightbox } from '../../ui/media.jsx';
 import { items, multi } from '../../lib/questions.js';
 import { compressImage } from '../../lib/image.js';
@@ -133,7 +134,7 @@ function Steps({ value, onChange, attemptId, q, disabled }) {
           </button>
         </div>
       )}
-      <Photos value={value} onChange={onChange} attemptId={attemptId} q={q} disabled={disabled} optional label="Or add a photo of working on paper" />
+      <Photos value={value} onChange={onChange} attemptId={attemptId} q={q} disabled={disabled} optional label="Or work it out on the whiteboard, or add a photo of your paper:" />
     </div>
   );
 }
@@ -145,7 +146,19 @@ function Photos({ value, onChange, attemptId, q, disabled, optional, label }) {
   const [cam, setCam] = useState(false);
   const [light, setLight] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [board, setBoard] = useState(null); // { background?, replace? }
   const files = value.files || [];
+
+  async function saveBoard(blob) {
+    try {
+      const f = await api.saveWorkImage(attemptId, q.id, blob, 'whiteboard.png');
+      const next = board.replace ? files.map((x) => (x.path === board.replace ? f : x)) : [...files, f];
+      onChange({ ...value, files: next });
+      setBoard(null);
+    } catch (e) {
+      toast({ title: 'Couldn’t save the whiteboard', body: e.message, tone: 'bad' });
+    }
+  }
 
   async function add(blobs) {
     setBusy(true);
@@ -169,13 +182,22 @@ function Photos({ value, onChange, attemptId, q, disabled, optional, label }) {
       {files.length > 0 && (
         <div className="thumbs">
           {files.map((f) => (
-            <WorkThumb key={f.path} path={f.path} onOpen={setLight} onRemove={disabled ? null : () => onChange({ ...value, files: files.filter((x) => x.path !== f.path) })} />
+            <WorkThumb
+              key={f.path}
+              path={f.path}
+              onOpen={setLight}
+              onDraw={disabled ? null : (url) => setBoard({ background: url, replace: f.path })}
+              onRemove={disabled ? null : () => onChange({ ...value, files: files.filter((x) => x.path !== f.path) })}
+            />
           ))}
         </div>
       )}
       {!disabled && (
         <div className="row wrap">
           {optional && !files.length && <span className="small muted">{label || 'You can also add a photo.'}</span>}
+          <button className="btn sm" onClick={() => setBoard({})} disabled={busy}>
+            <Icon name="pen" size={16} /> Use the whiteboard
+          </button>
           <button className="btn sm" onClick={() => input.current.click()} disabled={busy}>
             <Icon name="image" size={16} /> {files.length ? 'Add another photo' : 'Choose a photo or scan'}
           </button>
@@ -198,6 +220,7 @@ function Photos({ value, onChange, attemptId, q, disabled, optional, label }) {
         />
       )}
       {light && <Lightbox src={light} onClose={() => setLight(null)} />}
+      {board && <WorkBoard background={board.background || null} title={board.background ? 'Draw on your photo' : 'Work it out'} onClose={() => setBoard(null)} onSave={saveBoard} />}
     </div>
   );
 }

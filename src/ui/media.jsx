@@ -51,11 +51,22 @@ export function Lightbox({ src, onClose, children }) {
   );
 }
 
-export function WorkThumb({ path, onOpen, onRemove }) {
+export function WorkThumb({ path, onOpen, onRemove, onDraw }) {
   const { url } = useBlob('work', path);
   return (
     <div className="thumb" role="button" tabIndex={0} onClick={() => url && onOpen?.(url)} onKeyDown={(e) => e.key === 'Enter' && url && onOpen?.(url)}>
       {url ? <img src={url} alt="Uploaded work" /> : <div className="spinner" style={{ margin: 60 }} />}
+      {onDraw && url && (
+        <button
+          className="btn sm draw"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDraw(url);
+          }}
+        >
+          <Icon name="pen" size={14} /> Draw on it
+        </button>
+      )}
       {onRemove && (
         <button
           className="btn sm icon x"

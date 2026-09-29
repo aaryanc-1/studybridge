@@ -59,7 +59,7 @@ export default function FinishSetup() {
             >
               <h2>I’m a learner</h2>
               <Field label="Invite">
-                <textarea className="textarea code" value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1.…" />
+                <textarea className="textarea code" value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-…" />
               </Field>
               <button className="btn primary" disabled={busy}>
                 Join

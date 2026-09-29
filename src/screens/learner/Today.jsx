@@ -1,9 +1,9 @@
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Link, Page, go } from '../../ui/kit.jsx';
+import { Empty, Link, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, due, dur, kindLabel, when, weekRange } from '../../lib/format.js';
+import { ago, due, dur, kindLabel, when, weekRange, ymd } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
 
@@ -28,9 +28,53 @@ export default function Today() {
   const tutor = app.me.tutor_id;
   const weak = (progress?.topics || []).filter((t) => t.strength === 'weak').slice(0, 3);
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
+  const activity = useQuery('activity', api.listActivity).data || [];
+
+  // Study streak: days in a row with some study, ending today (or yesterday)
+  const days = new Set(activity.map((x) => x.day));
+  let streak = 0;
+  for (let d = new Date(), i = 0; i < 400; i++, d = new Date(d.getTime() - 86400000)) {
+    if (days.has(ymd(d))) streak++;
+    else if (i > 0 || streak > 0) break;
+  }
+  const monday = weekRange(0).from;
+  const weekDays = Array.from({ length: 7 }, (_, i) => new Date(monday.getTime() + i * 86400000));
+  const hour = new Date().getHours();
+  const next = todo[0];
 
   return (
-    <Page eyebrow={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} title={`Hi ${app.me.display_name.split(' ')[0]}`} subtitle={todo.length ? `You have ${todo.length} thing${todo.length > 1 ? 's' : ''} to do.` : 'You’re all caught up.'}>
+    <div className="page">
+      <div className="hero">
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          <div className="date">
+            <Icon name={hour < 18 ? 'sun' : 'moon'} size={16} /> {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+          </div>
+          <h1>
+            {hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'}, {app.me.display_name.split(' ')[0]}!
+          </h1>
+          <div className="sub">{todo.length ? `You have ${todo.length} thing${todo.length > 1 ? 's' : ''} to do. You’ve got this.` : 'All caught up. Nice work!'}</div>
+        </div>
+        <div className="hero-stats">
+          <div className="hero-stat">
+            <div className="n">
+              <Icon name="flame" size={22} /> {streak}
+            </div>
+            <div className="l">day{streak === 1 ? '' : 's'} in a row</div>
+          </div>
+          <div className="hero-stat">
+            <div className="n">{week ? dur(week.seconds) : '—'}</div>
+            <div className="l">studied this week</div>
+            <div className="week-dots" aria-label="Days studied this week">
+              {weekDays.map((d) => (
+                <span key={ymd(d)} className={(days.has(ymd(d)) ? 'on ' : '') + (ymd(d) === ymd(new Date()) ? 'today' : '')} title={d.toDateString()}>
+                  {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {nextSession && new Date(nextSession.starts_at).getTime() - Date.now() < 30 * 60000 && (
         <div className="card tint">
           <div className="row between wrap">
@@ -47,6 +91,30 @@ export default function Today() {
           </div>
         </div>
       )}
+
+      {next && (
+        <div className="up-next" onClick={(e) => !e.target.closest('button') && go(`/work/${next.a.id}`)} style={{ cursor: 'pointer' }}>
+          <span className="badge" style={{ background: lk.subject(next.a.subject_id)?.color || 'var(--accent)' }}>
+            <Icon name={next.a.kind === 'exam' || next.a.kind === 'test' ? 'target' : next.a.kind === 'quiz' ? 'star' : 'pen'} size={28} />
+          </span>
+          <div className="grow stack sm">
+            <div className="row wrap" style={{ gap: 8 }}>
+              <span className="small strong muted">UP NEXT</span>
+              <span className={'kind-pill ' + next.a.kind}>{kindLabel[next.a.kind]}</span>
+              {next.s.key !== 'todo' && <span className={'pill ' + next.s.tone}>{next.s.label}</span>}
+            </div>
+            <div className="t">{next.a.title}</div>
+            <div className="small muted">
+              {lk.subject(next.a.subject_id)?.name ? `${lk.subject(next.a.subject_id).name} · ` : ''}
+              {due(next.a.due_at).text}
+            </div>
+          </div>
+          <button className="btn primary big" onClick={() => go(`/work/${next.a.id}`)}>
+            {next.s.key === 'doing' ? 'Keep going' : next.s.key === 'redo' ? 'Redo it' : 'Let’s start'} <Icon name="send2" size={18} />
+          </button>
+        </div>
+      )}
+
       <div className="split">
         <div className="stack lg">
           <div className="card">
@@ -67,7 +135,7 @@ export default function Today() {
                       <span className="bar-l" style={{ background: lk.subject(a.subject_id)?.color || 'var(--accent)' }} />
                       <span className="grow stack sm">
                         <span className="row wrap" style={{ gap: 8 }}>
-                          <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span>
+                          <span className={'kind-pill ' + a.kind}>{kindLabel[a.kind]}</span>
                           {s.key !== 'todo' && <span className={'pill ' + s.tone}>{s.label}</span>}
                           {a.lockdown && <span className="pill dark"><Icon name="lock" size={12} /> Locked</span>}
                           {a.time_limit_min && <span className="pill"><Icon name="clock" size={12} /> {a.time_limit_min} min</span>}
@@ -108,8 +176,8 @@ export default function Today() {
             <h2>This week</h2>
             <div className="grid g2" style={{ gap: 12 }}>
               <div className="stat">
-                <div className="n">{week ? dur(week.seconds) : '—'}</div>
-                <div className="l">Studied</div>
+                <div className="n">{back.length}</div>
+                <div className="l">Marks back</div>
               </div>
               <div className="stat">
                 <div className="n">{week ? week.assignments.length : '—'}</div>
@@ -165,6 +233,6 @@ export default function Today() {
           {!tutor && <div className="note small">You’re not connected to a tutor any more.</div>}
         </div>
       </div>
-    </Page>
+    </div>
   );
 }

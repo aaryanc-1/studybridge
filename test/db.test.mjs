@@ -13,7 +13,8 @@ const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'u
 const STUBS = `
 create role authenticated nologin; create role anon nologin; create role service_role nologin;
 create schema auth;
-create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}');
+create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
+  encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now());
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 grant usage on schema auth to authenticated, anon;
@@ -382,8 +383,30 @@ test('anonymous visitors see nothing and can not call internals', async () => {
   await fails(as(null, `select become_tutor('x')`), /Not signed in/);
 });
 
+test('tutor admin: accounts, password reset, delete account', async () => {
+  const accts = await as('T', `select * from learner_accounts()`);
+  assert.deepEqual(accts.map((a) => a.email).sort(), ['other@x.com', 'sis@x.com']);
+  assert.equal((await as('T2', `select * from learner_accounts()`)).length, 0, 'other tutors see none');
+  assert.equal((await as('L', `select * from learner_accounts()`)).length, 0, 'learners see none');
+  await as('T', `select set_learner_password($1, 'NewPass1#')`, [U.L]);
+  const ok = await db.query(`select encrypted_password = extensions.crypt('NewPass1#', encrypted_password) as ok from auth.users where id = $1`, [U.L]);
+  assert.equal(ok.rows[0].ok, true);
+  await fails(as('T', `select set_learner_password($1, '123')`, [U.L]), /at least 6/);
+  await fails(as('T2', `select set_learner_password($1, 'Hacked123')`, [U.L]), /Not your learner/);
+  await fails(as('L', `select set_learner_password($1, 'Hacked123')`, [U.L2]), /Not your learner/);
+  const paths = await val('T', `select learner_work_paths($1)`, [U.L]);
+  assert.ok(Array.isArray(paths));
+  await fails(as('T2', `select delete_learner_account($1)`, [U.L2]), /Not your learner/);
+});
+
 test('removing a learner cuts access', async () => {
   await as('T', `select remove_learner($1)`, [U.L2]);
   assert.equal((await as('L2', `select * from subjects`)).length, 0);
   assert.equal((await as('L2', `select * from files`)).length, 0);
+  // Deleting an account removes the person and all their records
+  await as('T', `select delete_learner_account($1)`, [U.L]);
+  assert.equal((await db.query(`select count(*)::int n from auth.users where id = $1`, [U.L])).rows[0].n, 0);
+  assert.equal((await db.query(`select count(*)::int n from public.attempts where learner_id = $1`, [U.L])).rows[0].n, 0);
+  assert.equal((await db.query(`select count(*)::int n from public.comments where learner_id = $1`, [U.L])).rows[0].n, 0);
+  assert.equal((await db.query(`select count(*)::int n from public.profiles where id = $1`, [U.T])).rows[0].n, 1, 'tutor untouched');
 });

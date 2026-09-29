@@ -35,6 +35,26 @@ function blankQuestion(type) {
   };
 }
 
+// Anything that would confuse a learner if posted as it is
+function checkReady(a, qs) {
+  if (!a.title.trim()) return 'Give it a title.';
+  if (!qs.length) return 'Add at least one question.';
+  for (const [i, q] of qs.entries()) {
+    const n = `Question ${i + 1}`;
+    if (!q.prompt_md.trim() && !q.image_path) return `${n} has no question text.`;
+    if (q.type === 'mcq') {
+      const opts = items(q.options);
+      if (opts.filter((o) => o.trim()).length < 2) return `${n} needs at least two options.`;
+      if (opts.some((o) => !o.trim())) return `${n} has an empty option. Fill it in or remove it.`;
+      const right = multi(q.options) ? q.key.answer?.choices || [] : [q.key.answer?.choice].filter((x) => x != null);
+      if (!right.length) return `${n}: tick the correct answer.`;
+    }
+    if (q.type === 'numeric' && !String(q.key.answer?.value ?? '').trim()) return `${n}: add the correct number.`;
+  }
+  if (a.visibility === 'scheduled' && !a.visible_from) return 'Choose the date it becomes visible.';
+  return null;
+}
+
 export default function AssignmentEditor({ id }) {
   const lk = useLookups();
   const toast = useToast();
@@ -76,10 +96,16 @@ export default function AssignmentEditor({ id }) {
   };
 
   const saveAll = useCallback(
-    async ({ publish = false, quiet = false } = {}) => {
+    async ({ publish = false, quiet = false, post = false } = {}) => {
       if (!a) return;
+      if (post) {
+        const problem = checkReady(a, qs);
+        if (problem) return toast({ title: 'Not ready to post yet', body: problem, tone: 'bad', ms: 7000 });
+      }
       setBusy(true);
       try {
+        // Posting makes it visible now, unless you chose a date
+        const visibility = post && a.visibility === 'hidden' ? 'visible' : a.visibility;
         const row = {
           id: a.id,
           kind: a.kind,
@@ -89,8 +115,8 @@ export default function AssignmentEditor({ id }) {
           topic_id: a.topic_id || null,
           file_refs: a.file_refs || [],
           due_at: a.due_at || null,
-          visibility: a.visibility,
-          visible_from: a.visibility === 'scheduled' ? a.visible_from : null,
+          visibility,
+          visible_from: visibility === 'scheduled' ? a.visible_from : null,
           learner_ids: a.learner_ids?.length ? a.learner_ids : null,
           lockdown: !!a.lockdown,
           camera: !!a.camera,
@@ -100,7 +126,7 @@ export default function AssignmentEditor({ id }) {
           release_mode: a.release_mode,
           release_at: a.release_mode === 'at' ? a.release_at : null,
           show_answers: !!a.show_answers,
-          draft: publish ? false : a.draft,
+          draft: publish || post ? false : a.draft,
           updated_at: new Date().toISOString(),
         };
         // Questions first, so learners never see a half-saved assignment
@@ -128,14 +154,23 @@ export default function AssignmentEditor({ id }) {
         setRemoved([]);
         setDirty(false);
         invalidate('assignments');
-        if (!quiet) toast(publish ? 'Published' : 'Saved');
+        if (post || publish) {
+          const who = lk.audience(s).map((l) => l.display_name);
+          const whoText = who.length ? who.join(', ') : 'nobody yet (no learners take this subject)';
+          toast(
+            s.visibility === 'scheduled'
+              ? { title: `Scheduled: ${s.title}`, body: `${whoText} will see it from ${new Date(s.visible_from).toLocaleString()}.` }
+              : { title: `Posted: ${s.title}`, body: `Sent to ${whoText}.` },
+          );
+          go('/assignments');
+        } else if (!quiet) toast('Saved');
       } catch (e) {
         toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
       } finally {
         setBusy(false);
       }
     },
-    [a, qs, removed, toast],
+    [a, qs, removed, toast, lk],
   );
 
   // Ctrl/Cmd + S saves
@@ -156,6 +191,7 @@ export default function AssignmentEditor({ id }) {
   if (!a) return <Loading />;
 
   const total = qs.reduce((s, q) => s + (Number(q.marks) || 0), 0);
+  const live = !a.draft && a.visibility !== 'hidden';
   const attachable = files;
 
   return (
@@ -173,14 +209,20 @@ export default function AssignmentEditor({ id }) {
           <button className="btn" onClick={() => go(`/marking?a=${a.id}`)}>
             <Icon name="checkCircle" size={18} /> Submissions
           </button>
-          {a.draft ? (
-            <button className="btn claude" onClick={() => saveAll({ publish: true })} disabled={busy}>
-              <Icon name="check" size={18} /> Approve
+          {live ? (
+            <button className="btn primary" onClick={() => saveAll({ post: true })} disabled={busy}>
+              <Icon name="check" size={18} /> Save changes
             </button>
-          ) : null}
-          <button className="btn primary" onClick={() => saveAll()} disabled={busy || !dirty}>
-            Save
-          </button>
+          ) : (
+            <>
+              <button className="btn" onClick={() => saveAll()} disabled={busy || !dirty} title="Keep it hidden and carry on later">
+                Save draft
+              </button>
+              <button className={'btn ' + (a.draft ? 'claude' : 'primary')} onClick={() => saveAll({ post: true })} disabled={busy}>
+                <Icon name="send" size={18} /> {a.visibility === 'scheduled' ? 'Schedule' : a.draft ? 'Approve & post' : 'Post'}
+              </button>
+            </>
+          )}
         </>
       }
     >
@@ -286,6 +328,7 @@ export default function AssignmentEditor({ id }) {
             <h3>Who sees it</h3>
             <VisibilityPicker value={a.visibility} from={a.visible_from} onChange={(v, from) => setField({ visibility: v, visible_from: from })} />
             <AudiencePicker learners={lk.learners} value={a.learner_ids} onChange={(ids) => setField({ learner_ids: ids })} />
+            <AudienceNames item={a} />
             <Field label="Due">
               <input className="input" type="datetime-local" value={toLocalInput(a.due_at)} onChange={(e) => setField({ due_at: fromLocalInput(e.target.value) })} />
             </Field>
@@ -577,6 +620,26 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate }
             </Field>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// "Goes to: Aranya, Sam" (each learner still gets their own private copy)
+export function AudienceNames({ item }) {
+  const lk = useLookups();
+  const who = lk.audience(item).map((l) => l.display_name);
+  return (
+    <div className="small" style={{ color: who.length ? 'var(--ink-2)' : 'var(--amber-ink)' }}>
+      {who.length ? (
+        <>
+          <b>Goes to:</b> {who.join(', ')}
+          {who.length > 1 && <span className="muted"> · each works on their own copy</span>}
+        </>
+      ) : item.subject_id ? (
+        'Nobody takes this subject yet. Add it to a learner, or choose learners.'
+      ) : (
+        'No learners yet.'
       )}
     </div>
   );

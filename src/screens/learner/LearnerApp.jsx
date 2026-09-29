@@ -37,9 +37,11 @@ export default function LearnerApp() {
   if (a === 'attempt' && b)
     return (
       <LookupsProvider>
-        <ErrorBoundary>
-          <Attempt id={b} />
-        </ErrorBoundary>
+        <div className="theme-learner" style={{ height: '100%' }}>
+          <ErrorBoundary>
+            <Attempt id={b} />
+          </ErrorBoundary>
+        </div>
       </LookupsProvider>
     );
 
@@ -74,7 +76,7 @@ export default function LearnerApp() {
 
   return (
     <LookupsProvider>
-      <Shell nav={nav} tabs={tabs} roleLabel="Learner" notificationTarget={notificationTarget}>
+      <Shell nav={nav} tabs={tabs} roleLabel="Learner" notificationTarget={notificationTarget} theme="learner">
         {page}
       </Shell>
     </LookupsProvider>

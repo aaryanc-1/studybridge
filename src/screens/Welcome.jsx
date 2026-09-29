@@ -176,7 +176,7 @@ function InviteStep({ onBack, onDone }) {
     e.preventDefault();
     const inv = decodeInvite(text);
     if (!inv) return setErr('That doesn’t look like a StudyBridge invite. Paste the whole message your tutor sent.');
-    if (!inv.url && !app.server) return setErr('That’s just the code. Paste the whole invite message (it starts with SB1.).');
+    if (!inv.url && !app.server) return setErr('That’s just the code. Paste the whole invite message (it starts with SB1-).');
     if (inv.url) app.setServer({ url: inv.url, key: inv.key });
     sessionStorage.setItem('sb.pendingInvite', text.trim());
     onDone();
@@ -185,8 +185,8 @@ function InviteStep({ onBack, onDone }) {
   return (
     <form className="card" onSubmit={next}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Join your tutor</h2>
-      <Field label="Your invite" hint="Paste the whole invite your tutor sent you. It starts with SB1.">
-        <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1.eyJ1Ijoi…" spellCheck={false} />
+      <Field label="Your invite" hint="Paste the whole invite your tutor sent you. It starts with SB1-">
+        <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-eyJ1Ijoi…" spellCheck={false} />
       </Field>
       {err && <div className="error">{err}</div>}
       <div className="row between">
@@ -269,6 +269,7 @@ function Account({ role, onBack }) {
 
 function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
   const app = useApp();
+  const [forgot, setForgot] = useState(false);
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [err, setErr] = useState('');
@@ -305,6 +306,16 @@ function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
         <button className="btn primary big" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
+        <button type="button" className="linkbtn small" onClick={() => setForgot((f) => !f)} aria-expanded={forgot}>
+          Forgot your password?
+        </button>
+        {forgot && (
+          <div className="note small">
+            <b>Learners:</b> ask your tutor. They can set a new password for you in StudyBridge (Learners → your name → Account), and you can change it afterwards in Settings.
+            <br />
+            <b>Tutor:</b> reset it from the Supabase SQL Editor (the setup guide has the one-line command).
+          </div>
+        )}
         <hr />
         <div className="stack sm small">
           <div>

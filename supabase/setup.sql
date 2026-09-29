@@ -594,6 +594,51 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------
+-- Tutor admin: learners' accounts, password resets, deleting an account
+-- ---------------------------------------------------------------------
+create or replace function public.learner_accounts()
+returns table (id uuid, email text, joined_at timestamptz, last_sign_in_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select u.id, u.email::text, u.created_at, u.last_sign_in_at
+    from auth.users u join public.profiles p on p.id = u.id
+   where p.tutor_id = auth.uid() and p.role = 'learner'
+   order by p.display_name
+$$;
+
+create or replace function public.set_learner_password(p_learner uuid, p_password text)
+returns void language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  if length(coalesce(p_password, '')) < 6 then raise exception 'Use a password of at least 6 characters.'; end if;
+  update auth.users
+     set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')),
+         email_confirmed_at = coalesce(email_confirmed_at, now())
+   where id = p_learner;
+end $$;
+
+-- Files a learner uploaded as answers (the app deletes these before the account)
+create or replace function public.learner_work_paths(p_learner uuid)
+returns text[] language sql stable security definer set search_path = public as $$
+  select coalesce(array_agg(distinct p), '{}') from (
+    select f ->> 'path' as p from public.responses r, jsonb_array_elements(coalesce(r.answer -> 'files', '[]'::jsonb)) f
+     where r.learner_id = p_learner and public.is_my_learner(p_learner)
+    union all
+    select annotation_path from public.responses where learner_id = p_learner and public.is_my_learner(p_learner)
+    union all
+    select attachment_path from public.comments where learner_id = p_learner and public.is_my_learner(p_learner)
+  ) x where p is not null
+$$;
+
+-- Deletes the learner's sign-in and everything of theirs (work, marks, notes, progress). Can't be undone.
+create or replace function public.delete_learner_account(p_learner uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  delete from public.invites where accepted_by = p_learner;
+  delete from auth.users where id = p_learner;
+end $$;
+
+-- ---------------------------------------------------------------------
 -- Doing work
 -- ---------------------------------------------------------------------
 create or replace function public.start_attempt(p_assignment uuid, p_client text default 'desktop')
@@ -1113,12 +1158,17 @@ begin
   if not is_live or was_live then return new; end if;
   if tg_table_name = 'assignments' then
     v_title := 'New ' || new.kind || ': ' || new.title;
-    v_body := case when new.due_at is not null then 'Due ' || to_char(new.due_at, 'Dy DD Mon HH24:MI') || ' UTC' else 'Open StudyBridge to start.' end;
   else
     v_title := 'New lesson: ' || new.title;
     v_body := 'Open StudyBridge to read it.';
   end if;
   for l in select public._audience(new.tutor_id, new.learner_ids, new.subject_id) loop
+    if tg_table_name = 'assignments' then
+      -- due time in the learner's own time zone
+      v_body := case when new.due_at is not null
+        then 'Due ' || to_char(new.due_at at time zone coalesce((select p.timezone from public.profiles p join pg_timezone_names z on z.name = p.timezone where p.id = l), 'UTC'), 'Dy DD Mon, HH24:MI')
+        else 'Open StudyBridge to start.' end;
+    end if;
     perform public.notify_user(l, case when tg_table_name = 'assignments' then 'assignment' else 'lesson' end, v_title, v_body,
       jsonb_build_object(case when tg_table_name = 'assignments' then 'assignment_id' else 'lesson_id' end, new.id));
   end loop;

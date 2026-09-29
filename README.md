@@ -41,6 +41,16 @@ You need: a free **Supabase** project (database, sign-in, file storage) and, for
 
 Learners → **Invite a learner** → choose their programme and subjects → **Copy message**. Send them the StudyBridge installer and the message. They open the app, choose **I'm a learner**, paste the invite and make an account. The invite already contains your server details, so they never type a URL or key.
 
+## Updating
+
+When a new version comes out, install the new StudyBridge on each computer (your work, accounts and files are kept), and **run the latest `supabase/setup.sql` again** in the Supabase SQL Editor. It's safe to re-run: it only adds or updates things and never deletes your data.
+
+## Passwords
+
+- **A learner forgot theirs:** Learners → their name → **Account** → set a new password (or press **Make one up**) and tell them. They can change it in Settings afterwards.
+- **You forgot yours:** in the Supabase SQL Editor run
+  `update auth.users set encrypted_password = extensions.crypt('your-new-password', extensions.gen_salt('bf')) where email = 'you@example.com';`
+
 ## Good to know
 
 - **Lockdown** fills the screen, blocks the usual shortcuts, brings the window back if they switch away, and reports every attempt to you instantly. It can't stop a second device (a phone), so use **camera** for tests that matter. A learner can leave in an emergency, and you're told when they do.

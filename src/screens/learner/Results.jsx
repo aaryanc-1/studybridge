@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { confetti } from '../../ui/confetti.js';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Markdown, Page, go, useToast } from '../../ui/kit.jsx';
@@ -7,6 +8,18 @@ import * as api from '../../lib/api.js';
 import { dur, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { Thread } from '../shared/Messages.jsx';
+
+function useCelebrate(id, show) {
+  useEffect(() => {
+    if (!show) return;
+    const key = 'sb.celebrated:' + id;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, '1');
+    } catch {}
+    confetti();
+  }, [id, show]);
+}
 
 export default function Results({ id }) {
   const app = useApp();
@@ -19,6 +32,7 @@ export default function Results({ id }) {
   const [busy, setBusy] = useState(false);
   const d = detail.data;
   const a = assignments.find((x) => x.id === aid);
+  useCelebrate(id, !!d && d.attempt.released && d.attempt.status === 'marked' && (pct(d.attempt.score, d.attempt.max_score) ?? 0) >= 80);
   if (detail.error && !d) return <Page title="Results"><div className="error">{detail.error.message}</div></Page>;
   if (!d || !a) return <Loading />;
   const t = d.attempt;
@@ -77,11 +91,19 @@ export default function Results({ id }) {
         </div>
       ) : (
         <div className="card">
-          <div className="row" style={{ alignItems: 'baseline', gap: 10 }}>
-            <span className="score-big">{t.score != null ? Number(t.score) : '—'}</span>
-            <span className="muted" style={{ fontSize: 20 }}>/ {Number(t.max_score)}</span>
-            <span className="grow" />
-            {p != null && <span className={'pill ' + (p >= 80 ? 'good' : p >= 50 ? 'warn' : 'bad')} style={{ fontSize: 15, padding: '4px 14px' }}>{p}%</span>}
+          <div className="row wrap" style={{ gap: 22 }}>
+            <div className="score-ring" style={{ '--p': p ?? 0, '--ring': p >= 80 ? '#13937F' : p >= 50 ? '#E3A12F' : '#E0604F' }}>
+              <div>
+                <div className="n">{t.score != null ? Number(t.score) : '—'}</div>
+                <div className="l">out of {Number(t.max_score)}</div>
+              </div>
+            </div>
+            <div className="grow stack sm">
+              <div style={{ fontFamily: 'var(--serif)', fontSize: 26, fontWeight: 600 }}>
+                {p == null ? 'Marked' : p >= 90 ? 'Outstanding!' : p >= 80 ? 'Great work!' : p >= 60 ? 'Good effort!' : p >= 40 ? 'Getting there' : 'Let’s practise this together'}
+              </div>
+              <div className="muted">{p != null ? `You scored ${p}%.` : ''} {redo ? '' : 'Look through each question below to see what went well and what to fix.'}</div>
+            </div>
           </div>
           {t.feedback_md && (
             <div className="feedback">

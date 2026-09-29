@@ -303,10 +303,11 @@ export function LessonEditor({ id }) {
   if (!l) return <Page title="Lesson">{lessons.data ? <Empty>Lesson not found.</Empty> : null}</Page>;
   const set = (patch) => setL((x) => ({ ...x, ...patch }));
 
-  async function saveIt() {
+  async function saveIt({ post = false } = {}) {
     if (!l.title.trim()) return toast({ title: 'Give the lesson a title', tone: 'bad' });
     setBusy(true);
     try {
+      const visibility = post && l.visibility === 'hidden' ? 'visible' : l.visibility;
       const row = {
         ...(l.id ? { id: l.id } : {}),
         title: l.title.trim(),
@@ -314,13 +315,19 @@ export function LessonEditor({ id }) {
         subject_id: l.subject_id || null,
         topic_id: l.topic_id || null,
         file_ids: l.file_ids || [],
-        visibility: l.visibility,
-        visible_from: l.visibility === 'scheduled' ? l.visible_from : null,
+        visibility,
+        visible_from: visibility === 'scheduled' ? l.visible_from : null,
         learner_ids: l.learner_ids?.length ? l.learner_ids : null,
         updated_at: new Date().toISOString(),
       };
       const saved = await api.save('lessons', row);
       invalidate('lessons');
+      if (post) {
+        const who = lk.audience(saved).map((x) => x.display_name);
+        toast({ title: saved.visibility === 'scheduled' ? `Scheduled: ${saved.title}` : `Posted: ${saved.title}`, body: who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.' });
+        go('/library/lessons');
+        return;
+      }
       toast('Lesson saved');
       if (isNew) go(`/lesson/${saved.id}`, { replace: true });
       setL(saved);
@@ -366,9 +373,20 @@ export function LessonEditor({ id }) {
               Delete
             </button>
           )}
-          <button className="btn primary" onClick={saveIt} disabled={busy}>
-            {busy ? 'Saving…' : 'Save'}
-          </button>
+          {l.visibility === 'hidden' ? (
+            <>
+              <button className="btn" onClick={() => saveIt()} disabled={busy}>
+                Save draft
+              </button>
+              <button className="btn primary" onClick={() => saveIt({ post: true })} disabled={busy}>
+                <Icon name="send" size={18} /> Post
+              </button>
+            </>
+          ) : (
+            <button className="btn primary" onClick={() => saveIt({ post: true })} disabled={busy}>
+              <Icon name="check" size={18} /> {l.visibility === 'scheduled' ? 'Schedule' : 'Save changes'}
+            </button>
+          )}
         </>
       }
     >

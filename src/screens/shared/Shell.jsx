@@ -14,7 +14,7 @@ export function isActive(route, item) {
   return route.path === item.to || route.path.startsWith(item.to + '/') || (item.also || []).some((a) => route.path.startsWith(a));
 }
 
-export default function Shell({ nav, tabs, roleLabel, banner, children, notificationTarget }) {
+export default function Shell({ nav, tabs, roleLabel, banner, children, notificationTarget, theme = '' }) {
   const app = useApp();
   const route = useRoute();
   const online = useOnline();
@@ -28,7 +28,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   }, [app.me.role]);
 
   return (
-    <div className="shell">
+    <div className={'shell ' + (theme ? 'theme-' + theme : '')}>
       <aside className="side" aria-label="Main">
         <div className="brand">
           <Logo />

@@ -63,12 +63,13 @@ const unb64url = (s) => decodeURIComponent(escape(atob(s.replace(/-/g, '+').repl
 
 // Invites carry the server details, so learners never type a URL or key.
 export function encodeInvite({ url, key, code }) {
-  return 'SB1.' + b64url(JSON.stringify({ u: url, k: key, c: code }));
+  // (a dash, not a dot, so chat apps don't turn it into a fake web link)
+  return 'SB1-' + b64url(JSON.stringify({ u: url, k: key, c: code }));
 }
 
 export function decodeInvite(text) {
   const t = String(text || '').trim();
-  const m = t.match(/SB1\.([A-Za-z0-9_-]+)/);
+  const m = t.match(/SB1[.-]([A-Za-z0-9_-]+)/);
   if (m) {
     try {
       const o = JSON.parse(unb64url(m[1]));

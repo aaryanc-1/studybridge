@@ -5,7 +5,7 @@ import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm,
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { encodeInvite } from '../../lib/config.js';
-import { ago, dur, kindLabel, pct, weekRange, ymd } from '../../lib/format.js';
+import { ago, dur, kindLabel, pct, weekRange, ymd, when } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
@@ -13,6 +13,7 @@ export default function Learners() {
   const lk = useLookups();
   const invites = useQuery('invites', api.listInvites);
   const activity = useQuery('activity', api.listActivity).data || [];
+  const accounts = useQuery('accounts', api.learnerAccounts).data || [];
   const [inviting, setInviting] = useState(false);
   const [shown, setShown] = useState(null);
   const open = (invites.data || []).filter((i) => !i.accepted_by && !i.revoked);
@@ -57,6 +58,14 @@ export default function Learners() {
                   {subs.length ? subs.map((s) => <span key={s} className="pill"><SubjectTag id={s} /></span>) : <span className="muted small">No subjects yet</span>}
                 </div>
                 <div className="muted small">{dur(secs)} studied this week</div>
+                {(() => {
+                  const acct = accounts.find((x) => x.id === l.id);
+                  return acct ? (
+                    <div className="tiny muted" style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}>
+                      {acct.email} · {acct.last_sign_in_at ? `last signed in ${ago(acct.last_sign_in_at)}` : 'hasn’t signed in yet'}
+                    </div>
+                  ) : null;
+                })()}
               </Link>
             );
           })}
@@ -211,6 +220,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const attempts = (useQuery('attempts', api.listAttempts).data || []).filter((t) => t.learner_id === id);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const [editing, setEditing] = useState(false);
+  const [account, setAccount] = useState(false);
   if (!l) return <Page title="Learner">{lk.ready ? <Empty>This learner isn’t in your list any more.</Empty> : null}</Page>;
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const subs = lk.subjectsOfLearner(id);
@@ -247,9 +257,13 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           <button className="btn" onClick={() => setEditing(true)}>
             <Icon name="pen" size={18} /> Edit
           </button>
+          <button className="btn" onClick={() => setAccount(true)}>
+            <Icon name="lock" size={18} /> Account
+          </button>
         </>
       }
     >
+      {account && <AccountModal l={l} onClose={() => setAccount(false)} />}
       <Seg
         value={tab}
         onChange={(t) => go(`/learners/${id}/${t}`, { replace: true })}
@@ -376,8 +390,8 @@ function EditLearner({ l, onClose, onRemove }) {
         <div className="muted small">Email: {l.email}</div>
         {err && <div className="error">{err}</div>}
         <div className="row between">
-          <button type="button" className="btn danger" onClick={onRemove}>
-            Remove learner
+          <button type="button" className="btn danger" onClick={onRemove} title="They lose access, but their past work stays in your records">
+            Remove from my learners
           </button>
           <div className="row">
             <button type="button" className="btn" onClick={onClose}>
@@ -387,6 +401,113 @@ function EditLearner({ l, onClose, onRemove }) {
           </div>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// Easy-to-read temporary passwords, e.g. "Mango-River-47"
+const WORDS = ['Mango', 'River', 'Tiger', 'Cloud', 'Maple', 'Comet', 'Zebra', 'Lemon', 'Otter', 'Pixel', 'Rocket', 'Sunny', 'Violet', 'Panda', 'Ocean', 'Falcon'];
+function easyPassword() {
+  const r = (n) => Math.floor((crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32) * n);
+  return `${WORDS[r(WORDS.length)]}-${WORDS[r(WORDS.length)]}-${10 + r(90)}`;
+}
+
+function AccountModal({ l, onClose }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const accounts = useQuery('accounts', api.learnerAccounts);
+  const acct = (accounts.data || []).find((x) => x.id === l.id);
+  const [pw, setPw] = useState('');
+  const [show, setShow] = useState(true);
+  const [done, setDone] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmName, setConfirmName] = useState('');
+  const first = l.display_name.split(' ')[0];
+
+  async function setPassword(e) {
+    e.preventDefault();
+    if (pw.length < 6) return toast({ title: 'Use at least 6 characters', tone: 'bad' });
+    setBusy(true);
+    try {
+      await api.setLearnerPassword(l.id, pw);
+      setDone(pw);
+      setPw('');
+    } catch (x) {
+      toast({ title: 'Couldn’t change the password', body: x.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function del() {
+    setBusy(true);
+    try {
+      await api.deleteLearnerAccount(l.id);
+      invalidate('accounts', 'attempts', 'comments');
+      lk.reload();
+      toast(`${l.display_name}’s account was deleted`);
+      go('/learners');
+    } catch (x) {
+      toast({ title: 'Couldn’t delete the account', body: x.message, tone: 'bad' });
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`${l.display_name}’s account`} onClose={onClose}>
+      <div className="stack sm small">
+        <div className="row between"><span className="muted">Email (their sign-in)</span><span className="strong">{acct?.email || l.email}</span></div>
+        <div className="row between"><span className="muted">Joined</span><span>{acct?.joined_at ? when(acct.joined_at) : '—'}</span></div>
+        <div className="row between"><span className="muted">Last signed in</span><span>{acct?.last_sign_in_at ? ago(acct.last_sign_in_at) : 'Not yet'}</span></div>
+      </div>
+      <hr />
+      <form className="stack sm" onSubmit={setPassword}>
+        <h3>Set a new password</h3>
+        <div className="muted small">For when {first} forgets it. {first} can change it again any time in Settings.</div>
+        <div className="row">
+          <input className="input" type={show ? 'text' : 'password'} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="New password" aria-label="New password" autoComplete="new-password" />
+          <button type="button" className="btn sm ghost icon" onClick={() => setShow((x) => !x)} aria-label={show ? 'Hide password' : 'Show password'}>
+            <Icon name={show ? 'eyeOff' : 'eye'} size={16} />
+          </button>
+          <button type="button" className="btn sm" onClick={() => setPw(easyPassword())}>Make one up</button>
+        </div>
+        <div>
+          <button className="btn primary" disabled={busy || !pw}>Save new password</button>
+        </div>
+        {done && (
+          <div className="okmsg row between wrap">
+            <span>
+              Done. Tell {first}: <b style={{ userSelect: 'all' }}>{done}</b>
+            </span>
+            <button type="button" className="btn sm" onClick={() => (copyText(done), toast('Copied'))}>
+              <Icon name="copy" size={14} /> Copy
+            </button>
+          </div>
+        )}
+      </form>
+      <hr />
+      <div className="stack sm">
+        <h3 style={{ color: 'var(--red-ink)' }}>Delete account</h3>
+        <div className="muted small">
+          Deletes {first}’s sign-in and everything of theirs: work, marks, notes, messages and progress. This can’t be undone. (To stop their access but keep their records, use Edit → Remove from my learners.)
+        </div>
+        {!deleting ? (
+          <div>
+            <button className="btn danger" onClick={() => setDeleting(true)}>Delete {first}’s account…</button>
+          </div>
+        ) : (
+          <div className="stack sm">
+            <label className="small" htmlFor="confirm-delete">Type <b>{first}</b> to confirm</label>
+            <div className="row">
+              <input id="confirm-delete" className="input" value={confirmName} onChange={(e) => setConfirmName(e.target.value)} autoFocus />
+              <button className="btn danger solid" disabled={busy || confirmName.trim().toLowerCase() !== first.toLowerCase()} onClick={del}>
+                Delete forever
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </Modal>
   );
 }
