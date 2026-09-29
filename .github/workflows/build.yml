@@ -30,7 +30,9 @@ jobs:
         env:
           SHOTS: screenshots
       - name: Desktop lockdown check (Electron)
-        run: xvfb-run -a node test/electron-lockdown.mjs
+        run: |
+          node node_modules/electron/install.js
+          xvfb-run -a node test/electron-lockdown.mjs
         env:
           SHOTS: screenshots
       - name: Web version (for your phone)
