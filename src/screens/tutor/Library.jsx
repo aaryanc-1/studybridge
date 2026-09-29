@@ -1,0 +1,484 @@
+import { useEffect, useRef, useState } from 'react';
+import Icon from '../../ui/Icon.jsx';
+import { AudiencePicker, Empty, Field, Link, Markdown, Modal, Page, Seg, VisibilityPicker, VisibilityPill, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { useQuery, invalidate } from '../../lib/data.js';
+import * as api from '../../lib/api.js';
+import { bytes, ago } from '../../lib/format.js';
+import { useLookups, SubjectTag } from '../shared/lookups.jsx';
+
+export default function Library({ tab = 'files' }) {
+  return (
+    <Page
+      title="Library"
+      subtitle="Textbooks, worksheets and lessons. Everything starts hidden; you choose when learners see it."
+      actions={
+        tab === 'lessons' ? (
+          <button className="btn primary" onClick={() => go('/lesson/new')}>
+            <Icon name="plus" size={18} /> New lesson
+          </button>
+        ) : null
+      }
+    >
+      <Seg
+        value={tab}
+        onChange={(t) => go(`/library/${t}`, { replace: true })}
+        options={[
+          { value: 'files', label: 'Files', icon: 'file' },
+          { value: 'lessons', label: 'Lessons', icon: 'book' },
+        ]}
+      />
+      {tab === 'lessons' ? <Lessons /> : <Files />}
+    </Page>
+  );
+}
+
+function Files() {
+  const lk = useLookups();
+  const toast = useToast();
+  const files = useQuery('files', api.listFiles);
+  const [over, setOver] = useState(false);
+  const [uploading, setUploading] = useState([]);
+  const [edit, setEdit] = useState(null);
+  const [subject, setSubject] = useState('');
+  const input = useRef(null);
+  const list = (files.data || []).filter((f) => !subject || f.subject_id === subject);
+
+  async function upload(fileList) {
+    const arr = [...fileList];
+    if (!arr.length) return;
+    setUploading(arr.map((f) => f.name));
+    let last = null;
+    for (const f of arr) {
+      try {
+        last = await api.uploadFile(f, { subject_id: subject || null });
+      } catch (e) {
+        toast({ title: `Couldn’t upload ${f.name}`, body: e.message, tone: 'bad' });
+      }
+      setUploading((u) => u.filter((n) => n !== f.name));
+    }
+    invalidate('files');
+    if (arr.length === 1 && last) setEdit(last);
+    else toast({ title: `Uploaded ${arr.length} files`, body: 'They’re hidden until you make them visible.' });
+  }
+
+  return (
+    <>
+      <div
+        className={'dropzone' + (over ? ' over' : '')}
+        onClick={() => input.current.click()}
+        onDragOver={(e) => (e.preventDefault(), setOver(true))}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          upload(e.dataTransfer.files);
+        }}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === 'Enter' && input.current.click()}
+      >
+        <Icon name="upload" size={28} />
+        <div className="strong">Drop PDFs, images or any files here, or click to choose</div>
+        <div className="small muted">Up to 200 MB each. New uploads are hidden from learners.</div>
+        <input ref={input} type="file" multiple hidden onChange={(e) => (upload(e.target.files), (e.target.value = ''))} />
+      </div>
+      {uploading.length > 0 && (
+        <div className="note row">
+          <div className="spinner" /> Uploading {uploading.join(', ')}…
+        </div>
+      )}
+      <div className="row wrap">
+        <span className="small muted">Subject</span>
+        <select className="select" style={{ width: 'auto', minHeight: 36 }} value={subject} onChange={(e) => setSubject(e.target.value)}>
+          <option value="">All</option>
+          {lk.subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {list.length === 0 ? (
+        files.data && <Empty>No files yet.</Empty>
+      ) : (
+        <div className="card pad0">
+          <table className="table responsive">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Subject</th>
+                <th>Who sees it</th>
+                <th>Size</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((f) => (
+                <tr key={f.id} className="click" onClick={() => go(`/file/${f.id}`)}>
+                  <td data-label="Name">
+                    <div className="row">
+                      <Icon name={/pdf/.test(f.mime || '') ? 'pdf' : /image/.test(f.mime || '') ? 'image' : 'file'} style={{ color: 'var(--accent)' }} />
+                      <div className="grow">
+                        <div className="strong ellipsis">{f.name}</div>
+                        <div className="tiny muted">Added {ago(f.created_at)}{f.topic_id ? ` · ${lk.topic(f.topic_id)?.name}` : ''}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td data-label="Subject">{f.subject_id ? <SubjectTag id={f.subject_id} /> : <span className="muted">—</span>}</td>
+                  <td data-label="Who sees it">
+                    <div className="row wrap" style={{ gap: 6 }}>
+                      <VisibilityPill item={f} />
+                      {f.visibility !== 'hidden' && <span className="tiny muted">{f.learner_ids?.length ? lk.audience(f).map((l) => l.display_name).join(', ') : 'Everyone in the subject'}</span>}
+                    </div>
+                  </td>
+                  <td data-label="Size" className="muted">{bytes(f.size)}</td>
+                  <td>
+                    <button
+                      className="btn sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEdit(f);
+                      }}
+                    >
+                      Settings
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {edit && <FileSettings file={edit} onClose={() => setEdit(null)} />}
+    </>
+  );
+}
+
+function FileSettings({ file, onClose }) {
+  const lk = useLookups();
+  const confirm = useConfirm();
+  const [f, setF] = useState(file);
+  const [err, setErr] = useState('');
+  const set = (patch) => setF((x) => ({ ...x, ...patch }));
+  async function saveIt() {
+    try {
+      await api.save('files', {
+        id: f.id,
+        name: f.name,
+        description: f.description || null,
+        subject_id: f.subject_id || null,
+        topic_id: f.topic_id || null,
+        visibility: f.visibility,
+        visible_from: f.visibility === 'scheduled' ? f.visible_from : null,
+        learner_ids: f.learner_ids?.length ? f.learner_ids : null,
+      });
+      invalidate('files');
+      onClose();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+  return (
+    <Modal
+      title="File settings"
+      onClose={onClose}
+      foot={
+        <>
+          <button
+            className="btn danger"
+            style={{ marginRight: 'auto' }}
+            onClick={async () => {
+              if (!(await confirm({ title: `Delete ${f.name}?`, body: 'It’s removed for everyone.', ok: 'Delete', danger: true }))) return;
+              await api.deleteFile(f);
+              invalidate('files');
+              onClose();
+            }}
+          >
+            Delete
+          </button>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={saveIt}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <Field label="Name">
+        <input className="input" value={f.name} onChange={(e) => set({ name: e.target.value })} />
+      </Field>
+      <div className="grid g2">
+        <Field label="Subject">
+          <select className="select" value={f.subject_id || ''} onChange={(e) => set({ subject_id: e.target.value || null, topic_id: null })}>
+            <option value="">None</option>
+            {lk.subjects.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Topic">
+          <select className="select" value={f.topic_id || ''} onChange={(e) => set({ topic_id: e.target.value || null })} disabled={!f.subject_id}>
+            <option value="">None</option>
+            {lk.topicsOf(f.subject_id).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <Field label="Note for learners (optional)">
+        <input className="input" value={f.description || ''} onChange={(e) => set({ description: e.target.value })} placeholder="e.g. Read chapter 3 before Thursday" />
+      </Field>
+      <Field label="Visibility">
+        <VisibilityPicker value={f.visibility} from={f.visible_from} onChange={(v, from) => set({ visibility: v, visible_from: from })} />
+      </Field>
+      <Field label="Who">
+        <AudiencePicker learners={f.subject_id ? lk.learners : lk.learners} value={f.learner_ids} onChange={(ids) => set({ learner_ids: ids })} />
+      </Field>
+      {!f.subject_id && !(f.learner_ids || []).length && f.visibility !== 'hidden' && <div className="note small">No subject chosen, so all your learners will see it.</div>}
+      {err && <div className="error">{err}</div>}
+    </Modal>
+  );
+}
+
+function Lessons() {
+  const lessons = useQuery('lessons', api.listLessons);
+  const lk = useLookups();
+  const list = lessons.data || [];
+  if (lessons.data && list.length === 0)
+    return (
+      <Empty
+        title="No lessons yet"
+        action={
+          <button className="btn primary" onClick={() => go('/lesson/new')}>
+            <Icon name="plus" size={18} /> New lesson
+          </button>
+        }
+      >
+        Write notes with worked examples and maths, attach pages from your library, and release them when you’re ready.
+      </Empty>
+    );
+  return (
+    <div className="card">
+      <div className="list">
+        {list.map((l) => (
+          <Link key={l.id} to={`/lesson/${l.id}`} className="item">
+            <Icon name="book" style={{ color: 'var(--accent)' }} />
+            <span className="grow">
+              <span className="name">{l.title}</span>
+              <span className="meta">
+                {l.subject_id && <SubjectTag id={l.subject_id} />}
+                {l.topic_id && <span>{lk.topic(l.topic_id)?.name}</span>}
+                <span>Updated {ago(l.updated_at)}</span>
+              </span>
+            </span>
+            <VisibilityPill item={l} />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function LessonEditor({ id }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const lessons = useQuery('lessons', api.listLessons);
+  const files = useQuery('files', api.listFiles).data || [];
+  const isNew = id === 'new';
+  const [l, setL] = useState(isNew ? { title: '', body_md: '', visibility: 'hidden', file_ids: [], learner_ids: [] } : null);
+  const [preview, setPreview] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const imgInput = useRef(null);
+  const ta = useRef(null);
+
+  useEffect(() => {
+    if (!isNew && lessons.data && !l) setL(lessons.data.find((x) => x.id === id) || null);
+  }, [lessons.data, id, isNew, l]);
+  if (!l) return <Page title="Lesson">{lessons.data ? <Empty>Lesson not found.</Empty> : null}</Page>;
+  const set = (patch) => setL((x) => ({ ...x, ...patch }));
+
+  async function saveIt() {
+    if (!l.title.trim()) return toast({ title: 'Give the lesson a title', tone: 'bad' });
+    setBusy(true);
+    try {
+      const row = {
+        ...(l.id ? { id: l.id } : {}),
+        title: l.title.trim(),
+        body_md: l.body_md,
+        subject_id: l.subject_id || null,
+        topic_id: l.topic_id || null,
+        file_ids: l.file_ids || [],
+        visibility: l.visibility,
+        visible_from: l.visibility === 'scheduled' ? l.visible_from : null,
+        learner_ids: l.learner_ids?.length ? l.learner_ids : null,
+        updated_at: new Date().toISOString(),
+      };
+      const saved = await api.save('lessons', row);
+      invalidate('lessons');
+      toast('Lesson saved');
+      if (isNew) go(`/lesson/${saved.id}`, { replace: true });
+      setL(saved);
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addImage(file) {
+    try {
+      const path = await api.uploadImage(file, 'lessons');
+      const snippet = `\n![${file.name}](sb://library/${path})\n`;
+      const el = ta.current;
+      const pos = el ? el.selectionStart : l.body_md.length;
+      set({ body_md: l.body_md.slice(0, pos) + snippet + l.body_md.slice(pos) });
+    } catch (e) {
+      toast({ title: 'Couldn’t add image', body: e.message, tone: 'bad' });
+    }
+  }
+
+  return (
+    <Page
+      eyebrow={
+        <>
+          <Link to="/library/lessons">Lessons</Link> <Icon name="right" size={14} />
+        </>
+      }
+      title={isNew ? 'New lesson' : l.title || 'Lesson'}
+      actions={
+        <>
+          {!isNew && (
+            <button
+              className="btn danger"
+              onClick={async () => {
+                if (!(await confirm({ title: 'Delete this lesson?', ok: 'Delete', danger: true }))) return;
+                await api.remove('lessons', l.id);
+                invalidate('lessons');
+                go('/library/lessons');
+              }}
+            >
+              Delete
+            </button>
+          )}
+          <button className="btn primary" onClick={saveIt} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </>
+      }
+    >
+      <div className="split side-r">
+        <div className="card">
+          <Field label="Title">
+            <input className="input" value={l.title} onChange={(e) => set({ title: e.target.value })} placeholder="e.g. Solving quadratic equations" />
+          </Field>
+          <div className="row between">
+            <Seg
+              value={preview ? 'p' : 'w'}
+              onChange={(v) => setPreview(v === 'p')}
+              options={[
+                { value: 'w', label: 'Write' },
+                { value: 'p', label: 'Preview' },
+              ]}
+            />
+            <button className="btn sm" onClick={() => imgInput.current.click()}>
+              <Icon name="image" size={16} /> Add image
+            </button>
+            <input ref={imgInput} type="file" accept="image/*" hidden onChange={(e) => e.target.files[0] && addImage(e.target.files[0])} />
+          </div>
+          {preview ? (
+            <LessonBody md={l.body_md} />
+          ) : (
+            <textarea
+              ref={ta}
+              className="textarea"
+              style={{ minHeight: 420 }}
+              value={l.body_md}
+              onChange={(e) => set({ body_md: e.target.value })}
+              placeholder={'Write the lesson here.\n\n## Worked example\nSolve $x^2 - 5x + 6 = 0$.\n\n$$ (x-2)(x-3) = 0 $$\n\nSo $x = 2$ or $x = 3$.'}
+            />
+          )}
+          <div className="muted tiny">Formatting: **bold**, ## heading, - list. Maths: {'$x^2$'} in a sentence, {'$$\\frac{a}{b}$$'} on its own line.</div>
+        </div>
+        <div className="stack lg">
+          <div className="card">
+            <h3>Who sees it</h3>
+            <VisibilityPicker value={l.visibility} from={l.visible_from} onChange={(v, from) => set({ visibility: v, visible_from: from })} />
+            <AudiencePicker learners={lk.learners} value={l.learner_ids} onChange={(ids) => set({ learner_ids: ids })} />
+          </div>
+          <div className="card">
+            <h3>Subject</h3>
+            <select className="select" value={l.subject_id || ''} onChange={(e) => set({ subject_id: e.target.value || null, topic_id: null })}>
+              <option value="">None</option>
+              {lk.subjects.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <select className="select" value={l.topic_id || ''} onChange={(e) => set({ topic_id: e.target.value || null })} disabled={!l.subject_id} aria-label="Topic">
+              <option value="">No topic</option>
+              {lk.topicsOf(l.subject_id).map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="card">
+            <h3>Attached files</h3>
+            <div className="muted tiny">Attached files are shown with the lesson. Make sure the file itself is visible too.</div>
+            {files.length === 0 ? (
+              <div className="muted small">Upload files in the Library first.</div>
+            ) : (
+              <div className="stack sm" style={{ maxHeight: 260, overflowY: 'auto' }}>
+                {files.map((f) => (
+                  <label key={f.id} className="check">
+                    <input
+                      type="checkbox"
+                      checked={(l.file_ids || []).includes(f.id)}
+                      onChange={(e) => set({ file_ids: e.target.checked ? [...(l.file_ids || []), f.id] : l.file_ids.filter((x) => x !== f.id) })}
+                    />
+                    <span className="t small">{f.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Page>
+  );
+}
+
+// Lesson text, with images stored in the library shown inline
+export function LessonBody({ md }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const urls = [];
+    el.querySelectorAll('img[src^="sb://"]').forEach(async (img) => {
+      const [, bucket, ...rest] = img.getAttribute('src').replace('sb://', '/').split('/');
+      try {
+        const blob = await api.getBlob(bucket, rest.join('/'));
+        const u = URL.createObjectURL(blob);
+        urls.push(u);
+        img.src = u;
+      } catch {
+        img.alt = 'Image not available offline';
+      }
+    });
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [md]);
+  return (
+    <div ref={ref}>
+      <Markdown src={md || '*Nothing written yet.*'} />
+    </div>
+  );
+}

@@ -1,0 +1,327 @@
+import { useState } from 'react';
+import { useApp } from '../App.jsx';
+import Icon, { Logo } from '../ui/Icon.jsx';
+import { Field, useToast, copyText } from '../ui/kit.jsx';
+import { decodeInvite, validateServer, normaliseUrl, getServer, desktop } from '../lib/config.js';
+import { sb, friendly } from '../lib/supabase.js';
+import * as api from '../lib/api.js';
+import setupSql from '../../supabase/setup.sql?raw';
+
+export default function Welcome() {
+  const app = useApp();
+  const [step, setStep] = useState(app.server ? 'signin' : 'start');
+  const [role, setRole] = useState(null);
+
+  return (
+    <div className="welcome">
+      <div className="box">
+        <div className="hero">
+          <Logo size={52} />
+          {step === 'start' && (
+            <>
+              <h1>Welcome to StudyBridge</h1>
+              <p className="lead">Assignments, marking, lessons and live sessions between a tutor and their learners.</p>
+            </>
+          )}
+        </div>
+        {step === 'start' && (
+          <div className="stack">
+            <button className="choice" onClick={() => (setRole('tutor'), setStep('server'))}>
+              <span className="ic">
+                <Icon name="pen" size={24} />
+              </span>
+              <span className="grow">
+                <div className="t">I’m the tutor</div>
+                <div className="s">Set up StudyBridge, add subjects and invite learners.</div>
+              </span>
+              <Icon name="right" />
+            </button>
+            <button className="choice" onClick={() => (setRole('learner'), setStep('invite'))}>
+              <span className="ic">
+                <Icon name="book" size={24} />
+              </span>
+              <span className="grow">
+                <div className="t">I’m a learner</div>
+                <div className="s">Join with the invite your tutor sent you.</div>
+              </span>
+              <Icon name="right" />
+            </button>
+          </div>
+        )}
+        {step === 'server' && <ServerSetup onBack={() => setStep('start')} onDone={() => setStep('account')} />}
+        {step === 'invite' && <InviteStep onBack={() => setStep('start')} onDone={() => setStep('account')} />}
+        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? 'server' : 'invite')} />}
+        {step === 'signin' && (
+          <SignIn
+            onNewLearner={() => (setRole('learner'), setStep('invite'))}
+            onNewTutor={() => (setRole('tutor'), setStep('account'))}
+            onChangeServer={() => {
+              app.setServer(null);
+              setStep('start');
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ServerSetup({ onBack, onDone }) {
+  const app = useApp();
+  const toast = useToast();
+  const existing = getServer();
+  const [url, setUrl] = useState(existing?.url || '');
+  const [key, setKey] = useState(existing?.key || '');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function connect(e) {
+    e.preventDefault();
+    const v = validateServer({ url, key });
+    if (v) return setErr(v);
+    setBusy(true);
+    setErr('');
+    app.setServer({ url: normaliseUrl(url), key });
+    try {
+      const { error } = await sb().rpc('live_status');
+      if (error && /Could not find|does not exist|schema cache/i.test(error.message)) {
+        setErr('Connected, but the database isn’t set up yet. Do step 2 (run setup.sql), then try again.');
+      } else if (error && /Invalid API key|No API key|JWT/i.test(error.message)) {
+        setErr('Supabase didn’t accept that key. Copy the anon / publishable key again.');
+      } else if (error) {
+        setErr(friendly(error));
+      } else {
+        onDone();
+      }
+    } catch (x) {
+      setErr(friendly(x));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="card" onSubmit={connect}>
+      <div>
+        <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Set up your StudyBridge</h2>
+        <p className="muted small" style={{ marginTop: 4 }}>
+          Your work, your learners’ answers and files live in your own free Supabase project. This takes about five minutes, once.
+        </p>
+      </div>
+      <ol className="steps-guide">
+        <li>
+          <div>
+            Go to{' '}
+            <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">
+              supabase.com
+            </a>
+            , sign in with GitHub and create a new project (any name, pick the region closest to you).
+          </div>
+        </li>
+        <li>
+          <div className="stack sm">
+            <div>
+              Open <b>SQL Editor</b>, paste the StudyBridge setup and press <b>Run</b>.
+            </div>
+            <div>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => {
+                  copyText(setupSql);
+                  toast({ title: 'Setup copied', body: 'Paste it into the Supabase SQL Editor and press Run.' });
+                }}
+              >
+                <Icon name="copy" size={16} /> Copy setup.sql
+              </button>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div>
+            In <b>Authentication → Sign In / Providers → Email</b>, turn off <b>Confirm email</b> and save.
+          </div>
+        </li>
+        <li>
+          <div>
+            In <b>Project Settings → Data API</b> (or the <b>Connect</b> button), copy the <b>Project URL</b> and the <b>anon / publishable</b> key into the boxes below.
+          </div>
+        </li>
+      </ol>
+      <Field label="Project URL">
+        <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://abcdefgh.supabase.co" autoComplete="off" spellCheck={false} />
+      </Field>
+      <Field label="Anon / publishable key" hint="Never paste the secret / service_role key.">
+        <textarea className="textarea code" style={{ minHeight: 70 }} value={key} onChange={(e) => setKey(e.target.value)} placeholder="eyJhbGciOi… or sb_publishable_…" spellCheck={false} />
+      </Field>
+      {err && <div className="error">{err}</div>}
+      <div className="row between">
+        <button type="button" className="btn ghost" onClick={onBack}>
+          <Icon name="left" size={18} /> Back
+        </button>
+        <button className="btn primary" disabled={busy}>
+          {busy ? 'Checking…' : 'Connect'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function InviteStep({ onBack, onDone }) {
+  const app = useApp();
+  const [text, setText] = useState('');
+  const [err, setErr] = useState('');
+
+  function next(e) {
+    e.preventDefault();
+    const inv = decodeInvite(text);
+    if (!inv) return setErr('That doesn’t look like a StudyBridge invite. Paste the whole message your tutor sent.');
+    if (!inv.url && !app.server) return setErr('That’s just the code. Paste the whole invite message (it starts with SB1.).');
+    if (inv.url) app.setServer({ url: inv.url, key: inv.key });
+    sessionStorage.setItem('sb.pendingInvite', text.trim());
+    onDone();
+  }
+
+  return (
+    <form className="card" onSubmit={next}>
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Join your tutor</h2>
+      <Field label="Your invite" hint="Paste the whole invite your tutor sent you. It starts with SB1.">
+        <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1.eyJ1Ijoi…" spellCheck={false} />
+      </Field>
+      {err && <div className="error">{err}</div>}
+      <div className="row between">
+        <button type="button" className="btn ghost" onClick={onBack}>
+          <Icon name="left" size={18} /> Back
+        </button>
+        <button className="btn primary">Next</button>
+      </div>
+    </form>
+  );
+}
+
+function Account({ role, onBack }) {
+  const app = useApp();
+  const [mode, setMode] = useState('new');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function go(e) {
+    e.preventDefault();
+    setErr('');
+    if (mode === 'new' && !name.trim()) return setErr('Add your name.');
+    if (pw.length < 6) return setErr('Use a password of at least 6 characters.');
+    setBusy(true);
+    try {
+      const d = mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
+      const user = d.user || d.session?.user;
+      if (role === 'tutor') {
+        await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0]);
+      } else {
+        const inv = decodeInvite(sessionStorage.getItem('sb.pendingInvite'));
+        if (inv) await api.acceptInvite(inv.code, name.trim());
+        sessionStorage.removeItem('sb.pendingInvite');
+      }
+      await app.signedIn(user);
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="card" onSubmit={go}>
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : 'Your account'}</h2>
+      <div className="seg">
+        <button type="button" aria-pressed={mode === 'new'} onClick={() => setMode('new')}>
+          New account
+        </button>
+        <button type="button" aria-pressed={mode === 'existing'} onClick={() => setMode('existing')}>
+          I already have one
+        </button>
+      </div>
+      {mode === 'new' && (
+        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : 'Your tutor sees this name.'}>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" autoFocus />
+        </Field>
+      )}
+      <Field label="Email">
+        <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
+      </Field>
+      <Field label="Password" hint={mode === 'new' ? 'At least 6 characters.' : null}>
+        <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete={mode === 'new' ? 'new-password' : 'current-password'} required />
+      </Field>
+      {err && <div className="error">{err}</div>}
+      <div className="row between">
+        <button type="button" className="btn ghost" onClick={onBack}>
+          <Icon name="left" size={18} /> Back
+        </button>
+        <button className="btn primary" disabled={busy}>
+          {busy ? 'One moment…' : mode === 'new' ? 'Create account' : 'Sign in'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
+  const app = useApp();
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function go(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr('');
+    try {
+      const d = await api.signIn(email, pw);
+      await app.signedIn(d.user);
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <div>
+        <h1>Sign in</h1>
+        <p className="lead" style={{ marginTop: 6 }}>
+          Welcome back to StudyBridge.
+        </p>
+      </div>
+      <form className="card" onSubmit={go}>
+        <Field label="Email">
+          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoFocus required />
+        </Field>
+        <Field label="Password">
+          <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="current-password" required />
+        </Field>
+        {err && <div className="error">{err}</div>}
+        <button className="btn primary big" disabled={busy}>
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+        <hr />
+        <div className="stack sm small">
+          <div>
+            New learner? <button type="button" className="linkbtn" onClick={onNewLearner}>Join with an invite</button>
+          </div>
+          <div>
+            Setting up as the tutor? <button type="button" className="linkbtn" onClick={onNewTutor}>Create the tutor account</button>
+          </div>
+          <div className="muted tiny" style={{ marginTop: 6 }}>
+            Connected to {new URL(app.server.url).host}.{' '}
+            <button type="button" className="linkbtn" onClick={onChangeServer}>
+              Change
+            </button>
+          </div>
+          {!desktop && <div className="muted tiny">Tip: add this page to your home screen to use StudyBridge like an app.</div>}
+        </div>
+      </form>
+    </>
+  );
+}

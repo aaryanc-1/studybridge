@@ -1,8 +1,44 @@
 {
   "name": "studybridge",
-  "private": true,
+  "productName": "StudyBridge",
   "version": "1.0.0",
+  "description": "A private tutoring portal: tutors assign, learners work, marks and progress in one place.",
+  "author": "StudyBridge",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "pack:connector": "node scripts/pack-connector.mjs",
+    "dist": "npm run build && npm run pack:connector && electron-builder --publish never",
+    "test": "node --test test/*.test.mjs",
+    "walkthrough": "npm run build && node test/walkthrough.mjs",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "dependencies": {
+    "@cortex-js/compute-engine": "^0.140.0",
+    "@fontsource/fraunces": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@supabase/supabase-js": "^2.117.2",
+    "dompurify": "^3.4.16",
+    "livekit-client": "^2.22.3",
+    "marked": "^18.0.14",
+    "mathlive": "^0.110.0",
+    "pdfjs-dist": "^6.3.289",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8"
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@electric-sql/pglite": "^0.5.8",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "playwright": "^1.63.0",
+    "vite": "^8.3.1"
   }
 }

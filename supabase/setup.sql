@@ -55,6 +55,14 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from public.profiles where id = p_learner and tutor_id = auth.uid() and role = 'learner')
 $$;
 
+-- One row of settings for the whole StudyBridge. New tutor accounts are off
+-- by default, so only the owner (the first tutor) can run this StudyBridge.
+create table if not exists public.app_config (
+  id int primary key default 1 check (id = 1),
+  allow_new_tutors boolean not null default false
+);
+insert into public.app_config (id) values (1) on conflict do nothing;
+
 -- ---------------------------------------------------------------------
 -- Tutor-defined structure: programmes → subjects → topics
 -- ---------------------------------------------------------------------
@@ -355,6 +363,7 @@ grant select, insert, update, delete on all tables in schema public to authentic
 grant usage, select on all sequences in schema public to authenticated;
 revoke update on public.profiles from authenticated;
 grant update (display_name, timezone, avatar_color) on public.profiles to authenticated;
+revoke insert, update, delete on public.app_config from anon, authenticated;
 revoke all on public.tutor_secrets from anon, authenticated;
 
 alter table public.profiles enable row level security;
@@ -377,6 +386,7 @@ alter table public.claude_drafts enable row level security;
 alter table public.notifications enable row level security;
 alter table public.tutor_settings enable row level security;
 alter table public.tutor_secrets enable row level security;
+alter table public.app_config enable row level security;
 
 -- (re)create policies
 do $$
@@ -446,6 +456,7 @@ create policy drafts_tutor on public.claude_drafts for all using (tutor_id = aut
 create policy notifications_own on public.notifications for select using (user_id = auth.uid());
 create policy notifications_mark on public.notifications for update using (user_id = auth.uid()) with check (user_id = auth.uid());
 
+create policy app_config_read on public.app_config for select using (auth.uid() is not null);
 create policy settings_tutor on public.tutor_settings for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
 
 -- ---------------------------------------------------------------------
@@ -511,11 +522,22 @@ begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into v from public.profiles where id = auth.uid();
   if v.role = 'learner' then raise exception 'This account is a learner account.'; end if;
+  if v.role is null and exists (select 1 from public.profiles where role = 'tutor' and id <> auth.uid())
+     and not (select allow_new_tutors from public.app_config where id = 1) then
+    raise exception 'This StudyBridge is private. Only its owner can be a tutor here. If you were invited as a learner, use your invite.';
+  end if;
   update public.profiles
      set role = 'tutor', display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone)
    where id = auth.uid() returning * into v;
   insert into public.tutor_settings (tutor_id) values (auth.uid()) on conflict do nothing;
   return v;
+end $$;
+
+create or replace function public.set_allow_new_tutors(p_allow boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
+  update public.app_config set allow_new_tutors = p_allow where id = 1;
 end $$;
 
 create or replace function public.accept_invite(p_code text, p_name text, p_timezone text default 'UTC')
@@ -610,8 +632,10 @@ end $$;
 -- Is the attempt past its time limit? (small grace for slow connections)
 create or replace function public._attempt_timed_out(p_attempt public.attempts) returns boolean
 language sql stable set search_path = public as $$
+  -- (redo requests are not timed)
   select coalesce((select a.time_limit_min is not null and now() > p_attempt.started_at + make_interval(mins => a.time_limit_min) + interval '2 minutes'
                      from public.assignments a where a.id = p_attempt.assignment_id), false)
+     and not exists (select 1 from public.responses r where r.attempt_id = p_attempt.id and r.redo)
 $$;
 
 create or replace function public.save_response(p_attempt uuid, p_question uuid, p_answer jsonb)
@@ -802,7 +826,7 @@ begin
         'mistake', case when rel or is_tutor then r.mistake end))
       from public.responses r where r.attempt_id = t.id), '[]'),
     'keys', case when is_tutor or (rel and a.show_answers) then coalesce((select jsonb_agg(jsonb_build_object(
-        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', k.mark_scheme_md, 'solution_md', k.solution_md))
+        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor then k.mark_scheme_md end, 'solution_md', k.solution_md))
       from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
       else '[]'::jsonb end
   );
@@ -1010,6 +1034,15 @@ begin
       livekit_api_secret = coalesce(nullif(excluded.livekit_api_secret, ''), public.tutor_secrets.livekit_api_secret);
 end $$;
 
+-- Settings → Phone alerts → Send a test
+create or replace function public.test_phone_alert()
+returns boolean language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
+  perform public.notify_user(auth.uid(), 'test', 'StudyBridge test alert', 'Phone alerts are working.', '{}');
+  return exists (select 1 from pg_extension where extname = 'pg_net');
+end $$;
+
 -- Rooms: 'session-<uuid>' (lessons) and 'attempt-<uuid>' (exam camera).
 create or replace function public.live_pass(p_room text)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -1052,6 +1085,51 @@ returns jsonb language sql stable security definer set search_path = public as $
      where s.tutor_id = public.my_tutor() and s.livekit_url is not null and k.livekit_api_key is not null and k.livekit_api_secret is not null),
     'url', (select livekit_url from public.tutor_settings where tutor_id = public.my_tutor()))
 $$;
+
+-- Who an item is for: chosen learners, else everyone taking the subject, else all the tutor's learners
+create or replace function public._audience(p_tutor uuid, p_learner_ids uuid[], p_subject uuid)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select p.id from public.profiles p
+   where p.tutor_id = p_tutor and p.role = 'learner'
+     and case when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then p.id = any (p_learner_ids)
+              when p_subject is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p.id and ls.subject_id = p_subject)
+              else true end
+$$;
+
+-- Tell learners when new work or a lesson becomes visible to them
+create or replace function public.on_published() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  l uuid;
+  was_live boolean := false;
+  is_live boolean;
+  v_title text;
+  v_body text;
+begin
+  is_live := new.visibility = 'visible' and not coalesce((to_jsonb(new) ->> 'draft')::boolean, false);
+  if tg_op = 'UPDATE' then
+    was_live := old.visibility = 'visible' and not coalesce((to_jsonb(old) ->> 'draft')::boolean, false);
+  end if;
+  if not is_live or was_live then return new; end if;
+  if tg_table_name = 'assignments' then
+    v_title := 'New ' || new.kind || ': ' || new.title;
+    v_body := case when new.due_at is not null then 'Due ' || to_char(new.due_at, 'Dy DD Mon HH24:MI') || ' UTC' else 'Open StudyBridge to start.' end;
+  else
+    v_title := 'New lesson: ' || new.title;
+    v_body := 'Open StudyBridge to read it.';
+  end if;
+  for l in select public._audience(new.tutor_id, new.learner_ids, new.subject_id) loop
+    perform public.notify_user(l, case when tg_table_name = 'assignments' then 'assignment' else 'lesson' end, v_title, v_body,
+      jsonb_build_object(case when tg_table_name = 'assignments' then 'assignment_id' else 'lesson_id' end, new.id));
+  end loop;
+  return new;
+end $$;
+drop trigger if exists assignments_published on public.assignments;
+create trigger assignments_published after insert or update of visibility, draft on public.assignments
+  for each row execute function public.on_published();
+drop trigger if exists lessons_published on public.lessons;
+create trigger lessons_published after insert or update of visibility on public.lessons
+  for each row execute function public.on_published();
 
 -- Notify a learner when a session is scheduled for them
 create or replace function public.on_session_created() returns trigger

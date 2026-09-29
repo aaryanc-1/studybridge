@@ -6,3 +6,5 @@ connector/dist/
 connector/node_modules/
 *.log
 .DS_Store
+public/mathlive/
+test/screenshots/

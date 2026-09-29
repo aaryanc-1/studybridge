@@ -1,0 +1,51 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 7 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 356 >>
+stream
+BT /F1 22 Tf 72 720 Td (Chapter 3: Linear equations) Tj ET
+BT /F1 13 Tf 72 680 Td (3.1 Solving ax + b = c) Tj ET
+BT /F1 13 Tf 72 658 Td (To solve 2x + 3 = 11, subtract 3 from both sides: 2x = 8.) Tj ET
+BT /F1 13 Tf 72 636 Td (Then divide both sides by 2: x = 4.) Tj ET
+BT /F1 13 Tf 72 614 Td (Always do the same thing to both sides of the equation.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 7 0 R >> >> >>
+endobj
+6 0 obj
+<< /Length 251 >>
+stream
+BT /F1 22 Tf 72 720 Td (3.2 Practice) Tj ET
+BT /F1 13 Tf 72 680 Td (1. Solve 5x - 2 = 18) Tj ET
+BT /F1 13 Tf 72 658 Td (2. Solve 3(x + 1) = 21) Tj ET
+BT /F1 13 Tf 72 636 Td (3. Solve x/4 + 2 = 5) Tj ET
+BT /F1 13 Tf 72 614 Td (Answers: 4, 6, 12) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000653 00000 n 
+0000000779 00000 n 
+0000001080 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1150
+%%EOF

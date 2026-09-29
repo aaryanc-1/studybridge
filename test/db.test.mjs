@@ -62,7 +62,13 @@ const S = {};
 test('tutor setup, programmes, subjects, invites', async () => {
   const p = await one('T', `select * from become_tutor('Aaryan', 'America/New_York')`);
   assert.equal(p.role, 'tutor');
+  await fails(as('T2', `select become_tutor('Other tutor')`), /private/);
+  await fails(as('L', `select set_allow_new_tutors(true)`), /Tutors only/);
+  await fails(as('T', `update app_config set allow_new_tutors = true`), /permission denied/);
+  await as('T', `select set_allow_new_tutors(true)`);
   await one('T2', `select * from become_tutor('Other tutor')`);
+  await as('T', `select set_allow_new_tutors(false)`);
+  await fails(as('X', `select become_tutor('x')`), /private/);
   S.prog = await val('T', `insert into programmes (name) values ('IGCSE') returning id`);
   S.math = await val('T', `insert into subjects (programme_id, name) values ($1, 'Mathematics') returning id`, [S.prog]);
   S.phys = await val('T', `insert into subjects (programme_id, name) values ($1, 'Physics') returning id`, [S.prog]);
@@ -157,6 +163,9 @@ test('assignments: drafts hidden, keys hidden, exams need the desktop app', asyn
     values ('exam', 'Mock exam', 'visible', true, true, 60, $1) returning id`, [S.math]);
   await as('T', `insert into questions (assignment_id, type, prompt_md) values ($1, 'short', 'Exam Q')`, [S.exam]);
 
+  const told = (await as('L', `select title from notifications where kind = 'assignment' order by title`)).map((r) => r.title);
+  assert.deepEqual(told, ['New exam: Mock exam', 'New homework: Algebra HW 1'], 'learner told about new visible work, not drafts');
+  assert.equal((await as('L2', `select * from notifications where kind = 'assignment'`)).length, 0, 'L2 does not take Maths');
   const titles = (await as('L', `select title from assignments order by title`)).map((r) => r.title);
   assert.deepEqual(titles, ['Algebra HW 1', 'Mock exam']);
   assert.equal((await as('L2', `select * from assignments`)).length, 0); // L2 has no Maths
