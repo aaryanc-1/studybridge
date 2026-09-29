@@ -29,6 +29,11 @@ jobs:
         run: node test/walkthrough.mjs
         env:
           SHOTS: screenshots
+      - name: PDFs draw their text (browser + desktop)
+        run: |
+          node test/pdf-render.mjs
+          node node_modules/electron/install.js
+          ELECTRON=1 xvfb-run -a node test/pdf-render.mjs
       - name: Desktop lockdown check (Electron)
         run: |
           node node_modules/electron/install.js

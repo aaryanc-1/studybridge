@@ -163,6 +163,15 @@ try {
   await L.getByText('algebra-chapter-3.pdf').click();
   await L.locator('canvas[aria-label="Page 1"]').waitFor();
   await L.waitForTimeout(800);
+  // The text on the page really drew (PDFs that rely on standard fonts need pdf.js's font files)
+  const ink = await L.evaluate(() => {
+    const c = document.querySelector('canvas[aria-label="Page 1"]');
+    const d = c.getContext('2d').getImageData(0, 0, c.width, Math.min(c.height, 400)).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 100 && d[i + 1] < 100 && d[i + 2] < 100) n++;
+    return n;
+  });
+  assert.ok(ink > 500, `PDF text is visible (${ink} dark pixels)`);
   await shot(L, 'learner-pdf-viewer');
 
   // ---------------- lesson ----------------

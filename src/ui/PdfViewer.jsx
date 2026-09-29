@@ -12,6 +12,19 @@ function pdfjs() {
   return pdfjsP;
 }
 
+// Where pdf.js finds fonts that aren't inside the PDF, character maps for other alphabets, and image decoders
+function pdfAssets() {
+  const base = new URL('./pdfjs/', document.baseURI).href;
+  return {
+    standardFontDataUrl: base + 'standard_fonts/',
+    cMapUrl: base + 'cmaps/',
+    cMapPacked: true,
+    wasmUrl: base + 'wasm/',
+    iccUrl: base + 'iccs/',
+    useSystemFonts: true,
+  };
+}
+
 export default function PdfViewer({ blob, title, toolbar }) {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState('');
@@ -25,7 +38,7 @@ export default function PdfViewer({ blob, title, toolbar }) {
     (async () => {
       try {
         const lib = await pdfjs();
-        task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) });
+        task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
         const d = await task.promise;
         if (alive) setDoc(d);
       } catch (e) {
