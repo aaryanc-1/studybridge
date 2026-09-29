@@ -216,7 +216,7 @@ try {
   // Settings
   await T.getByRole('button', { name: 'Visible now' }).click();
   await T.getByLabel('Due').fill('2030-01-10T17:00');
-  await T.getByLabel('Topic', { exact: true }).selectOption({ label: 'Algebra' });
+  await T.getByLabel('Topic', { exact: true }).last().selectOption({ label: 'Algebra' });
   await T.getByText('algebra-chapter-3.pdf').last().click();
   await T.getByRole('button', { name: 'Save', exact: true }).click();
   await T.getByText('All changes saved').waitFor();
@@ -334,6 +334,38 @@ try {
   await T.keyboard.press('Enter');
   await T.getByText('Dividing first works').waitFor();
   await shot(T, 'tutor-messages');
+
+  step('Offline: learner answers and hands in with no connection, it syncs later');
+  const tc = (await import('@supabase/supabase-js')).createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
+  await tc.auth.signInWithPassword({ email: 'aaryan@example.com', password: 'secret123' });
+  const quiz = (await tc.from('assignments').insert({ kind: 'quiz', title: 'Offline quiz', visibility: 'visible', release_mode: 'on_submit' }).select().single()).data;
+  const oq = (await tc.from('questions').insert({ assignment_id: quiz.id, type: 'numeric', prompt_md: 'What is $6 \\times 7$?', marks: 1 }).select().single()).data;
+  await tc.from('question_keys').insert({ question_id: oq.id, answer: { value: '42', tolerance: '0' } });
+  await nav(L, 'Today').click();
+  await L.reload();
+  await L.getByText('Offline quiz').first().click();
+  await L.getByRole('button', { name: 'Start' }).click();
+  await L.getByText('What is').waitFor();
+  await learnerCtx.setOffline(true);
+  await L.getByLabel('Your answer').fill('42');
+  await L.getByText('Saved on this device').waitFor({ timeout: 15000 });
+  await L.getByText(/You’re offline/).first().waitFor();
+  await shot(L, 'learner-offline');
+  await L.getByRole('button', { name: 'Hand in' }).first().click();
+  await L.getByRole('dialog').getByRole('button', { name: 'Hand in' }).click();
+  await L.getByText(/saved on this laptop/).waitFor();
+  await shot(L, 'learner-offline-handed-in');
+  assert.equal((await tc.from('attempts').select('status').eq('assignment_id', quiz.id)).data[0].status, 'in_progress');
+  await learnerCtx.setOffline(false);
+  await L.evaluate(() => window.dispatchEvent(new Event('online')));
+  let synced = null;
+  for (let i = 0; i < 30 && !synced; i++) {
+    await L.waitForTimeout(500);
+    const r = (await tc.from('attempts').select('status,score').eq('assignment_id', quiz.id)).data[0];
+    if (r.status === 'marked') synced = r;
+  }
+  assert.ok(synced, 'offline hand-in synced when back online');
+  assert.equal(Number(synced.score), 1);
 
   step('Phone view');
   const phone = await browser.newContext({ ...devices['iPhone 13'] });

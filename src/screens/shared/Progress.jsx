@@ -4,7 +4,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Bar, Empty, Loading, Seg, copyText, useToast } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { day, dur, kindLabel, monthRange, pct, weekRange } from '../../lib/format.js';
+import { day, dur, kindLabel, monthRange, pct, weekRange, ymd } from '../../lib/format.js';
 
 const PERIODS = {
   week: { label: 'This week', range: () => weekRange(0) },
@@ -33,7 +33,7 @@ export default function ProgressView({ learnerId, name }) {
   // Build the day-by-day chart for the period
   const days = [];
   for (let d = new Date(from); d < to && days.length < 31; d = new Date(d.getTime() + 86400000)) {
-    const key = d.toISOString().slice(0, 10);
+    const key = ymd(d);
     const hit = (s?.by_day || []).find((x) => x.day === key);
     days.push({ key, d, seconds: hit ? hit.seconds : 0 });
   }

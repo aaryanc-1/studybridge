@@ -839,9 +839,10 @@ declare
   v_tutor uuid;
   v_subject uuid;
   v_topic uuid;
+  v_tz text;
   s int := greatest(0, least(coalesce(p_seconds, 0), 120));
 begin
-  select tutor_id into v_tutor from public.profiles where id = auth.uid() and role = 'learner';
+  select tutor_id, timezone into v_tutor, v_tz from public.profiles where id = auth.uid() and role = 'learner';
   if v_tutor is null or s = 0 then return; end if;
   if p_kind = 'assignment' then
     select a.subject_id, a.topic_id into v_subject, v_topic from public.attempts t join public.assignments a on a.id = t.assignment_id
@@ -855,8 +856,9 @@ begin
   elsif p_kind <> 'session' then
     return;
   end if;
-  insert into public.activity (learner_id, tutor_id, kind, ref_id, subject_id, topic_id, seconds)
-  values (auth.uid(), v_tutor, p_kind, p_ref, v_subject, v_topic, s);
+  insert into public.activity (learner_id, tutor_id, kind, ref_id, subject_id, topic_id, seconds, day)
+  values (auth.uid(), v_tutor, p_kind, p_ref, v_subject, v_topic, s,
+          (now() at time zone coalesce((select name from pg_timezone_names where name = v_tz), 'UTC'))::date);
 end $$;
 
 -- Lockdown: the desktop app reports leaving the exam window

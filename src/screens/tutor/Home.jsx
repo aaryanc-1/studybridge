@@ -4,7 +4,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Avatar, Empty, Link, Page, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, dur, due, when, kindLabel, weekRange } from '../../lib/format.js';
+import { ago, dur, due, when, kindLabel, weekRange, ymd } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 
 function greeting() {
@@ -28,7 +28,7 @@ export default function Home() {
   const liveNow = attempts.filter((t) => t.status === 'in_progress' && aById[t.assignment_id]?.camera);
   const notes = comments.filter((c) => c.author_id !== app.me.id && !c.read_at).slice(-6).reverse();
   const { from } = weekRange(0);
-  const weekStr = from.toISOString().slice(0, 10);
+  const weekStr = ymd(from);
   const weekSeconds = (lid) => activity.filter((x) => (!lid || x.learner_id === lid) && x.day >= weekStr).reduce((s, x) => s + x.seconds, 0);
   const soon = assignments
     .filter((a) => !a.draft && a.due_at && new Date(a.due_at) > new Date() && new Date(a.due_at) < new Date(Date.now() + 8 * 86400000))

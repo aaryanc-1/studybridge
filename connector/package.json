@@ -1,0 +1,15 @@
+{
+  "name": "studybridge-connector",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "server/index.js",
+  "description": "StudyBridge for Claude: lets the tutor's Claude Desktop read learners' work and draft assignments and marking.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@supabase/supabase-js": "^2.117.2",
+    "unpdf": "^1.8.1",
+    "zod": "^4.6.5"
+  }
+}

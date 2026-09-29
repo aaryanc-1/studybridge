@@ -109,3 +109,9 @@ export function colorFor(id) {
   for (const c of String(id || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return palette[h % palette.length];
 }
+
+// YYYY-MM-DD for a date in local time
+export function ymd(d) {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+}

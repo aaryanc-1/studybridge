@@ -1,0 +1,53 @@
+{
+  "manifest_version": "0.3",
+  "name": "studybridge",
+  "display_name": "StudyBridge",
+  "version": "1.0.0",
+  "description": "For tutors: Claude reads your learners’ work and progress in StudyBridge and drafts assignments, marking and messages for you to approve.",
+  "long_description": "StudyBridge is a private tutoring portal. With this connector, Claude can see your learners, their submissions (including maths working and photos of their work), their progress, and the PDFs in your library. Claude can draft assignments, suggested marking with explanations, lessons and messages. Everything Claude makes is saved as a draft in StudyBridge → From Claude, and reaches a learner only after you approve it. Learners never use Claude.",
+  "author": { "name": "StudyBridge" },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "STUDYBRIDGE_URL": "${user_config.server_url}",
+        "STUDYBRIDGE_ANON_KEY": "${user_config.anon_key}",
+        "STUDYBRIDGE_EMAIL": "${user_config.email}",
+        "STUDYBRIDGE_PASSWORD": "${user_config.password}"
+      }
+    }
+  },
+  "user_config": {
+    "server_url": { "type": "string", "title": "Server URL", "description": "From StudyBridge → Settings → Claude (your Supabase Project URL).", "required": true },
+    "anon_key": { "type": "string", "title": "Anon key", "description": "From StudyBridge → Settings → Claude.", "required": true, "sensitive": true },
+    "email": { "type": "string", "title": "Your StudyBridge email", "description": "The email you sign in to StudyBridge with (tutor account).", "required": true },
+    "password": { "type": "string", "title": "Your StudyBridge password", "description": "Stored securely by Claude Desktop on this computer.", "required": true, "sensitive": true }
+  },
+  "tools": [
+    { "name": "overview", "description": "Learners, work to mark, unread notes, what’s due." },
+    { "name": "list_subjects", "description": "Programmes, subjects and topics." },
+    { "name": "learner_progress", "description": "Topic strengths, time, mistakes, weekly and monthly summaries." },
+    { "name": "list_assignments", "description": "Assignments and submission counts." },
+    { "name": "get_assignment", "description": "Questions, answers and mark schemes." },
+    { "name": "list_submissions", "description": "Submitted work (to mark, marked, returned)." },
+    { "name": "get_submission", "description": "One submission with answers, working and photos." },
+    { "name": "list_library", "description": "Files and lessons." },
+    { "name": "read_pdf", "description": "Text of a PDF in the library." },
+    { "name": "list_notes", "description": "Notes and messages with a learner." },
+    { "name": "create_assignment_draft", "description": "Draft an assignment for the tutor to approve." },
+    { "name": "draft_marking", "description": "Suggest marks and explanations for the tutor to approve." },
+    { "name": "draft_message", "description": "Draft a message to a learner." },
+    { "name": "create_lesson", "description": "Write a hidden lesson into the library." }
+  ],
+  "prompts": [
+    { "name": "mark_latest", "description": "Mark everything waiting in StudyBridge", "text": "Using StudyBridge, look at the submissions waiting to be marked. For each one, read it carefully, then draft marks with clear explanations of any mistakes, and flag questions worth a redo." },
+    { "name": "weekly_report", "description": "Weekly report on each learner", "text": "Using StudyBridge, write me a short weekly report on each learner: time studied, work handed in, scores, strengths, topics that need work, and what to set next." }
+  ],
+  "keywords": ["education", "tutoring", "marking", "igcse", "ib"],
+  "license": "UNLICENSED",
+  "compatibility": { "platforms": ["darwin", "win32"], "runtimes": { "node": ">=18.0.0" } }
+}

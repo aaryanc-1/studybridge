@@ -5,7 +5,7 @@ import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm,
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { encodeInvite } from '../../lib/config.js';
-import { ago, dur, kindLabel, pct, weekRange } from '../../lib/format.js';
+import { ago, dur, kindLabel, pct, weekRange, ymd } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
@@ -16,7 +16,7 @@ export default function Learners() {
   const [inviting, setInviting] = useState(false);
   const [shown, setShown] = useState(null);
   const open = (invites.data || []).filter((i) => !i.accepted_by && !i.revoked);
-  const weekStr = weekRange(0).from.toISOString().slice(0, 10);
+  const weekStr = ymd(weekRange(0).from);
 
   return (
     <Page
