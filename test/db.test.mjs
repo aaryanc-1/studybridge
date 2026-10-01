@@ -7,28 +7,10 @@ import { readFileSync } from 'node:fs';
 import crypto from 'node:crypto';
 import { PGlite } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
+import { STUBS } from './fake-supabase.mjs';
 
 const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'utf8');
 
-const STUBS = `
-create role authenticated nologin; create role anon nologin; create role service_role nologin;
-create schema auth;
-create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
-  encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now());
-create function auth.uid() returns uuid language sql stable as $$
-  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-grant usage on schema auth to authenticated, anon;
-create schema storage;
-create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint);
-create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid);
-alter table storage.objects enable row level security;
-create function storage.foldername(name text) returns text[] language sql immutable as $$
-  select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1] $$;
-grant usage on schema storage to authenticated, anon;
-grant all on storage.objects to authenticated;
-alter default privileges in schema public grant all on tables to anon, authenticated;
-alter default privileges in schema public grant all on functions to anon, authenticated;
-`;
 
 let db;
 const U = {};
@@ -63,13 +45,26 @@ const S = {};
 test('tutor setup, programmes, subjects, invites', async () => {
   const p = await one('T', `select * from become_tutor('Aaryan', 'America/New_York')`);
   assert.equal(p.role, 'tutor');
-  await fails(as('T2', `select become_tutor('Other tutor')`), /private/);
-  await fails(as('L', `select set_allow_new_tutors(true)`), /Tutors only/);
-  await fails(as('T', `update app_config set allow_new_tutors = true`), /permission denied/);
-  await as('T', `select set_allow_new_tutors(true)`);
-  await one('T2', `select * from become_tutor('Other tutor')`);
+  assert.equal(p.status, 'active', 'the first tutor is approved straight away');
+  assert.equal(await val('T', `select is_platform_admin()`), true, 'and is the StudyBridge admin');
+  // Anyone else can sign up as a tutor, but waits for the admin
+  const p2 = await one('T2', `select * from become_tutor('Other tutor')`);
+  assert.equal(p2.status, 'pending');
+  assert.equal(await val('T2', `select is_platform_admin()`), false);
+  const told = await as('T', `select * from notifications where kind = 'tutor_signup'`);
+  assert.equal(told.length, 1, 'admin is told about the new tutor');
+  // A waiting tutor can't invite anyone
+  await fails(as('T2', `insert into invites (name) values ('x')`), /row-level security/);
+  await fails(as('L', `select set_allow_new_tutors(true)`), /admins only/);
+  await fails(as('T', `update app_config set tutor_signups_open = false`), /permission denied/);
   await as('T', `select set_allow_new_tutors(false)`);
-  await fails(as('X', `select become_tutor('x')`), /private/);
+  await fails(as('X', `select become_tutor('x')`), /taking new tutors/);
+  await as('T', `select admin_set_signups(true)`);
+  // Admin approves the new tutor
+  await fails(as('T2', `select admin_set_status($1, 'active')`, [U.T2]), /admins only/);
+  await as('T', `select admin_set_status($1, 'active')`, [U.T2]);
+  assert.equal(await val('T2', `select status from profiles where id = auth.uid()`), 'active');
+  assert.equal((await as('T2', `select * from notifications where kind = 'approved'`)).length, 1);
   S.prog = await val('T', `insert into programmes (name) values ('IGCSE') returning id`);
   S.math = await val('T', `insert into subjects (programme_id, name) values ($1, 'Mathematics') returning id`, [S.prog]);
   S.phys = await val('T', `insert into subjects (programme_id, name) values ($1, 'Physics') returning id`, [S.prog]);
@@ -397,6 +392,137 @@ test('tutor admin: accounts, password reset, delete account', async () => {
   const paths = await val('T', `select learner_work_paths($1)`, [U.L]);
   assert.ok(Array.isArray(paths));
   await fails(as('T2', `select delete_learner_account($1)`, [U.L2]), /Not your learner/);
+});
+
+async function asService(sql, params = []) {
+  return db.transaction(async (tx) => {
+    await tx.query(`select set_config('request.jwt.claim.sub', '', true)`);
+    await tx.exec(`set local role service_role`);
+    return (await tx.query(sql, params)).rows;
+  });
+}
+
+test('StudyBridge admin: accounts and access, never anyone’s work', async () => {
+  // The other tutor has their own work
+  const subj = await val('T2', `insert into subjects (name) values ('Chemistry') returning id`);
+  await as('T2', `insert into assignments (title, subject_id) values ('T2 secret quiz', $1)`, [subj]);
+  const tutors = await val('T', `select admin_tutors()`);
+  assert.deepEqual(tutors.map((t) => t.email).sort(), ['tutor2@x.com', 'tutor@x.com']);
+  const t2 = tutors.find((t) => t.email === 'tutor2@x.com');
+  assert.equal(t2.status, 'active');
+  assert.equal(t2.learners, 0);
+  assert.ok('ai_cents' in t2 && 'storage_bytes' in t2);
+  await fails(as('T2', `select admin_tutors()`), /admins only/);
+  await fails(as('L', `select admin_accounts($1)`, [U.T]), /admins only/);
+  const mine = await val('T', `select admin_accounts($1)`, [U.T]);
+  assert.deepEqual(mine.map((a) => a.email).sort(), ['other@x.com', 'sis@x.com']);
+  // ...but none of the other tutor's content
+  assert.equal((await as('T', `select * from subjects where tutor_id = $1`, [U.T2])).length, 0);
+  assert.equal((await as('T', `select * from assignments where tutor_id = $1`, [U.T2])).length, 0);
+  await fails(as('T', `select * from platform_secrets`), /permission denied/);
+  await fails(as('T', `select * from platform_admins`), /permission denied/);
+  // Plans, passwords, pausing
+  await as('T', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
+  assert.equal((await val('T', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_cents, 2500);
+  await as('T', `select admin_set_password($1, 'Reset-Pass-1')`, [U.T2]);
+  assert.equal((await db.query(`select encrypted_password = extensions.crypt('Reset-Pass-1', encrypted_password) ok from auth.users where id = $1`, [U.T2])).rows[0].ok, true);
+  await fails(as('T2', `select admin_set_password($1, 'Hacked-123')`, [U.T]), /admins only/);
+  await fails(as('T', `select admin_set_status($1, 'suspended')`, [U.T]), /own account/);
+  await as('T', `select admin_set_status($1, 'suspended')`, [U.T2]);
+  const banned = (await db.query(`select banned_until from auth.users where id = $1`, [U.T2])).rows[0].banned_until;
+  assert.ok(banned && new Date(banned) > new Date(Date.now() + 365 * 86400000), 'paused tutor can’t sign in');
+  await fails(as('T2', `insert into invites (name) values ('x')`), /row-level security/);
+  await as('T', `select admin_set_status($1, 'active')`, [U.T2]);
+  assert.equal((await db.query(`select banned_until from auth.users where id = $1`, [U.T2])).rows[0].banned_until, null);
+  // Shared live video for tutors without their own LiveKit keys
+  assert.equal((await val('T2', `select live_status()`)).configured, false);
+  await fails(as('T2', `select admin_set_livekit('wss://x.livekit.cloud', 'k', 's')`), /admins only/);
+  await as('T', `select admin_set_livekit('wss://shared.livekit.cloud', 'APIshared', 'shared-secret')`);
+  const ls2 = await val('T2', `select live_status()`);
+  assert.equal(ls2.configured && ls2.shared && !ls2.own, true);
+  assert.equal(ls2.url, 'wss://shared.livekit.cloud');
+  // Prof key is write-only
+  await fails(as('T', `select admin_set_prof('not-a-key')`), /Claude API key/);
+  await as('T', `select admin_set_prof('sk-ant-test-key', 'claude-sonnet-5-5', 500)`);
+  const st = await val('T', `select admin_settings()`);
+  assert.equal(st.prof_key_set, true);
+  assert.ok(!JSON.stringify(st).includes('sk-ant'), 'the key is never sent back');
+  // The log: admin sees it all, the tutor sees what was done to them, learners nothing
+  const log = await as('T', `select action from admin_log where user_id = $1 order by id`, [U.T2]);
+  assert.deepEqual(log.map((r) => r.action), ['approved', 'plan', 'password_reset', 'paused', 'switched_on']);
+  assert.equal((await as('T2', `select * from admin_log`)).length, 5);
+  assert.equal((await as('L', `select * from admin_log`)).length, 0);
+  // Unfinished sign-ups show up; deleting a tutor takes their learners too
+  assert.ok((await val('T', `select admin_accounts(null)`)).some((a) => a.email === 'nobody@x.com'));
+  const code = await val('T2', `insert into invites (name) values ('Nobody') returning code`);
+  await as('X', `select accept_invite($1, 'Nobody')`, [code]);
+  await fails(as('T', `select admin_delete_account($1)`, [U.T]), /own account/);
+  assert.equal((await val('T', `select admin_delete_account($1)`, [U.T2])).deleted, 2);
+  assert.equal((await db.query(`select count(*)::int n from auth.users where id = any($1)`, [[U.T2, U.X]])).rows[0].n, 0);
+  assert.equal((await db.query(`select count(*)::int n from public.assignments where title = 'T2 secret quiz'`)).rows[0].n, 0);
+  assert.equal((await as('T', `select * from admin_log where action = 'deleted'`)).length, 1);
+});
+
+test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () => {
+  // Learners can't use Prof; the tutor can, within their allowance
+  await fails(as('L', `select prof_ask('make a quiz')`), /approved tutors/);
+  await fails(as('T', `select prof_ask('make a quiz', $1)`, [{ pages: [{ path: `${U.L}/prof/x.jpg` }] }]), /Unknown page/);
+  const j = await val('T', `select prof_ask('Make a 5 question quiz on algebra for Sis', $1)`, [{ learner_ids: [U.L], pages: [{ path: `${U.T}/prof/p1.jpg`, label: 'Book p.12' }] }]);
+  assert.ok(j.id);
+  await fails(as('T', `insert into prof_jobs (tutor_id, prompt, kind) values (auth.uid(), 'x', 'ask')`), /permission denied/);
+  assert.equal((await as('T', `select * from prof_jobs`)).length, 1);
+  assert.equal((await as('L', `select * from prof_jobs`)).length, 0);
+  const u = await val('T', `select prof_usage()`);
+  assert.equal(u.ready, true);
+  assert.equal(u.limit_cents, 500);
+  // Only the server can claim and run jobs
+  await fails(as('T', `select * from prof_claim()`), /permission denied/);
+  const claimed = await asService(`select * from prof_claim()`);
+  assert.equal(claimed[0].id, j.id);
+  assert.equal((await asService(`select * from prof_claim()`)).length, 0, 'a running job isn’t taken twice');
+  const ctx = (await asService(`select prof_context($1) c`, [U.T]))[0].c;
+  assert.ok(ctx.subjects.length >= 2 && ctx.learners.some((l) => l.id === U.L));
+  assert.ok(Array.isArray(ctx.learners[0].topics_needing_work));
+  // Drafts only, even with the server key
+  await fails(asService(`insert into assignments (tutor_id, title, draft) values ($1, 'Live!', false)`, [U.T]), /only save drafts/);
+  const aid = (await asService(`insert into assignments (tutor_id, title, draft, visibility, source) values ($1, 'Prof quiz', true, 'visible', 'prof') returning id`, [U.T]))[0].id;
+  const qid = (await asService(`insert into questions (tutor_id, assignment_id, type, prompt_md) values ($1, $2, 'short', 'Explain') returning id`, [U.T, aid]))[0].id;
+  await asService(`insert into question_keys (tutor_id, question_id, answer) values ($1, $2, '{}')`, [U.T, qid]);
+  await fails(asService(`update assignments set draft = false where id = $1`, [aid]), /only save drafts/);
+  await fails(asService(`update responses set marks = 99`), /can’t change marks/);
+  await fails(asService(`insert into comments (tutor_id, learner_id, author_id, body) values ($1, $2, $1, 'hi')`, [U.T, U.L]), /can’t change marks or send/);
+  assert.equal((await as('L', `select * from assignments where id = $1`, [aid])).length, 0, 'learner can’t see the draft');
+  await asService(`select prof_save($1, 'done', null, $2, 'Finished', null, 1000, 500, 0.7, 'claude-sonnet-5-5', null, $3)`,
+    [j.id, { assignment_ids: [aid] }, { title: 'Prof made: Prof quiz', body: 'Review it', ref: { assignment_id: aid } }]);
+  const done = await one('T', `select * from prof_jobs where id = $1`, [j.id]);
+  assert.equal(done.status, 'done');
+  assert.equal(Number(done.cost_cents), 0.7);
+  assert.equal((await as('T', `select * from notifications where kind = 'prof'`)).length, 1);
+  // Tutor approves it: now the learner sees it
+  await as('T', `update assignments set draft = false, learner_ids = $2 where id = $1`, [aid, [U.L]]);
+  assert.equal((await as('L', `select * from assignments where id = $1`, [aid])).length, 1);
+  // Auto-marking when a learner hands in
+  await as('T', `insert into prof_settings (tutor_id, auto_mark) values (auth.uid(), true)`);
+  const t = await one('L', `select * from start_attempt($1, 'desktop')`, [aid]);
+  await as('L', `select save_response($1, $2, '{"text":"Because"}')`, [t.id, qid]);
+  await as('L', `select submit_attempt($1)`, [t.id]);
+  const mark = await one('T', `select * from prof_jobs where kind = 'mark'`);
+  assert.equal(mark.attempt_id, t.id);
+  const mc = (await asService(`select prof_mark_context($1) c`, [t.id]))[0].c;
+  assert.equal(mc.questions[0].learner_answer.text, 'Because');
+  assert.equal(mc.learner, 'Sis');
+  // Over the allowance: no more Prof this month
+  await asService(`select prof_save($1, 'done', null, null, null, null, 1, 1, 600)`, [mark.id]);
+  await fails(as('T', `select prof_ask('another quiz please')`), /allowance/);
+  await as('T', `select admin_set_plan($1, 'free', 100000)`, [U.T]);
+  // Weekly auto-created work: one job per learner, once a week
+  const dow = await val('T', `select extract(dow from now() at time zone 'America/New_York')::int`);
+  await as('T', `update prof_settings set auto_create = true, auto_day = $1, auto_hour = 0`, [dow]);
+  await asService(`select prof_tick()`);
+  await asService(`select prof_tick()`);
+  const auto = await as('T', `select * from prof_jobs where kind = 'auto'`);
+  assert.equal(auto.length, 2, 'one for each learner, only once');
+  assert.match(auto[0].prompt, /next week/);
 });
 
 test('removing a learner cuts access', async () => {

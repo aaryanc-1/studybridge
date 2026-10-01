@@ -1,16 +1,19 @@
-// Which StudyBridge server (the tutor's Supabase project) this app talks to.
-// The tutor enters it once; learners get it inside their invite; the phone gets it from a QR code.
+// Which StudyBridge server (Supabase project) this app talks to.
+// Release builds have the StudyBridge server built in (set when the app is built),
+// so nobody types a URL or key. Builds without one fall back to the old way: the
+// tutor enters their own server once, and learners get it inside their invite.
 const KEY = 'sb.server';
+const BUILT_IN = import.meta.env?.VITE_SB_URL && import.meta.env?.VITE_SB_KEY ? { url: import.meta.env.VITE_SB_URL.replace(/\/+$/, ''), key: import.meta.env.VITE_SB_KEY } : null;
+export const builtInServer = BUILT_IN;
 
 export const desktop = typeof window !== 'undefined' && window.studybridge ? window.studybridge : null;
 
 export function getServer() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY) || 'null');
-    return s && s.url && s.key ? s : null;
-  } catch {
-    return null;
-  }
+    if (s && s.url && s.key) return s;
+  } catch {}
+  return BUILT_IN;
 }
 
 export function setServer(s) {

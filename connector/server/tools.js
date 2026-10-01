@@ -1,7 +1,7 @@
 // StudyBridge for Claude: the tutor's Claude Desktop connects to their StudyBridge.
 // Claude can read learners, progress, submissions and library PDFs, and it can
 // DRAFT assignments, marking, lessons and messages. Drafts wait in StudyBridge
-// ("From Claude") until the tutor approves them; nothing reaches a learner directly.
+// (StudyBridge → Prof) until the tutor approves them; nothing reaches a learner directly.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
@@ -324,7 +324,7 @@ export function createStudyBridgeServer(cfg) {
 
   tool(
     'create_assignment_draft',
-    'Draft a homework, quiz, test or exam with questions and answers. It is saved as a DRAFT in StudyBridge: the tutor reviews it under “From Claude” and approves it before learners can see it.',
+    'Draft a homework, quiz, test or exam with questions and answers. It is saved as a DRAFT in StudyBridge: the tutor reviews it under Prof → Waiting for you and approves it before learners can see it.',
     {
       title: z.string(),
       kind: z.enum(['homework', 'quiz', 'test', 'exam']).optional(),
@@ -393,14 +393,14 @@ export function createStudyBridgeServer(cfg) {
         else if (x.type === 'short' && x.answer) answer = { text: x.answer };
         await q(c.from('question_keys').insert({ question_id: qrow.id, answer, solution_md: x.solution || null, mark_scheme_md: x.mark_scheme || null }));
       }
-      return `Draft saved: “${a.title}” (${kind}, ${a.questions.length} questions). It’s waiting in StudyBridge → From Claude for the tutor to review and approve. Learners can’t see it yet.`;
+      return `Draft saved: “${a.title}” (${kind}, ${a.questions.length} questions). It’s waiting in StudyBridge → Prof for the tutor to review and approve. Learners can’t see it yet.`;
     },
     false,
   );
 
   tool(
     'draft_marking',
-    'Suggest marks and feedback for a submission. Saved as a draft: the tutor checks it under “From Claude”, can edit it, and then returns the marks. Explain what was wrong clearly (maths in $...$).',
+    'Suggest marks and feedback for a submission. Saved as a draft: the tutor checks it under Prof → Waiting for you, can edit it, and then returns the marks. Explain what was wrong clearly (maths in $...$).',
     {
       attempt_id: z.string(),
       summary: z.string().optional().describe('One or two lines for the tutor'),
@@ -434,7 +434,7 @@ export function createStudyBridgeServer(cfg) {
         };
       });
       await q(c.from('claude_drafts').insert({ kind: 'marking', learner_id: t.learner_id, attempt_id, summary: summary || null, payload: { marks, ...(overall_feedback ? { feedback_md: overall_feedback } : {}) } }));
-      return 'Suggested marking saved. The tutor reviews it in StudyBridge → From Claude, then returns the marks to the learner.';
+      return 'Suggested marking saved. The tutor reviews it in StudyBridge → Prof, then returns the marks to the learner.';
     },
     false,
   );
@@ -447,7 +447,7 @@ export function createStudyBridgeServer(cfg) {
       const c = await db();
       const l = await findLearner(learner);
       await q(c.from('claude_drafts').insert({ kind: 'message', learner_id: l.id, payload: { body: message } }));
-      return `Message to ${l.display_name} drafted. The tutor sends it from StudyBridge → From Claude.`;
+      return `Message to ${l.display_name} drafted. The tutor sends it from StudyBridge → Prof.`;
     },
     false,
   );

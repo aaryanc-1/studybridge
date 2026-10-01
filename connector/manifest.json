@@ -4,7 +4,7 @@
   "display_name": "StudyBridge",
   "version": "1.0.0",
   "description": "For tutors: Claude reads your learners’ work and progress in StudyBridge and drafts assignments, marking and messages for you to approve.",
-  "long_description": "StudyBridge is a private tutoring portal. With this connector, Claude can see your learners, their submissions (including maths working and photos of their work), their progress, and the PDFs in your library. Claude can draft assignments, suggested marking with explanations, lessons and messages. Everything Claude makes is saved as a draft in StudyBridge → From Claude, and reaches a learner only after you approve it. Learners never use Claude.",
+  "long_description": "StudyBridge is a private tutoring portal. With this connector, Claude can see your learners, their submissions (including maths working and photos of their work), their progress, and the PDFs in your library. Claude can draft assignments, suggested marking with explanations, lessons and messages. Everything Claude makes is saved as a draft in StudyBridge → Prof, and reaches a learner only after you approve it. Learners never use Claude.",
   "author": { "name": "StudyBridge" },
   "icon": "icon.png",
   "server": {

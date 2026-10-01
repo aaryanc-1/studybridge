@@ -77,6 +77,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
           </div>
         )}
         {banner}
+        <UpdateBanner />
         <div className="content">
           <ErrorBoundary key={route.path}>{children}</ErrorBoundary>
         </div>
@@ -242,5 +243,46 @@ export function useIsNarrow() {
       return () => window.removeEventListener('resize', f);
     },
     () => window.innerWidth <= 900,
+  );
+}
+
+// "A new version is ready" (desktop app). Restarting never happens during a locked exam.
+export function useUpdateStatus() {
+  const [st, setSt] = useState(null);
+  useEffect(() => {
+    const u = desktop?.updates;
+    if (!u) return;
+    u.get().then(setSt).catch(() => {});
+    return u.onStatus(setSt);
+  }, []);
+  return st;
+}
+
+function UpdateBanner() {
+  const st = useUpdateStatus();
+  const toast = useToast();
+  const [hidden, setHidden] = useState(false);
+  if (!st || st.state !== 'ready' || hidden) return null;
+  const mac = st.kind === 'mac-install';
+  return (
+    <div className="banner update-banner" role="status">
+      <Icon name="download" size={18} />
+      <span className="grow">
+        {mac ? 'A new version of StudyBridge has downloaded. Open it and drag StudyBridge into Applications (replace the old one).' : 'A new version of StudyBridge is ready.'}
+      </span>
+      <button
+        className="btn sm"
+        onClick={async () => {
+          const r = await desktop.updates.apply();
+          if (r?.error) toast({ title: r.error, tone: 'bad' });
+          if (mac) setHidden(true);
+        }}
+      >
+        {mac ? 'Open it' : 'Restart now'}
+      </button>
+      <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHidden(true)} aria-label="Later">
+        <Icon name="x" size={16} />
+      </button>
+    </div>
   );
 }

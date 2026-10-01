@@ -5,6 +5,7 @@ import DrawingPad, { drawStrokes } from '../../ui/DrawingPad.jsx';
 import { useBlob } from '../../ui/media.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
+import { ProfMarkCard } from './Prof.jsx';
 import { checkSteps } from '../../lib/steps.js';
 import { ago, dur, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
@@ -285,17 +286,23 @@ export function MarkAttempt({ id }) {
             )}
             {others.length > 0 && <div className="muted small">{others.length} more submission{others.length > 1 ? 's' : ''} of this to mark.</div>}
           </div>
-          <div className="card claude">
-            <h3 className="row">
-              <Icon name="spark" style={{ color: 'var(--claude)' }} /> Mark with Claude
-            </h3>
-            <div className="small">In Claude Desktop (with the StudyBridge connector), ask:</div>
-            <div className="code-box" style={{ fontFamily: 'var(--sans)', fontSize: 13, userSelect: 'text', wordBreak: 'normal' }}>{claudePrompt}</div>
-            <button className="btn sm" onClick={() => (copyText(claudePrompt), toast('Copied. Paste it into Claude.'))}>
-              <Icon name="copy" size={14} /> Copy
-            </button>
-            <div className="tiny muted">Claude’s suggested marks arrive in “From Claude” for you to check before anything reaches your learner.</div>
-          </div>
+          <ProfMarkCard
+            attemptId={id}
+            onApplied={async () => {
+              setLocal({});
+              const fresh = await api.attemptDetail(id).catch(() => null);
+              if (fresh) setFeedback(fresh.attempt.feedback_md || '');
+            }}
+          />
+          <details className="small">
+            <summary className="linkbtn small">Or mark with Claude Desktop</summary>
+            <div className="stack sm" style={{ marginTop: 8 }}>
+              <div className="code-box" style={{ fontFamily: 'var(--sans)', fontSize: 13, userSelect: 'text', wordBreak: 'normal' }}>{claudePrompt}</div>
+              <button className="btn sm" onClick={() => (copyText(claudePrompt), toast('Copied. Paste it into Claude.'))}>
+                <Icon name="copy" size={14} /> Copy
+              </button>
+            </div>
+          </details>
         </div>
       </div>
       {annotating && (

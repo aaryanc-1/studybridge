@@ -2,7 +2,7 @@
 import { sb, run, isOffline } from './supabase.js';
 import { sendOrQueue } from './outbox.js';
 import * as store from './store.js';
-import { timezone } from './config.js';
+import { timezone, getServer } from './config.js';
 
 let me = null;
 export const setMe = (p) => (me = p);
@@ -219,4 +219,69 @@ export async function deleteLearnerAccount(id) {
   const paths = (await run(sb().rpc('learner_work_paths', { p_learner: id }))) || [];
   for (let i = 0; i < paths.length; i += 100) await sb().storage.from('work').remove(paths.slice(i, i + 100));
   await run(sb().rpc('delete_learner_account', { p_learner: id }));
+}
+
+// ---------------- StudyBridge admin (account details only) ----------------
+export const isAdmin = () => run(sb().rpc('is_platform_admin'));
+export const adminTutors = () => run(sb().rpc('admin_tutors'));
+export const adminAccounts = (tutorId) => run(sb().rpc('admin_accounts', { p_tutor: tutorId || null }));
+export const adminSetStatus = (id, status) => run(sb().rpc('admin_set_status', { p_user: id, p_status: status }));
+export const adminSetPlan = (id, plan, limitCents) => run(sb().rpc('admin_set_plan', { p_user: id, p_plan: plan, p_ai_limit_cents: limitCents ?? null }));
+export const adminSetPassword = (id, password) => run(sb().rpc('admin_set_password', { p_user: id, p_password: password }));
+export async function adminDeleteAccount(id) {
+  const r = await run(sb().rpc('admin_delete_account', { p_user: id }));
+  // the server removes the files that belonged to the account
+  callProf('cleanup').catch(() => {});
+  return r;
+}
+export const adminSettings = () => run(sb().rpc('admin_settings'));
+export const adminSetSignups = (open) => run(sb().rpc('admin_set_signups', { p_open: open }));
+export const adminSetProf = ({ key, model, defaultLimitCents }) =>
+  run(sb().rpc('admin_set_prof', { p_key: key || null, p_model: model || null, p_default_limit_cents: defaultLimitCents ?? null }));
+export const adminSetLivekit = (url, key, secret) => run(sb().rpc('admin_set_livekit', { p_url: url, p_key: key, p_secret: secret }));
+export const adminLog = () => run(sb().from('admin_log').select('*').order('at', { ascending: false }).limit(200));
+
+// ---------------- Prof (the AI assistant, tutors only) ----------------
+// Wakes the Prof server. The database also does this by itself; this makes it instant.
+export async function callProf(action = 'kick') {
+  const s = getServer();
+  const { data } = await sb().auth.getSession();
+  const token = data.session?.access_token;
+  if (!s || !token) return null;
+  const r = await fetch(`${s.url}/functions/v1/prof`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', apikey: s.key, authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || (r.status === 404 ? 'The Prof server isn’t installed yet.' : `Prof server error ${r.status}`));
+  return body;
+}
+export const profJobs = () =>
+  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,cost_cents,created_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
+export const profUsage = () => run(sb().rpc('prof_usage'));
+export const profSettings = () => run(sb().from('prof_settings').select('*').eq('tutor_id', uid()).maybeSingle());
+export const saveProfSettings = (patch) =>
+  run(sb().from('prof_settings').upsert({ tutor_id: uid(), ...patch, updated_at: new Date().toISOString() }, { onConflict: 'tutor_id' }));
+export async function profAsk(prompt, { learnerIds = [], pages = [] } = {}) {
+  // pages: [{ blob, label }] images of book pages, kept in the tutor's own library folder until Prof has read them
+  const stored = [];
+  for (const p of pages) {
+    const path = `${uid()}/prof/${uuid()}.jpg`;
+    await run(sb().storage.from('library').upload(path, await p.blob.arrayBuffer(), { contentType: p.blob.type || 'image/jpeg' }));
+    stored.push({ path, label: p.label });
+  }
+  const r = await run(sb().rpc('prof_ask', { p_prompt: prompt, p_context: { learner_ids: learnerIds, pages: stored } }));
+  callProf().catch(() => {});
+  return r;
+}
+export async function profMark(attemptId) {
+  const r = await run(sb().rpc('prof_mark', { p_attempt: attemptId }));
+  callProf().catch(() => {});
+  return r;
+}
+export const profCancel = (id) => run(sb().rpc('prof_cancel', { p_job: id }));
+export async function profRetry(id) {
+  await run(sb().rpc('prof_retry', { p_job: id }));
+  callProf().catch(() => {});
 }

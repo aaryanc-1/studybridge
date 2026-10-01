@@ -1,12 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { getServer, readConnectFromHash, setServer, decodeInvite } from './lib/config.js';
+import { getServer, readConnectFromHash, setServer, decodeInvite, desktop } from './lib/config.js';
 import { sb, resetClient, isOffline } from './lib/supabase.js';
 import * as api from './lib/api.js';
 import * as store from './lib/store.js';
 import { setScope } from './lib/data.js';
 import { ToastProvider, ConfirmProvider, Loading } from './ui/kit.jsx';
 import Welcome from './screens/Welcome.jsx';
-import FinishSetup from './screens/FinishSetup.jsx';
+import FinishSetup, { WaitingForApproval } from './screens/FinishSetup.jsx';
 import TutorApp from './screens/tutor/TutorApp.jsx';
 import LearnerApp from './screens/learner/LearnerApp.jsx';
 
@@ -24,7 +24,10 @@ function storedUser() {
 export default function App() {
   const [server, setServerState] = useState(() => {
     const fromQr = readConnectFromHash();
-    if (fromQr) setServer(fromQr);
+    if (fromQr) {
+      setServer(fromQr);
+      localStorage.setItem('sb.seen', '1');
+    }
     return getServer();
   });
   const [user, setUser] = useState(undefined); // undefined = checking
@@ -45,6 +48,7 @@ export default function App() {
       }
       sessionStorage.removeItem('sb.pendingInvite');
       sessionStorage.removeItem('sb.pendingName');
+      if (p?.role === 'tutor') p = { ...p, is_admin: !!(await api.isAdmin().catch(() => cached?.is_admin)) };
       if (p) await store.set(`profile:${u.id}`, p);
       api.setMe(p);
       setBootError(null);
@@ -119,10 +123,16 @@ export default function App() {
     [server, user, profile, offlineBoot, bootError, loadProfile],
   );
 
+  // Tell the desktop app this version started properly (so it keeps it after an update)
+  useEffect(() => {
+    if (user !== undefined) desktop?.updates?.ok?.().catch?.(() => {});
+  }, [user]);
+
   let body;
   if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
   else if (!server || !user) body = <Welcome />;
   else if (!profile || !profile.role) body = <FinishSetup />;
+  else if (profile.role === 'tutor' && profile.status !== 'active') body = <WaitingForApproval />;
   else if (profile.role === 'tutor') body = <TutorApp />;
   else body = <LearnerApp />;
 

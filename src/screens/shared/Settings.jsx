@@ -8,6 +8,7 @@ import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
 import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone } from '../../lib/config.js';
+import { useUpdateStatus } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
 
 export default function Settings() {
@@ -25,6 +26,7 @@ export default function Settings() {
       {isTutor && <PhoneApp />}
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
+      {isTutor && <AccountHistory />}
       {!isTutor && <LearnerNotifications />}
       <Device />
       <About />
@@ -254,12 +256,14 @@ function LiveKeys() {
     if (s.data?.livekit_url && !url) setUrl(s.data.livekit_url);
   }, [s.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const ok = status.data?.configured;
+  const shared = status.data?.shared && !status.data?.own;
   return (
-    <Section id="live" icon="video" title="Live video" sub="Powers live lessons and exam cameras. Uses a free LiveKit Cloud project.">
+    <Section id="live" icon="video" title="Live video" sub="Powers live lessons and exam cameras.">
       <div className="row">
         <span className={'dot ' + (ok ? '' : 'warn')} />
-        <span className="strong">{ok ? 'Switched on' : 'Not set up yet'}</span>
+        <span className="strong">{shared ? 'Ready: StudyBridge provides it' : ok ? 'Switched on (your own LiveKit)' : 'Not set up yet'}</span>
       </div>
+      {shared && <div className="small muted">Nothing to do. If you’d rather use your own LiveKit Cloud project, add its keys below.</div>}
       <ol className="steps-guide">
         <li>
           <div>
@@ -317,7 +321,7 @@ function ClaudeConnector() {
   const toast = useToast();
   const [showKey, setShowKey] = useState(false);
   return (
-    <Section id="claude" icon="spark" title="Claude (for you only)" sub="Connect Claude Desktop so Claude can write questions, draft assignments, mark work and explain mistakes. Everything Claude makes waits in “From Claude” for your approval. Learners never use Claude.">
+    <Section id="claude" icon="spark" title="Claude Desktop (optional)" sub="Prof is built in. If you also use Claude Desktop, connect it here so Claude can read your StudyBridge and draft work too. Everything it makes waits in Prof for your approval. Learners never use it.">
       <ol className="steps-guide">
         <li>
           <div className="stack sm">
@@ -368,10 +372,34 @@ function ClaudeConnector() {
         </li>
         <li>
           <div>
-            Try it: in Claude, ask <i>“Using StudyBridge, what has my sister submitted this week?”</i>
+            Try it: in Claude, ask <i>“Using StudyBridge, what have my learners handed in this week?”</i>
           </div>
         </li>
       </ol>
+    </Section>
+  );
+}
+
+// What the StudyBridge admin has done to this account (approvals, password resets…)
+function AccountHistory() {
+  const q = useQuery('my-admin-log', api.adminLog);
+  const app = useApp();
+  const list = (q.data || []).filter((x) => x.user_id === app.me.id || x.tutor_id === app.me.id);
+  if (!list.length || app.me.is_admin) return null;
+  const label = { approved: 'Your account was approved', paused: 'Your account was paused', switched_on: 'Your account was switched back on', password_reset: 'Password reset by StudyBridge', deleted: 'Account deleted by StudyBridge', plan: 'Plan changed' };
+  return (
+    <Section id="history" icon="shield" title="Changes StudyBridge made to your account" sub="StudyBridge can manage accounts (approvals, passwords) but never sees your work. Every change is listed here.">
+      <div className="list small">
+        {list.map((x) => (
+          <div key={x.id} className="item" style={{ padding: '6px 0' }}>
+            <span className="muted" style={{ width: 150, flexShrink: 0 }}>{new Date(x.at).toLocaleString()}</span>
+            <span className="grow">
+              {label[x.action] || x.action}
+              {x.user_id !== app.me.id && x.detail?.name ? ` (${x.detail.name})` : x.user_id !== app.me.id && x.email ? ` (${x.email})` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
     </Section>
   );
 }
@@ -439,9 +467,43 @@ function Device() {
 }
 
 function About() {
+  const st = useUpdateStatus();
+  const [busy, setBusy] = useState(false);
+  const appV = st?.current || import.meta.env.VITE_APP_VERSION || desktop?.version || 'dev';
   return (
-    <div className="muted small" style={{ textAlign: 'center' }}>
-      StudyBridge {desktop?.version || 'web'} · {desktop ? (desktop.platform === 'darwin' ? 'Mac' : desktop.platform === 'win32' ? 'Windows' : desktop.platform) : 'browser'}
+    <div className="stack sm" style={{ alignItems: 'center' }}>
+      <div className="muted small" style={{ textAlign: 'center' }}>
+        StudyBridge {appV} · {desktop ? (desktop.platform === 'darwin' ? 'Mac' : desktop.platform === 'win32' ? 'Windows' : desktop.platform) : 'browser'}
+        {desktop && desktop.version !== appV ? ` (desktop ${desktop.version})` : ''}
+      </div>
+      {desktop?.updatesOn && st && (
+        <div className="row small">
+          <span className="muted">
+            {st.state === 'ready'
+              ? `Version ${st.version} is ready (see the banner at the top).`
+              : st.state === 'downloading'
+                ? `Downloading version ${st.version}…`
+                : st.state === 'error'
+                  ? 'Couldn’t check for updates just now.'
+                  : st.state === 'up-to-date'
+                    ? 'You have the latest version.'
+                    : 'Updates install by themselves.'}
+          </span>
+          {st.state !== 'downloading' && (
+            <button
+              className="linkbtn small"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await desktop.updates.check().catch(() => {});
+                setBusy(false);
+              }}
+            >
+              {busy ? 'Checking…' : 'Check now'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

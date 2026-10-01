@@ -11,6 +11,17 @@ contextBridge.exposeInMainWorld('studybridge', {
   saveFile: (name, bytes) => ipcRenderer.invoke('file:save', { name, bytes }),
   saveConnector: () => ipcRenderer.invoke('connector:save'),
   openConnector: () => ipcRenderer.invoke('connector:open'),
+  updates: {
+    get: () => ipcRenderer.invoke('update:get'),
+    check: () => ipcRenderer.invoke('update:check'),
+    apply: () => ipcRenderer.invoke('update:apply'),
+    ok: () => ipcRenderer.invoke('update:ok'),
+    onStatus: (cb) => {
+      const h = (_e, d) => cb(d);
+      ipcRenderer.on('update:status', h);
+      return () => ipcRenderer.removeListener('update:status', h);
+    },
+  },
   lockdown: {
     enter: (attemptId) => ipcRenderer.invoke('lockdown:enter', attemptId),
     exit: () => ipcRenderer.invoke('lockdown:exit'),

@@ -1,35 +1,42 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Link, Markdown, Page, go, useToast } from '../../ui/kit.jsx';
+import { Avatar, Link, Markdown, go, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, kindLabel } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 
-export default function ClaudeInbox() {
+// Everything Prof (or Claude Desktop) has drafted, waiting for the tutor
+export function useDraftCounts() {
+  const drafts = useQuery('drafts', api.listDrafts).data || [];
+  const assignments = useQuery('assignments', api.listAssignments).data || [];
+  const lessons = useQuery('lessons', api.listLessons).data || [];
+  return drafts.length + assignments.filter((a) => a.draft).length + lessons.filter((l) => l.draft).length;
+}
+
+const from = (src) => (src === 'prof' ? 'Prof' : src === 'claude' ? 'Claude Desktop' : 'you');
+
+export function DraftsWaiting() {
   const drafts = useQuery('drafts', api.listDrafts);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
+  const lessons = useQuery('lessons', api.listLessons).data || [];
   const draftAssignments = assignments.filter((a) => a.draft);
+  const draftLessons = lessons.filter((l) => l.draft);
   const list = drafts.data || [];
+  const lk = useLookups();
+  const none = drafts.data && list.length === 0 && draftAssignments.length === 0 && draftLessons.length === 0;
 
   return (
-    <Page
-      title="From Claude"
-      subtitle="Work Claude has prepared in Claude Desktop. Nothing reaches a learner until you approve it."
-      actions={
-        <button className="btn" onClick={() => go('/settings?s=claude')}>
-          <Icon name="settings" size={18} /> Connect Claude
-        </button>
-      }
-    >
-      {drafts.data && list.length === 0 && draftAssignments.length === 0 && (
-        <Empty title="Nothing waiting">
-          In Claude Desktop, ask things like “Make a 10-question IGCSE quiz on simultaneous equations for my sister, due Friday” or “Mark the latest submissions and explain her mistakes”. Drafts appear here.
-        </Empty>
-      )}
-      {draftAssignments.length > 0 && (
+    <>
+      {none && (
         <div className="card">
-          <h2>Assignments to review</h2>
+          <h2>Waiting for you</h2>
+          <div className="muted small">Nothing to review. When Prof makes something, it waits here until you approve it.</div>
+        </div>
+      )}
+      {(draftAssignments.length > 0 || draftLessons.length > 0) && (
+        <div className="card">
+          <h2>Waiting for you</h2>
           <div className="list">
             {draftAssignments.map((a) => (
               <Link key={a.id} to={`/assignments/${a.id}`} className="item">
@@ -37,8 +44,19 @@ export default function ClaudeInbox() {
                 <span className="grow">
                   <span className="name">{a.title}</span>
                   <span className="meta">
-                    <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span> drafted {ago(a.created_at)}
+                    <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span> by {from(a.source)} · {ago(a.created_at)}
+                    {lk.audience(a).length > 0 && ` · for ${lk.audience(a).map((l) => l.display_name.split(' ')[0]).join(', ')}`}
                   </span>
+                </span>
+                <span className="btn sm">Review</span>
+              </Link>
+            ))}
+            {draftLessons.map((l) => (
+              <Link key={l.id} to={`/lesson/${l.id}`} className="item">
+                <Icon name="book" style={{ color: 'var(--claude)' }} />
+                <span className="grow">
+                  <span className="name">{l.title}</span>
+                  <span className="meta">Lesson by {from(l.source)} · {ago(l.created_at)}</span>
                 </span>
                 <span className="btn sm">Review</span>
               </Link>
@@ -47,7 +65,7 @@ export default function ClaudeInbox() {
         </div>
       )}
       {list.map((d) => (d.kind === 'marking' ? <MarkingDraft key={d.id} d={d} /> : <MessageDraft key={d.id} d={d} />))}
-    </Page>
+    </>
   );
 }
 
@@ -86,7 +104,7 @@ function MarkingDraft({ d }) {
         <div className="row">
           <Icon name="spark" style={{ color: 'var(--claude)' }} />
           <div>
-            <h2>Suggested marking{a ? `: ${a.title}` : ''}</h2>
+            <h2>{d.source === 'prof' ? 'Prof’s marking' : 'Suggested marking'}{a ? `: ${a.title}` : ''}</h2>
             <div className="small muted row" style={{ gap: 6 }}>
               {learner && <Avatar person={learner} size="sm" />} {learner?.display_name} · {ago(d.created_at)}
             </div>

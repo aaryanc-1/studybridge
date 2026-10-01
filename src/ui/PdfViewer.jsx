@@ -25,6 +25,51 @@ function pdfAssets() {
   };
 }
 
+// Pictures of chosen pages (for Prof to read). Returns [{ page, blob }] as JPEGs about 1500px tall.
+export async function renderPdfPages(blob, pages, { maxSide = 1500, quality = 0.82 } = {}) {
+  const lib = await pdfjs();
+  const task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+  const doc = await task.promise;
+  const out = [];
+  try {
+    for (const n of pages) {
+      if (n < 1 || n > doc.numPages) continue;
+      const pg = await doc.getPage(n);
+      const v1 = pg.getViewport({ scale: 1 });
+      const scale = Math.min(3, maxSide / Math.max(v1.width, v1.height));
+      const vp = pg.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(vp.width);
+      canvas.height = Math.round(vp.height);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await pg.render({ canvasContext: ctx, canvas, viewport: vp }).promise;
+      const jpg = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
+      out.push({ page: n, blob: jpg });
+      pg.cleanup();
+    }
+    return { pages: out, total: doc.numPages };
+  } finally {
+    try {
+      await task.destroy();
+    } catch {}
+  }
+}
+
+// "12-15, 20" -> [12, 13, 14, 15, 20]
+export function parsePages(text, max = 20) {
+  const out = [];
+  for (const part of String(text || '').split(/[,\s]+/)) {
+    const m = part.match(/^(\d+)(?:\s*[-–]\s*(\d+))?$/);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    for (let i = Math.min(a, b); i <= Math.max(a, b) && out.length < max; i++) if (!out.includes(i)) out.push(i);
+  }
+  return out;
+}
+
 export default function PdfViewer({ blob, title, toolbar }) {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState('');

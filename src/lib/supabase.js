@@ -36,6 +36,7 @@ export function friendly(err) {
   if (!err) return '';
   if (isOffline(err)) return 'You’re offline. This will work again once you’re connected.';
   const m = String(err.message || err.msg || err.error_description || err);
+  if (/User is banned|user_banned/i.test(m)) return 'This account is paused. Contact StudyBridge if you think this is a mistake.';
   if (/Invalid login credentials/i.test(m)) return 'That email and password don’t match. Check them and try again.';
   if (/already registered|already exists/i.test(m)) return 'There’s already an account with that email. Sign in instead.';
   if (/Email not confirmed/i.test(m)) return 'This account still needs its email confirmed. Your tutor can turn off “Confirm email” in Supabase, or open the link in your inbox.';

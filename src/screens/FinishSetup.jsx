@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
-import { Logo } from '../ui/Icon.jsx';
+import Icon, { Logo } from '../ui/Icon.jsx';
 import { Field } from '../ui/kit.jsx';
 import { decodeInvite } from '../lib/config.js';
 import * as api from '../lib/api.js';
@@ -66,10 +66,10 @@ export default function FinishSetup() {
               </button>
             </form>
             <div className="card">
-              <h2>I’m the tutor</h2>
-              <p className="muted small">Only the owner of this StudyBridge can be a tutor.</p>
+              <h2>I’m a tutor</h2>
+              <p className="muted small">New tutor accounts are approved by StudyBridge before you can invite learners.</p>
               <button className="btn" disabled={busy} onClick={() => act(() => api.becomeTutor(name))}>
-                Set up as tutor
+                Sign up as a tutor
               </button>
             </div>
             {err && <div className="error">{err}</div>}
@@ -78,6 +78,51 @@ export default function FinishSetup() {
             </button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// A tutor who signed up and is waiting for StudyBridge to approve them (or whose account is paused)
+export function WaitingForApproval() {
+  const app = useApp();
+  const paused = app.me.status === 'suspended';
+  useEffect(() => {
+    if (paused) return;
+    const t = setInterval(() => app.refreshMe(), 15000);
+    return () => clearInterval(t);
+  }, [paused]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="welcome">
+      <div className="box">
+        <div className="hero">
+          <Logo size={52} />
+          <h1>{paused ? 'Your account is paused' : `Thanks, ${app.me.display_name.split(' ')[0]}!`}</h1>
+          <p className="lead">
+            {paused
+              ? 'StudyBridge has paused this tutor account. Your learners’ work is kept safe. Contact StudyBridge to switch it back on.'
+              : 'Your tutor account is waiting for approval. This page opens StudyBridge for you as soon as you’re approved.'}
+          </p>
+        </div>
+        <div className="card">
+          <div className="row">
+            <Icon name={paused ? 'pause' : 'clock'} style={{ color: 'var(--accent)' }} />
+            <div className="grow">
+              <div className="strong">{app.me.email}</div>
+              <div className="small muted">{paused ? 'Paused' : 'Waiting for approval'}</div>
+            </div>
+          </div>
+          <div className="row">
+            {!paused && (
+              <button className="btn primary" onClick={() => app.refreshMe()}>
+                <Icon name="refresh" size={18} /> Check again
+              </button>
+            )}
+            <button className="btn" onClick={app.signOut}>
+              Sign out
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

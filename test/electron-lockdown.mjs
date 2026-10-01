@@ -52,7 +52,7 @@ const isKiosk = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWi
 const events = async () => (await tutor.from('attempts').select('lockdown_events').eq('assignment_id', a.id)).data[0]?.lockdown_events || [];
 
 try {
-  await win.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+  await win.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
   await win.reload();
   await win.getByLabel('Email').fill('anaya@example.com');
   await win.getByLabel('Password').fill('secret123');
@@ -98,7 +98,7 @@ try {
     const T = await (await browser.newContext({ viewport: { width: 1300, height: 820 }, permissions: ['camera', 'microphone'] })).newPage();
     if (process.env.DEBUG_LIVE) T.on('console', (m) => console.log('tutor console:', m.type(), m.text().slice(0, 300)));
     await T.goto(`http://127.0.0.1:${web.address().port}/`);
-    await T.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+    await T.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
     await T.reload();
     await T.getByLabel('Email').fill('tutor@example.com');
     await T.getByLabel('Password').fill('secret123');

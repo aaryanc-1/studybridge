@@ -11,39 +11,46 @@ import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'utf8');
 
 export const STUBS = `
-create role authenticated nologin; create role anon nologin; create role service_role nologin;
+create role authenticated nologin; create role anon nologin; create role service_role nologin bypassrls;
 create schema auth;
 create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
-  encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now());
+  encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now(),
+  banned_until timestamptz);
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 grant usage on schema auth to authenticated, anon;
 create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint);
 create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text, owner uuid,
-  created_at timestamptz default now(), unique (bucket_id, name));
+  metadata jsonb default '{}', created_at timestamptz default now(), unique (bucket_id, name));
 alter table storage.objects enable row level security;
 create function storage.foldername(name text) returns text[] language sql immutable as $$
   select (string_to_array(name, '/'))[1:array_length(string_to_array(name, '/'), 1) - 1] $$;
-grant usage on schema storage to authenticated, anon;
-grant all on storage.objects to authenticated;
-alter default privileges in schema public grant all on tables to anon, authenticated;
-alter default privileges in schema public grant all on functions to anon, authenticated;
+grant usage on schema storage to authenticated, anon, service_role;
+grant all on storage.objects to authenticated, service_role;
+grant usage on schema auth to service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+grant usage on schema public to service_role;
 `;
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 
-export async function startFakeSupabase({ port = 0, log = false } = {}) {
+export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = null } = {}) {
   const db = new PGlite({ extensions: { pgcrypto } });
   await db.exec(STUBS);
   await db.exec(SETUP);
   const anonKey = 'fake-anon-key-for-local-testing-only';
+  const serviceKey = 'fake-service-role-key-for-local-testing-only';
+  const SERVICE = 'service';
+  let prof = null; // the Prof edge function, loaded on first use
   const users = new Map(); // email -> { id, password, meta }
   const refresh = new Map(); // refresh token -> user id
   const files = new Map(); // bucket/path -> { bytes, type }
   const signed = new Map(); // token -> bucket/path
   let offline = false;
+  let base = '';
 
   const colTypes = new Map();
   async function columns(table) {
@@ -87,7 +94,8 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
   function caller(req) {
     const h = req.headers.authorization || '';
     const t = h.replace(/^Bearer\s+/i, '');
-    if (!t || t === anonKey) return null;
+    if (!t || t === anonKey) return req.headers.apikey === serviceKey ? SERVICE : null;
+    if (t === serviceKey) return SERVICE;
     try {
       const p = JSON.parse(Buffer.from(t.split('.')[1], 'base64url').toString());
       if (p.exp < Date.now() / 1000) return null;
@@ -98,8 +106,8 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
   }
   async function as(uid, fnc) {
     return db.transaction(async (tx) => {
-      await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [uid || '']);
-      await tx.exec(`set local role ${uid ? 'authenticated' : 'anon'}`);
+      await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [uid && uid !== SERVICE ? uid : '']);
+      await tx.exec(`set local role ${uid === SERVICE ? 'service_role' : uid ? 'authenticated' : 'anon'}`);
       return fnc(tx);
     });
   }
@@ -284,7 +292,8 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       try {
         await as(uid, async (tx) => {
           if (upsert) await tx.query(`delete from storage.objects where bucket_id = $1 and name = $2`, [bucket, name]);
-          await tx.query(`insert into storage.objects (bucket_id, name, owner) values ($1, $2, $3)`, [bucket, name, uid]);
+          await tx.query(`insert into storage.objects (bucket_id, name, owner, metadata) values ($1, $2, $3, $4)`,
+            [bucket, name, uid === SERVICE ? null : uid, { size: raw.length, mimetype: req.headers['content-type'] || null }]);
         });
       } catch (e) {
         if (/duplicate/.test(e.message)) return [400, { statusCode: '409', error: 'Duplicate', message: 'The resource already exists' }];
@@ -301,6 +310,27 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       return [200, f.bytes, f.type];
     }
     return [405, { message: 'Method not allowed' }];
+  }
+
+  async function banned(id) {
+    if (!id) return false;
+    const r = await db.query(`select banned_until > now() as b from auth.users where id = $1`, [id]);
+    return !!r.rows[0]?.b;
+  }
+
+  // Supabase Edge Function "prof", run in-process (Claude is the stand-in at anthropicUrl)
+  async function functions(req, url, raw) {
+    if (url.pathname !== '/functions/v1/prof') return [404, { message: 'Function not found' }];
+    if (!prof) {
+      const mod = await import('../supabase/functions/prof/index.ts');
+      const env = { SUPABASE_URL: base, SUPABASE_SERVICE_ROLE_KEY: serviceKey, SUPABASE_ANON_KEY: anonKey, ANTHROPIC_BASE_URL: anthropicUrl || 'http://127.0.0.1:9' };
+      prof = mod.createHandler((k) => env[k]);
+    }
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v);
+    const r = await prof(new Request(base + url.pathname, { method: req.method, headers, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : raw }));
+    const text = await r.text();
+    return [r.status, text ? JSON.parse(text) : null];
   }
 
   async function auth(req, url, body) {
@@ -324,6 +354,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
         );
         const row = r.rows[0];
         if (!row) return [400, { code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }];
+        if (await banned(row.id)) return [400, { code: 400, error_code: 'user_banned', msg: 'User is banned' }];
         const u = users.get(row.email) || { id: row.id, email: row.email, meta: row.raw_user_meta_data };
         users.set(row.email, u);
         return [200, session(u)];
@@ -331,6 +362,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       if (gt === 'refresh_token') {
         const email = refresh.get(b.refresh_token);
         if (!email) return [400, { code: 400, error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }];
+        if (await banned(users.get(email)?.id)) return [400, { code: 400, error_code: 'user_banned', msg: 'User is banned' }];
         return [200, session(users.get(email))];
       }
     }
@@ -373,6 +405,7 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
       if (url.pathname.startsWith('/auth/v1/')) out = await auth(req, url, raw.toString());
       else if (url.pathname.startsWith('/rest/v1/')) out = await rest(req, url, raw.toString(), caller(req));
       else if (url.pathname.startsWith('/storage/v1/object/')) out = await storage(req, url, raw, caller(req));
+      else if (url.pathname.startsWith('/functions/v1/')) out = await functions(req, url, raw);
       else out = [404, { message: 'Not found' }];
     } catch (e) {
       out = [e.status || 400, { message: e.message, code: e.code || 'P0001', details: e.detail || null, hint: e.hint || null }];
@@ -393,9 +426,11 @@ export async function startFakeSupabase({ port = 0, log = false } = {}) {
   server.on('upgrade', (req, socket) => socket.destroy()); // no realtime: the app falls back to polling
   await new Promise((r) => server.listen(port, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}`;
+  base = url;
   return {
     url,
     anonKey,
+    serviceKey,
     db,
     files,
     setOffline(v) {

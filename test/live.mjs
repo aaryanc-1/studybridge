@@ -44,7 +44,7 @@ async function join_(email) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 780 }, permissions: ['camera', 'microphone'] });
   const p = await ctx.newPage();
   await p.goto(WEB);
-  await p.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+  await p.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
   await p.reload();
   await p.getByLabel('Email').fill(email);
   await p.getByLabel('Password').fill('secret123');

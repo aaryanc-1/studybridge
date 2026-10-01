@@ -75,7 +75,7 @@ try {
   step('Tutor connects their Supabase project and creates an account');
   await T.goto(web.url);
   await shot(T, 'welcome');
-  await T.getByText('I’m the tutor').click();
+  await T.getByText('I’m a tutor').click();
   await T.getByLabel('Project URL').fill(srv.url);
   await T.getByLabel(/Anon \/ publishable key/).fill(srv.anonKey);
   await shot(T, 'tutor-server-setup', true);
@@ -356,7 +356,7 @@ try {
   await T.getByRole('button', { name: 'Message' }).click();
   await T.getByPlaceholder('Write a message…').fill('Yes! Dividing first works too because 3x means 3 times x.');
   await T.keyboard.press('Enter');
-  await T.getByText('Dividing first works').waitFor();
+  await T.getByText('Dividing first works').first().waitFor();
   await shot(T, 'tutor-messages');
 
   step('Admin: tutor sets a new password for the learner, who signs in with it');
@@ -373,7 +373,7 @@ try {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
     const X = await ctx.newPage();
     await X.goto(web.url);
-    await X.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+    await X.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
     await X.reload();
     await X.getByLabel('Email').fill('anaya@example.com');
     await X.getByLabel('Password').fill('secret123');
@@ -422,7 +422,7 @@ try {
   const P = await phone.newPage();
   const errP = watchErrors(P, 'phone');
   await P.goto(web.url);
-  await P.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+  await P.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
   await P.reload();
   await P.getByLabel('Email').fill('aaryan@example.com');
   await P.getByLabel('Password').fill('secret123');

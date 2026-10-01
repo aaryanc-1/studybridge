@@ -229,10 +229,10 @@ export default function AssignmentEditor({ id }) {
       {a.draft && (
         <div className="card claude">
           <div className="row top">
-            <Icon name="spark" style={{ color: 'var(--claude)', flexShrink: 0 }} />
+            <Icon name={a.source === 'prof' ? 'cap' : 'spark'} style={{ color: 'var(--claude)', flexShrink: 0 }} />
             <div className="stack sm">
-              <div className="strong">Drafted by Claude. Learners can’t see it yet.</div>
-              <div className="small">Check the questions and answers, change anything you like, then press Approve. It follows the “Who sees it” setting once approved.</div>
+              <div className="strong">Drafted by {a.source === 'prof' ? 'Prof' : 'Claude'}. Learners can’t see it yet.</div>
+              <div className="small">Check the questions, answers and mark schemes, change anything you like, then press Approve & post. It follows the “Who sees it” setting once approved.</div>
             </div>
           </div>
         </div>

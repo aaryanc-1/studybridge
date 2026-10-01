@@ -1,0 +1,49 @@
+name: Nightly backup
+
+# Every night: a copy of the StudyBridge database (everyone's accounts, work,
+# marks and messages), encrypted with your BACKUP_PASSWORD, kept for 30 days
+# under Actions → Nightly backup → the run → Artifacts.
+# Needs the secrets SUPABASE_DB_URL and BACKUP_PASSWORD. (Uploaded files such as
+# PDFs and photos live in Supabase Storage and aren't in this copy.)
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+    steps:
+      - name: Skip if not set up
+        if: env.DB_URL == '' || env.BACKUP_PASSWORD == ''
+        run: echo "::notice::Add the SUPABASE_DB_URL and BACKUP_PASSWORD secrets to turn on nightly backups."
+      - name: Install pg_dump 17
+        if: env.DB_URL != '' && env.BACKUP_PASSWORD != ''
+        run: |
+          sudo apt-get install -y -qq postgresql-common >/dev/null
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
+          sudo apt-get install -y -qq postgresql-client-17 >/dev/null
+      - name: Back up
+        if: env.DB_URL != '' && env.BACKUP_PASSWORD != ''
+        run: |
+          set -euo pipefail
+          D=studybridge-$(date -u +%Y-%m-%d)
+          mkdir "$D"
+          PGD=/usr/lib/postgresql/17/bin/pg_dump
+          $PGD "$DB_URL" --no-owner --no-privileges --schema=public -Fc -f "$D/public.dump"
+          $PGD "$DB_URL" --no-owner --no-privileges --data-only --table=auth.users --table=auth.identities -Fc -f "$D/auth.dump"
+          tar czf "$D.tgz" "$D"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$BACKUP_PASSWORD" -c --cipher-algo AES256 -o "$D.tgz.gpg" "$D.tgz"
+          rm -rf "$D" "$D.tgz"
+          ls -la
+          echo "NAME=$D" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: env.DB_URL != '' && env.BACKUP_PASSWORD != ''
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tgz.gpg
+          retention-days: 30

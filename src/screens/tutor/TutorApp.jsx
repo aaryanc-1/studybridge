@@ -11,7 +11,9 @@ import Library, { LessonEditor } from './Library.jsx';
 import Assignments from './Assignments.jsx';
 import AssignmentEditor from './AssignmentEditor.jsx';
 import Marking, { MarkAttempt } from './Marking.jsx';
-import ClaudeInbox from './ClaudeInbox.jsx';
+import { useDraftCounts } from './ClaudeInbox.jsx';
+import Prof from './Prof.jsx';
+import Admin from './Admin.jsx';
 import Messages from '../shared/Messages.jsx';
 import Live, { Watch } from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
@@ -23,6 +25,8 @@ function notificationTarget(n) {
   if (n.kind === 'note' && r.learner_id) return `/messages/${r.learner_id}`;
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
+  if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
+  if (n.kind === 'tutor_signup') return '/admin';
   return '/';
 }
 
@@ -30,11 +34,12 @@ export default function TutorApp() {
   const app = useApp();
   const route = useRoute();
   const attempts = useQuery('attempts', api.listAttempts);
-  const drafts = useQuery('drafts', api.listDrafts);
   const comments = useQuery('comments', api.listComments);
   const toMark = (attempts.data || []).filter((a) => a.status === 'submitted').length;
   const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
-  const draftCount = (drafts.data || []).length;
+  const draftCount = useDraftCounts();
+  const admin = useQuery(app.me.is_admin ? 'admin-tutors' : null, api.adminTutors, { poll: 60000 });
+  const waitingTutors = (admin.data || []).filter((t) => t.status === 'pending').length;
 
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
@@ -45,7 +50,8 @@ export default function TutorApp() {
     { to: '/messages', label: 'Messages', icon: 'message', count: unreadNotes },
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
     { to: '/structure', label: 'Subjects', icon: 'layers' },
-    { to: '/claude', label: 'From Claude', icon: 'spark', count: draftCount, tone: 'claude' },
+    { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
+    ...(app.me.is_admin ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: waitingTutors }] : []),
   ];
   const tabs = [nav[0], nav[2], nav[3], nav[5], nav[1]];
 
@@ -62,7 +68,8 @@ export default function TutorApp() {
   else if (a === 'assignments') page = <Assignments />;
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;
   else if (a === 'marking') page = <Marking />;
-  else if (a === 'claude') page = <ClaudeInbox />;
+  else if (a === 'claude' || a === 'prof') page = <Prof />;
+  else if (a === 'admin') page = <Admin />;
   else if (a === 'messages') page = <Messages learnerId={b} />;
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;

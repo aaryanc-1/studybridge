@@ -318,6 +318,7 @@ export function LessonEditor({ id }) {
         visibility,
         visible_from: visibility === 'scheduled' ? l.visible_from : null,
         learner_ids: l.learner_ids?.length ? l.learner_ids : null,
+        draft: post ? false : !!l.draft,
         updated_at: new Date().toISOString(),
       };
       const saved = await api.save('lessons', row);
@@ -373,13 +374,13 @@ export function LessonEditor({ id }) {
               Delete
             </button>
           )}
-          {l.visibility === 'hidden' ? (
+          {l.visibility === 'hidden' || l.draft ? (
             <>
               <button className="btn" onClick={() => saveIt()} disabled={busy}>
                 Save draft
               </button>
-              <button className="btn primary" onClick={() => saveIt({ post: true })} disabled={busy}>
-                <Icon name="send" size={18} /> Post
+              <button className={'btn ' + (l.draft ? 'claude' : 'primary')} onClick={() => saveIt({ post: true })} disabled={busy}>
+                <Icon name="send" size={18} /> {l.draft ? 'Approve & post' : 'Post'}
               </button>
             </>
           ) : (
@@ -390,6 +391,16 @@ export function LessonEditor({ id }) {
         </>
       }
     >
+      {l.draft && (
+        <div className="card claude small">
+          <div className="row">
+            <Icon name="cap" style={{ color: 'var(--claude)' }} />
+            <span>
+              {l.source === 'prof' ? 'Prof' : 'Claude'} wrote this lesson. Learners can’t see it until you press <b>Approve & post</b>. Change anything you like first.
+            </span>
+          </div>
+        </div>
+      )}
       <div className="split side-r">
         <div className="card">
           <Field label="Title">

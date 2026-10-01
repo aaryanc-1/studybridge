@@ -63,6 +63,52 @@ create table if not exists public.app_config (
 );
 insert into public.app_config (id) values (1) on conflict do nothing;
 
+-- StudyBridge as a service: anyone can sign up as a tutor and the StudyBridge
+-- admin approves them. Learners only ever join through a tutor's invite.
+alter table public.app_config add column if not exists tutor_signups_open boolean not null default true;
+alter table public.app_config add column if not exists prof_model text not null default 'claude-sonnet-5-5';
+alter table public.app_config add column if not exists default_ai_limit_cents int not null default 1000;
+alter table public.app_config add column if not exists prof_endpoint text;
+alter table public.app_config add column if not exists prof_seen_at timestamptz;
+alter table public.app_config add column if not exists livekit_url text;
+
+alter table public.profiles add column if not exists status text not null default 'active';
+alter table public.profiles add column if not exists plan text not null default 'free';
+alter table public.profiles add column if not exists ai_limit_cents int;
+do $$ begin
+  alter table public.profiles add constraint profiles_status_check check (status in ('pending', 'active', 'suspended'));
+exception when duplicate_object then null; end $$;
+
+-- The StudyBridge admin(s). The first tutor ever becomes the admin.
+create table if not exists public.platform_admins (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+insert into public.platform_admins (user_id)
+  select id from public.profiles where role = 'tutor' and not exists (select 1 from public.platform_admins)
+  order by created_at limit 1;
+
+-- Keys only the server uses (the Claude key for Prof, shared live-video keys). Nobody can read them back.
+create table if not exists public.platform_secrets (
+  id int primary key default 1 check (id = 1),
+  anthropic_api_key text,
+  livekit_api_key text,
+  livekit_api_secret text,
+  hook_secret text not null default encode(extensions.gen_random_bytes(24), 'hex')
+);
+insert into public.platform_secrets (id) values (1) on conflict do nothing;
+
+create or replace function public.is_platform_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.platform_admins where user_id = auth.uid())
+$$;
+
+-- An approved tutor (pending and paused tutors can't invite anyone or use Prof)
+create or replace function public._tutor_active(p_tutor uuid default null) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = coalesce(p_tutor, auth.uid()) and role = 'tutor' and status = 'active')
+$$;
+
 -- ---------------------------------------------------------------------
 -- Tutor-defined structure: programmes → subjects → topics
 -- ---------------------------------------------------------------------
@@ -337,6 +383,61 @@ create table if not exists public.tutor_secrets (
   livekit_api_secret text
 );
 
+alter table public.lessons add column if not exists draft boolean not null default false;
+alter table public.lessons add column if not exists source text not null default 'tutor';
+alter table public.claude_drafts add column if not exists source text not null default 'claude';
+
+-- What the StudyBridge admin did to an account (tutors see the entries about them)
+create table if not exists public.admin_log (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  admin_id uuid references public.profiles (id) on delete set null,
+  action text not null,
+  user_id uuid,
+  tutor_id uuid,
+  email text,
+  detail jsonb not null default '{}'
+);
+
+-- Prof, the AI teaching assistant (runs on the server; tutors only; makes drafts the tutor approves)
+create table if not exists public.prof_settings (
+  tutor_id uuid primary key references public.profiles (id) on delete cascade,
+  auto_mark boolean not null default false,
+  auto_create boolean not null default false,
+  auto_day int not null default 0 check (auto_day between 0 and 6),
+  auto_hour int not null default 17 check (auto_hour between 0 and 23),
+  auto_count int not null default 8 check (auto_count between 3 and 30),
+  auto_kind text not null default 'homework' check (auto_kind in ('homework', 'quiz')),
+  style_md text not null default '',
+  last_auto_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.prof_jobs (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null check (kind in ('ask', 'mark', 'auto')),
+  status text not null default 'queued' check (status in ('queued', 'running', 'done', 'failed', 'cancelled')),
+  prompt text not null default '',
+  context jsonb not null default '{}',
+  attempt_id uuid references public.attempts (id) on delete cascade,
+  state jsonb not null default '{}',
+  result jsonb not null default '{}',
+  progress text,
+  error text,
+  model text,
+  input_tokens int not null default 0,
+  output_tokens int not null default 0,
+  cost_cents numeric not null default 0,
+  steps int not null default 0,
+  lease_until timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  finished_at timestamptz
+);
+create index if not exists idx_prof_jobs_tutor on public.prof_jobs (tutor_id, created_at desc);
+create index if not exists idx_prof_jobs_status on public.prof_jobs (status, created_at);
+
 -- Tests and exams: questions stay hidden until the learner starts an attempt.
 create or replace function public._questions_open(p_assignment uuid) returns boolean
 language sql stable security definer set search_path = public as $$
@@ -365,6 +466,12 @@ revoke update on public.profiles from authenticated;
 grant update (display_name, timezone, avatar_color) on public.profiles to authenticated;
 revoke insert, update, delete on public.app_config from anon, authenticated;
 revoke all on public.tutor_secrets from anon, authenticated;
+revoke all on public.platform_secrets from anon, authenticated;
+revoke all on public.platform_admins from anon, authenticated;
+revoke insert, update, delete on public.admin_log from anon, authenticated;
+revoke insert, update, delete on public.prof_jobs from anon, authenticated;
+grant all on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to service_role;
 
 alter table public.profiles enable row level security;
 alter table public.programmes enable row level security;
@@ -387,6 +494,11 @@ alter table public.notifications enable row level security;
 alter table public.tutor_settings enable row level security;
 alter table public.tutor_secrets enable row level security;
 alter table public.app_config enable row level security;
+alter table public.platform_admins enable row level security;
+alter table public.platform_secrets enable row level security;
+alter table public.admin_log enable row level security;
+alter table public.prof_settings enable row level security;
+alter table public.prof_jobs enable row level security;
 
 -- (re)create policies
 do $$
@@ -413,7 +525,10 @@ create policy topics_learner on public.topics for select using (tutor_id = publi
 create policy learner_subjects_tutor on public.learner_subjects for all
   using (tutor_id = auth.uid()) with check (tutor_id = auth.uid() and public.is_my_learner(learner_id));
 create policy learner_subjects_self on public.learner_subjects for select using (learner_id = auth.uid());
-create policy invites_tutor on public.invites for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+create policy invites_tutor_read on public.invites for select using (tutor_id = auth.uid());
+create policy invites_tutor_write on public.invites for insert with check (tutor_id = auth.uid() and public._tutor_active());
+create policy invites_tutor_update on public.invites for update using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+create policy invites_tutor_delete on public.invites for delete using (tutor_id = auth.uid());
 
 -- library + lessons: learners only see what is released to them
 create policy files_tutor on public.files for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
@@ -421,7 +536,7 @@ create policy files_learner on public.files for select
   using (public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
 create policy lessons_tutor on public.lessons for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
 create policy lessons_learner on public.lessons for select
-  using (public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
+  using (not draft and public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
 
 -- assignments + questions
 create policy assignments_tutor on public.assignments for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
@@ -458,6 +573,12 @@ create policy notifications_mark on public.notifications for update using (user_
 
 create policy app_config_read on public.app_config for select using (auth.uid() is not null);
 create policy settings_tutor on public.tutor_settings for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+
+-- The admin log: admins read everything in it; a tutor reads what was done to their own account or learners
+create policy admin_log_read on public.admin_log for select
+  using (public.is_platform_admin() or tutor_id = auth.uid() or user_id = auth.uid());
+create policy prof_settings_tutor on public.prof_settings for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+create policy prof_jobs_tutor on public.prof_jobs for select using (tutor_id = auth.uid());
 
 -- ---------------------------------------------------------------------
 -- Notifications (+ phone push through ntfy.sh when pg_net is available)
@@ -517,27 +638,45 @@ $$;
 -- ---------------------------------------------------------------------
 create or replace function public.become_tutor(p_name text, p_timezone text default 'UTC')
 returns public.profiles language plpgsql security definer set search_path = public as $$
-declare v public.profiles;
+declare
+  v public.profiles;
+  v_first boolean;
+  a uuid;
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into v from public.profiles where id = auth.uid();
   if v.role = 'learner' then raise exception 'This account is a learner account.'; end if;
-  if v.role is null and exists (select 1 from public.profiles where role = 'tutor' and id <> auth.uid())
-     and not (select allow_new_tutors from public.app_config where id = 1) then
-    raise exception 'This StudyBridge is private. Only its owner can be a tutor here. If you were invited as a learner, use your invite.';
+  if v.role = 'tutor' then
+    update public.profiles set display_name = coalesce(nullif(trim(p_name), ''), display_name) where id = auth.uid() returning * into v;
+    return v;
+  end if;
+  -- The very first tutor is the StudyBridge admin; everyone after waits for the admin's approval.
+  v_first := not exists (select 1 from public.platform_admins);
+  if not v_first and not (select tutor_signups_open from public.app_config where id = 1) then
+    raise exception 'StudyBridge isn’t taking new tutors right now.';
   end if;
   update public.profiles
-     set role = 'tutor', display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone)
+     set role = 'tutor', status = case when v_first then 'active' else 'pending' end,
+         display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone)
    where id = auth.uid() returning * into v;
   insert into public.tutor_settings (tutor_id) values (auth.uid()) on conflict do nothing;
+  if v_first then
+    insert into public.platform_admins (user_id) values (auth.uid()) on conflict do nothing;
+  else
+    for a in select user_id from public.platform_admins loop
+      perform public.notify_user(a, 'tutor_signup', 'New tutor waiting: ' || v.display_name,
+        coalesce(v.email, '') || ' wants to teach on StudyBridge. Approve them in Admin.', jsonb_build_object('user_id', v.id));
+    end loop;
+  end if;
   return v;
 end $$;
 
+-- (older apps call this) open or close tutor sign-ups
 create or replace function public.set_allow_new_tutors(p_allow boolean)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  if public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
-  update public.app_config set allow_new_tutors = p_allow where id = 1;
+  if not public.is_platform_admin() then raise exception 'StudyBridge admins only.'; end if;
+  update public.app_config set tutor_signups_open = p_allow, allow_new_tutors = p_allow where id = 1;
 end $$;
 
 create or replace function public.accept_invite(p_code text, p_name text, p_timezone text default 'UTC')
@@ -552,6 +691,7 @@ begin
   if inv.accepted_by is not null and inv.accepted_by <> auth.uid() then raise exception 'That invite has already been used.'; end if;
   select * into v from public.profiles where id = auth.uid();
   if v.role = 'tutor' then raise exception 'Tutor accounts cannot join as learners.'; end if;
+  if not public._tutor_active(inv.tutor_id) then raise exception 'This invite can’t be used right now. Ask your tutor.'; end if;
   update public.profiles
      set role = 'learner', tutor_id = inv.tutor_id, programme_id = inv.programme_id,
          display_name = coalesce(nullif(trim(p_name), ''), nullif(inv.name, ''), display_name),
@@ -1114,6 +1254,11 @@ begin
   select s.livekit_url, k.livekit_api_key, k.livekit_api_secret into v_url, v_key, v_secret
     from public.tutor_settings s left join public.tutor_secrets k on k.tutor_id = s.tutor_id where s.tutor_id = v_tutor;
   if v_url is null or v_key is null or v_secret is null then
+    -- the tutor hasn't added their own: use StudyBridge's shared live video, if the admin set it up
+    select c.livekit_url, ps.livekit_api_key, ps.livekit_api_secret into v_url, v_key, v_secret
+      from public.app_config c, public.platform_secrets ps where c.id = 1 and ps.id = 1;
+  end if;
+  if v_url is null or v_key is null or v_secret is null then
     raise exception 'Live video is not set up yet. The tutor adds the LiveKit keys in Settings.';
   end if;
   select display_name into v_name from public.profiles where id = auth.uid();
@@ -1125,10 +1270,16 @@ end $$;
 
 create or replace function public.live_status()
 returns jsonb language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('configured', exists (
-    select 1 from public.tutor_settings s join public.tutor_secrets k on k.tutor_id = s.tutor_id
-     where s.tutor_id = public.my_tutor() and s.livekit_url is not null and k.livekit_api_key is not null and k.livekit_api_secret is not null),
-    'url', (select livekit_url from public.tutor_settings where tutor_id = public.my_tutor()))
+  select jsonb_build_object(
+    'configured', own or shared,
+    'own', own,
+    'shared', shared,
+    'url', coalesce((select livekit_url from public.tutor_settings where tutor_id = public.my_tutor()), (select livekit_url from public.app_config where id = 1)))
+  from (select
+    exists (select 1 from public.tutor_settings s join public.tutor_secrets k on k.tutor_id = s.tutor_id
+             where s.tutor_id = public.my_tutor() and s.livekit_url is not null and k.livekit_api_key is not null and k.livekit_api_secret is not null) as own,
+    exists (select 1 from public.app_config c, public.platform_secrets ps
+             where c.id = 1 and ps.id = 1 and c.livekit_url is not null and ps.livekit_api_key is not null and ps.livekit_api_secret is not null) as shared) x
 $$;
 
 -- Who an item is for: chosen learners, else everyone taking the subject, else all the tutor's learners
@@ -1178,7 +1329,7 @@ drop trigger if exists assignments_published on public.assignments;
 create trigger assignments_published after insert or update of visibility, draft on public.assignments
   for each row execute function public.on_published();
 drop trigger if exists lessons_published on public.lessons;
-create trigger lessons_published after insert or update of visibility on public.lessons
+create trigger lessons_published after insert or update of visibility, draft on public.lessons
   for each row execute function public.on_published();
 
 -- Notify a learner when a session is scheduled for them
@@ -1196,7 +1347,518 @@ end $$;
 drop trigger if exists sessions_notify on public.sessions;
 create trigger sessions_notify after insert on public.sessions for each row execute function public.on_session_created();
 
+-- =====================================================================
+-- StudyBridge admin console. Account details only: names, emails, status,
+-- sign-in dates, how many learners, storage and AI used. Never anyone's
+-- work, files, marks or messages. Every action is written to admin_log.
+-- =====================================================================
+create or replace function public._admin() returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_platform_admin() then raise exception 'StudyBridge admins only.'; end if;
+end $$;
+
+create or replace function public._admin_log(p_action text, p_user uuid, p_detail jsonb default '{}')
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_tutor uuid;
+  v_email text;
+begin
+  select case when role = 'tutor' then id else tutor_id end, email into v_tutor, v_email from public.profiles where id = p_user;
+  insert into public.admin_log (admin_id, action, user_id, tutor_id, email, detail)
+  values (auth.uid(), p_action, p_user, v_tutor, v_email, coalesce(p_detail, '{}'));
+end $$;
+
+-- Bytes of files a tutor's StudyBridge uses (their library + their learners' work)
+create or replace function public._storage_bytes(p_tutor uuid) returns bigint
+language plpgsql stable security definer set search_path = public as $$
+declare n bigint;
+begin
+  begin
+    execute $q$select coalesce(sum((o.metadata ->> 'size')::bigint), 0) from storage.objects o
+      where (o.bucket_id = 'library' and (storage.foldername(o.name))[1] = $1::text)
+         or (o.bucket_id = 'work' and (storage.foldername(o.name))[1] in (select id::text from public.profiles where tutor_id = $1))$q$
+      into n using p_tutor;
+  exception when others then n := null;
+  end;
+  return n;
+end $$;
+
+-- Prof's spending: this calendar month, and the tutor's monthly allowance
+create or replace function public._prof_month_cents(p_tutor uuid) returns numeric
+language sql stable security definer set search_path = public as $$
+  select coalesce(sum(cost_cents), 0) from public.prof_jobs where tutor_id = p_tutor and created_at >= date_trunc('month', now())
+$$;
+create or replace function public._prof_limit(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select coalesce((select ai_limit_cents from public.profiles where id = p_tutor), (select default_ai_limit_cents from public.app_config where id = 1))
+$$;
+
+create or replace function public.admin_tutors() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'status', p.status, 'plan', p.plan,
+      'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at,
+      'is_admin', exists (select 1 from public.platform_admins a where a.user_id = p.id),
+      'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+      'storage_bytes', public._storage_bytes(p.id),
+      'ai_cents', public._prof_month_cents(p.id),
+      'ai_limit_cents', public._prof_limit(p.id),
+      'ai_limit_custom', p.ai_limit_cents is not null
+    ) order by (p.status = 'pending') desc, p.created_at)
+    from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor'), '[]');
+end $$;
+
+-- A tutor's learners, or (no tutor) accounts that never finished signing up
+create or replace function public.admin_accounts(p_tutor uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((
+    select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'role', p.role,
+                                        'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at) order by p.display_name)
+    from public.profiles p left join auth.users u on u.id = p.id
+    where case when p_tutor is null then p.role is null else p.tutor_id = p_tutor and p.role = 'learner' end), '[]');
+end $$;
+
+-- Approve a waiting tutor, pause (suspend) one, or switch them back on
+create or replace function public.admin_set_status(p_user uuid, p_status text)
+returns void language plpgsql security definer set search_path = public as $$
+declare v public.profiles;
+begin
+  perform public._admin();
+  if p_status not in ('active', 'suspended') then raise exception 'Unknown status.'; end if;
+  if p_user = auth.uid() then raise exception 'You can’t change your own account here.'; end if;
+  select * into v from public.profiles where id = p_user;
+  if v.id is null or v.role is distinct from 'tutor' then raise exception 'That isn’t a tutor account.'; end if;
+  if v.status = p_status then return; end if;
+  update public.profiles set status = p_status where id = p_user;
+  -- a paused tutor can't sign in at all (their learners still can, and keep their past work)
+  begin
+    execute 'update auth.users set banned_until = $2 where id = $1'
+      using p_user, case when p_status = 'suspended' then now() + interval '100 years' end;
+  exception when others then raise notice 'could not change sign-in: %', sqlerrm;
+  end;
+  if p_status = 'suspended' then
+    begin
+      execute 'delete from auth.refresh_tokens where user_id = $1::text' using p_user;
+    exception when others then null;
+    end;
+    begin
+      execute 'delete from auth.sessions where user_id = $1' using p_user;
+    exception when others then null;
+    end;
+  end if;
+  if v.status = 'pending' and p_status = 'active' then
+    perform public.notify_user(p_user, 'approved', 'You’re approved!',
+      'Your StudyBridge tutor account is ready. Add your subjects, then invite your learners.', '{}');
+  end if;
+  perform public._admin_log(case when p_status = 'suspended' then 'paused' when v.status = 'pending' then 'approved' else 'switched_on' end, p_user);
+end $$;
+
+create or replace function public.admin_set_plan(p_user uuid, p_plan text, p_ai_limit_cents int default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if not exists (select 1 from public.profiles where id = p_user and role = 'tutor') then raise exception 'That isn’t a tutor account.'; end if;
+  if p_ai_limit_cents is not null and p_ai_limit_cents < 0 then raise exception 'The AI limit can’t be negative.'; end if;
+  update public.profiles set plan = coalesce(nullif(trim(p_plan), ''), plan), ai_limit_cents = p_ai_limit_cents where id = p_user;
+  perform public._admin_log('plan', p_user, jsonb_build_object('plan', p_plan, 'ai_limit_cents', p_ai_limit_cents));
+end $$;
+
+create or replace function public.admin_set_password(p_user uuid, p_password text)
+returns void language plpgsql security definer set search_path = public, extensions as $$
+begin
+  perform public._admin();
+  if length(coalesce(p_password, '')) < 6 then raise exception 'Use a password of at least 6 characters.'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'Account not found.'; end if;
+  update auth.users
+     set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf')),
+         email_confirmed_at = coalesce(email_confirmed_at, now())
+   where id = p_user;
+  perform public._admin_log('password_reset', p_user);
+end $$;
+
+-- Deletes an account. A tutor's learners and everything in that StudyBridge go with it. Can't be undone.
+create or replace function public.admin_delete_account(p_user uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v public.profiles;
+  n int := 0;
+begin
+  perform public._admin();
+  if p_user = auth.uid() then raise exception 'You can’t delete your own account here.'; end if;
+  select * into v from public.profiles where id = p_user;
+  if v.id is null then raise exception 'Account not found.'; end if;
+  if exists (select 1 from public.platform_admins where user_id = p_user) then raise exception 'That account is a StudyBridge admin.'; end if;
+  if v.role = 'tutor' then
+    select count(*) into n from public.profiles where tutor_id = p_user and role = 'learner';
+  end if;
+  perform public._admin_log('deleted', p_user, jsonb_build_object('role', v.role, 'name', v.display_name, 'learners', n));
+  if v.role = 'tutor' then
+    delete from auth.users where id in (select id from public.profiles where tutor_id = p_user and role = 'learner');
+  end if;
+  delete from public.invites where accepted_by = p_user;
+  delete from auth.users where id = p_user;
+  return jsonb_build_object('deleted', 1 + n);
+end $$;
+
+create or replace function public.admin_settings() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return (select jsonb_build_object(
+    'tutor_signups_open', c.tutor_signups_open, 'prof_model', c.prof_model, 'default_ai_limit_cents', c.default_ai_limit_cents,
+    'prof_key_set', s.anthropic_api_key is not null, 'prof_endpoint', c.prof_endpoint, 'prof_seen_at', c.prof_seen_at,
+    'livekit_url', c.livekit_url, 'livekit_set', s.livekit_api_key is not null and s.livekit_api_secret is not null,
+    'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
+    'pg_cron', exists (select 1 from pg_extension where extname = 'pg_cron'),
+    'ai_cents_month', (select coalesce(sum(cost_cents), 0) from public.prof_jobs where created_at >= date_trunc('month', now())))
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
+end $$;
+
+create or replace function public.admin_set_signups(p_open boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_config set tutor_signups_open = p_open where id = 1;
+end $$;
+
+-- Prof's Claude key (write-only: nobody can read it back), model and default monthly allowance per tutor
+create or replace function public.admin_set_prof(p_key text default null, p_model text default null, p_default_limit_cents int default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if nullif(trim(coalesce(p_key, '')), '') is not null then
+    if trim(p_key) !~ '^sk-ant-' then raise exception 'That doesn’t look like a Claude API key (they start with sk-ant-).'; end if;
+    update public.platform_secrets set anthropic_api_key = trim(p_key) where id = 1;
+  end if;
+  update public.app_config set prof_model = coalesce(nullif(trim(p_model), ''), prof_model),
+                               default_ai_limit_cents = coalesce(p_default_limit_cents, default_ai_limit_cents) where id = 1;
+end $$;
+
+-- Live video for every tutor who hasn't added their own LiveKit keys
+create or replace function public.admin_set_livekit(p_url text, p_key text, p_secret text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_config set livekit_url = nullif(trim(p_url), '') where id = 1;
+  update public.platform_secrets set livekit_api_key = coalesce(nullif(trim(p_key), ''), livekit_api_key),
+                                     livekit_api_secret = coalesce(nullif(trim(p_secret), ''), livekit_api_secret) where id = 1;
+end $$;
+
+-- =====================================================================
+-- Prof: the AI teaching assistant. Runs on the server (Supabase Edge
+-- Function "prof"). It only ever saves drafts; the tutor approves them.
+-- =====================================================================
+
+-- Wake the Prof server (needs pg_net and the server to have said hello once)
+create or replace function public._prof_kick() returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_url text;
+  v_secret text;
+begin
+  select prof_endpoint into v_url from public.app_config where id = 1;
+  select hook_secret into v_secret from public.platform_secrets where id = 1;
+  if v_url is null or not exists (select 1 from pg_extension where extname = 'pg_net') then return; end if;
+  begin
+    execute 'select net.http_post(url := $1, body := $2, headers := $3)'
+      using v_url, '{"action":"kick"}'::jsonb, jsonb_build_object('Content-Type', 'application/json', 'x-prof-secret', v_secret);
+  exception when others then
+    raise notice 'Prof kick failed: %', sqlerrm;
+  end;
+end $$;
+
+create or replace function public._prof_ready(p_tutor uuid) returns text
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._tutor_active(p_tutor) then return 'Prof is for approved tutors.'; end if;
+  if not exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null) then
+    return 'Prof isn’t switched on yet. (The StudyBridge admin adds the Claude key in Admin.)';
+  end if;
+  if public._prof_month_cents(p_tutor) >= public._prof_limit(p_tutor) then
+    return 'Prof has used this month’s allowance. It resets on the 1st.';
+  end if;
+  return null;
+end $$;
+
+create or replace function public.prof_ask(p_prompt text, p_context jsonb default '{}')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+  p jsonb;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  if length(trim(coalesce(p_prompt, ''))) < 3 then raise exception 'Tell Prof what to make.'; end if;
+  -- pages Prof should read must be in this tutor's own library folder
+  for p in select * from jsonb_array_elements(coalesce(p_context -> 'pages', '[]')) loop
+    if (p ->> 'path') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown page.'; end if;
+  end loop;
+  if jsonb_array_length(coalesce(p_context -> 'pages', '[]')) > 20 then raise exception 'Choose up to 20 pages.'; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'ask', left(trim(p_prompt), 4000), jsonb_build_object(
+    'learner_ids', coalesce(p_context -> 'learner_ids', '[]'), 'pages', coalesce(p_context -> 'pages', '[]')))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+-- Ask Prof to mark one submission now
+create or replace function public.prof_mark(p_attempt uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+begin
+  if not exists (select 1 from public.attempts where id = p_attempt and tutor_id = auth.uid() and status <> 'in_progress') then
+    raise exception 'Submission not found.';
+  end if;
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  select id into v_id from public.prof_jobs where attempt_id = p_attempt and status in ('queued', 'running');
+  if v_id is null then
+    insert into public.prof_jobs (tutor_id, kind, attempt_id, prompt) values (auth.uid(), 'mark', p_attempt, 'Mark this submission')
+    returning id into v_id;
+  end if;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+create or replace function public.prof_cancel(p_job uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.prof_jobs set status = 'cancelled', finished_at = now(), lease_until = null
+   where id = p_job and tutor_id = auth.uid() and status in ('queued', 'running')
+$$;
+
+create or replace function public.prof_retry(p_job uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_err text;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  update public.prof_jobs set status = 'queued', error = null, lease_until = null, state = '{}', steps = 0, result = '{}', progress = null
+   where id = p_job and tutor_id = auth.uid() and status in ('failed', 'cancelled');
+  perform public._prof_kick();
+end $$;
+
+create or replace function public.prof_usage() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('used_cents', public._prof_month_cents(auth.uid()), 'limit_cents', public._prof_limit(auth.uid()),
+    'ready', public._prof_ready(auth.uid()) is null, 'why_not', public._prof_ready(auth.uid()),
+    'server_seen_at', (select prof_seen_at from public.app_config where id = 1))
+$$;
+
+-- Auto-marking: when a learner hands in, Prof drafts the marks (if the tutor switched it on)
+create or replace function public.on_attempt_submitted() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.status = 'submitted' and old.status is distinct from 'submitted'
+     and exists (select 1 from public.prof_settings where tutor_id = new.tutor_id and auto_mark)
+     and public._prof_ready(new.tutor_id) is null
+     and exists (select 1 from public.questions where assignment_id = new.assignment_id and type in ('short', 'steps', 'upload', 'drawing'))
+     and not exists (select 1 from public.prof_jobs where attempt_id = new.id and status in ('queued', 'running')) then
+    insert into public.prof_jobs (tutor_id, kind, attempt_id, prompt) values (new.tutor_id, 'mark', new.id, 'Mark this submission');
+    perform public._prof_kick();
+  end if;
+  return new;
+end $$;
+drop trigger if exists attempts_prof_mark on public.attempts;
+create trigger attempts_prof_mark after update of status on public.attempts
+  for each row execute function public.on_attempt_submitted();
+
+-- Every minute (pg_cron): restart stuck jobs, start weekly auto-created work, wake the server
+create or replace function public.prof_tick() returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  s record;
+  l record;
+  v_local timestamp;
+begin
+  update public.prof_jobs
+     set status = case when steps >= 40 then 'failed' else 'queued' end,
+         error = case when steps >= 40 then 'Prof stopped: this took too many steps. Try asking for less at once.' else error end,
+         lease_until = null, finished_at = case when steps >= 40 then now() end
+   where status = 'running' and lease_until < now() - interval '30 seconds';
+  for s in select ps.*, p.timezone from public.prof_settings ps join public.profiles p on p.id = ps.tutor_id
+            where ps.auto_create and (ps.last_auto_at is null or ps.last_auto_at < now() - interval '6 days') loop
+    v_local := now() at time zone coalesce((select name from pg_timezone_names where name = s.timezone), 'UTC');
+    if extract(dow from v_local) = s.auto_day and extract(hour from v_local) >= s.auto_hour and public._prof_ready(s.tutor_id) is null then
+      for l in select id, display_name from public.profiles where tutor_id = s.tutor_id and role = 'learner' loop
+        insert into public.prof_jobs (tutor_id, kind, prompt, context) values (s.tutor_id, 'auto',
+          format('Make next week’s %s for %s: about %s questions, focused on the topics they find hardest and their recent mistakes. Due in 7 days, at the end of the day in their time zone.',
+                 s.auto_kind, l.display_name, s.auto_count),
+          jsonb_build_object('learner_ids', jsonb_build_array(l.id)));
+      end loop;
+      update public.prof_settings set last_auto_at = now() where tutor_id = s.tutor_id;
+    end if;
+  end loop;
+  if exists (select 1 from public.prof_jobs where status = 'queued' and (lease_until is null or lease_until < now())) then
+    perform public._prof_kick();
+  end if;
+end $$;
+
+-- ---------- called only by the Prof server (service role) ----------
+create or replace function public.prof_hello(p_endpoint text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  update public.app_config set prof_endpoint = coalesce(nullif(p_endpoint, ''), prof_endpoint), prof_seen_at = now() where id = 1;
+  return (select jsonb_build_object('model', c.prof_model, 'key', s.anthropic_api_key, 'secret', s.hook_secret)
+            from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
+end $$;
+
+-- Takes the next job (or a given one) for up to ~3 minutes
+create or replace function public.prof_claim(p_job uuid default null)
+returns setof public.prof_jobs language sql security definer set search_path = public as $$
+  update public.prof_jobs j set status = 'running', lease_until = now() + interval '170 seconds', updated_at = now()
+   where j.id = (select id from public.prof_jobs
+                  where status = 'queued' and (lease_until is null or lease_until < now()) and (p_job is null or id = p_job)
+                  order by created_at limit 1 for update skip locked)
+  returning j.*
+$$;
+
+create or replace function public.prof_save(p_job uuid, p_status text, p_state jsonb default null, p_result jsonb default null,
+  p_progress text default null, p_error text default null, p_input int default 0, p_output int default 0, p_cost numeric default 0,
+  p_model text default null, p_retry_in int default null, p_notify jsonb default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare j public.prof_jobs;
+begin
+  update public.prof_jobs
+     set status = case when status = 'cancelled' then status else p_status end,
+         state = coalesce(p_state, state), result = coalesce(p_result, result),
+         progress = coalesce(p_progress, progress), error = p_error,
+         input_tokens = input_tokens + coalesce(p_input, 0), output_tokens = output_tokens + coalesce(p_output, 0),
+         cost_cents = cost_cents + coalesce(p_cost, 0), model = coalesce(p_model, model),
+         steps = steps + case when coalesce(p_input, 0) > 0 then 1 else 0 end,
+         lease_until = case when p_retry_in is not null then now() + make_interval(secs => p_retry_in)
+                            when p_status = 'running' then lease_until end,
+         updated_at = now(), finished_at = case when p_status in ('done', 'failed') then now() end
+   where id = p_job returning * into j;
+  if j.status = p_status and p_notify is not null then
+    perform public.notify_user(j.tutor_id, 'prof', p_notify ->> 'title', p_notify ->> 'body',
+      coalesce(p_notify -> 'ref', '{}') || jsonb_build_object('job_id', j.id));
+  end if;
+end $$;
+
+-- What Prof knows when making work: subjects, topics, learners (with what they find hard), the tutor's style
+create or replace function public.prof_context(p_tutor uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'tutor', (select jsonb_build_object('name', display_name, 'timezone', timezone) from public.profiles where id = p_tutor),
+    'now', now(),
+    'style', coalesce((select style_md from public.prof_settings where tutor_id = p_tutor), ''),
+    'programmes', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'name', name)) from public.programmes where tutor_id = p_tutor), '[]'),
+    'subjects', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'name', name, 'programme_id', programme_id) order by position, name)
+                            from public.subjects where tutor_id = p_tutor), '[]'),
+    'topics', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'name', name, 'subject_id', subject_id) order by position, name)
+                          from public.topics where tutor_id = p_tutor), '[]'),
+    'learners', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', l.id, 'name', l.display_name, 'timezone', l.timezone,
+        'subject_ids', coalesce((select jsonb_agg(subject_id) from public.learner_subjects where learner_id = l.id), '[]'),
+        'topics_needing_work', coalesce((select jsonb_agg(jsonb_build_object('topic', z.name, 'score_pct', z.pct) order by z.pct) from (
+            select tp.name, round(100 * sum(r.marks) / nullif(sum(q.marks), 0)) as pct
+              from public.responses r
+              join public.questions q on q.id = r.question_id
+              join public.attempts t on t.id = r.attempt_id
+              join public.assignments a on a.id = t.assignment_id
+              join public.topics tp on tp.id = coalesce(q.topic_id, a.topic_id)
+             where r.learner_id = l.id and r.marks is not null and t.status in ('marked', 'returned')
+             group by tp.name having sum(q.marks) > 0) z where z.pct < 80), '[]'),
+        'recent_mistakes', coalesce((select jsonb_agg(m) from (
+            select r.mistake as m from public.responses r where r.learner_id = l.id and coalesce(r.mistake, '') <> ''
+             order by r.updated_at desc limit 10) x), '[]')
+      ) order by l.display_name) from public.profiles l where l.tutor_id = p_tutor and l.role = 'learner'), '[]')
+  )
+$$;
+
+-- Everything needed to mark one submission
+create or replace function public.prof_mark_context(p_attempt uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'attempt_id', t.id, 'tutor_id', t.tutor_id, 'learner_id', t.learner_id, 'learner', p.display_name,
+    'style', coalesce((select style_md from public.prof_settings where tutor_id = t.tutor_id), ''),
+    'assignment', jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'instructions', a.instructions_md),
+    'questions', coalesce((select jsonb_agg(jsonb_build_object(
+        'number', q.rn, 'question_id', q.id, 'type', q.type, 'prompt', q.prompt_md, 'options', q.options, 'max_marks', q.marks,
+        'answer_key', k.answer, 'mark_scheme', k.mark_scheme_md, 'model_solution', k.solution_md,
+        'learner_answer', r.answer, 'auto_marks', r.auto_marks) order by q.rn)
+      from (select qq.*, row_number() over (order by qq.position, qq.created_at) as rn from public.questions qq where qq.assignment_id = a.id) q
+      left join public.question_keys k on k.question_id = q.id
+      left join public.responses r on r.attempt_id = t.id and r.question_id = q.id), '[]'),
+    'learner_notes', coalesce((select jsonb_agg(jsonb_build_object('question_id', c.question_id, 'note', c.body))
+      from public.comments c where c.learner_id = t.learner_id and c.assignment_id = a.id and c.author_id = t.learner_id), '[]')
+  )
+  from public.attempts t join public.assignments a on a.id = t.assignment_id join public.profiles p on p.id = t.learner_id
+  where t.id = p_attempt
+$$;
+
+-- Files left behind by deleted accounts (the Prof server removes them)
+create or replace function public.prof_orphan_files() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r jsonb;
+begin
+  execute $q$select coalesce(jsonb_agg(jsonb_build_object('bucket', bucket_id, 'name', name)), '[]') from (
+      select bucket_id, name from storage.objects
+       where bucket_id in ('library', 'work')
+         and not exists (select 1 from public.profiles p where p.id::text = (storage.foldername(name))[1])
+       limit 500) x$q$ into r;
+  return r;
+end $$;
+
+-- Prof can only save drafts. Even with the server's key it can't post work, change marks or message anyone.
+create or replace function public._prof_guard() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if current_user = 'service_role' then
+    if tg_table_name in ('assignments', 'lessons') then
+      if not coalesce(new.draft, false) then raise exception 'Prof can only save drafts; the tutor approves them.'; end if;
+    elsif tg_table_name = 'questions' then
+      if not exists (select 1 from public.assignments where id = new.assignment_id and draft) then
+        raise exception 'Prof can only add questions to drafts.';
+      end if;
+    elsif tg_table_name = 'question_keys' then
+      if not exists (select 1 from public.questions q join public.assignments a on a.id = q.assignment_id where q.id = new.question_id and a.draft) then
+        raise exception 'Prof can only add answers to drafts.';
+      end if;
+    else
+      raise exception 'Prof can’t change marks or send messages; it saves suggestions for the tutor.';
+    end if;
+  end if;
+  return coalesce(new, old);
+end $$;
+do $$
+declare t text;
+begin
+  foreach t in array array['assignments', 'lessons', 'questions', 'question_keys'] loop
+    execute format('drop trigger if exists %I on public.%I', t || '_prof_guard', t);
+    execute format('create trigger %I before insert or update on public.%I for each row execute function public._prof_guard()', t || '_prof_guard', t);
+  end loop;
+  foreach t in array array['attempts', 'responses', 'comments', 'notifications', 'invites', 'profiles'] loop
+    execute format('drop trigger if exists %I on public.%I', t || '_prof_guard', t);
+    execute format('create trigger %I before insert or update or delete on public.%I for each row execute function public._prof_guard()', t || '_prof_guard', t);
+  end loop;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
+-- Only the Prof server may call these
+do $$
+declare f text;
+begin
+  foreach f in array array['prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
+                           'prof_context(uuid)', 'prof_mark_context(uuid)', 'prof_orphan_files()', 'prof_tick()', '_prof_kick()'] loop
+    execute format('revoke execute on function public.%s from public, anon, authenticated', f);
+    execute format('grant execute on function public.%s to service_role', f);
+  end loop;
+end $$;
+grant execute on all functions in schema public to service_role;
+revoke execute on function public._admin_log(text, uuid, jsonb) from public, anon, authenticated;
+revoke execute on function public._storage_bytes(uuid) from public, anon, authenticated;
+revoke execute on function public._prof_month_cents(uuid) from public, anon, authenticated;
 revoke execute on function public.notify_user(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
@@ -1241,13 +1903,22 @@ do $$
 declare t text;
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    foreach t in array array['notifications', 'comments', 'attempts', 'responses', 'assignments', 'sessions', 'claude_drafts'] loop
+    foreach t in array array['notifications', 'comments', 'attempts', 'responses', 'assignments', 'sessions', 'claude_drafts', 'prof_jobs', 'lessons'] loop
       begin
         execute format('alter publication supabase_realtime add table public.%I', t);
       exception when others then null;
       end;
     end loop;
   end if;
+end $$;
+
+-- Prof's minute-by-minute check (restarts stuck jobs, runs weekly auto-created work)
+do $$
+begin
+  create extension if not exists pg_cron;
+  perform cron.schedule('studybridge-prof', '* * * * *', 'select public.prof_tick()');
+exception when others then
+  raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;
 
 select 'StudyBridge database is ready' as status;

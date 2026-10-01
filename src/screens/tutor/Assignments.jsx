@@ -41,7 +41,7 @@ export default function Assignments() {
           { value: 'quiz', label: 'Quizzes' },
           { value: 'test', label: 'Tests' },
           { value: 'exam', label: 'Exams' },
-          ...(drafts ? [{ value: 'drafts', label: `From Claude (${drafts})` }] : []),
+          ...(drafts ? [{ value: 'drafts', label: `Drafts (${drafts})` }] : []),
         ]}
       />
       {q.data && list.length === 0 ? (

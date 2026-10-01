@@ -2,14 +2,15 @@ import { useState } from 'react';
 import { useApp } from '../App.jsx';
 import Icon, { Logo } from '../ui/Icon.jsx';
 import { Field, useToast, copyText } from '../ui/kit.jsx';
-import { decodeInvite, validateServer, normaliseUrl, getServer, desktop } from '../lib/config.js';
+import { decodeInvite, validateServer, normaliseUrl, getServer, desktop, builtInServer } from '../lib/config.js';
 import { sb, friendly } from '../lib/supabase.js';
 import * as api from '../lib/api.js';
 import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
   const app = useApp();
-  const [step, setStep] = useState(app.server ? 'signin' : 'start');
+  // First time on this device: choose tutor / learner / sign in. After that: straight to sign in.
+  const [step, setStep] = useState(app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start');
   const [role, setRole] = useState(null);
 
   return (
@@ -26,13 +27,13 @@ export default function Welcome() {
         </div>
         {step === 'start' && (
           <div className="stack">
-            <button className="choice" onClick={() => (setRole('tutor'), setStep('server'))}>
+            <button className="choice" onClick={() => (setRole('tutor'), setStep(app.server ? 'account' : 'server'))}>
               <span className="ic">
                 <Icon name="pen" size={24} />
               </span>
               <span className="grow">
-                <div className="t">I’m the tutor</div>
-                <div className="s">Set up StudyBridge, add subjects and invite learners.</div>
+                <div className="t">I’m a tutor</div>
+                <div className="s">Teach on StudyBridge: add your subjects and invite your learners.</div>
               </span>
               <Icon name="right" />
             </button>
@@ -46,11 +47,16 @@ export default function Welcome() {
               </span>
               <Icon name="right" />
             </button>
+            {app.server && (
+              <button className="linkbtn" style={{ alignSelf: 'center', marginTop: 6 }} onClick={() => setStep('signin')}>
+                I already have an account: sign in
+              </button>
+            )}
           </div>
         )}
         {step === 'server' && <ServerSetup onBack={() => setStep('start')} onDone={() => setStep('account')} />}
         {step === 'invite' && <InviteStep onBack={() => setStep('start')} onDone={() => setStep('account')} />}
-        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? 'server' : 'invite')} />}
+        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : 'invite')} />}
         {step === 'signin' && (
           <SignIn
             onNewLearner={() => (setRole('learner'), setStep('invite'))}
@@ -59,6 +65,7 @@ export default function Welcome() {
               app.setServer(null);
               setStep('start');
             }}
+            onStart={() => setStep('start')}
           />
         )}
       </div>
@@ -224,6 +231,7 @@ function Account({ role, onBack }) {
         if (inv) await api.acceptInvite(inv.code, name.trim());
         sessionStorage.removeItem('sb.pendingInvite');
       }
+      localStorage.setItem('sb.seen', '1');
       await app.signedIn(user);
     } catch (x) {
       setErr(x.message);
@@ -235,6 +243,7 @@ function Account({ role, onBack }) {
   return (
     <form className="card" onSubmit={go}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : 'Your account'}</h2>
+      {role === 'tutor' && mode === 'new' && <div className="note small">New tutor accounts are checked and approved by StudyBridge. You can set up your subjects straight away; you can invite learners once you’re approved.</div>}
       <div className="seg">
         <button type="button" aria-pressed={mode === 'new'} onClick={() => setMode('new')}>
           New account
@@ -267,7 +276,7 @@ function Account({ role, onBack }) {
   );
 }
 
-function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
+function SignIn({ onNewLearner, onNewTutor, onChangeServer, onStart }) {
   const app = useApp();
   const [forgot, setForgot] = useState(false);
   const [email, setEmail] = useState('');
@@ -280,6 +289,7 @@ function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
     setErr('');
     try {
       const d = await api.signIn(email, pw);
+      localStorage.setItem('sb.seen', '1');
       await app.signedIn(d.user);
     } catch (x) {
       setErr(x.message);
@@ -313,7 +323,7 @@ function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
           <div className="note small">
             <b>Learners:</b> ask your tutor. They can set a new password for you in StudyBridge (Learners → your name → Account), and you can change it afterwards in Settings.
             <br />
-            <b>Tutor:</b> reset it from the Supabase SQL Editor (the setup guide has the one-line command).
+            <b>Tutors:</b> {builtInServer ? 'ask StudyBridge: the admin can set a new password for you.' : 'reset it from the Supabase SQL Editor (the setup guide has the one-line command).'}
           </div>
         )}
         <hr />
@@ -322,14 +332,16 @@ function SignIn({ onNewLearner, onNewTutor, onChangeServer }) {
             New learner? <button type="button" className="linkbtn" onClick={onNewLearner}>Join with an invite</button>
           </div>
           <div>
-            Setting up as the tutor? <button type="button" className="linkbtn" onClick={onNewTutor}>Create the tutor account</button>
+            Teaching on StudyBridge? <button type="button" className="linkbtn" onClick={onNewTutor}>Create a tutor account</button>
           </div>
-          <div className="muted tiny" style={{ marginTop: 6 }}>
-            Connected to {new URL(app.server.url).host}.{' '}
-            <button type="button" className="linkbtn" onClick={onChangeServer}>
-              Change
-            </button>
-          </div>
+          {!builtInServer && (
+            <div className="muted tiny" style={{ marginTop: 6 }}>
+              Connected to {new URL(app.server.url).host}.{' '}
+              <button type="button" className="linkbtn" onClick={onChangeServer}>
+                Change
+              </button>
+            </div>
+          )}
           {!desktop && <div className="muted tiny">Tip: add this page to your home screen to use StudyBridge like an app.</div>}
         </div>
       </form>

@@ -1,5 +1,17 @@
 name: Build
 
+# Every push to main: test everything, build the Windows and Mac apps and the
+# web version, update the StudyBridge database and the Prof server, and publish
+# the release that installed apps update themselves from.
+#
+# Settings it uses (GitHub → this repo → Settings → Secrets and variables → Actions).
+# Anything missing is skipped, so the build still works without them.
+#   Variables:  SUPABASE_URL, SUPABASE_ANON_KEY   (built into the apps; both are public)
+#               RELEASES_REPO                     (optional, default aaryanc-1/studybridge-releases)
+#   Secrets:    SUPABASE_DB_URL                   (runs setup.sql on every release)
+#               SUPABASE_ACCESS_TOKEN             (deploys the Prof server)
+#               RELEASES_TOKEN                    (publishes updates to the public releases repo)
+
 on:
   push:
     branches: [main]
@@ -8,6 +20,10 @@ on:
 
 permissions:
   contents: write
+
+env:
+  VERSION: 1.1.${{ github.run_number }}
+  RELEASES_REPO: ${{ vars.RELEASES_REPO || 'aaryanc-1/studybridge-releases' }}
 
 jobs:
   test:
@@ -22,11 +38,15 @@ jobs:
       - run: npm ci
         working-directory: connector
       - run: npx playwright install --with-deps chromium
-      - name: Database, server, maths checker and Claude connector tests
+      - name: Database, server, Prof, maths checker and Claude connector tests
         run: npm test
       - run: npm run build
       - name: Full walkthrough in the browser (tutor + learner + phone + offline)
         run: node test/walkthrough.mjs
+        env:
+          SHOTS: screenshots
+      - name: StudyBridge as a product (sign-up approval, admin, Prof)
+        run: node test/product.mjs
         env:
           SHOTS: screenshots
       - name: PDFs draw their text (browser + desktop)
@@ -35,22 +55,40 @@ jobs:
           node node_modules/electron/install.js
           ELECTRON=1 xvfb-run -a node test/pdf-render.mjs
       - name: Desktop lockdown check (Electron)
-        run: |
-          node node_modules/electron/install.js
-          xvfb-run -a node test/electron-lockdown.mjs
+        run: xvfb-run -a node test/electron-lockdown.mjs
         env:
           SHOTS: screenshots
-      - name: Web version (for your phone)
-        run: cd dist && zip -qr ../StudyBridge-web.zip .
+      - name: Desktop updates check (Electron)
+        run: xvfb-run -a node test/electron-update.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshots
           path: screenshots
+
+  # The app's screens as an update file, plus the web version (for phones)
+  bundle:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+      - run: npm run build
+        env:
+          VITE_SB_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SB_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          VITE_APP_VERSION: ${{ env.VERSION }}
+      - run: node scripts/pack-bundle.mjs "$VERSION" out
+      - run: cd dist && zip -qr ../out/StudyBridge-web.zip .
       - uses: actions/upload-artifact@v4
         with:
-          name: studybridge-web
-          path: StudyBridge-web.zip
+          name: studybridge-bundle
+          path: out/*
 
   build:
     needs: test
@@ -66,9 +104,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm version "${{ env.VERSION }}" --no-git-tag-version --allow-same-version
+      - name: Where installed apps look for updates
+        run: node -e "require('fs').writeFileSync('electron/build-config.json', JSON.stringify({ updateUrl: 'https://github.com/${{ env.RELEASES_REPO }}/releases/latest/download/', bundleVersion: '${{ env.VERSION }}' }))"
       - run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          VITE_SB_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SB_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          VITE_APP_VERSION: ${{ env.VERSION }}
       - uses: actions/upload-artifact@v4
         with:
           name: studybridge-${{ runner.os }}
@@ -78,23 +122,63 @@ jobs:
             build/studybridge.mcpb
           if-no-files-found: error
 
+  # Keep the database and the Prof server in step with the apps
+  server:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SB_URL: ${{ vars.SUPABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the database (setup.sql is safe to re-run)
+        if: env.DB_URL != ''
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >/dev/null
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/setup.sql
+      - name: Deploy the Prof server
+        if: env.SUPABASE_ACCESS_TOKEN != '' && env.SB_URL != ''
+        run: |
+          REF=$(echo "$SB_URL" | sed -E 's#https?://([a-z0-9]+)\.supabase\.co.*#\1#')
+          npx -y supabase@latest functions deploy prof --project-ref "$REF" --no-verify-jwt --use-api
+
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: [build, bundle, server]
     runs-on: ubuntu-latest
+    env:
+      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          path: out
-      - name: Publish the latest build
+          path: art
+      - name: Gather the files
+        run: |
+          mkdir out
+          find art -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.sbz' -o -name 'StudyBridge-web.zip' \) -exec cp {} out/ \;
+          cp "$(find art -name 'studybridge.mcpb' | head -1)" out/StudyBridge-for-Claude.mcpb
+          NOTES="Built from ${GITHUB_SHA::7}" node scripts/make-manifest.mjs "$VERSION" out
+          ls -la out
+      - name: Latest build (this repo)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          files=$(find out -type f \( -name '*.exe' -o -name '*.dmg' -o -name 'StudyBridge-web.zip' \))
-          mcpb=$(find out -name 'studybridge.mcpb' | head -1)
-          cp "$mcpb" "out/StudyBridge-for-Claude.mcpb"
           gh release delete latest-build --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes || true
-          gh release create latest-build $files out/StudyBridge-for-Claude.mcpb \
+          gh release create latest-build out/* \
             --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --prerelease \
-            --title "StudyBridge (latest build)" \
-            --notes "Built from $(echo ${GITHUB_SHA} | cut -c1-7). Windows: StudyBridge-Setup-*.exe. Mac: the .dmg for your chip (arm64 = Apple silicon, x64 = Intel). Phone: StudyBridge-web.zip (see the setup guide). The Claude connector is also inside the desktop app (Settings → Claude)."
+            --title "StudyBridge ${VERSION} (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Windows: StudyBridge-Setup-*.exe. Mac: the .dmg for your chip (arm64 = Apple silicon, x64 = Intel). Phone: StudyBridge-web.zip. Installed apps update themselves."
+      - name: Publish the update (public releases repo)
+        if: env.RELEASES_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.RELEASES_TOKEN }}
+        run: |
+          gh release create "v${VERSION}" out/* --repo "$RELEASES_REPO" --latest \
+            --title "StudyBridge ${VERSION}" \
+            --notes "Download StudyBridge: Windows → StudyBridge-Setup-${VERSION}.exe · Mac (Apple silicon) → StudyBridge-${VERSION}-arm64.dmg · Mac (Intel) → StudyBridge-${VERSION}-x64.dmg. Installed apps update themselves."

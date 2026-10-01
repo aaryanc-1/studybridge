@@ -407,7 +407,7 @@ function EditLearner({ l, onClose, onRemove }) {
 
 // Easy-to-read temporary passwords, e.g. "Mango-River-47"
 const WORDS = ['Mango', 'River', 'Tiger', 'Cloud', 'Maple', 'Comet', 'Zebra', 'Lemon', 'Otter', 'Pixel', 'Rocket', 'Sunny', 'Violet', 'Panda', 'Ocean', 'Falcon'];
-function easyPassword() {
+export function easyPassword() {
   const r = (n) => Math.floor((crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32) * n);
   return `${WORDS[r(WORDS.length)]}-${WORDS[r(WORDS.length)]}-${10 + r(90)}`;
 }

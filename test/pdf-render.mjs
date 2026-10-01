@@ -48,7 +48,7 @@ page.on('console', (m) => /warn|error/.test(m.type()) && warnings.push(m.text())
 let failed = false;
 try {
   if (!inApp) await page.goto(`http://127.0.0.1:${web.address().port}/`);
-  await page.evaluate(([u, k]) => localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), [srv.url, srv.anonKey]);
+  await page.evaluate(([u, k]) => (localStorage.setItem('sb.server', JSON.stringify({ url: u, key: k })), localStorage.setItem('sb.seen', '1')), [srv.url, srv.anonKey]);
   await page.reload();
   await page.getByLabel('Email').fill('tutor@example.com');
   await page.getByLabel('Password').fill('secret123');

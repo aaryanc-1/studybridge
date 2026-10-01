@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, shell, session, desktopCapturer, systemPreferences, dialog, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { createUpdater } = require('./updater.cjs');
 
 if (process.env.SB_USER_DATA) app.setPath('userData', process.env.SB_USER_DATA);
 if (process.platform === 'win32') app.setAppUserModelId('app.studybridge.desktop');
@@ -16,6 +17,8 @@ let tray = null;
 let quitting = false;
 let keepInBackground = false;
 const lock = { on: false, attempt: null, lastBlur: 0 };
+const updater = createUpdater({ getWindow: () => win, isLocked: () => lock.on });
+let startFile = null;
 
 function resource(name) {
   return app.isPackaged ? path.join(process.resourcesPath, name) : path.join(__dirname, '..', 'build', name);
@@ -44,7 +47,7 @@ function createWindow() {
   });
 
   if (process.env.SB_DEV_URL) win.loadURL(process.env.SB_DEV_URL);
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  else win.loadFile(startFile || (startFile = updater.startPage()));
 
   // Links open in the normal browser; the app never navigates away from itself
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -179,6 +182,7 @@ app.whenReady().then(() => {
     }
   });
   createWindow();
+  updater.start();
 });
 
 app.on('window-all-closed', () => {
@@ -188,8 +192,12 @@ app.on('activate', () => showWindow());
 
 // ---------- IPC ----------
 ipcMain.on('app:info', (e) => {
-  e.returnValue = { version: app.getVersion(), platform: process.platform, desktop: true };
+  e.returnValue = { version: app.getVersion(), platform: process.platform, desktop: true, updatesOn: updater.enabled };
 });
+ipcMain.handle('update:get', () => updater.status());
+ipcMain.handle('update:check', () => updater.check());
+ipcMain.handle('update:apply', () => updater.apply());
+ipcMain.handle('update:ok', () => updater.confirm());
 ipcMain.handle('app:focus', () => showWindow());
 ipcMain.handle('app:badge', (_e, n) => {
   try {
