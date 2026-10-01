@@ -124,9 +124,9 @@ try {
   await nav(A, 'Prof').click();
   await A.getByRole('heading', { name: 'Ask Prof' }).waitFor();
   await A.getByLabel('What should Prof make?').fill('A 5 question quiz on linear equations for Anaya from this page, due Friday');
-  await A.getByRole('button', { name: 'Use pages from my library' }).click();
+  await A.getByRole('button', { name: 'Use a book from my library' }).click();
   await A.getByRole('textbox', { name: 'Pages' }).fill('1');
-  await A.getByRole('button', { name: 'Add pages' }).click();
+  await A.getByRole('button', { name: 'Add these pages' }).click();
   await A.getByText(/Algebra chapter 3\.pdf: page 1/).waitFor();
   await A.getByRole('button', { name: 'Ask Prof' }).click();
   await A.getByText('Prof is on it').waitFor();
@@ -143,6 +143,31 @@ try {
   await A.getByText(/Posted/).first().waitFor();
   const visible = (await lc.from('assignments').select('title')).data;
   assert.deepEqual(visible.map((x) => x.title), ['Linear equations quiz']);
+
+  step('Tutor gives Prof the whole book (no page numbers): the app sends the pages Prof asks for');
+  await nav(A, 'Prof').click();
+  await A.getByLabel('What should Prof make?').fill('Homework on linear equations from the book');
+  await A.getByRole('button', { name: 'Use a book from my library' }).click();
+  await A.getByRole('button', { name: 'Add the book' }).click();
+  await A.getByText(/Algebra chapter 3\.pdf: Prof finds the pages/).waitFor();
+  const before = seen.length;
+  await A.getByRole('button', { name: 'Ask Prof' }).click();
+  const bookJob = A.locator('.prof-job', { hasText: 'Homework on linear equations from the book' });
+  await bookJob.getByRole('link', { name: /Linear equations quiz · 5 questions/ }).waitFor({ timeout: 45000 });
+  const looked = seen.slice(before).find((x) => x.body.messages.length === 3 && x.body.tools.some((t) => t.name === 'look_at_pages'));
+  assert.ok(looked, 'Prof asked for pages and got them');
+  const tr = looked.body.messages[2].content.find((b) => b.type === 'tool_result');
+  assert.ok(tr.content.filter((b) => b.type === 'image').length >= 1, 'the app sent pictures of the pages');
+  await shot(A, 'prof-whole-book');
+
+  step('Tutor replies to Prof under its answer');
+  await bookJob.getByRole('button', { name: 'Reply to Prof' }).click();
+  await bookJob.getByLabel('Reply to Prof').fill('Make questions 4 and 5 harder');
+  await bookJob.getByRole('button', { name: 'Send' }).click();
+  await A.getByText('Sent to Prof').waitFor();
+  const replyJob = A.locator('.prof-job', { hasText: 'Make questions 4 and 5 harder' });
+  await replyJob.getByText(/↳ Reply to “Homework on linear equations/).waitFor();
+  await replyJob.getByRole('link', { name: /Linear equations quiz/ }).waitFor({ timeout: 45000 });
 
   step('Tutor switches on auto-marking');
   await nav(A, 'Prof').click();

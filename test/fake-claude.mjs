@@ -23,7 +23,11 @@ export async function startFakeClaude() {
       mode = 'ok';
       return send(529, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } });
     }
-    send(200, reply(body));
+    try {
+      send(200, reply(body));
+    } catch (e) {
+      send(500, { type: 'error', error: { type: 'api_error', message: 'stand-in Claude: ' + e.message } });
+    }
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
@@ -53,17 +57,26 @@ function reply(body) {
       ],
     };
   }
-  // making work: start → questions → questions → finish
+  // making work: (look at book pages →) start → questions → questions → finish
   const last = body.messages[body.messages.length - 1];
-  const step = body.messages.filter((m) => m.role === 'assistant').length;
+  const looks = body.tools.some((t) => t.name === 'look_at_pages');
+  const asked = body.messages.filter((m) => m.role === 'assistant').length;
+  if (looks && asked === 0) {
+    const fid = body.messages[0].content[0].text.match(/file_id ([0-9a-f-]{36})/)[1];
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [{ type: 'text', text: 'Let me read the chapter.' }, tu('look_at_pages', { file_id: fid, pages: [1, 2], why: 'linear equations' })] };
+  }
+  const step = asked - (looks ? 1 : 0);
   const lastResult = Array.isArray(last.content) ? last.content.find((b) => b.type === 'tool_result') : null;
   if (step === 0) {
     const sys = body.system[0].text;
     const subj = JSON.parse(sys.slice(sys.indexOf('{"programmes"'))).subjects[0];
     const learner = JSON.parse(sys.slice(sys.indexOf('{"programmes"'))).learners[0];
-    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [{ type: 'text', text: 'I will make the quiz.' }, tu('start_assignment', { title: 'Linear equations quiz', kind: 'quiz', subject_id: subj.id, learner_ids: [learner.id], due_at: '2026-10-09T20:00:00+02:00' })] };
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [{ type: 'text', text: 'I will make the quiz.' }, tu('start_assignment', { title: 'Linear equations quiz', kind: 'quiz', subject_id: subj?.id, learner_ids: learner ? [learner.id] : undefined, due_at: '2026-10-09T20:00:00+02:00' })] };
   }
-  const aid = JSON.parse(body.messages[2].content[0].content).assignment_id;
+  const aid = body.messages
+    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    .filter((b) => b.type === 'tool_result' && typeof b.content === 'string' && b.content.includes('assignment_id'))
+    .map((b) => JSON.parse(b.content).assignment_id)[0];
   if (step === 1) {
     return {
       role: 'assistant',

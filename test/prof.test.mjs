@@ -158,3 +158,53 @@ test('Prof tidies files left behind by deleted accounts', async () => {
   const now = await srv.db.query(`select count(*)::int n from storage.objects where name like $1`, [`${learner}/%`]);
   assert.equal(now.rows[0].n, 0);
 });
+
+test('Prof reads a whole book (asks the app for pages) and takes replies', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const me = (await T.auth.getUser()).data.user.id;
+  await q(T.rpc('admin_set_plan', { p_user: me, p_plan: 'free', p_ai_limit_cents: 100000 }));
+  const path = `${me}/files/book.pdf`;
+  await q(T.storage.from('library').upload(path, new Uint8Array([37, 80, 68, 70]), { contentType: 'application/pdf' }));
+  const book = await q(T.from('files').insert({ name: 'Algebra book.pdf', storage_path: path, mime: 'application/pdf' }).select().single());
+  const bad = await T.rpc('prof_ask', { p_prompt: 'quiz', p_context: { books: [{ file_id: '00000000-0000-0000-0000-000000000000', name: 'x', pages: 3 }] } });
+  assert.match(bad.error.message, /Unknown book/);
+  const job = await q(T.rpc('prof_ask', { p_prompt: 'Homework from the linear equations chapter', p_context: { books: [{ file_id: book.id, name: book.name, pages: 120, outline: 'Linear equations → 45\nQuadratics → 60' }] } }));
+  await kick(T);
+  let j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'waiting', j.error || '');
+  assert.deepEqual(j.result.need_pages.pages, [1, 2]);
+  assert.match(j.progress, /Reading Algebra book\.pdf, pages 1–2/);
+  const first = seen.at(-1).body;
+  assert.ok(first.tools.some((t) => t.name === 'look_at_pages'));
+  assert.match(first.messages[0].content[0].text, /Linear equations → 45/);
+  // the tutor's app sends the pages (pictures it rendered)
+  const pages = [];
+  for (const n of [1, 2]) {
+    const p = `${me}/prof/look-${n}.jpg`;
+    await q(T.storage.from('library').upload(p, new Uint8Array([0xff, 0xd8, 0xff, n]), { contentType: 'image/jpeg' }));
+    pages.push({ path: p, label: `Algebra book.pdf, PDF page ${n}` });
+  }
+  const notMine = await T.rpc('prof_pages', { p_job: job.id, p_pages: [{ path: 'someone-else/prof/x.jpg' }] });
+  assert.match(notMine.error.message, /Unknown page/);
+  await q(T.rpc('prof_pages', { p_job: job.id, p_pages: pages }));
+  await kick(T);
+  j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.equal(j.result.assignments[0].questions, 5);
+  const afterPages = seen.find((x) => x.body.messages.length === 3 && x.body.tools.some((t) => t.name === 'look_at_pages')).body;
+  const tr = afterPages.messages[2].content.find((b) => b.type === 'tool_result');
+  assert.equal(tr.content.filter((b) => b.type === 'image').length, 2, 'the pages reach Prof as pictures');
+  for (const p of pages) assert.equal((await T.storage.from('library').download(p.path)).data, null, 'page pictures are tidied away');
+
+  // A reply carries the earlier request and answer
+  const reply = await q(T.rpc('prof_ask', { p_prompt: 'Make questions 4 and 5 harder', p_context: { reply_to: job.id } }));
+  await kick(T);
+  const rj = await q(T.from('prof_jobs').select('*').eq('id', reply.id).single());
+  assert.equal(rj.status, 'done', rj.error || '');
+  assert.equal(rj.context.reply_to, job.id);
+  const text = seen.at(-4).body.messages[0].content[0].text;
+  assert.match(text, /This is a reply to an earlier request/);
+  assert.match(text, /Homework from the linear equations chapter/);
+  assert.match(text, /Make questions 4 and 5 harder/);
+});

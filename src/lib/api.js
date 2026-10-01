@@ -258,22 +258,41 @@ export async function callProf(action = 'kick') {
   return body;
 }
 export const profJobs = () =>
-  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,cost_cents,created_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
+  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,cost_cents,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
 export const profUsage = () => run(sb().rpc('prof_usage'));
 export const profSettings = () => run(sb().from('prof_settings').select('*').eq('tutor_id', uid()).maybeSingle());
 export const saveProfSettings = (patch) =>
   run(sb().from('prof_settings').upsert({ tutor_id: uid(), ...patch, updated_at: new Date().toISOString() }, { onConflict: 'tutor_id' }));
-export async function profAsk(prompt, { learnerIds = [], pages = [] } = {}) {
+export async function profAsk(prompt, { learnerIds = [], pages = [], books = [], replyTo = null } = {}) {
   // pages: [{ blob, label }] images of book pages, kept in the tutor's own library folder until Prof has read them
+  // books: [{ file_id, name, pages, outline }] whole PDFs: Prof asks for the pages it needs
   const stored = [];
   for (const p of pages) {
     const path = `${uid()}/prof/${uuid()}.jpg`;
     await run(sb().storage.from('library').upload(path, await p.blob.arrayBuffer(), { contentType: p.blob.type || 'image/jpeg' }));
     stored.push({ path, label: p.label });
   }
-  const r = await run(sb().rpc('prof_ask', { p_prompt: prompt, p_context: { learner_ids: learnerIds, pages: stored } }));
+  const r = await run(sb().rpc('prof_ask', { p_prompt: prompt, p_context: { learner_ids: learnerIds, pages: stored, books, ...(replyTo ? { reply_to: replyTo } : {}) } }));
   callProf().catch(() => {});
   return r;
+}
+// Prof asked to see pages of a book: open it here, take pictures of those pages and send them
+export async function profProvidePages(job) {
+  const need = job.result?.need_pages;
+  if (!need) return;
+  const f = (await listFiles()).find((x) => x.id === need.file_id);
+  const out = [];
+  if (f) {
+    const { renderPdfPages } = await import('../ui/PdfViewer.jsx');
+    const r = await renderPdfPages(await getBlob('library', f.storage_path), need.pages);
+    for (const p of r.pages) {
+      const path = `${uid()}/prof/${uuid()}.jpg`;
+      await run(sb().storage.from('library').upload(path, await p.blob.arrayBuffer(), { contentType: 'image/jpeg' }));
+      out.push({ path, label: `${f.name}, PDF page ${p.page}` });
+    }
+  }
+  await run(sb().rpc('prof_pages', { p_job: job.id, p_pages: out }));
+  callProf().catch(() => {});
 }
 export async function profMark(attemptId) {
   const r = await run(sb().rpc('prof_mark', { p_attempt: attemptId }));

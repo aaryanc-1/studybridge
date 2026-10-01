@@ -12,7 +12,8 @@ import { useLookups } from '../shared/lookups.jsx';
 import { DraftsWaiting } from './ClaudeInbox.jsx';
 
 const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
-const busy = (j) => j.status === 'queued' || j.status === 'running';
+const busy = (j) => j.status === 'queued' || j.status === 'running' || j.status === 'waiting';
+const sending = new Set(); // page requests this app is answering
 
 export function useProfJobs() {
   const first = useRef(true);
@@ -29,6 +30,21 @@ export function useProfJobs() {
     const stale = jobs.some((j) => j.status === 'queued' && Date.now() - new Date(j.created_at) > (first.current ? 0 : 20000));
     first.current = false;
     if (stale) api.callProf().catch(() => {});
+  }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Prof asked to read pages of a book: this app opens the book and sends pictures of them
+  useEffect(() => {
+    for (const j of jobs) {
+      const key = j.id + JSON.stringify(j.result?.need_pages || '');
+      if (j.status !== 'waiting' || !j.result?.need_pages || sending.has(key)) continue;
+      sending.add(key);
+      api
+        .profProvidePages(j)
+        .catch((e) => console.warn('Prof pages', e))
+        .finally(() => {
+          invalidate('prof-jobs');
+          setTimeout(() => sending.delete(key), 30000);
+        });
+    }
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const doneIds = jobs.filter((j) => j.status === 'done').map((j) => j.id).join();
   useEffect(() => {
@@ -78,26 +94,39 @@ function AskProf({ ready }) {
     'A lesson with worked examples on the sine rule',
   ];
   const pageCount = attach.reduce((n, a) => n + (a.kind === 'pdf' ? a.pages.length : 1), 0);
+  const bookCount = attach.filter((a) => a.kind === 'pdf' && !a.pages.length).length;
 
   async function send(e) {
     e.preventDefault();
     if (text.trim().length < 3) return toast({ title: 'Tell Prof what to make', tone: 'bad' });
     if (pageCount > 20) return toast({ title: 'Choose up to 20 pages', tone: 'bad' });
+    if (bookCount > 3) return toast({ title: 'Choose up to 3 whole books', tone: 'bad' });
     try {
       const pages = [];
+      const books = [];
       for (const a of attach) {
         if (a.kind === 'image') {
           pages.push({ blob: await compressImage(a.blob, 1600, 0.85), label: a.name });
           continue;
         }
-        setSending(`Reading ${a.file.name}…`);
-        const { renderPdfPages } = await import('../../ui/PdfViewer.jsx');
+        setSending(`Opening ${a.file.name}…`);
+        const { renderPdfPages, pdfBookInfo } = await import('../../ui/PdfViewer.jsx');
         const blob = await api.getBlob('library', a.file.storage_path);
+        if (!a.pages.length) {
+          // the whole book: Prof gets its outline (or its first pages, to read the contents) and asks for the pages it needs
+          const info = await pdfBookInfo(blob);
+          books.push({ file_id: a.file.id, name: a.file.name, pages: info.pages, outline: info.outline });
+          if (info.outline.split('\n').length < 3) {
+            const first = await renderPdfPages(blob, Array.from({ length: Math.min(8, info.pages) }, (_, i) => i + 1), { maxSide: 1200 });
+            for (const p of first.pages) pages.push({ blob: p.blob, label: `${a.file.name}, PDF page ${p.page} (to find the contents)` });
+          }
+          continue;
+        }
         const r = await renderPdfPages(blob, a.pages);
         for (const p of r.pages) pages.push({ blob: p.blob, label: `${a.file.name}, page ${p.page}` });
       }
       setSending('Sending to Prof…');
-      await api.profAsk(text.trim(), { learnerIds: learners, pages });
+      await api.profAsk(text.trim(), { learnerIds: learners, pages, books });
       setText('');
       setAttach([]);
       setLearners([]);
@@ -153,7 +182,9 @@ function AskProf({ ready }) {
           {attach.map((a, i) => (
             <div key={i} className="row small attach-row">
               <Icon name={a.kind === 'pdf' ? 'pdf' : 'image'} size={18} />
-              <span className="grow ellipsis">{a.kind === 'pdf' ? `${a.file.name}: page${a.pages.length > 1 ? 's' : ''} ${pagesText(a.pages)}` : a.name}</span>
+              <span className="grow ellipsis">
+                {a.kind === 'pdf' ? (a.pages.length ? `${a.file.name}: page${a.pages.length > 1 ? 's' : ''} ${pagesText(a.pages)}` : `${a.file.name}: Prof finds the pages`) : a.name}
+              </span>
               <button type="button" className="btn ghost icon sm" aria-label="Remove" onClick={() => setAttach((xs) => xs.filter((_, j) => j !== i))}>
                 <Icon name="x" size={16} />
               </button>
@@ -163,7 +194,7 @@ function AskProf({ ready }) {
       )}
       <div className="row wrap">
         <button type="button" className="btn sm" onClick={() => setPicking(true)} disabled={!ready}>
-          <Icon name="book" size={16} /> Use pages from my library
+          <Icon name="book" size={16} /> Use a book from my library
         </button>
         <label className="btn sm" aria-disabled={!ready}>
           <Icon name="camera" size={16} /> Add a photo
@@ -219,7 +250,7 @@ function PagePicker({ files, onClose, onAdd }) {
   const [err, setErr] = useState('');
   return (
     <Modal
-      title="Pages for Prof to read"
+      title="A book for Prof to use"
       onClose={onClose}
       foot={
         <>
@@ -232,14 +263,14 @@ function PagePicker({ files, onClose, onAdd }) {
               const { parsePages } = await import('../../ui/PdfViewer.jsx');
               const ps = parsePages(pages);
               if (!file) return setErr('Choose a PDF.');
-              if (!ps.length) return setErr('Type the page numbers, like 12-15.');
+              if (pages.trim() && !ps.length) return setErr('Type the page numbers like 12-15, or leave it empty.');
               onAdd(
                 files.find((f) => f.id === file),
                 ps,
               );
             }}
           >
-            Add pages
+            {pages.trim() ? 'Add these pages' : 'Add the book'}
           </button>
         </>
       }
@@ -257,8 +288,8 @@ function PagePicker({ files, onClose, onAdd }) {
               ))}
             </select>
           </Field>
-          <Field label="Pages" hint="The page numbers in the PDF viewer, e.g. 12-15 or 12, 14, 20. Up to 20 pages.">
-            <input className="input" value={pages} onChange={(e) => setPages(e.target.value)} placeholder="12-15" autoFocus />
+          <Field label="Pages (optional)" hint="Leave empty and Prof finds the right pages itself (from the contents), while StudyBridge is open. Or type PDF page numbers, e.g. 12-15 or 12, 14, 20 (up to 20).">
+            <input className="input" value={pages} onChange={(e) => setPages(e.target.value)} placeholder="Leave empty, or 12-15" autoFocus />
           </Field>
           {err && <div className="error">{err}</div>}
         </>
@@ -279,6 +310,7 @@ function Jobs() {
       <div className="stack">
         {jobs.slice(0, 15).map((j) => {
           const r = j.result || {};
+          const prev = j.context?.reply_to ? jobs.find((x) => x.id === j.context.reply_to) : null;
           return (
             <div key={j.id} className={'prof-job ' + j.status}>
               <div className="row top">
@@ -290,6 +322,8 @@ function Jobs() {
                     </span>
                     <span className="small muted">{ago(j.created_at)}</span>
                   </div>
+                  {j.context?.reply_to && <div className="tiny muted ellipsis">↳ Reply{prev ? ` to “${prev.prompt.slice(0, 90)}”` : ''}</div>}
+                  {j.context?.books?.length > 0 && <div className="tiny muted ellipsis">Using {j.context.books.map((b) => b.name).join(', ')}</div>}
                   {busy(j) && (
                     <div className="row small">
                       <span className="spinner sm" /> {j.progress || (j.status === 'queued' ? 'Waiting to start…' : 'Working…')}
@@ -318,6 +352,7 @@ function Jobs() {
                           </Link>
                         )}
                       </div>
+                      {j.kind !== 'mark' && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
                     </>
                   )}
                   {(j.status === 'failed' || j.status === 'cancelled') && (
@@ -350,6 +385,62 @@ function Jobs() {
         })}
       </div>
     </div>
+  );
+}
+
+// Answer Prof's question, or ask for changes, right under its reply
+function ReplyBox({ job, asked }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(asked);
+  const [text, setText] = useState('');
+  const [busyNow, setBusyNow] = useState(false);
+  if (!open)
+    return (
+      <div>
+        <button className="linkbtn small" onClick={() => setOpen(true)}>
+          Reply to Prof
+        </button>
+      </div>
+    );
+  return (
+    <form
+      className="row top"
+      style={{ gap: 8 }}
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (text.trim().length < 2) return;
+        setBusyNow(true);
+        try {
+          await api.profAsk(text.trim(), { replyTo: job.id, learnerIds: job.context?.learner_ids || [], books: job.context?.books || [] });
+          setText('');
+          setOpen(false);
+          invalidate('prof-jobs', 'prof-usage');
+          toast({ title: 'Sent to Prof' });
+        } catch (x) {
+          toast({ title: 'Couldn’t send', body: x.message, tone: 'bad' });
+        } finally {
+          setBusyNow(false);
+        }
+      }}
+    >
+      <textarea
+        className="textarea"
+        style={{ minHeight: 44, flex: 1 }}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={asked ? 'Answer Prof, e.g. “Simultaneous equations, 10 questions, due Friday”' : 'Ask for changes, e.g. “Make questions 4–6 harder”'}
+        aria-label="Reply to Prof"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            e.currentTarget.form.requestSubmit();
+          }
+        }}
+      />
+      <button className="btn sm claude" disabled={busyNow || text.trim().length < 2}>
+        <Icon name="send" size={14} /> Send
+      </button>
+    </form>
   );
 }
 

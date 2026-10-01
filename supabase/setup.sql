@@ -435,6 +435,11 @@ create table if not exists public.prof_jobs (
   updated_at timestamptz not null default now(),
   finished_at timestamptz
 );
+do $$ begin
+  alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
+  alter table public.prof_jobs add constraint prof_jobs_status_check
+    check (status in ('queued', 'running', 'waiting', 'done', 'failed', 'cancelled'));
+end $$;
 create index if not exists idx_prof_jobs_tutor on public.prof_jobs (tutor_id, created_at desc);
 create index if not exists idx_prof_jobs_status on public.prof_jobs (status, created_at);
 
@@ -1592,21 +1597,53 @@ declare
   v_err text;
   v_id uuid;
   p jsonb;
+  v_books jsonb := '[]';
+  v_reply uuid;
 begin
   v_err := public._prof_ready(auth.uid());
   if v_err is not null then raise exception '%', v_err; end if;
-  if length(trim(coalesce(p_prompt, ''))) < 3 then raise exception 'Tell Prof what to make.'; end if;
+  if length(trim(coalesce(p_prompt, ''))) < 2 then raise exception 'Tell Prof what to make.'; end if;
   -- pages Prof should read must be in this tutor's own library folder
   for p in select * from jsonb_array_elements(coalesce(p_context -> 'pages', '[]')) loop
     if (p ->> 'path') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown page.'; end if;
   end loop;
   if jsonb_array_length(coalesce(p_context -> 'pages', '[]')) > 20 then raise exception 'Choose up to 20 pages.'; end if;
+  -- whole books from the library: Prof reads the contents and asks for the pages it needs
+  for p in select * from jsonb_array_elements(coalesce(p_context -> 'books', '[]')) loop
+    if not exists (select 1 from public.files where id = (p ->> 'file_id')::uuid and tutor_id = auth.uid()) then raise exception 'Unknown book.'; end if;
+    v_books := v_books || jsonb_build_array(jsonb_build_object('file_id', p ->> 'file_id', 'name', left(p ->> 'name', 200),
+      'pages', (p ->> 'pages')::int, 'outline', left(coalesce(p ->> 'outline', ''), 6000)));
+  end loop;
+  if jsonb_array_length(v_books) > 3 then raise exception 'Choose up to 3 books.'; end if;
+  -- a reply to an earlier request
+  if p_context ? 'reply_to' then
+    select id into v_reply from public.prof_jobs where id = (p_context ->> 'reply_to')::uuid and tutor_id = auth.uid();
+  end if;
   insert into public.prof_jobs (tutor_id, kind, prompt, context)
   values (auth.uid(), 'ask', left(trim(p_prompt), 4000), jsonb_build_object(
-    'learner_ids', coalesce(p_context -> 'learner_ids', '[]'), 'pages', coalesce(p_context -> 'pages', '[]')))
+    'learner_ids', coalesce(p_context -> 'learner_ids', '[]'), 'pages', coalesce(p_context -> 'pages', '[]'),
+    'books', v_books, 'reply_to', v_reply))
   returning id into v_id;
   perform public._prof_kick();
   return jsonb_build_object('id', v_id);
+end $$;
+
+-- The tutor's app sends the book pages Prof asked for
+create or replace function public.prof_pages(p_job uuid, p_pages jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare p jsonb;
+begin
+  if not exists (select 1 from public.prof_jobs where id = p_job and tutor_id = auth.uid() and status = 'waiting') then
+    raise exception 'Prof isn’t waiting for pages.';
+  end if;
+  if jsonb_array_length(coalesce(p_pages, '[]')) > 12 then raise exception 'Too many pages.'; end if;
+  for p in select * from jsonb_array_elements(coalesce(p_pages, '[]')) loop
+    if (p ->> 'path') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown page.'; end if;
+  end loop;
+  update public.prof_jobs set result = result || jsonb_build_object('provided_pages', coalesce(p_pages, '[]')),
+         status = 'queued', lease_until = null, progress = 'Reading the pages…', updated_at = now()
+   where id = p_job;
+  perform public._prof_kick();
 end $$;
 
 -- Ask Prof to mark one submission now
@@ -1633,7 +1670,7 @@ end $$;
 create or replace function public.prof_cancel(p_job uuid)
 returns void language sql security definer set search_path = public as $$
   update public.prof_jobs set status = 'cancelled', finished_at = now(), lease_until = null
-   where id = p_job and tutor_id = auth.uid() and status in ('queued', 'running')
+   where id = p_job and tutor_id = auth.uid() and status in ('queued', 'running', 'waiting')
 $$;
 
 create or replace function public.prof_retry(p_job uuid)

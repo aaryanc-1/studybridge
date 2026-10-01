@@ -222,7 +222,23 @@ export function createHandler(env) {
     },
   ];
 
-  function createSystem(ctx) {
+  const LOOK_TOOL = {
+    name: 'look_at_pages',
+    description:
+      'See pages of one of the tutor’s books (the tutor’s app sends pictures of them). Use PDF page numbers (1 = first page of the file). Up to 10 pages per call; the result shows each page’s PDF number, so check the printed page numbers and ask again if you landed in the wrong place.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string' },
+        pages: { type: 'array', items: { type: 'integer' }, maxItems: 10 },
+        why: { type: 'string', description: 'A few words for the tutor, e.g. "the chapter on simultaneous equations"' },
+      },
+      required: ['file_id', 'pages'],
+    },
+  };
+  const MAX_LOOKS = 4;
+
+  function createSystem(ctx, books = []) {
     return `You are Prof, the teaching assistant inside StudyBridge, working for the tutor ${ctx.tutor?.name || ''}.
 You make DRAFT assignments and lessons. The tutor reviews and approves everything; nothing you make reaches a learner until they do. You never talk to learners.
 
@@ -230,8 +246,9 @@ How to work:
 1. Read the tutor's request. Use the subjects, topics and learners below (use their ids). If the tutor names a learner, set learner_ids.
 2. For an assignment: call start_assignment, then add_questions with AT MOST 4 questions per call (call it again for more), then finish.
 3. For a lesson: call create_lesson, then finish.
-4. If the request is unclear or impossible, call finish and say what you need.
-
+4. If details are missing (topic, how many questions, due date), make sensible choices and go ahead: use the learner's subjects, level and topics_needing_work, about 8 questions, no due date. Say in finish what you assumed so the tutor can ask for changes. Only finish with a question instead if you truly can't make anything useful.
+${books.length ? `5. The tutor chose whole books (below). Find the right pages from the outline or the contents pages, then call look_at_pages to read them before writing questions. Base the work on what those pages teach. Use look_at_pages at most ${MAX_LOOKS} times.
+` : ''}
 Writing questions:
 - Pitch them at the learner's level and syllabus. Vary difficulty: start accessible, end with something that stretches.
 - Markdown with LaTeX maths in $...$ (inline) or $$...$$ (display). Never use \\( \\).
@@ -254,11 +271,43 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
     const names = (job.context?.learner_ids || []).map((id) => ctx.learners.find((l) => l.id === id)).filter(Boolean);
     let t = `${job.kind === 'auto' ? 'Weekly work (the tutor switched this on)' : 'The tutor asks'}: ${job.prompt}`;
     if (names.length) t += `\n\nFor: ${names.map((l) => `${l.name} (${l.id})`).join(', ')}`;
+    if (job.context?.reply_to) {
+      const prev = (await rest(`prof_jobs?id=eq.${job.context.reply_to}&select=prompt,result`))[0];
+      if (prev) {
+        const made = [...(prev.result?.assignments || []).map((a) => `assignment “${a.title}” (${a.questions} questions, now a draft)`), ...(prev.result?.lessons || []).map((l) => `lesson “${l.title}” (draft)`)];
+        t = `This is a reply to an earlier request.\nEarlier the tutor asked: ${prev.prompt}\nYou replied: ${prev.result?.reply || '(nothing)'}${made.length ? `\nYou made: ${made.join('; ')}. To change it, make a new draft (the tutor deletes the old one).` : ''}\n\nNow ${t.charAt(0).toLowerCase() + t.slice(1)}`;
+      }
+    }
+    for (const b of job.context?.books || []) {
+      t += `\n\nBook: “${b.name}” (file_id ${b.file_id}, ${b.pages} PDF pages).${b.outline ? `\nIts outline (title → PDF page):\n${b.outline}` : '\nIt has no outline; its first pages are attached so you can read the contents page.'}`;
+    }
     const pages = job.context?.pages || [];
     if (pages.length) t += `\n\n${pages.length} page${pages.length > 1 ? 's' : ''} from the tutor’s library follow${pages.length > 1 ? '' : 's'} as images: ${pages.map((p) => p.label || 'page').join('; ')}.`;
     content.push({ type: 'text', text: t });
     for (const p of pages) content.push({ type: 'sb_image', bucket: 'library', path: p.path });
     return { role: 'user', content };
+  }
+
+  async function expandBlocks(blocks) {
+    const content = [];
+    for (const b of blocks) {
+      if (b.type === 'tool_result' && Array.isArray(b.content)) {
+        content.push({ ...b, content: await expandBlocks(b.content) });
+        continue;
+      }
+      if (b.type !== 'sb_image') {
+        content.push(b);
+        continue;
+      }
+      const f = await download(b.bucket, b.path);
+      if (!f || f.bytes.length > 4.5 * 1024 * 1024) {
+        content.push({ type: 'text', text: '(An image could not be loaded.)' });
+        continue;
+      }
+      const media = /png|gif|webp/.test(f.type) ? f.type : 'image/jpeg';
+      content.push({ type: 'image', source: { type: 'base64', media_type: media, data: b64(f.bytes) } });
+    }
+    return content;
   }
 
   // Swap stored image references for the image data (kept out of the saved state)
@@ -269,21 +318,7 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
         out.push(m);
         continue;
       }
-      const content = [];
-      for (const b of m.content) {
-        if (b.type !== 'sb_image') {
-          content.push(b);
-          continue;
-        }
-        const f = await download(b.bucket, b.path);
-        if (!f || f.bytes.length > 4.5 * 1024 * 1024) {
-          content.push({ type: 'text', text: '(An image could not be loaded.)' });
-          continue;
-        }
-        const media = /png|gif|webp/.test(f.type) ? f.type : 'image/jpeg';
-        content.push({ type: 'image', source: { type: 'base64', media_type: media, data: b64(f.bytes) } });
-      }
-      out.push({ ...m, content });
+      out.push({ ...m, content: await expandBlocks(m.content) });
     }
     // cache the start of the conversation (system + attached pages) and the latest turn
     const mark = (m) => {
@@ -379,17 +414,32 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
 
   async function stepCreate(job, cfg) {
     let st = job.state && job.state.messages ? job.state : null;
+    const books = job.context?.books || [];
     if (!st) {
       const ctx = await rpc('prof_context', { p_tutor: job.tutor_id });
-      st = { ctx, messages: [await firstMessage(job, ctx)], made: { assignments: [], lessons: [] }, tries: 0 };
-      await save(job, 'running', { p_state: st, p_progress: job.context?.pages?.length ? 'Reading your pages…' : 'Planning…', p_input: 0 });
+      st = { ctx, messages: [await firstMessage(job, ctx)], made: { assignments: [], lessons: [] }, tries: 0, looks: 0, uploaded: [] };
+      await save(job, 'running', { p_state: st, p_progress: job.context?.pages?.length || books.length ? 'Reading your book…' : 'Planning…', p_input: 0 });
+    }
+    // The tutor's app has sent the pages Prof asked for
+    if (st.waiting) {
+      const got = job.result?.provided_pages;
+      if (!got) return save(job, 'waiting', { p_input: 0 });
+      const parts = [{ type: 'text', text: got.length ? `The pages you asked for (${got.length}):` : 'Those pages could not be opened. Try others, or work with what you have.' }];
+      for (const p of got) {
+        parts.push({ type: 'text', text: p.label || 'Page' });
+        parts.push({ type: 'sb_image', bucket: 'library', path: p.path });
+      }
+      st.messages.push({ role: 'user', content: [...st.waiting.results, { type: 'tool_result', tool_use_id: st.waiting.tool_use_id, content: parts }] });
+      st.uploaded = [...(st.uploaded || []), ...got.map((p) => p.path)];
+      delete st.waiting;
+      await save(job, 'running', { p_state: st, p_result: {}, p_progress: 'Reading the pages…', p_input: 0 });
     }
     if (job.steps >= MAX_STEPS) throw new Error('Prof stopped: this took too many steps. Try asking for less at once.');
     const { ctx, messages, made } = st;
     const res = await claude(cfg, {
       max_tokens: 8000,
-      system: [{ type: 'text', text: createSystem(ctx), cache_control: { type: 'ephemeral' } }],
-      tools: CREATE_TOOLS,
+      system: [{ type: 'text', text: createSystem(ctx, books), cache_control: { type: 'ephemeral' } }],
+      tools: books.length ? [...CREATE_TOOLS, LOOK_TOOL] : CREATE_TOOLS,
       messages: await expand(messages),
     });
     let blocks = res.content || [];
@@ -398,7 +448,24 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
     messages.push({ role: 'assistant', content: blocks.length ? blocks : [{ type: 'text', text: '…' }] });
     const results = [];
     let finished = null;
+    let look = null;
     for (const u of blocks.filter((b) => b.type === 'tool_use')) {
+      if (u.name === 'look_at_pages') {
+        const book = books.find((x) => x.file_id === u.input?.file_id);
+        const pages = book ? [...new Set((u.input?.pages || []).map(Number).filter((n) => n >= 1 && n <= book.pages))].slice(0, 10) : [];
+        const why = !book
+          ? 'Unknown file_id: use one from the books listed.'
+          : look
+            ? 'One look_at_pages at a time: ask again after this one.'
+            : (st.looks || 0) >= MAX_LOOKS
+              ? 'No more page requests: work with what you have.'
+              : !pages.length
+                ? `Those page numbers aren’t in the book (it has ${book.pages} PDF pages).`
+                : null;
+        if (why) results.push({ type: 'tool_result', tool_use_id: u.id, content: why, is_error: true });
+        else look = { tool_use_id: u.id, file_id: book.file_id, name: book.name, pages, why: String(u.input?.why || '').slice(0, 120) };
+        continue;
+      }
       try {
         const out = await runCreateTool(u.name, u.input || {}, job, ctx, made);
         if (u.name === 'finish') finished = String(u.input?.message || 'Done.');
@@ -408,7 +475,7 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
       }
     }
     const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
-    if (!results.length && !cut) finished = said || 'Done.';
+    if (!results.length && !look && !cut) finished = said || 'Done.';
     const use = usageArgs(cfg, res.usage);
     if (finished !== null) {
       const qn = made.assignments.reduce((n, a) => n + a.questions, 0);
@@ -427,14 +494,27 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
         p_progress: 'Ready for you to review',
         p_notify: { title, body: finished.slice(0, 220), ref: { assignment_id: made.assignments[0]?.id || null, lesson_id: made.lessons[0]?.id || null } },
       });
-      await removeFiles('library', (job.context?.pages || []).map((p) => p.path));
+      await removeFiles('library', [...(job.context?.pages || []).map((p) => p.path), ...(st.uploaded || [])]);
+      return;
+    }
+    // Prof wants to read pages of a book: the tutor's app renders them and sends them back
+    if (look) {
+      st.looks = (st.looks || 0) + 1;
+      st.waiting = { tool_use_id: look.tool_use_id, results };
+      const range = look.pages.length > 1 && look.pages[look.pages.length - 1] - look.pages[0] === look.pages.length - 1 ? `${look.pages[0]}–${look.pages[look.pages.length - 1]}` : look.pages.join(', ');
+      await save(job, 'waiting', {
+        ...use,
+        p_state: { ...st, tries: 0 },
+        p_result: { need_pages: { file_id: look.file_id, name: look.name, pages: look.pages, why: look.why } },
+        p_progress: `Reading ${look.name}, page${look.pages.length > 1 ? 's' : ''} ${range}${look.why ? ` (${look.why})` : ''}…`,
+      });
       return;
     }
     const next = [...results];
     if (cut) next.push({ type: 'text', text: 'Your last reply was cut off. Add fewer questions per call (at most 3).' });
     if (!next.length) next.push({ type: 'text', text: 'Carry on, or call finish if you are done.' });
     messages.push({ role: 'user', content: next });
-    await save(job, 'queued', { ...use, p_state: { ctx, messages, made, tries: 0 }, p_progress: progressOf(made) });
+    await save(job, 'queued', { ...use, p_state: { ...st, tries: 0 }, p_progress: progressOf(made) });
   }
 
   // ---------------- marking ----------------
@@ -555,7 +635,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       } else {
         console.error('Prof job failed', job.id, e);
         await save(job, 'failed', { p_error: String(e.message || e).slice(0, 500), p_input: 0 });
-        await removeFiles('library', (job.context?.pages || []).map((p) => p.path));
+        await removeFiles('library', [...(job.context?.pages || []).map((p) => p.path), ...(job.state?.uploaded || [])]);
       }
     }
     return true;

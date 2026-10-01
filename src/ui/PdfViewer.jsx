@@ -57,6 +57,35 @@ export async function renderPdfPages(blob, pages, { maxSide = 1500, quality = 0.
   }
 }
 
+// A book's size and outline (bookmarks), so Prof can find the right pages itself.
+// Outline lines look like "  Simultaneous equations → 112" (PDF page numbers).
+export async function pdfBookInfo(blob) {
+  const lib = await pdfjs();
+  const task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+  const doc = await task.promise;
+  const lines = [];
+  try {
+    const walk = async (items, depth) => {
+      for (const it of items || []) {
+        if (lines.length >= 250) return;
+        let page = null;
+        try {
+          const dest = typeof it.dest === 'string' ? await doc.getDestination(it.dest) : it.dest;
+          if (dest && dest[0]) page = (await doc.getPageIndex(dest[0])) + 1;
+        } catch {}
+        lines.push(`${'  '.repeat(depth)}${String(it.title || '').trim()}${page ? ` → ${page}` : ''}`);
+        if (depth < 2) await walk(it.items, depth + 1);
+      }
+    };
+    await walk(await doc.getOutline().catch(() => null), 0);
+    return { pages: doc.numPages, outline: lines.join('\n').slice(0, 6000) };
+  } finally {
+    try {
+      await task.destroy();
+    } catch {}
+  }
+}
+
 // "12-15, 20" -> [12, 13, 14, 15, 20]
 export function parsePages(text, max = 20) {
   const out = [];

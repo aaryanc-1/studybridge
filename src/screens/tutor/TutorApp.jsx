@@ -12,7 +12,7 @@ import Assignments from './Assignments.jsx';
 import AssignmentEditor from './AssignmentEditor.jsx';
 import Marking, { MarkAttempt } from './Marking.jsx';
 import { useDraftCounts } from './ClaudeInbox.jsx';
-import Prof from './Prof.jsx';
+import Prof, { useProfJobs } from './Prof.jsx';
 import Admin from './Admin.jsx';
 import Messages from '../shared/Messages.jsx';
 import Live, { Watch } from '../shared/Live.jsx';
@@ -38,6 +38,7 @@ export default function TutorApp() {
   const toMark = (attempts.data || []).filter((a) => a.status === 'submitted').length;
   const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
   const draftCount = useDraftCounts();
+  useProfJobs(); // keeps Prof's requests moving (e.g. sending book pages) on every page
   const admin = useQuery(app.me.is_admin ? 'admin-tutors' : null, api.adminTutors, { poll: 60000 });
   const waitingTutors = (admin.data || []).filter((t) => t.status === 'pending').length;
 
