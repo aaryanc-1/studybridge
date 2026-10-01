@@ -179,6 +179,14 @@ jobs:
         env:
           GH_TOKEN: ${{ env.RELEASES_TOKEN }}
         run: |
-          gh release create "v${VERSION}" out/* --repo "$RELEASES_REPO" --latest \
+          set -o pipefail
+          fail() { echo "::error title=Publishing the update::${1//$'\n'/ }"; exit 1; }
+          # a release needs at least one commit to point at: give a brand-new repo a README
+          if ! gh api "repos/$RELEASES_REPO/commits?per_page=1" >/dev/null 2>&1; then
+            printf '# StudyBridge\n\nDownload StudyBridge from the latest release on the right: Windows → StudyBridge-Setup-….exe, Mac → the .dmg for your chip (arm64 = Apple silicon, x64 = Intel). Installed apps update themselves.\n' > readme.md
+            out=$(gh api -X PUT "repos/$RELEASES_REPO/contents/README.md" -f message="StudyBridge downloads" -f content="$(base64 -w0 readme.md)" 2>&1) || fail "Couldn’t write to $RELEASES_REPO (check RELEASES_TOKEN has Contents: Read and write on it): $out"
+          fi
+          out=$(gh release create "v${VERSION}" out/* --repo "$RELEASES_REPO" --latest \
             --title "StudyBridge ${VERSION}" \
-            --notes "Download StudyBridge: Windows → StudyBridge-Setup-${VERSION}.exe · Mac (Apple silicon) → StudyBridge-${VERSION}-arm64.dmg · Mac (Intel) → StudyBridge-${VERSION}-x64.dmg. Installed apps update themselves."
+            --notes "Download StudyBridge: Windows → StudyBridge-Setup-${VERSION}.exe · Mac (Apple silicon) → StudyBridge-${VERSION}-arm64.dmg · Mac (Intel) → StudyBridge-${VERSION}-x64.dmg. Installed apps update themselves." 2>&1) || fail "$out"
+          echo "$out"
