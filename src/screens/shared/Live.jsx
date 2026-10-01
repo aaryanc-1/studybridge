@@ -310,7 +310,7 @@ function LiveRoom({ session, onLeave }) {
         if (alive) setRoom(x);
         else x.disconnect();
       })
-      .catch((e) => alive && setErr(e.message || 'Couldn’t connect to the live session.'));
+      .catch((e) => alive && setErr(liveError(e)));
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => {
       alive = false;
@@ -419,7 +419,7 @@ export function Watch({ attemptId }) {
         if (alive) setRoom(x);
         else x.disconnect();
       })
-      .catch((e) => alive && setErr(e.message));
+      .catch((e) => alive && setErr(liveError(e)));
     return () => {
       alive = false;
       r?.disconnect();
@@ -485,4 +485,12 @@ export function Watch({ attemptId }) {
       </div>
     </Page>
   );
+}
+
+// LiveKit's messages, in words people can act on
+function liveError(e) {
+  const m = String(e?.message || e || '');
+  if (/invalid API key|invalid token|signature|unauthorized|401/i.test(m))
+    return 'Live video couldn’t sign in: the LiveKit keys don’t match. Tutor: check Settings → Live video (or, for the shared setup, Admin → Live video for every tutor) and paste the current key, secret and URL from cloud.livekit.io.';
+  return m || 'Couldn’t connect to the live session.';
 }

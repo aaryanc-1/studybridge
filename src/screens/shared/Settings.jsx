@@ -264,6 +264,26 @@ function LiveKeys() {
         <span className="strong">{shared ? 'Ready: StudyBridge provides it' : ok ? 'Switched on (your own LiveKit)' : 'Not set up yet'}</span>
       </div>
       {shared && <div className="small muted">Nothing to do. If you’d rather use your own LiveKit Cloud project, add its keys below.</div>}
+      {status.data?.own && (
+        <div className="row wrap small">
+          <span className="muted">You’re using your own LiveKit keys{status.data?.shared ? ', not StudyBridge’s shared ones' : ''}.</span>
+          <button
+            className="btn sm"
+            onClick={async () => {
+              try {
+                await api.saveSettings({ livekit_url: null });
+                setUrl('');
+                invalidate('settings', 'live-status');
+                toast(status.data?.shared ? 'Now using StudyBridge’s live video' : 'Your LiveKit keys are removed');
+              } catch (e) {
+                toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+              }
+            }}
+          >
+            {status.data?.shared ? 'Use StudyBridge’s live video instead' : 'Remove my keys'}
+          </button>
+        </div>
+      )}
       <ol className="steps-guide">
         <li>
           <div>
