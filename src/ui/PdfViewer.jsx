@@ -25,8 +25,8 @@ function pdfAssets() {
   };
 }
 
-// Pictures of chosen pages (for Prof to read). Returns [{ page, blob }] as JPEGs about 1500px tall.
-export async function renderPdfPages(blob, pages, { maxSide = 1500, quality = 0.82 } = {}) {
+// Pictures of chosen pages (for Prof to read). Returns [{ page, blob }] as JPEGs about 1200px tall (sharp enough to read, about a third cheaper for Prof than 1500px).
+export async function renderPdfPages(blob, pages, { maxSide = 1200, quality = 0.82 } = {}) {
   const lib = await pdfjs();
   const task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
   const doc = await task.promise;
