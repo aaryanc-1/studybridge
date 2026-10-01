@@ -106,7 +106,7 @@ jobs:
       - run: npm ci
       - run: npm version "${{ env.VERSION }}" --no-git-tag-version --allow-same-version
       - name: Where installed apps look for updates
-        run: node -e "require('fs').writeFileSync('electron/build-config.json', JSON.stringify({ updateUrl: 'https://github.com/${{ env.RELEASES_REPO }}/releases/latest/download/', bundleVersion: '${{ env.VERSION }}' }))"
+        run: node scripts/write-build-config.mjs
       - run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
