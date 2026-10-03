@@ -177,6 +177,79 @@ try {
   assert.equal(ps.auto_mark, true);
   await shot(A, 'prof-page');
 
+  step('Past papers: import a folder; papers are filed, paired and de-duplicated; nothing is uploaded');
+  const pdfBytes = readFileSync(PDF);
+  const variantOf = (tag) => Buffer.concat([pdfBytes, Buffer.from(`\n%${tag}\n`)]);
+  const paperFiles = [
+    { name: '0607_s23_qp_41.pdf', mimeType: 'application/pdf', buffer: variantOf('qp41') },
+    { name: '0607_s23_ms_41.pdf', mimeType: 'application/pdf', buffer: variantOf('ms41') },
+    { name: '0607_s23_qp_41 (1).pdf', mimeType: 'application/pdf', buffer: variantOf('qp41') },
+    { name: '0580_w22_qp_22.pdf', mimeType: 'application/pdf', buffer: variantOf('qp22') },
+    { name: 'chapter notes.pdf', mimeType: 'application/pdf', buffer: variantOf('notes') },
+    { name: 'readme.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') },
+  ];
+  const storageBefore = (await tc.storage.from('library').list(`${me}/files`)).data?.length || 0;
+  await nav(A, 'Library').click();
+  await A.getByRole('button', { name: 'Past papers' }).click();
+  await A.getByText('Every IGCSE and IB paper, in one place').waitFor();
+  await A.getByRole('button', { name: 'Import papers' }).click();
+  const dlg = A.getByRole('dialog', { name: 'Import past papers' });
+  await dlg.locator('input[type=file][accept]').setInputFiles(paperFiles);
+  await dlg.getByRole('button', { name: /Import 3 papers/ }).waitFor({ timeout: 30000 });
+  await dlg.getByText('Same file twice').waitFor();
+  await dlg.getByText('Couldn’t tell which paper').waitFor();
+  await shot(A, 'papers-import');
+  await dlg.getByRole('button', { name: /Import 3 papers/ }).click();
+  await A.getByText('Imported 3 papers').waitFor({ timeout: 30000 });
+  const papers = (await tc.from('files').select('*').not('exam_board', 'is', null)).data;
+  assert.equal(papers.length, 3);
+  assert.ok(papers.every((f) => f.cloud === false && f.storage_path.startsWith('local/') && f.sha256), 'kept on the computer, not uploaded');
+  assert.equal((await tc.storage.from('library').list(`${me}/files`)).data?.length || 0, storageBefore, 'nothing uploaded');
+  // the folder's subject is opened and pinned
+  await A.locator('.papers-grid').waitFor();
+  const chip41 = A.locator('.papers-grid tr', { hasText: 'June 2023' }).locator('.paper-chip', { hasText: '41' });
+  assert.match(await chip41.getAttribute('class'), /mine/);
+  assert.equal(await chip41.locator('.ms-dot').count(), 1, 'mark scheme paired');
+  assert.match(await A.locator('.papers-grid tr', { hasText: 'June 2023' }).locator('.paper-chip', { hasText: '42' }).getAttribute('class'), /missing/);
+  await shot(A, 'papers-grid');
+
+  step('Open the paper: share it with the learner (uploaded only now); save a link for a missing one');
+  await chip41.click();
+  const panel = A.getByRole('dialog', { name: '0607 June 2023 Paper 41' });
+  await panel.locator('.upper', { hasText: 'Mark scheme' }).waitFor();
+  await panel.getByRole('button', { name: 'Turn into a test with Prof' }).waitFor();
+  await shot(A, 'papers-slot');
+  await panel.getByRole('button', { name: 'Share' }).first().click();
+  const fs = A.getByRole('dialog', { name: 'File settings' });
+  await fs.getByText('Visible now').click();
+  await fs.getByRole('button', { name: 'Save' }).click();
+  await fs.waitFor({ state: 'detached' });
+  const shared = (await tc.from('files').select('*').eq('exam_kind', 'qp').eq('exam_paper', '41').single()).data;
+  assert.equal(shared.cloud, true);
+  assert.equal(shared.visibility, 'visible');
+  assert.ok(!shared.storage_path.startsWith('local/'));
+  assert.equal((await lc.from('files').select('id').eq('id', shared.id)).data.length, 1, 'the learner can open the shared paper');
+  await panel.getByRole('button', { name: 'Close' }).click();
+  await A.locator('.papers-grid tr', { hasText: 'June 2023' }).locator('.paper-chip', { hasText: '42' }).click();
+  const p42 = A.getByRole('dialog', { name: '0607 June 2023 Paper 42' });
+  await p42.getByRole('button', { name: 'Add my link' }).click();
+  await A.getByLabel('Web address').fill('https://example.org/0607-42.pdf');
+  await A.getByRole('button', { name: 'Save link' }).click();
+  await A.getByRole('dialog', { name: 'Add your link' }).waitFor({ state: 'detached' });
+  await p42.getByText('your link').waitFor();
+  await p42.getByRole('button', { name: 'Close' }).click();
+  assert.match(await A.locator('.papers-grid tr', { hasText: 'June 2023' }).locator('.paper-chip', { hasText: '42' }).getAttribute('class'), /link/);
+
+  step('Find a paper by typing it');
+  await A.getByLabel('Find a paper').fill('0580 November 2022 paper 2');
+  await A.getByRole('button', { name: 'Find' }).click();
+  await A.getByRole('dialog', { name: '0580 November 2022 Paper 2' }).getByText('0580 November 2022 Paper 22').waitFor();
+  await A.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+  await A.getByRole('button', { name: 'Free textbooks' }).click();
+  await A.getByText('Prealgebra 2e').waitFor();
+  await A.getByRole('button', { name: 'Files' }).click();
+  await A.getByText(/past papers? (is|are) filed under/).waitFor();
+
   step('Admin pauses the other tutor: she can’t sign in, nothing is deleted');
   await nav(A, 'Admin').click();
   await A.locator('.tutor-row', { hasText: 'Maria Banda' }).getByRole('button', { name: 'Pause' }).click();

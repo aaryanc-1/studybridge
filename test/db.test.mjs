@@ -131,6 +131,26 @@ test('library visibility: hidden, visible, scheduled, audience', async () => {
   assert.deepEqual((await as('L', `select title from lessons`)).map((r) => r.title), ['Quadratics']);
 });
 
+test('past papers: kept on the tutor\'s computer until shared; links; exam subjects', async () => {
+  const f = await one('T', `insert into files (name, storage_path, cloud, sha256, exam_board, exam_code, exam_year, exam_session, exam_kind, exam_paper)
+    values ('0607_s23_qp_41.pdf', 'local/x/abc.pdf', false, 'abc', 'cie', '0607', 2023, 's', 'qp', '41') returning *`);
+  assert.equal(f.visibility, 'hidden');
+  // A paper that only lives on the tutor's computer can't be shown to learners
+  await fails(as('T', `update files set visibility = 'visible' where id = $1`, [f.id]), /files_local_hidden/);
+  await as('T', `update files set storage_path = $2, cloud = true, visibility = 'visible', subject_id = $3 where id = $1`, [f.id, `${U.T}/files/p.pdf`, S.math]);
+  assert.equal((await as('L', `select * from files where id = $1`, [f.id])).length, 1, 'shared papers reach learners like any file');
+  assert.equal((await as('T2', `select * from files where id = $1`, [f.id])).length, 0, 'never another tutor');
+  // Links must be web addresses
+  await fails(as('T', `insert into files (name, storage_path, link_url) values ('x', 'link/a/b', 'javascript:alert(1)')`), /files_link_http/);
+  const l = await one('T', `insert into files (name, storage_path, link_url, exam_board, exam_code) values ('x', 'link/a/c', 'https://example.org/p.pdf', 'cie', '0607') returning *`);
+  assert.equal(l.visibility, 'hidden');
+  // Pinned exam subjects
+  await as('T', `insert into tutor_settings (tutor_id, exam_subjects) values (auth.uid(), '{cie:0607}')
+    on conflict (tutor_id) do update set exam_subjects = excluded.exam_subjects`);
+  assert.deepEqual(await val('T', `select exam_subjects from tutor_settings where tutor_id = auth.uid()`), ['cie:0607']);
+  await as('T', `delete from files where id = any($1)`, [[f.id, l.id]]);
+});
+
 test('storage rules for PDFs and learner work', async () => {
   await as('T', `insert into storage.objects (bucket_id, name) values ('library', $1), ('library', $2), ('library', $3)`,
     [`${U.T}/files/visible.pdf`, `${U.T}/files/hidden.pdf`, `${U.T}/questions/q1.png`]);

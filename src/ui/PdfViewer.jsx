@@ -86,6 +86,28 @@ export async function pdfBookInfo(blob) {
   }
 }
 
+// The words on a PDF's first page(s), to recognise past papers by their cover
+export async function pdfFirstText(blob, pages = 1) {
+  const lib = await pdfjs();
+  const task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+  try {
+    const doc = await task.promise;
+    let out = '';
+    for (let n = 1; n <= Math.min(pages, doc.numPages); n++) {
+      const pg = await doc.getPage(n);
+      const tc = await pg.getTextContent();
+      out += ' ' + tc.items.map((i) => i.str).join(' ');
+    }
+    return out.replace(/\s+/g, ' ').trim();
+  } catch {
+    return '';
+  } finally {
+    try {
+      await task.destroy();
+    } catch {}
+  }
+}
+
 // "12-15, 20" -> [12, 13, 14, 15, 20]
 export function parsePages(text, max = 20) {
   const out = [];

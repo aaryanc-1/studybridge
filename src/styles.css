@@ -537,3 +537,21 @@ label.btn[aria-disabled='true'] { opacity: 0.5; pointer-events: none; }
 .tutor-row .facts b { color: var(--ink); font-weight: 600; }
 .update-banner { background: var(--accent); color: #fff; }
 .update-banner .btn { background: #fff; color: var(--accent); border-color: #fff; }
+
+/* ---------- Past papers ---------- */
+.papers-grid-wrap { overflow-x: auto; }
+.papers-grid td, .papers-grid th { padding: 7px 10px; }
+.papers-grid tr.quiet td:first-child { color: var(--muted); font-weight: 500; }
+.nowrap { white-space: nowrap; }
+.upper { text-transform: uppercase; letter-spacing: 0.04em; }
+.bad-text { color: var(--red-ink); }
+.paper-chip { position: relative; display: inline-flex; align-items: center; justify-content: center; min-width: 34px; height: 26px; padding: 0 7px; border-radius: 7px; font: 600 12px/1 inherit; font-variant-numeric: tabular-nums; cursor: pointer; border: 1.5px solid transparent; }
+.paper-chip.sm { min-width: 28px; height: 20px; font-size: 11px; cursor: default; }
+.paper-chip.mine { background: var(--good-tint); color: var(--good-ink); border-color: var(--good-ink); }
+.paper-chip.official { background: var(--accent-tint); color: var(--accent-ink); border-color: var(--accent); }
+.paper-chip.link { background: var(--card); color: var(--accent-ink); border: 1.5px dashed var(--accent); }
+.paper-chip.missing { background: transparent; color: var(--muted); border: 1.5px dashed var(--btn-line); }
+.paper-chip:not(.sm):hover { filter: brightness(0.95); border-style: solid; }
+.paper-chip .ms-dot { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--claude); border: 1.5px solid var(--card); }
+.paper-line { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.paper-line:last-child { border-bottom: 0; }

@@ -5,12 +5,13 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { bytes, ago } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
+import PastPapers, { OpenBooks } from './PastPapers.jsx';
 
 export default function Library({ tab = 'files' }) {
   return (
     <Page
       title="Library"
-      subtitle="Textbooks, worksheets and lessons. Everything starts hidden; you choose when learners see it."
+      subtitle="Textbooks, past papers, worksheets and lessons. Everything starts hidden; you choose when learners see it."
       actions={
         tab === 'lessons' ? (
           <button className="btn primary" onClick={() => go('/lesson/new')}>
@@ -24,10 +25,12 @@ export default function Library({ tab = 'files' }) {
         onChange={(t) => go(`/library/${t}`, { replace: true })}
         options={[
           { value: 'files', label: 'Files', icon: 'file' },
-          { value: 'lessons', label: 'Lessons', icon: 'book' },
+          { value: 'papers', label: 'Past papers', icon: 'clipboard' },
+          { value: 'textbooks', label: 'Free textbooks', icon: 'book' },
+          { value: 'lessons', label: 'Lessons', icon: 'pen' },
         ]}
       />
-      {tab === 'lessons' ? <Lessons /> : <Files />}
+      {tab === 'lessons' ? <Lessons /> : tab === 'papers' ? <PastPapers /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
     </Page>
   );
 }
@@ -41,7 +44,8 @@ function Files() {
   const [edit, setEdit] = useState(null);
   const [subject, setSubject] = useState('');
   const input = useRef(null);
-  const list = (files.data || []).filter((f) => !subject || f.subject_id === subject);
+  const papers = (files.data || []).filter((f) => f.exam_board).length;
+  const list = (files.data || []).filter((f) => !f.exam_board && (!subject || f.subject_id === subject));
 
   async function upload(fileList) {
     const arr = [...fileList];
@@ -98,6 +102,11 @@ function Files() {
           ))}
         </select>
       </div>
+      {papers > 0 && (
+        <div className="note small">
+          {papers} past paper{papers === 1 ? ' is' : 's are'} filed under <a href="#/library/papers">Past papers</a>.
+        </div>
+      )}
       {list.length === 0 ? (
         files.data && <Empty>No files yet.</Empty>
       ) : (
@@ -154,7 +163,7 @@ function Files() {
   );
 }
 
-function FileSettings({ file, onClose }) {
+export function FileSettings({ file, onClose }) {
   const lk = useLookups();
   const confirm = useConfirm();
   const [f, setF] = useState(file);
@@ -162,6 +171,7 @@ function FileSettings({ file, onClose }) {
   const set = (patch) => setF((x) => ({ ...x, ...patch }));
   async function saveIt() {
     try {
+      if (f.cloud === false && f.visibility !== 'hidden') await api.ensureCloud(file);
       await api.save('files', {
         id: f.id,
         name: f.name,
@@ -321,6 +331,7 @@ export function LessonEditor({ id }) {
         draft: post ? false : !!l.draft,
         updated_at: new Date().toISOString(),
       };
+      if (visibility !== 'hidden') await api.ensureCloudIds(row.file_ids, files);
       const saved = await api.save('lessons', row);
       invalidate('lessons');
       if (post) {

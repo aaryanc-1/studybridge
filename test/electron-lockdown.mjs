@@ -48,6 +48,10 @@ const app = await electron.launch({
 const win = await app.firstWindow();
 const errs = [];
 win.on('pageerror', (e) => errs.push(e.message));
+// The desktop app only fetches exam boards' own websites for past papers
+await win.waitForLoadState('domcontentloaded');
+const blocked = await win.evaluate(() => window.studybridge.webFetch('https://example.com/paper.pdf'));
+assert.match(blocked.error, /exam boards/);
 const isKiosk = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isKiosk());
 const events = async () => (await tutor.from('attempts').select('lockdown_events').eq('assignment_id', a.id)).data[0]?.lockdown_events || [];
 

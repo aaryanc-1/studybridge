@@ -129,6 +129,8 @@ export default function AssignmentEditor({ id }) {
           draft: publish || post ? false : a.draft,
           updated_at: new Date().toISOString(),
         };
+        // Papers kept only on this computer are uploaded once learners can see the assignment
+        if (visibility !== 'hidden') await api.ensureCloudIds((row.file_refs || []).map((r) => r.file_id), files);
         // Questions first, so learners never see a half-saved assignment
         for (const qid of removed) await api.remove('questions', qid);
         const next = [];
@@ -192,7 +194,7 @@ export default function AssignmentEditor({ id }) {
 
   const total = qs.reduce((s, q) => s + (Number(q.marks) || 0), 0);
   const live = !a.draft && a.visibility !== 'hidden';
-  const attachable = files;
+  const attachable = files.filter((f) => !f.link_url);
 
   return (
     <Page

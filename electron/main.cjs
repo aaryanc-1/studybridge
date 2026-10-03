@@ -1,5 +1,5 @@
 // StudyBridge desktop app (Windows + Mac). One app for tutors and learners.
-const { app, BrowserWindow, ipcMain, shell, session, desktopCapturer, systemPreferences, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session, desktopCapturer, systemPreferences, dialog, Tray, Menu, nativeImage, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { createUpdater } = require('./updater.cjs');
@@ -239,6 +239,29 @@ ipcMain.handle('file:save', async (_e, { name, bytes }) => {
   fs.writeFileSync(r.filePath, Buffer.from(bytes));
   shell.showItemInFolder(r.filePath);
   return r.filePath;
+});
+// Exam boards' own websites only: reads a past-papers page or downloads one of their PDFs for the tutor.
+// (Their sites don't let the app's pages fetch them directly.) Nothing is sent anywhere else.
+const WEB_HOSTS = ['www.cambridgeinternational.org', 'cambridgeinternational.org', 'www.ibo.org', 'ibo.org'];
+ipcMain.handle('web:fetch', async (_e, { url, as }) => {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return { error: 'Not a web address.' };
+  }
+  if (u.protocol !== 'https:' || !WEB_HOSTS.includes(u.hostname)) return { error: 'StudyBridge only opens exam boards’ own websites here.' };
+  try {
+    const r = await net.fetch(u.href, { headers: { 'User-Agent': `Mozilla/5.0 StudyBridge/${app.getVersion()}`, Accept: as === 'text' ? 'text/html' : 'application/pdf,*/*' } });
+    if (!r.ok) return { error: `The exam board’s site answered ${r.status}.`, status: r.status };
+    const type = r.headers.get('content-type') || '';
+    if (as === 'text') return { text: await r.text(), type };
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 60 * 1024 * 1024) return { error: 'That file is too big.' };
+    return { bytes: new Uint8Array(buf), type };
+  } catch (e) {
+    return { error: 'Couldn’t reach the exam board’s site. Check the internet connection.', detail: String(e && e.message) };
+  }
 });
 ipcMain.handle('connector:save', async () => {
   const src = resource('studybridge.mcpb');

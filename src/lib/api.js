@@ -2,7 +2,8 @@
 import { sb, run, isOffline } from './supabase.js';
 import { sendOrQueue } from './outbox.js';
 import * as store from './store.js';
-import { timezone, getServer } from './config.js';
+import { timezone, getServer, desktop } from './config.js';
+import { parseOfficialPage, officialPage } from './exams.js';
 
 let me = null;
 export const setMe = (p) => (me = p);
@@ -80,6 +81,98 @@ export async function deleteFile(f) {
   await sb().storage.from('library').remove([f.storage_path]);
   await store.blobs.del(`library/${f.storage_path}`);
 }
+// ---------------- past papers ----------------
+const EXAM_COLS = ['exam_board', 'exam_code', 'exam_year', 'exam_session', 'exam_kind', 'exam_paper', 'exam_level', 'exam_tz'];
+const examMeta = (x) => Object.fromEntries(EXAM_COLS.map((k) => [k, x[k] ?? null]));
+
+export async function sha256(blob) {
+  const buf = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// A paper kept on this computer only: listed in the library, opened from this device, never uploaded
+// until the tutor shares it with learners.
+export async function importPaper(blob, name, meta, { hash, subject_id = null } = {}) {
+  const sha = hash || (await sha256(blob));
+  const path = `local/${uid()}/${sha}${/\.pdf$/i.test(name) || /pdf/.test(blob.type) ? '.pdf' : ''}`;
+  await store.blobs.set(`library/${path}`, blob);
+  const existing = await run(sb().from('files').select('*').eq('storage_path', path).maybeSingle());
+  if (existing && !('exam_board' in existing)) throw new Error('The StudyBridge server needs its latest update before past papers work. (Admin: run the new setup.sql.)');
+  if (existing) return { ...existing, duplicate: true };
+  return run(
+    sb()
+      .from('files')
+      .insert({ name, mime: blob.type || 'application/pdf', size: blob.size, storage_path: path, visibility: 'hidden', cloud: false, sha256: sha, subject_id, ...examMeta(meta) })
+      .select()
+      .maybeSingle(),
+  ).catch((e) => {
+    if (/exam_|sha256|cloud|column/i.test(e.message)) throw new Error('The StudyBridge server needs its latest update before past papers work. (Admin: run the new setup.sql.)');
+    throw e;
+  });
+}
+
+// Before learners can open a paper kept on this computer, a copy goes to the tutor's private storage.
+export async function ensureCloud(f) {
+  if (!f || f.cloud !== false) return f;
+  const blob = await store.blobs.get(`library/${f.storage_path}`);
+  if (!blob) throw new Error(`“${f.name}” is saved on the computer it was imported on. Share it from there.`);
+  const path = `${uid()}/files/${uuid()}-${safeName(f.name)}`;
+  await run(sb().storage.from('library').upload(path, await blob.arrayBuffer(), { contentType: f.mime || 'application/pdf' }));
+  await store.blobs.set(`library/${path}`, blob);
+  const row = await run(sb().from('files').update({ storage_path: path, cloud: true }).eq('id', f.id).select().maybeSingle());
+  await store.blobs.del(`library/${f.storage_path}`);
+  return row;
+}
+export async function ensureCloudIds(ids, files) {
+  for (const id of ids || []) {
+    const f = (files || []).find((x) => x.id === id);
+    if (f && f.cloud === false) await ensureCloud(f);
+  }
+}
+
+// The tutor's own link for a paper (private, opened in the browser)
+export const addPaperLink = (url, name, meta) =>
+  run(
+    sb()
+      .from('files')
+      .insert({ name, mime: 'text/uri-list', size: 0, storage_path: `link/${uid()}/${uuid()}`, link_url: url, visibility: 'hidden', ...examMeta(meta) })
+      .select()
+      .maybeSingle(),
+  );
+
+export const setExamSubjects = (codes) =>
+  run(sb().from('tutor_settings').upsert({ tutor_id: uid(), exam_subjects: codes }, { onConflict: 'tutor_id' }).select().maybeSingle());
+
+// The papers an exam board publishes itself, read from its own website (desktop app). Kept on this
+// device for a week; nothing is stored on StudyBridge's servers.
+export const canReachBoards = () => !!desktop?.webFetch;
+export async function officialPapers(code, { refresh = false } = {}) {
+  const key = `official:cie:${code}`;
+  const hit = await store.get(key);
+  if (hit && !refresh && Date.now() - hit.at < 7 * 864e5) return hit;
+  const url = officialPage(code);
+  if (!url || !desktop?.webFetch) return hit || { at: 0, items: [], page: url, unavailable: true };
+  const r = await desktop.webFetch(url, 'text');
+  if (r.error) {
+    if (hit) return { ...hit, stale: true };
+    throw new Error(r.error);
+  }
+  const out = { at: Date.now(), items: parseOfficialPage(code, r.text), page: url };
+  await store.set(key, out);
+  return out;
+}
+export async function officialBlob(url) {
+  const key = `official/${url}`;
+  const hit = await store.blobs.get(key);
+  if (hit) return hit;
+  if (!desktop?.webFetch) throw new Error('Open this one in your browser.');
+  const r = await desktop.webFetch(url, 'bytes');
+  if (r.error) throw new Error(r.error);
+  const blob = new Blob([r.bytes], { type: r.type || 'application/pdf' });
+  await store.blobs.set(key, blob);
+  return blob;
+}
+
 // Images inside questions and lessons (always readable by the tutor's learners)
 export async function uploadImage(file, kind = 'questions') {
   const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
@@ -97,6 +190,8 @@ export async function getBlob(bucket, path, { fresh = false } = {}) {
     const hit = await store.blobs.get(key);
     if (hit) return hit;
   }
+  if (path.startsWith('local/')) throw new Error('This paper is kept on the computer it was imported on. Open it there, or import it on this device too.');
+  if (path.startsWith('link/')) throw new Error('This is a saved link, not a file.');
   const { data, error } = await sb().storage.from(bucket).download(path);
   if (error) {
     const hit = await store.blobs.get(key);

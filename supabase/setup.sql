@@ -383,6 +383,29 @@ create table if not exists public.tutor_secrets (
   livekit_api_secret text
 );
 
+-- Past papers: where a library file sits in the exam catalogue (board, syllabus, year, session, paper).
+-- Imported papers stay on the tutor's computer (cloud = false) until the tutor shares one with learners.
+-- A saved link has no file at all (link_url). StudyBridge never stores exam-board files for anyone else.
+alter table public.files add column if not exists exam_board text;
+alter table public.files add column if not exists exam_code text;
+alter table public.files add column if not exists exam_year int;
+alter table public.files add column if not exists exam_session text;
+alter table public.files add column if not exists exam_kind text;
+alter table public.files add column if not exists exam_paper text;
+alter table public.files add column if not exists exam_level text;
+alter table public.files add column if not exists exam_tz text;
+alter table public.files add column if not exists sha256 text;
+alter table public.files add column if not exists cloud boolean not null default true;
+alter table public.files add column if not exists link_url text;
+do $$ begin
+  alter table public.files add constraint files_local_hidden check (cloud or visibility = 'hidden');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.files add constraint files_link_http check (link_url is null or link_url ~* '^https?://');
+exception when duplicate_object then null; end $$;
+create index if not exists idx_files_exam on public.files (tutor_id, exam_board, exam_code);
+alter table public.tutor_settings add column if not exists exam_subjects text[] not null default '{}';
+
 alter table public.lessons add column if not exists draft boolean not null default false;
 alter table public.lessons add column if not exists source text not null default 'tutor';
 alter table public.claude_drafts add column if not exists source text not null default 'claude';

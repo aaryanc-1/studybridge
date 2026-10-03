@@ -26,6 +26,24 @@ export default function FileView({ id }) {
 }
 
 export function FileBody({ file, tutor }) {
+  if (file.link_url) return <LinkBody file={file} />;
+  return <StoredBody file={file} tutor={tutor} />;
+}
+
+function LinkBody({ file }) {
+  return (
+    <div className="card" style={{ alignItems: 'flex-start' }}>
+      <Icon name="link" size={32} />
+      <div className="strong">{file.name}</div>
+      <div className="muted small ellipsis" style={{ maxWidth: '100%' }}>{file.link_url}</div>
+      <a className="btn primary" href={file.link_url} target="_blank" rel="noreferrer">
+        Open in browser
+      </a>
+    </div>
+  );
+}
+
+function StoredBody({ file, tutor }) {
   const { blob, url, error } = useBlob('library', file.storage_path);
   useReadingTime(tutor ? null : file.id);
   if (error) return <div className="error">{error.message}</div>;

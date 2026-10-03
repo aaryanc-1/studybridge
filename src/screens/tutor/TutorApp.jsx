@@ -18,6 +18,7 @@ import Messages from '../shared/Messages.jsx';
 import Live, { Watch } from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
+import { OfficialView } from './PastPapers.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -65,6 +66,7 @@ export default function TutorApp() {
   else if (a === 'library') page = <Library tab={b} />;
   else if (a === 'lesson') page = <LessonEditor id={b} />;
   else if (a === 'file') page = <FileView id={b} />;
+  else if (a === 'official' && b) page = <OfficialView url={decodeURIComponent(b)} />;
   else if (a === 'assignments' && b) page = <AssignmentEditor id={b} />;
   else if (a === 'assignments') page = <Assignments />;
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;

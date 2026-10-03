@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('studybridge', {
   keepInBackground: (on) => ipcRenderer.invoke('app:background', on),
   askMedia: () => ipcRenderer.invoke('media:ask'),
   saveFile: (name, bytes) => ipcRenderer.invoke('file:save', { name, bytes }),
+  webFetch: (url, as = 'bytes') => ipcRenderer.invoke('web:fetch', { url, as }),
   saveConnector: () => ipcRenderer.invoke('connector:save'),
   openConnector: () => ipcRenderer.invoke('connector:open'),
   updates: {
