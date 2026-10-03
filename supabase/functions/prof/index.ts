@@ -171,14 +171,14 @@ export function createHandler(env) {
     },
     {
       name: 'add_questions',
-      description: 'Add up to 4 questions to a draft assignment you started. Call it again for more.',
+      description: 'Add up to 8 questions to a draft assignment you started. Call it again for more.',
       input_schema: {
         type: 'object',
         properties: {
           assignment_id: { type: 'string' },
           questions: {
             type: 'array',
-            maxItems: 4,
+            maxItems: 8,
             items: {
               type: 'object',
               properties: {
@@ -232,8 +232,22 @@ export function createHandler(env) {
         file_id: { type: 'string' },
         pages: { type: 'array', items: { type: 'integer' }, maxItems: 10 },
         why: { type: 'string', description: 'A few words for the tutor, e.g. "the chapter on simultaneous equations"' },
+        pictures: { type: 'boolean', description: 'true to see the pictures even if you already have notes on these pages (e.g. you need a diagram)' },
       },
       required: ['file_id', 'pages'],
+    },
+  };
+  const NOTE_TOOL = {
+    name: 'note_pages',
+    description:
+      'After reading pages as pictures, save short notes on each page (what it teaches, key definitions and formulas, worked examples, exercise numbers and what they ask). Next time anyone asks about these pages you get your notes instead of the pictures, which is much cheaper. Under 150 words per page.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string' },
+        notes: { type: 'array', items: { type: 'object', properties: { page: { type: 'integer' }, text: { type: 'string' } }, required: ['page', 'text'] }, maxItems: 10 },
+      },
+      required: ['file_id', 'notes'],
     },
   };
   const MAX_LOOKS = 4;
@@ -244,10 +258,11 @@ You make DRAFT assignments and lessons. The tutor reviews and approves everythin
 
 How to work:
 1. Read the tutor's request. Use the subjects, topics and learners below (use their ids). If the tutor names a learner, set learner_ids.
-2. For an assignment: call start_assignment, then add_questions with AT MOST 4 questions per call (call it again for more), then finish.
+2. For an assignment: call start_assignment, then add_questions with AT MOST 8 questions per call (call it again for more), then finish.
 3. For a lesson: call create_lesson, then finish.
 4. If details are missing (topic, how many questions, due date), make sensible choices and go ahead: use the learner's subjects, level and topics_needing_work, about 8 questions, no due date. Say in finish what you assumed so the tutor can ask for changes. Only finish with a question instead if you truly can't make anything useful.
 ${books.length ? `5. The tutor chose whole books (below). Find the right pages from the outline or the contents pages, then call look_at_pages to read them before writing questions. Base the work on what those pages teach. Use look_at_pages at most ${MAX_LOOKS} times.
+6. When look_at_pages gives you pictures, also call note_pages (in the same reply as your next step) with short notes on each page. If it gives you your earlier notes instead, work from them; ask again with pictures: true only if you truly need to see a diagram.
 ` : ''}
 Writing questions:
 - Pitch them at the learner's level and syllabus. Vary difficulty: start accessible, end with something that stretches.
@@ -374,7 +389,7 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
     if (name === 'add_questions') {
       const a = made.assignments.find((x) => x.id === input.assignment_id);
       if (!a) throw new Error('Unknown assignment_id. Use the id start_assignment gave you.');
-      const qs = (input.questions || []).slice(0, 6);
+      const qs = (input.questions || []).slice(0, 8);
       for (const x of qs) {
         if (!TYPES.includes(x.type)) throw new Error(`Unknown question type ${x.type}`);
         const q = await insert('questions', {
@@ -405,6 +420,16 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
       });
       made.lessons.push({ id: l.id, title: l.title });
       return { lesson_id: l.id };
+    }
+    if (name === 'note_pages') {
+      const book = (job.context?.books || []).find((b) => b.file_id === input.file_id);
+      if (!book) throw new Error('Unknown file_id: use one from the books listed.');
+      const rows = (input.notes || [])
+        .filter((n) => Number.isInteger(n.page) && n.page >= 1 && n.page <= book.pages && n.text)
+        .slice(0, 10)
+        .map((n) => ({ file_id: book.file_id, page: n.page, tutor_id: job.tutor_id, notes: String(n.text).slice(0, 1500) }));
+      if (rows.length) await rest('book_notes?on_conflict=file_id,page', { method: 'POST', body: rows, prefer: 'resolution=merge-duplicates,return=minimal' });
+      return { saved: rows.length };
     }
     if (name === 'finish') return { ok: true };
     throw new Error(`Unknown tool ${name}`);
@@ -442,9 +467,9 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
     if (job.steps >= MAX_STEPS) throw new Error('Prof stopped: this took too many steps. Try asking for less at once.');
     const { ctx, messages, made } = st;
     const res = await claude(cfg, {
-      max_tokens: 8000,
+      max_tokens: 12000,
       system: [{ type: 'text', text: createSystem(ctx, books), cache_control: { type: 'ephemeral' } }],
-      tools: books.length ? [...CREATE_TOOLS, LOOK_TOOL] : CREATE_TOOLS,
+      tools: books.length ? [...CREATE_TOOLS, LOOK_TOOL, NOTE_TOOL] : CREATE_TOOLS,
       messages: await expand(messages),
     });
     let blocks = res.content || [];
@@ -467,8 +492,28 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
               : !pages.length
                 ? `Those page numbers aren’t in the book (it has ${book.pages} PDF pages).`
                 : null;
-        if (why) results.push({ type: 'tool_result', tool_use_id: u.id, content: why, is_error: true });
-        else look = { tool_use_id: u.id, file_id: book.file_id, name: book.name, pages, why: String(u.input?.why || '').slice(0, 120) };
+        if (why) {
+          results.push({ type: 'tool_result', tool_use_id: u.id, content: why, is_error: true });
+          continue;
+        }
+        // Pages Prof has read before: its notes, straight away and much cheaper than pictures
+        if (!u.input?.pictures) {
+          const notes = await rest(`book_notes?file_id=eq.${book.file_id}&page=in.(${pages.join(',')})&select=page,notes`).catch(() => []);
+          if (notes.length === pages.length) {
+            st.looks = (st.looks || 0) + 1;
+            st.notes_used = (st.notes_used || 0) + pages.length;
+            results.push({
+              type: 'tool_result',
+              tool_use_id: u.id,
+              content: `Your notes from reading these pages before (ask with pictures: true if you need to see them):\n${notes
+                .sort((a, b) => a.page - b.page)
+                .map((n) => `PDF page ${n.page}: ${n.notes}`)
+                .join('\n')}`,
+            });
+            continue;
+          }
+        }
+        look = { tool_use_id: u.id, file_id: book.file_id, name: book.name, pages, why: String(u.input?.why || '').slice(0, 120) };
         continue;
       }
       try {
@@ -516,7 +561,7 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
       return;
     }
     const next = [...results];
-    if (cut) next.push({ type: 'text', text: 'Your last reply was cut off. Add fewer questions per call (at most 3).' });
+    if (cut) next.push({ type: 'text', text: 'Your last reply was cut off. Add fewer questions per call (at most 4).' });
     if (!next.length) next.push({ type: 'text', text: 'Carry on, or call finish if you are done.' });
     messages.push({ role: 'user', content: next });
     await save(job, 'queued', { ...use, p_state: { ...st, tries: 0 }, p_progress: progressOf(made) });

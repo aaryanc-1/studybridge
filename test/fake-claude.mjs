@@ -106,9 +106,12 @@ function reply(body) {
   const lastResult = Array.isArray(last.content) ? last.content.find((b) => b.type === 'tool_result') : null;
   if (step === 0) {
     const sys = body.system[0].text;
+    // after seeing page pictures, Prof also saves notes on them
+    const sawPictures = lastResult && Array.isArray(lastResult.content) && lastResult.content.some((b) => b.type === 'image');
+    const noteCall = sawPictures && looks ? [tu('note_pages', { file_id: body.messages[0].content[0].text.match(/file_id ([0-9a-f-]{36})/)[1], notes: [{ page: 1, text: 'Linear equations: solve ax + b = c by inverse operations.' }, { page: 2, text: 'Exercise 3A: 12 equations to solve.' }] })] : [];
     const subj = JSON.parse(sys.slice(sys.indexOf('{"programmes"'))).subjects[0];
     const learner = JSON.parse(sys.slice(sys.indexOf('{"programmes"'))).learners[0];
-    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [{ type: 'text', text: 'I will make the quiz.' }, tu('start_assignment', { title: 'Linear equations quiz', kind: 'quiz', subject_id: subj?.id, learner_ids: learner ? [learner.id] : undefined, due_at: '2026-10-09T20:00:00+02:00' })] };
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [{ type: 'text', text: 'I will make the quiz.' }, ...noteCall, tu('start_assignment', { title: 'Linear equations quiz', kind: 'quiz', subject_id: subj?.id, learner_ids: learner ? [learner.id] : undefined, due_at: '2026-10-09T20:00:00+02:00' })] };
   }
   const aid = body.messages
     .flatMap((m) => (Array.isArray(m.content) ? m.content : []))

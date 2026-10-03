@@ -536,6 +536,16 @@ create table if not exists public.parent_reports (
 );
 alter table public.prof_settings add column if not exists auto_reports boolean not null default false;
 
+-- Prof's own notes on pages of a tutor's book, so it reads the notes next time instead of the pictures (cheaper)
+create table if not exists public.book_notes (
+  file_id uuid not null references public.files (id) on delete cascade,
+  page int not null check (page > 0),
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  notes text not null,
+  created_at timestamptz not null default now(),
+  primary key (file_id, page)
+);
+
 -- Tests and exams: questions stay hidden until the learner starts an attempt.
 create or replace function public._questions_open(p_assignment uuid) returns boolean
 language sql stable security definer set search_path = public as $$
@@ -601,6 +611,7 @@ alter table public.prof_jobs enable row level security;
 alter table public.bank_questions enable row level security;
 alter table public.learner_reports enable row level security;
 alter table public.parent_reports enable row level security;
+alter table public.book_notes enable row level security;
 
 -- (re)create policies
 do $$
@@ -648,6 +659,8 @@ create policy parent_reports_tutor on public.parent_reports for all
   using (tutor_id = auth.uid())
   with check (tutor_id = auth.uid() and public.is_my_learner(learner_id)
               and (status = 'draft' or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.enabled)));
+create policy book_notes_tutor on public.book_notes for select using (tutor_id = auth.uid());
+create policy book_notes_delete on public.book_notes for delete using (tutor_id = auth.uid());
 create policy parent_reports_learner on public.parent_reports for select using (learner_id = auth.uid() and status = 'sent');
 create policy bank_admin on public.bank_questions for all
   using (owner_id is null and public.is_platform_admin()) with check (owner_id is null and public.is_platform_admin());
@@ -2121,6 +2134,8 @@ begin
       if not exists (select 1 from public.assignments where id = new.assignment_id and draft) then
         raise exception 'Prof can only add questions to drafts.';
       end if;
+    elsif tg_table_name = 'book_notes' then
+      if not exists (select 1 from public.files where id = new.file_id and tutor_id = new.tutor_id) then raise exception 'Not that tutor’s book.'; end if;
     elsif tg_table_name = 'parent_reports' then
       if tg_op <> 'UPDATE' or old.status <> 'draft' or new.status <> 'draft' then raise exception 'Prof only writes report drafts.'; end if;
     elsif tg_table_name = 'bank_questions' then
@@ -2138,7 +2153,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['assignments', 'lessons', 'questions', 'question_keys', 'bank_questions', 'parent_reports'] loop
+  foreach t in array array['assignments', 'lessons', 'questions', 'question_keys', 'bank_questions', 'parent_reports', 'book_notes'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_prof_guard', t);
     execute format('create trigger %I before insert or update on public.%I for each row execute function public._prof_guard()', t || '_prof_guard', t);
   end loop;

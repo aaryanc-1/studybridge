@@ -197,6 +197,17 @@ test('Prof reads a whole book (asks the app for pages) and takes replies', async
   assert.equal(tr.content.filter((b) => b.type === 'image').length, 2, 'the pages reach Prof as pictures');
   for (const p of pages) assert.equal((await T.storage.from('library').download(p.path)).data, null, 'page pictures are tidied away');
 
+  // Prof saved notes on the pages it read; next time it reads the notes instead of asking for pictures
+  const notes = await q(T.from('book_notes').select('page,notes').eq('file_id', book.id).order('page'));
+  assert.deepEqual(notes.map((n) => n.page), [1, 2]);
+  const again = await q(T.rpc('prof_ask', { p_prompt: 'Another homework from the same chapter', p_context: { books: [{ file_id: book.id, name: book.name, pages: 120, outline: 'Linear equations → 45' }] } }));
+  await kick(T);
+  const aj = await q(T.from('prof_jobs').select('*').eq('id', again.id).single());
+  assert.equal(aj.status, 'done', aj.error || 'no waiting for pictures: the notes were enough');
+  const usedNotes = seen.filter((x) => x.body.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result' && typeof b.content === 'string' && b.content.includes('Your notes from reading these pages before'))));
+  assert.ok(usedNotes.length > 0);
+  await q(T.from('prof_jobs').delete().eq('id', again.id)).catch(() => {});
+
   // A reply carries the earlier request and answer
   const reply = await q(T.rpc('prof_ask', { p_prompt: 'Make questions 4 and 5 harder', p_context: { reply_to: job.id } }));
   await kick(T);
