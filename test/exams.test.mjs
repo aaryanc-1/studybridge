@@ -19,6 +19,14 @@ test('Cambridge file names', () => {
 test('IB file names and folders', () => {
   assert.equal(pick(X.parseFilename('Physics_paper_2__TZ1_HL_markscheme.pdf', 'May 2019/Physics')), 'ib|physics|2019|may|ms|2|HL|TZ1');
   assert.equal(pick(X.parseFilename('Mathematics_analysis_and_approaches_paper_1__TZ2_SL.pdf', 'Nov 2022')), 'ib|math-aa|2022|nov|qp|1|SL|TZ2');
+  assert.equal(pick(X.parseFilename('November_2025_Math_AA_SL_Paper_1_for_IB.pdf')), 'ib|math-aa|2025|nov|qp|1|SL|');
+  assert.equal(pick(X.parseFilename('Mathematics_analysis_and_approaches_paper_1_TZ1_SL.pdf')), 'ib|math-aa|||qp|1|SL|TZ1', 'the cover page fills in the rest');
+});
+
+test('IB cover page, past the copyright page', () => {
+  const boiler = (l) => `© International Baccalaureate Organization 2025 All rights reserved. ${l} use by tutoring or study services, vendors operating curriculum mapping services or teacher resource digital platforms is prohibited. More information: https://ibo.org/become-an-ib-school/ib-publishing/licensing/applying-for-a-license/.`;
+  const text = `${boiler('a')} ${boiler('b')} ${boiler('c')} Mathematics: analysis and approaches Standard level Paper 1 10 November 2025 Zone A afternoon | Zone B afternoon 1 hour 30 minutes Instructions to candidates 8825 – 7109 © International Baccalaureate Organization 2025`;
+  assert.equal(pick(X.parseCover(text)), 'ib|math-aa|2025|nov|qp|1|SL|', '“teacher resource” in the notice doesn’t make it an insert');
 });
 
 test('cover pages', () => {

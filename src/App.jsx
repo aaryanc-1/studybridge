@@ -9,6 +9,7 @@ import Welcome from './screens/Welcome.jsx';
 import FinishSetup, { WaitingForApproval } from './screens/FinishSetup.jsx';
 import TutorApp from './screens/tutor/TutorApp.jsx';
 import LearnerApp from './screens/learner/LearnerApp.jsx';
+import AdminApp from './screens/admin/AdminApp.jsx';
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
@@ -48,7 +49,9 @@ export default function App() {
       }
       sessionStorage.removeItem('sb.pendingInvite');
       sessionStorage.removeItem('sb.pendingName');
-      if (p?.role === 'tutor') p = { ...p, is_admin: !!(await api.isAdmin().catch(() => cached?.is_admin)) };
+      // A tutor account that still holds admin the old way is offered the move to its own admin account
+      if (p?.role === 'tutor') p = { ...p, admin_to_move: !!(await api.adminToMove().catch(() => cached?.admin_to_move)) };
+      if (p?.role === 'admin') p = { ...p, is_admin: true };
       if (p) await store.set(`profile:${u.id}`, p);
       api.setMe(p);
       setBootError(null);
@@ -132,6 +135,7 @@ export default function App() {
   if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
   else if (!server || !user) body = <Welcome />;
   else if (!profile || !profile.role) body = <FinishSetup />;
+  else if (profile.role === 'admin') body = <AdminApp />;
   else if (profile.role === 'tutor' && profile.status !== 'active') body = <WaitingForApproval />;
   else if (profile.role === 'tutor') body = <TutorApp />;
   else body = <LearnerApp />;

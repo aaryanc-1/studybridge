@@ -9,7 +9,7 @@ import { join, extname } from 'node:path';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
-import { startFakeSupabase } from './fake-supabase.mjs';
+import { startFakeSupabase, totp } from './fake-supabase.mjs';
 import { startFakeClaude, seen } from './fake-claude.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -65,8 +65,10 @@ const watch = (page, label) => {
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined) });
 const A = await (await browser.newContext({ viewport: { width: 1400, height: 900 }, timezoneId: 'America/New_York' })).newPage();
 const B = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'Europe/London' })).newPage();
-watch(A, 'admin');
+const ADM = await (await browser.newContext({ viewport: { width: 1300, height: 860 }, timezoneId: 'America/New_York' })).newPage();
+watch(A, 'tutor');
 watch(B, 'tutor2');
+watch(ADM, 'admin');
 
 async function signUpTutor(P, name, email) {
   await P.goto(web.url);
@@ -78,10 +80,47 @@ async function signUpTutor(P, name, email) {
 }
 
 try {
-  step('First tutor signs up (no server to set up) and is the StudyBridge admin');
+  step('First tutor signs up (no server to set up); admin goes to its own account');
   await signUpTutor(A, 'Aaryan Chouhan', 'aaryan@example.com');
-  await nav(A, 'Admin').waitFor();
   await nav(A, 'Prof').waitFor();
+  await nav(A, 'Admin').click();
+  await A.getByRole('heading', { name: 'Admin has its own account now' }).waitFor();
+  await A.getByLabel('Email for the admin account').fill('aaryan+admin@example.com');
+  await A.getByRole('button', { name: 'Make this the admin account' }).click();
+  await A.getByText('aaryan+admin@example.com will be the admin account').waitFor();
+  await shot(A, 'tutor-moves-admin');
+
+  step('The admin account signs up, sets up two-step sign-in, and opens Admin');
+  await signUpTutor(ADM, 'Aaryan (admin)', 'aaryan+admin@example.com');
+  await ADM.getByRole('heading', { name: /Set up as the StudyBridge admin/ }).waitFor();
+  await ADM.getByRole('button', { name: 'Set up admin account' }).click();
+  await ADM.getByRole('heading', { name: 'Set up two-step sign-in' }).waitFor();
+  await ADM.getByAltText('QR code for your authenticator app').waitFor();
+  const key = (await ADM.locator('.twostep-key').innerText()).replace(/\s+/g, '');
+  await shot(ADM, 'admin-two-step-setup');
+  await ADM.getByLabel('Code').fill('000000');
+  await ADM.getByRole('button', { name: 'Turn on and open Admin' }).click();
+  await ADM.getByText(/That code didn’t work/).waitFor();
+  await ADM.getByLabel('Code').fill(totp(key));
+  await ADM.getByRole('button', { name: 'Turn on and open Admin' }).click();
+  await nav(ADM, 'Tutors').waitFor();
+  assert.equal(await nav(ADM, 'Learners').count(), 0, 'the admin account has no teaching screens');
+  await A.reload();
+  await nav(A, 'Learners').waitFor();
+  assert.equal(await nav(A, 'Admin').count(), 0, 'the tutor account no longer has Admin');
+
+  step('Signing in to the admin account again asks for the code');
+  await ADM.evaluate(() => localStorage.removeItem('sb.auth'));
+  await ADM.goto(web.url);
+  await ADM.getByRole('heading', { name: 'Sign in' }).waitFor();
+  await ADM.getByLabel('Email').fill('aaryan+admin@example.com');
+  await ADM.getByLabel('Password').fill('secret123');
+  await ADM.getByRole('button', { name: 'Sign in' }).click();
+  await ADM.getByRole('heading', { name: 'Admin sign-in' }).waitFor();
+  await shot(ADM, 'admin-code');
+  await ADM.getByLabel('Code').fill(totp(key));
+  await ADM.getByRole('button', { name: 'Open Admin' }).click();
+  await nav(ADM, 'Tutors').waitFor();
 
   step('Another tutor signs up and waits for approval');
   await B.goto(web.url);
@@ -95,24 +134,25 @@ try {
   await shot(B, 'tutor-waiting-for-approval');
 
   step('Admin approves her');
-  await A.reload();
-  await nav(A, 'Admin').click();
-  await A.getByRole('heading', { name: 'Waiting for approval' }).waitFor();
-  await shot(A, 'admin-waiting');
-  await A.getByRole('button', { name: 'Approve' }).click();
-  await A.getByText('Maria Banda approved').waitFor();
+  await ADM.reload();
+  await nav(ADM, 'Tutors').click();
+  await ADM.getByRole('heading', { name: 'Waiting for approval' }).waitFor();
+  await shot(ADM, 'admin-waiting');
+  await ADM.getByRole('button', { name: 'Approve' }).click();
+  await ADM.getByText('Maria Banda approved').waitFor();
   await B.getByRole('button', { name: 'Check again' }).click();
   await nav(B, 'Learners').waitFor();
   assert.equal(await nav(B, 'Admin').count(), 0, 'only the admin has Admin');
 
   step('Admin switches Prof on (Claude key, write-only) and checks the server');
-  await A.getByLabel('Claude API key').fill('sk-ant-test-key');
-  await A.getByRole('button', { name: 'Save', exact: true }).click();
-  await A.getByText('Prof settings saved').waitFor();
-  await A.getByRole('button', { name: 'Check the Prof server' }).click();
-  await A.getByText(/Prof server is working/).waitFor();
-  assert.equal(await A.getByLabel('Claude API key').inputValue(), '');
-  await shot(A, 'admin-console');
+  await nav(ADM, 'StudyBridge settings').click();
+  await ADM.getByLabel('Claude API key').fill('sk-ant-test-key');
+  await ADM.getByRole('button', { name: 'Save', exact: true }).click();
+  await ADM.getByText('Prof settings saved').waitFor();
+  await ADM.getByRole('button', { name: 'Check the Prof server' }).click();
+  await ADM.getByText(/Prof server is working/).waitFor();
+  assert.equal(await ADM.getByLabel('Claude API key').inputValue(), '');
+  await shot(ADM, 'admin-console');
 
   step('A learner joins; the tutor’s textbook is in the library');
   const tc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
@@ -193,24 +233,44 @@ try {
     { name: '0607_s23_ms_41.pdf', mimeType: 'application/pdf', buffer: variantOf('ms41') },
     { name: '0607_s23_qp_41 (1).pdf', mimeType: 'application/pdf', buffer: variantOf('qp41') },
     { name: '0580_w22_qp_22.pdf', mimeType: 'application/pdf', buffer: variantOf('qp22') },
+    { name: 'November_2025_Math_AA_SL_Paper_1_for_IB.pdf', mimeType: 'application/pdf', buffer: variantOf('ibnov25') },
+    { name: 'Mathematics_analysis_and_approaches_paper_1_TZ1_SL.pdf', mimeType: 'application/pdf', buffer: variantOf('ibtz1') },
     { name: 'chapter notes.pdf', mimeType: 'application/pdf', buffer: variantOf('notes') },
     { name: 'readme.txt', mimeType: 'text/plain', buffer: Buffer.from('hello') },
   ];
   const storageBefore = (await tc.storage.from('library').list(`${me}/files`)).data?.length || 0;
   await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Past papers' }).click();
-  await A.getByText('Every IGCSE and IB paper, in one place').waitFor();
+  await A.getByText('Your learners’ exams show here', { exact: true }).waitFor();
+  // The tutor says which exam the subject is for; Past papers then follows the learners
+  await nav(A, 'Subjects').click();
+  await A.getByRole('button', { name: 'Edit Mathematics' }).click();
+  await A.getByRole('dialog', { name: 'Edit subject' }).getByLabel('Exam').selectOption('cie:0607');
+  await A.getByRole('dialog', { name: 'Edit subject' }).getByRole('button', { name: 'Save' }).click();
+  await A.locator('.pill', { hasText: '(0607)' }).waitFor();
+  await nav(A, 'Library').click();
+  await A.getByRole('button', { name: 'Past papers' }).click();
+  await A.locator('.pill.click', { hasText: '(Anaya)' }).waitFor();
+  await A.getByText('For Anaya (Mathematics)').waitFor();
   await A.getByRole('button', { name: 'Import papers' }).click();
   const dlg = A.getByRole('dialog', { name: 'Import past papers' });
   await dlg.locator('input[type=file][accept]').setInputFiles(paperFiles);
-  await dlg.getByRole('button', { name: /Import 3 papers/ }).waitFor({ timeout: 30000 });
+  await dlg.getByRole('button', { name: /Import 5 papers/ }).waitFor({ timeout: 30000 });
   await dlg.getByText('Same file twice').waitFor();
   await dlg.getByText('Couldn’t tell which paper').waitFor();
+  // Fix one that was read without its session: the tutor sets it
+  await dlg.getByRole('button', { name: 'Fix Mathematics_analysis_and_approaches_paper_1_TZ1_SL.pdf' }).click();
+  const fix = A.getByRole('dialog', { name: 'Which paper is this?' });
+  await fix.getByLabel('Session').selectOption('may');
+  await fix.getByLabel('Year').fill('2024');
+  await fix.getByText('Files as: Mathematics: analysis and approaches SL May 2024 Paper 1 TZ1').waitFor();
+  await fix.getByRole('button', { name: 'Use this' }).click();
+  await dlg.getByText('Mathematics: analysis and approaches SL May 2024 Paper 1 TZ1').waitFor();
   await shot(A, 'papers-import');
-  await dlg.getByRole('button', { name: /Import 3 papers/ }).click();
-  await A.getByText('Imported 3 papers').waitFor({ timeout: 30000 });
+  await dlg.getByRole('button', { name: /Import 5 papers/ }).click();
+  await A.getByText('Imported 5 papers').waitFor({ timeout: 30000 });
   const papers = (await tc.from('files').select('*').not('exam_board', 'is', null)).data;
-  assert.equal(papers.length, 3);
+  assert.equal(papers.length, 5);
   assert.ok(papers.every((f) => f.cloud === false && f.storage_path.startsWith('local/') && f.sha256), 'kept on the computer, not uploaded');
   assert.equal((await tc.storage.from('library').list(`${me}/files`)).data?.length || 0, storageBefore, 'nothing uploaded');
   // the folder's subject is opened and pinned
@@ -253,6 +313,18 @@ try {
   await A.getByRole('button', { name: 'Find' }).click();
   await A.getByRole('dialog', { name: '0580 November 2022 Paper 2' }).getByText('0580 November 2022 Paper 22').waitFor();
   await A.getByRole('dialog').getByRole('button', { name: 'Close' }).click();
+
+  step('IB: papers filed by level and paper; private to the tutor; Prof can write one in the same style');
+  await A.getByLabel('Subject').selectOption('ib:math-aa');
+  const sl1 = A.locator('.ib-paper', { hasText: 'Paper 1' }).first();
+  await sl1.locator('.paper-chip', { hasText: 'Nov 2025' }).waitFor();
+  await sl1.locator('.paper-chip', { hasText: 'May 2024 TZ1' }).waitFor();
+  await shot(A, 'papers-ib');
+  await sl1.locator('.paper-chip', { hasText: 'Nov 2025' }).click();
+  const ibp = A.getByRole('dialog', { name: 'Mathematics: analysis and approaches SL November 2025 Paper 1' });
+  await ibp.getByText(/IB paper, private to you/).waitFor();
+  await ibp.getByRole('button', { name: 'Prof: practice paper in this style' }).waitFor();
+  await ibp.getByRole('button', { name: 'Close' }).click();
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
   await A.getByRole('button', { name: 'Files' }).click();
@@ -367,27 +439,27 @@ try {
   await C.close();
 
   step('Admin adds shared StudyBridge questions; every tutor gets them once approved');
-  await nav(A, 'Admin').click();
-  await A.getByRole('heading', { name: 'Shared question bank' }).waitFor();
-  await A.getByRole('button', { name: 'Ask Prof for shared questions' }).click();
-  const sh = A.getByRole('dialog', { name: 'Add shared StudyBridge questions' });
+  await nav(ADM, 'StudyBridge questions').click();
+  await ADM.getByRole('heading', { name: 'StudyBridge questions' }).waitFor();
+  await ADM.getByRole('button', { name: 'Ask Prof for shared questions' }).click();
+  const sh = ADM.getByRole('dialog', { name: 'Add shared StudyBridge questions' });
   await sh.getByRole('button', { name: 'Algebra', exact: true }).click();
   await sh.getByLabel('How many').fill('3');
   await sh.getByRole('button', { name: /Write 3 questions/ }).click();
-  await A.getByText('Shared questions to review').waitFor({ timeout: 60000 });
-  await shot(A, 'admin-shared-bank');
-  await A.getByRole('button', { name: 'Approve 2 the check agreed with' }).click();
-  await A.getByText('0607 · Algebra: 2').waitFor();
+  await ADM.getByText('Shared questions to review').waitFor({ timeout: 60000 });
+  await shot(ADM, 'admin-shared-bank');
+  await ADM.getByRole('button', { name: 'Approve 2 the check agreed with' }).click();
+  await ADM.getByText('0607 · Algebra: 2').waitFor();
   await nav(B, 'Library').click();
   await B.getByRole('button', { name: 'Question bank' }).click();
   await B.locator('.bank-q', { hasText: 'StudyBridge' }).first().waitFor();
   assert.equal(await B.locator('.bank-q').count(), 2, 'the other tutor sees only the approved shared questions');
 
   step('Admin pauses the other tutor: she can’t sign in, nothing is deleted');
-  await nav(A, 'Admin').click();
-  await A.locator('.tutor-row', { hasText: 'Maria Banda' }).getByRole('button', { name: 'Pause' }).click();
-  await A.getByRole('dialog').getByRole('button', { name: 'Pause' }).click();
-  await A.getByText('Maria Banda paused', { exact: true }).waitFor();
+  await nav(ADM, 'Tutors').click();
+  await ADM.locator('.tutor-row', { hasText: 'Maria Banda' }).getByRole('button', { name: 'Pause' }).click();
+  await ADM.getByRole('dialog').getByRole('button', { name: 'Pause' }).click();
+  await ADM.getByText('Maria Banda paused', { exact: true }).waitFor();
   await B.reload();
   await B.getByText('Your account is paused').waitFor();
   await B.getByRole('button', { name: 'Sign out' }).click();
@@ -396,13 +468,15 @@ try {
   await B.getByLabel('Password').fill('secret123');
   await B.getByRole('button', { name: 'Sign in' }).click();
   await B.getByText(/This account is paused/).waitFor();
-  await A.getByText('What’s been done').waitFor();
-  await shot(A, 'admin-log');
+  await nav(ADM, 'What’s been done').click();
+  await ADM.locator('.item', { hasText: 'maria@example.com' }).filter({ hasText: 'Paused' }).waitFor();
+  await shot(ADM, 'admin-log');
 
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');
 } catch (e) {
-  await A.screenshot({ path: join(SHOTS, 'product-fail-admin.png') }).catch(() => {});
+  await A.screenshot({ path: join(SHOTS, 'product-fail-tutor.png') }).catch(() => {});
+  await ADM.screenshot({ path: join(SHOTS, 'product-fail-admin.png') }).catch(() => {});
   await B.screenshot({ path: join(SHOTS, 'product-fail-tutor2.png') }).catch(() => {});
   console.error('\nProduct walkthrough FAILED:', e.message);
   if (errors.length) console.error(errors.join('\n'));

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Loading, Modal, Seg, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Loading, Modal, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
 import { bytes, ago } from '../../lib/format.js';
 import { FileSettings } from './Library.jsx';
+import { useLookups } from '../shared/lookups.jsx';
 
 const THIS_YEAR = new Date().getFullYear();
 const SESSION_MONTH = { m: 3, s: 5, w: 11, may: 5, nov: 11 };
@@ -21,31 +22,45 @@ const FIRST_YEAR = 2016;
 export default function PastPapers() {
   const files = useQuery('files', api.listFiles);
   const settings = useQuery('tutor_settings', api.getSettings);
+  const lk = useLookups();
   const pinned = settings.data?.exam_subjects || [];
-  const [board, setBoard] = useState('cie');
-  const [code, setCode] = useState(null);
+  const [key, setKey] = useState(null); // 'cie:0607', 'ib:math-aa'
   const [importing, setImporting] = useState(false);
   const [panel, setPanel] = useState(null);
   const [find, setFind] = useState('');
   const toast = useToast();
 
   const mine = (files.data || []).filter((f) => f.exam_board);
-  // syllabuses the tutor has papers for, or pinned
-  const used = useMemo(() => {
+  // Exams your learners take (from the Exam set on each subject), first
+  const learnerExams = useMemo(() => {
+    const m = new Map();
+    for (const s of lk.subjects) {
+      if (!s.exam || !X.findSyllabus(...s.exam.split(':'))) continue;
+      const who = lk.learnersOfSubject(s.id).map((id) => lk.learner(id)?.display_name?.split(' ')[0]).filter(Boolean);
+      if (!who.length) continue;
+      const e = m.get(s.exam) || { key: s.exam, subjects: [], learners: new Set() };
+      e.subjects.push(s.name);
+      who.forEach((w) => e.learners.add(w));
+      m.set(s.exam, e);
+    }
+    return [...m.values()].map((e) => ({ ...e, learners: [...e.learners] }));
+  }, [lk.subjects, lk.learnerSubjects, lk.learners]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Others you added yourself, or have papers for
+  const others = useMemo(() => {
     const s = new Set(pinned);
     for (const f of mine) s.add(`${f.exam_board}:${f.exam_code}`);
-    return [...s];
-  }, [pinned, mine]);
+    for (const e of learnerExams) s.delete(e.key);
+    return [...s].filter((k) => X.findSyllabus(...k.split(':')));
+  }, [pinned, mine, learnerExams]);
 
   useEffect(() => {
-    if (code && X.findSyllabus(board, code)) return;
-    const first = used.find((k) => k.startsWith(board + ':'));
-    setCode(first ? first.split(':')[1] : null);
-  }, [board, used.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (key && X.findSyllabus(...key.split(':'))) return;
+    setKey(learnerExams[0]?.key || others[0] || null);
+  }, [learnerExams.map((e) => e.key).join(','), others.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function pin(c, on) {
-    const k = `${board}:${c}`;
-    const next = on ? [...new Set([...pinned, k])] : pinned.filter((x) => x !== k);
+  const [board, code] = key ? key.split(':') : [null, null];
+  async function pin(on) {
+    const next = on ? [...new Set([...pinned, key])] : pinned.filter((x) => x !== key);
     try {
       await api.setExamSubjects(next);
       invalidate('tutor_settings');
@@ -58,18 +73,25 @@ export default function PastPapers() {
     e.preventDefault();
     const req = X.parseRequest(find);
     if (!req) return toast({ title: 'Couldn’t tell which paper that is', body: 'Try something like “0607 June 2023 Paper 4” or “IB Physics HL Paper 2 May 2023”.', tone: 'bad' });
-    setBoard(req.exam_board);
-    setCode(req.exam_code);
-    if (req.exam_year || req.exam_session) setPanel(req);
+    setKey(`${req.exam_board}:${req.exam_code}`);
+    if (req.exam_year || req.exam_session || req.exam_paper) setPanel(req);
   }
 
-  const syl = code ? X.findSyllabus(board, code) : null;
-  const isPinned = syl && pinned.includes(`${board}:${code}`);
+  const syl = key ? X.findSyllabus(board, code) : null;
+  const forLearners = learnerExams.find((e) => e.key === key);
+  const isPinned = pinned.includes(key);
+  const label = (k) => X.syllabusLabel(...k.split(':'));
 
   return (
     <>
       <div className="row wrap between">
-        <Seg value={board} onChange={(b) => (setBoard(b), setCode(null))} options={Object.entries(X.BOARDS).map(([value, b]) => ({ value, label: b.name }))} />
+        <div className="row wrap" style={{ gap: 6 }}>
+          {learnerExams.map((e) => (
+            <button key={e.key} className={'pill click' + (e.key === key ? ' accent' : '')} onClick={() => setKey(e.key)} title={`${e.subjects.join(', ')} · ${e.learners.join(', ')}`}>
+              {X.BOARDS[e.key.split(':')[0]].short} · {label(e.key)} <span className="muted">({e.learners.join(', ')})</span>
+            </button>
+          ))}
+        </div>
         <div className="row wrap">
           <form className="row" onSubmit={search}>
             <input className="input" style={{ width: 260 }} value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find a paper, e.g. 0607 June 2023 Paper 4" aria-label="Find a paper" />
@@ -84,31 +106,40 @@ export default function PastPapers() {
       </div>
 
       <div className="row wrap">
-        <select className="select" style={{ width: 'auto', maxWidth: '100%' }} value={code || ''} onChange={(e) => setCode(e.target.value || null)} aria-label="Subject">
+        <select className="select" style={{ width: 'auto', maxWidth: '100%' }} value={key || ''} onChange={(e) => setKey(e.target.value || null)} aria-label="Subject">
           <option value="">Choose a subject…</option>
-          {used.some((k) => k.startsWith(board + ':')) && (
-            <optgroup label="Your subjects">
-              {used
-                .filter((k) => k.startsWith(board + ':'))
-                .map((k) => k.split(':')[1])
-                .map((c) => (
-                  <option key={'u' + c} value={c}>
-                    {X.syllabusLabel(board, c)}
-                  </option>
-                ))}
+          {learnerExams.length > 0 && (
+            <optgroup label="Your learners’ exams">
+              {learnerExams.map((e) => (
+                <option key={'l' + e.key} value={e.key}>
+                  {label(e.key)}
+                </option>
+              ))}
             </optgroup>
           )}
-          <optgroup label={`All ${X.BOARDS[board].short} subjects`}>
-            {X.syllabuses(board).map((s) => (
-              <option key={s.code} value={s.code}>
-                {X.syllabusLabel(board, s.code)}
-              </option>
-            ))}
-          </optgroup>
+          {others.length > 0 && (
+            <optgroup label="Also in your list">
+              {others.map((k) => (
+                <option key={'o' + k} value={k}>
+                  {label(k)}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {Object.entries(X.BOARDS).map(([b, info]) => (
+            <optgroup key={b} label={`Other ${info.name} subjects`}>
+              {X.syllabuses(b).map((s) => (
+                <option key={b + s.code} value={`${b}:${s.code}`}>
+                  {X.syllabusLabel(b, s.code)}
+                </option>
+              ))}
+            </optgroup>
+          ))}
         </select>
-        {syl && (
-          <button className="btn sm" onClick={() => pin(code, !isPinned)}>
-            <Icon name="star" size={16} /> {isPinned ? 'Remove from your subjects' : 'Add to your subjects'}
+        {syl && forLearners && <span className="small muted">For {forLearners.learners.join(', ')} ({forLearners.subjects.join(', ')})</span>}
+        {syl && !forLearners && (
+          <button className="btn sm" onClick={() => pin(!isPinned)}>
+            <Icon name="star" size={16} /> {isPinned ? 'Remove from your list' : 'Keep in your list'}
           </button>
         )}
       </div>
@@ -116,8 +147,14 @@ export default function PastPapers() {
       {!files.data ? (
         <Loading />
       ) : !syl ? (
-        <Empty title="Every IGCSE and IB paper, in one place">
-          Choose a subject to see its papers by year and session. Import a folder of papers you already have and each one is filed automatically. Papers the exam board publishes itself open straight from its website.
+        <Empty title={learnerExams.length ? 'Choose a subject' : 'Your learners’ exams show here'}>
+          {learnerExams.length ? (
+            'Pick one of your learners’ exams above, or any other subject from the list.'
+          ) : (
+            <>
+              Tell StudyBridge which exam each of your subjects is for: <a href="#/structure">Subjects</a> → edit a subject → Exam. Then the papers for your learners’ exams show here first. You can still look at any subject from the list above, or import a folder of papers you have.
+            </>
+          )}
         </Empty>
       ) : board === 'cie' ? (
         <CieSyllabus code={code} mine={mine.filter((f) => f.exam_board === 'cie' && f.exam_code === code)} onOpen={setPanel} />
@@ -131,15 +168,12 @@ export default function PastPapers() {
           existing={files.data || []}
           onClose={() => setImporting(false)}
           onDone={async (codes) => {
-            const add = codes.filter((k) => !pinned.includes(k));
+            const known = new Set(learnerExams.map((e) => e.key));
+            const add = codes.filter((k) => !pinned.includes(k) && !known.has(k));
             if (add.length) await api.setExamSubjects([...pinned, ...add]).catch(() => {});
             invalidate('tutor_settings');
             invalidate('files');
-            const first = codes[0];
-            if (first) {
-              setBoard(first.split(':')[0]);
-              setCode(first.split(':')[1]);
-            }
+            if (codes[0]) setKey(codes[0]);
           }}
         />
       )}
@@ -322,64 +356,95 @@ function CieSyllabus({ code, mine, onOpen }) {
   );
 }
 
+// IB: the IB sells its papers, so this is what you have, by level and paper, plus
+// original practice papers Prof writes in each paper's style. No empty grid of years.
+const SESSION_SHORT = { may: 'May', nov: 'Nov', spec: 'Specimen' };
 function IbSyllabus({ syl, mine, onOpen }) {
-  const cols = [];
-  for (const p of syl.papers.length ? syl.papers : ['1']) for (const l of syl.levels) cols.push({ p, l });
-  const years = [];
-  const maxYear = Math.max(THIS_YEAR, ...mine.map((x) => x.exam_year || 0));
-  for (let y = maxYear; y >= FIRST_YEAR; y--) years.push(y);
+  const assignments = useQuery('assignments', api.listAssignments);
+  const papers = syl.papers.length ? syl.papers : ['1'];
+  const practice = (assignments.data || []).filter((a) => /practice paper/i.test(a.title || '') && (a.title || '').toLowerCase().includes(syl.name.toLowerCase()));
+  // one chip per paper sitting (question paper + mark scheme together)
+  const sittings = (list) => {
+    const m = new Map();
+    for (const f of list) {
+      const k = X.slotKey(f);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(f);
+    }
+    return [...m.values()].sort((x, y) => (y[0].exam_year || 0) - (x[0].exam_year || 0) || String(y[0].exam_session).localeCompare(String(x[0].exam_session)));
+  };
+  const levels = [...syl.levels, ...(mine.some((f) => !f.exam_level) ? [null] : [])];
   return (
     <div className="stack">
       <div className="note small">
-        The IB doesn’t publish its past papers for free; it sells them through the{' '}
+        The IB sells its past papers through the{' '}
         <a href={X.IB_STORE} target="_blank" rel="noreferrer">
-          IB’s official store
+          IB store
         </a>
-        . Import the copies you have and they’re filed here automatically.
+        . Papers you import are filed here and stay private to you. For papers you can share freely, ask Prof for an original practice paper in a paper’s style.
       </div>
       {!syl.papers.length && <div className="note small">This subject is assessed mainly through coursework, so there are few written papers.</div>}
-      <div className="card pad0 papers-grid-wrap">
-        <table className="table papers-grid">
-          <thead>
-            <tr>
-              <th>Session</th>
-              {cols.map((c) => (
-                <th key={c.p + c.l}>
-                  Paper {c.p} {c.l}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {years.map((y) =>
-              X.SESSIONS.ib.filter(([s]) => happened(y, s) || mine.some((x) => x.exam_year === y && x.exam_session === s)).map(([s, sname]) => {
-                const row = mine.filter((x) => x.exam_year === y && x.exam_session === s);
-                return (
-                  <tr key={y + s} className={row.length ? '' : 'quiet'}>
-                    <td className="strong nowrap">
-                      {sname} {y}
-                    </td>
-                    {cols.map((c) => {
-                      const cell = row.filter((x) => x.exam_paper === c.p && (!x.exam_level || x.exam_level === c.l));
-                      const tzs = [...new Set(cell.map((x) => x.exam_tz || ''))];
-                      const req = { exam_board: 'ib', exam_code: syl.code, exam_year: y, exam_session: s, exam_paper: c.p, exam_level: c.l };
+      {levels.map((l) => (
+        <div key={l || 'none'} className="card">
+          <h3 style={{ margin: 0 }}>
+            {syl.name} {l || '(level not set)'}
+          </h3>
+          <div className="list">
+            {(l ? papers : ['?']).map((p) => {
+              const list = mine.filter((f) => (l ? f.exam_level === l && (f.exam_paper || '1') === p : !f.exam_level));
+              const sits = sittings(list);
+              const req = { exam_board: 'ib', exam_code: syl.code, exam_paper: l ? p : null, exam_level: l };
+              return (
+                <div key={p} className="item ib-paper">
+                  <span className="strong nowrap" style={{ width: 70 }}>
+                    {l ? `Paper ${p}` : 'Unsorted'}
+                  </span>
+                  <span className="grow row wrap" style={{ gap: 4 }}>
+                    {sits.map((g) => {
+                      const f = g[0];
+                      const lab = [SESSION_SHORT[f.exam_session] || '', f.exam_year || '', f.exam_tz || '', !l && f.exam_paper ? `P${f.exam_paper}` : ''].filter(Boolean).join(' ') || f.name;
                       return (
-                        <td key={c.p + c.l}>
-                          <div className="row" style={{ gap: 4 }}>
-                            {(tzs.length ? tzs : ['']).map((tz) => {
-                              const list = cell.filter((x) => (x.exam_tz || '') === tz);
-                              return <Chip key={tz} label={tz || '—'} state={entryState(list)} hasMs={list.some((x) => x.exam_kind === 'ms')} onClick={() => onOpen(req)} />;
-                            })}
-                          </div>
-                        </td>
+                        <Chip
+                          key={X.slotKey(f)}
+                          label={lab}
+                          state={entryState(g)}
+                          hasMs={g.some((x) => x.exam_kind === 'ms')}
+                          onClick={() => onOpen({ exam_board: 'ib', exam_code: syl.code, exam_year: f.exam_year, exam_session: f.exam_session, exam_paper: f.exam_paper, exam_level: f.exam_level, exam_tz: f.exam_tz })}
+                        />
                       );
                     })}
-                  </tr>
-                );
-              }),
-            )}
-          </tbody>
-        </table>
+                    {!sits.length && <span className="small muted">None yet</span>}
+                  </span>
+                  {l && (
+                    <button className="btn sm" onClick={() => onOpen(req)}>
+                      <Icon name="plus" size={14} /> Add or practise
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <div className="card">
+        <h3 style={{ margin: 0 }} className="row">
+          <Icon name="cap" style={{ color: 'var(--claude)' }} /> Prof’s practice papers
+        </h3>
+        {practice.length ? (
+          <div className="list">
+            {practice.map((a) => (
+              <a key={a.id} className="item" href={`#/assignments/${a.id}`}>
+                <Icon name="clipboard" size={18} />
+                <span className="grow">
+                  <span className="name">{a.title}</span>
+                  <span className="meta">{a.draft ? 'Draft: hidden until you approve' : 'Approved'}</span>
+                </span>
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="small muted">None yet. Choose “Add or practise” on a paper, then “Prof: practice paper in this style”. Prof writes all-new questions with the same structure and marks, with a mark scheme, and you approve it first.</div>
+        )}
       </div>
     </div>
   );
@@ -404,7 +469,7 @@ function SlotPanel({ req, files, onClose }) {
   const myQp = mine.find((f) => f.exam_kind === 'qp' && !f.link_url);
   const myMs = mine.find((f) => f.exam_kind === 'ms' && !f.link_url);
   const title = X.slotLabel({ ...req, exam_kind: req.exam_kind || 'qp' });
-  const exact = req.exam_paper && (req.exam_board === 'ib' || /^\d\d$/.test(req.exam_paper) || req.exam_session === 'spec');
+  const exact = req.exam_paper && (req.exam_board === 'ib' ? !!req.exam_level : /^\d\d$/.test(req.exam_paper) || req.exam_session === 'spec');
 
   async function saveOfficial(x) {
     setBusy(x.url);
@@ -485,6 +550,7 @@ function SlotPanel({ req, files, onClose }) {
                       <span className="tiny muted">
                         {' '}
                         · {x.official ? 'from Cambridge’s website' : x.link_url ? 'your link' : x.cloud === false ? `on this computer · ${bytes(x.size)}` : `in your library · ${bytes(x.size)}`}
+                        {x.exam_board === 'ib' && !x.official && !x.link_url ? ' · IB paper, private to you' : ''}
                       </span>
                     </span>
                     {x.official ? (
@@ -662,6 +728,7 @@ function ImportPapers({ existing, onClose, onDone }) {
   const [reading, setReading] = useState(false);
   const [doing, setDoing] = useState(null);
   const [over, setOver] = useState(false);
+  const [editing, setEditing] = useState(null);
   const folder = useRef(null);
   const picker = useRef(null);
   const known = useMemo(() => new Set(existing.map((f) => f.sha256).filter(Boolean)), [existing]);
@@ -784,8 +851,13 @@ function ImportPapers({ existing, onClose, onDone }) {
                       {r.name}
                     </td>
                     <td className="small">{r.meta ? `${X.slotLabel(r.meta)}` : <span className="muted">{r.why || '—'}</span>}</td>
-                    <td>
+                    <td className="nowrap">
                       <span className={'pill ' + tone[r.status]}>{label[r.status]}</span>
+                      {(r.status === 'new' || r.status === 'unknown') && (
+                        <button className="btn sm ghost" onClick={() => setEditing(i)} aria-label={`Fix ${r.name}`}>
+                          <Icon name="pen" size={14} /> Fix
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -794,7 +866,117 @@ function ImportPapers({ existing, onClose, onDone }) {
           </div>
         </>
       )}
-      <div className="tiny muted">Imported papers stay on this computer and are private to you. A paper is uploaded only when you share it with learners.</div>
+      <div className="tiny muted">Check the list: if a paper was read wrongly (or not at all), choose Fix. Imported papers stay on this computer and are private to you. A paper is uploaded only when you share it with learners.</div>
+      {editing != null && rows[editing] && (
+        <MetaEdit
+          name={rows[editing].name}
+          meta={rows[editing].meta}
+          onClose={() => setEditing(null)}
+          onSave={(meta) => {
+            setRows((rs) => rs.map((r, i) => (i === editing ? { ...r, meta, status: 'new', why: null } : r)));
+            setEditing(null);
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+// Fix what a file was read as, before importing it
+function MetaEdit({ name, meta, onClose, onSave }) {
+  const [m, setM] = useState({ exam_board: 'ib', exam_kind: 'qp', ...(meta || {}) });
+  const set = (k, v) => setM((x) => ({ ...x, [k]: v === '' ? null : v }));
+  const syl = m.exam_code ? X.findSyllabus(m.exam_board, m.exam_code) : null;
+  const ok = !!syl;
+  return (
+    <Modal
+      title="Which paper is this?"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={!ok} onClick={() => onSave({ ...m, exam_year: m.exam_year ? Number(m.exam_year) : null })}>
+            Use this
+          </button>
+        </>
+      }
+    >
+      <div className="small muted ellipsis" title={name}>
+        {name}
+      </div>
+      <div className="grid g2" style={{ gap: 12 }}>
+        <Field label="Exam board">
+          <select className="select" value={m.exam_board} onChange={(e) => setM((x) => ({ ...x, exam_board: e.target.value, exam_code: null, exam_session: null }))}>
+            {Object.entries(X.BOARDS).map(([b, info]) => (
+              <option key={b} value={b}>
+                {info.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Subject">
+          <select className="select" value={m.exam_code || ''} onChange={(e) => set('exam_code', e.target.value)}>
+            <option value="">Choose…</option>
+            {X.syllabuses(m.exam_board).map((s) => (
+              <option key={s.code} value={s.code}>
+                {X.syllabusLabel(m.exam_board, s.code)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Session">
+          <select className="select" value={m.exam_session || ''} onChange={(e) => set('exam_session', e.target.value)}>
+            <option value="">Not known</option>
+            {[...X.SESSIONS[m.exam_board], ['spec', 'Specimen']].map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Year">
+          <input className="input" inputMode="numeric" value={m.exam_year || ''} onChange={(e) => set('exam_year', e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="e.g. 2025" />
+        </Field>
+        <Field label="Paper">
+          <input className="input" value={m.exam_paper || ''} onChange={(e) => set('exam_paper', e.target.value.trim().toUpperCase().slice(0, 3))} placeholder={m.exam_board === 'ib' ? '1, 2 or 3' : 'e.g. 41'} />
+        </Field>
+        <Field label="What it is">
+          <select className="select" value={m.exam_kind || 'qp'} onChange={(e) => set('exam_kind', e.target.value)}>
+            {Object.entries(X.KINDS).map(([k, l]) => (
+              <option key={k} value={k}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {m.exam_board === 'ib' && (
+          <>
+            <Field label="Level">
+              <select className="select" value={m.exam_level || ''} onChange={(e) => set('exam_level', e.target.value)}>
+                <option value="">Not known</option>
+                {(syl?.levels || ['SL', 'HL']).map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Time zone">
+              <select className="select" value={m.exam_tz || ''} onChange={(e) => set('exam_tz', e.target.value)}>
+                <option value="">None / not known</option>
+                {['TZ0', 'TZ1', 'TZ2'].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </>
+        )}
+      </div>
+      {ok && <div className="small">Files as: {X.slotLabel(m)}</div>}
     </Modal>
   );
 }

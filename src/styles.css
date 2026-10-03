@@ -570,3 +570,11 @@ label.btn[aria-disabled='true'] { opacity: 0.5; pointer-events: none; }
 .report-row { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .report-row:last-child { border-bottom: 0; }
 .report-preview { white-space: pre-wrap; font-family: var(--sans); font-size: 13px; line-height: 1.5; background: #E7F6E3; color: #1d2b1a; border-radius: 12px; padding: 12px 14px; margin: 0; max-height: 460px; overflow-y: auto; }
+
+/* Admin two-step sign-in */
+.code-input { font-family: var(--mono, ui-monospace, monospace); font-size: 24px; letter-spacing: 6px; max-width: 220px; text-align: center; }
+.twostep-setup { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.twostep-setup img { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 6px; }
+.twostep-key { font-size: 15px; letter-spacing: 1px; word-break: break-all; }
+ol.steps { padding-left: 20px; margin: 0; }
+.ib-paper > .grow { display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 6px; }

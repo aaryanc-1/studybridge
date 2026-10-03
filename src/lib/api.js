@@ -409,6 +409,33 @@ export async function deleteLearnerAccount(id) {
 
 // ---------------- StudyBridge admin (account details only) ----------------
 export const isAdmin = () => run(sb().rpc('is_platform_admin'));
+export const adminToMove = () => run(sb().rpc('admin_to_move'));
+export const adminMoveTo = (email) => run(sb().rpc('admin_move_to', { p_email: email }));
+export const adminInvited = () => run(sb().rpc('admin_invited'));
+export const claimAdmin = () => run(sb().rpc('claim_admin'));
+
+// Two-step sign-in (authenticator app) for the admin account
+export async function twoStepState() {
+  const a = await sb().auth.mfa.getAuthenticatorAssuranceLevel();
+  if (a.error) throw a.error;
+  const f = await sb().auth.mfa.listFactors();
+  if (f.error) throw f.error;
+  const verified = (f.data.totp || [])[0] || null;
+  return { level: a.data.currentLevel, factor: verified, unverified: (f.data.all || []).filter((x) => x.status !== 'verified') };
+}
+export async function twoStepStart() {
+  // Clear half-finished set-ups first, then start a new one
+  const s = await twoStepState();
+  for (const x of s.unverified) await sb().auth.mfa.unenroll({ factorId: x.id });
+  const r = await sb().auth.mfa.enroll({ factorType: 'totp', friendlyName: 'StudyBridge admin', issuer: 'StudyBridge' });
+  if (r.error) throw r.error;
+  return { id: r.data.id, secret: r.data.totp.secret, uri: r.data.totp.uri };
+}
+export async function twoStepVerify(factorId, code) {
+  const r = await sb().auth.mfa.challengeAndVerify({ factorId, code: String(code).replace(/\s+/g, '') });
+  if (r.error) throw new Error(/invalid|failed/i.test(r.error.message) ? 'That code didn’t work. Check the time on your phone is set automatically, then try the newest code.' : r.error.message);
+  return r.data;
+}
 export const adminTutors = () => run(sb().rpc('admin_tutors'));
 export const adminAccounts = (tutorId) => run(sb().rpc('admin_accounts', { p_tutor: tutorId || null }));
 export const adminSetStatus = (id, status) => run(sb().rpc('admin_set_status', { p_user: id, p_status: status }));

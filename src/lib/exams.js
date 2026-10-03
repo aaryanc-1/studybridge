@@ -248,9 +248,10 @@ function parseIbWords(t) {
   const paper = (s.match(/\bpaper ?([123])\b/) || s.match(/\bp([123])\b/) || [])[1] || null;
   const level = /\bhl\b|higher level/.test(s) ? 'HL' : /\bsl\b|standard level/.test(s) ? 'SL' : null;
   const tz = (s.match(/\btz ?([012])\b/) || [])[1];
-  const year = +((s.match(/\b(20[0-3]\d)\b/) || [])[1] || 0) || null;
+  const dated = s.match(/\b(may|nov(?:ember)?) (20[0-3]\d)\b/);
+  const year = +((dated || [])[2] || (s.match(/\b(20[0-3]\d)\b/) || [])[1] || 0) || null;
   const session = /\bnov(ember)?\b/.test(s) ? 'nov' : /\bmay\b/.test(s) ? 'may' : /specimen/.test(s) ? 'spec' : null;
-  const kind = /mark ?scheme|\bms\b|markscheme/.test(s) ? 'ms' : /subject report|examiner/.test(s) ? 'er' : /resource|insert|source booklet|data booklet/.test(s) ? 'in' : 'qp';
+  const kind = /mark ?scheme|\bms\b|markscheme/.test(s) ? 'ms' : /subject report|examiner/.test(s) ? 'er' : /\binsert\b|resource booklet|source booklet|data booklet/.test(s) ? 'in' : 'qp';
   if (!paper && !year) return null;
   return {
     exam_board: 'ib',
@@ -324,7 +325,10 @@ export function parseCover(text) {
       exam_tz: null,
     };
   }
-  if (/international baccalaureate|baccalauréat international|\bib\b/.test(low) || /markscheme/.test(low)) return parseIbWords(t);
+  if (/international baccalaureate|baccalauréat international|\bib\b/.test(low) || /markscheme/.test(low)) {
+    // leave out the IB's copyright page (in three languages), which mentions other things
+    return parseIbWords(t.replace(/©[\s\S]{0,1500}?applying-for-a-license\/?\.?/gi, ' '));
+  }
   return null;
 }
 
@@ -422,6 +426,7 @@ export function matches(req, x) {
   if (req.exam_year && req.exam_year !== x.exam_year) return false;
   if (req.exam_session && req.exam_session !== x.exam_session) return false;
   if (req.exam_level && x.exam_level && req.exam_level !== x.exam_level) return false;
+  if (req.exam_tz && x.exam_tz && req.exam_tz !== x.exam_tz) return false;
   if (req.exam_paper && x.exam_paper) {
     const a = String(req.exam_paper).toUpperCase();
     const b = String(x.exam_paper).toUpperCase();

@@ -98,9 +98,18 @@ create table if not exists public.platform_secrets (
 );
 insert into public.platform_secrets (id) values (1) on conflict do nothing;
 
+-- The StudyBridge admin is its own account (role 'admin'), never a tutor account, and admin
+-- powers only work once that sign-in has passed two-step login (a code from an authenticator app).
+do $$ begin
+  alter table public.profiles drop constraint if exists profiles_role_check;
+  alter table public.profiles add constraint profiles_role_check check (role in ('tutor', 'learner', 'admin'));
+end $$;
+
 create or replace function public.is_platform_admin() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.platform_admins where user_id = auth.uid())
+  select exists (select 1 from public.platform_admins a join public.profiles p on p.id = a.user_id
+                  where a.user_id = auth.uid() and p.role = 'admin')
+     and coalesce(auth.jwt() ->> 'aal', '') = 'aal2'
 $$;
 
 -- An approved tutor (pending and paused tutors can't invite anyone or use Prof)
@@ -405,6 +414,11 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 create index if not exists idx_files_exam on public.files (tutor_id, exam_board, exam_code);
 alter table public.tutor_settings add column if not exists exam_subjects text[] not null default '{}';
+-- Which exam a subject is for ('cie:0607', 'ib:math-aa'), so Past papers shows your learners' exams first
+alter table public.subjects add column if not exists exam text;
+do $$ begin
+  alter table public.subjects add constraint subjects_exam_check check (exam is null or exam ~ '^(cie|ib):[a-z0-9-]{2,40}$');
+exception when duplicate_object then null; end $$;
 
 -- Practice: tutor-approved questions a learner can do any time, as often as they like, marked instantly
 alter table public.assignments add column if not exists practice boolean not null default false;
@@ -780,6 +794,9 @@ begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into v from public.profiles where id = auth.uid();
   if v.role = 'learner' then raise exception 'This account is a learner account.'; end if;
+  -- The admin account (or the email chosen for it) signing in through the tutor screen: leave it
+  -- as it is, and the app opens Admin (or offers "Set up admin account")
+  if v.role = 'admin' or (v.role is null and public.admin_invited()) then return v; end if;
   if v.role = 'tutor' then
     update public.profiles set display_name = coalesce(nullif(trim(p_name), ''), display_name) where id = auth.uid() returning * into v;
     return v;
@@ -824,7 +841,7 @@ begin
   if inv.id is null then raise exception 'That invite code is not valid.'; end if;
   if inv.accepted_by is not null and inv.accepted_by <> auth.uid() then raise exception 'That invite has already been used.'; end if;
   select * into v from public.profiles where id = auth.uid();
-  if v.role = 'tutor' then raise exception 'Tutor accounts cannot join as learners.'; end if;
+  if v.role in ('tutor', 'admin') then raise exception 'Tutor and admin accounts cannot join as learners.'; end if;
   if not public._tutor_active(inv.tutor_id) then raise exception 'This invite can’t be used right now. Ask your tutor.'; end if;
   update public.profiles
      set role = 'learner', tutor_id = inv.tutor_id, programme_id = inv.programme_id,
@@ -1651,6 +1668,92 @@ begin
   return jsonb_build_object('deleted', 1 + n);
 end $$;
 
+-- Moves admin from a tutor account (how it used to work) to its own admin account. The new
+-- account must already exist and not be set up as a tutor or learner yet.
+create or replace function public._make_admin(p_email text, p_by uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v public.profiles;
+begin
+  select p.* into v from public.profiles p join auth.users u on u.id = p.id
+   where lower(u.email) = lower(trim(coalesce(p_email, '')));
+  if v.id is null then
+    raise exception 'No StudyBridge account with that email yet. Sign up with it first, stop at the “Finish setting up” screen, then try again.';
+  end if;
+  if v.id = p_by then raise exception 'Use a different email from your tutor account.'; end if;
+  if v.role is not null and v.role <> 'admin' then
+    raise exception 'That account is already set up as a %. Use a new email for the admin account.', v.role;
+  end if;
+  update public.profiles set role = 'admin', status = 'active', tutor_id = null where id = v.id;
+  insert into public.platform_admins (user_id) values (v.id) on conflict do nothing;
+  -- Tutor accounts lose admin
+  delete from public.platform_admins a using public.profiles p where p.id = a.user_id and p.role = 'tutor';
+  insert into public.admin_log (admin_id, action, user_id, email, detail)
+  values (coalesce(p_by, v.id), 'admin_moved', v.id, v.email, jsonb_build_object('name', v.display_name));
+  return jsonb_build_object('id', v.id, 'email', v.email);
+end $$;
+
+-- (kept with the server secrets: nobody can read it back)
+alter table public.platform_secrets add column if not exists admin_invite text;
+
+-- From the app: only a tutor account that was the admin (the old way) can do this. If the admin
+-- email has no account yet, it's remembered, and signing up with it offers "Set up as admin".
+create or replace function public.admin_move_to(p_email text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_id uuid;
+begin
+  if not exists (select 1 from public.platform_admins a join public.profiles p on p.id = a.user_id
+                  where a.user_id = auth.uid() and p.role = 'tutor') then
+    raise exception 'StudyBridge admins only.';
+  end if;
+  if v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Enter an email address.'; end if;
+  if v_email = (select lower(email) from auth.users where id = auth.uid()) then
+    raise exception 'Use a different email from your tutor account.';
+  end if;
+  select id into v_id from auth.users where lower(email) = v_email;
+  if v_id is null then
+    update public.platform_secrets set admin_invite = v_email where id = 1;
+    return jsonb_build_object('moved', false, 'email', v_email);
+  end if;
+  perform public._make_admin(v_email, auth.uid());
+  update public.platform_secrets set admin_invite = null where id = 1;
+  return jsonb_build_object('moved', true, 'email', v_email);
+end $$;
+
+-- Signed up with the email the old admin chose, and not set up as anything yet
+create or replace function public.admin_invited() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles p join auth.users u on u.id = p.id, public.platform_secrets c
+                  where p.id = auth.uid() and p.role is null and c.id = 1 and c.admin_invite is not null
+                    and lower(u.email) = c.admin_invite)
+$$;
+
+create or replace function public.claim_admin()
+returns public.profiles language plpgsql security definer set search_path = public as $$
+declare v public.profiles;
+begin
+  if not public.admin_invited() then raise exception 'This account wasn’t chosen as the StudyBridge admin.'; end if;
+  perform public._make_admin((select email from auth.users where id = auth.uid()), null);
+  update public.platform_secrets set admin_invite = null where id = 1;
+  select * into v from public.profiles where id = auth.uid();
+  return v;
+end $$;
+
+-- True for a tutor account that still holds admin the old way (the app then offers the move)
+create or replace function public.admin_to_move() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.platform_admins a join public.profiles p on p.id = a.user_id
+                  where a.user_id = auth.uid() and p.role = 'tutor')
+$$;
+
+-- From the Supabase SQL editor only (e.g. if you're locked out): select public.make_admin('you+admin@example.com');
+create or replace function public.make_admin(p_email text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  return public._make_admin(p_email, null);
+end $$;
+
 create or replace function public.admin_settings() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
@@ -1721,7 +1824,10 @@ end $$;
 create or replace function public._prof_ready(p_tutor uuid) returns text
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if not public._tutor_active(p_tutor) then return 'Prof is for approved tutors.'; end if;
+  if not (public._tutor_active(p_tutor) or exists (select 1 from public.profiles p join public.platform_admins a on a.user_id = p.id
+                                                    where p.id = p_tutor and p.role = 'admin')) then
+    return 'Prof is for approved tutors.';
+  end if;
   if not exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null) then
     return 'Prof isn’t switched on yet. (The StudyBridge admin adds the Claude key in Admin.)';
   end if;
@@ -2276,6 +2382,8 @@ revoke execute on function public._refresh_reports() from public, anon, authenti
 revoke execute on function public._prof_month_cents(uuid) from public, anon, authenticated;
 revoke execute on function public.notify_user(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
+revoke execute on function public._make_admin(text, uuid) from public, anon, authenticated, service_role;
+revoke execute on function public.make_admin(text) from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------
 -- File storage: 'library' (tutor uploads) and 'work' (learner answers)

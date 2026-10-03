@@ -15,9 +15,13 @@ const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'u
 let db;
 const U = {};
 
+// 'A' is the separate admin account, signed in with two-step login (aal2). 'A1' is the same account
+// before the authenticator code (aal1).
 async function as(user, sql, params = []) {
   return db.transaction(async (tx) => {
-    await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [user ? U[user] : '']);
+    const id = user === 'A1' ? U.A : user ? U[user] : '';
+    await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [id]);
+    await tx.query(`select set_config('request.jwt.claims', $1, true)`, [id ? JSON.stringify({ sub: id, aal: user === 'A' ? 'aal2' : 'aal1' }) : '']);
     await tx.exec(`set local role ${user ? 'authenticated' : 'anon'}`);
     const r = await tx.query(sql, params);
     return r.rows;
@@ -34,7 +38,7 @@ test.before(async () => {
   await db.exec(STUBS);
   await db.exec(SETUP);
   await db.exec(SETUP); // safe to re-run
-  for (const [k, email] of Object.entries({ T: 'tutor@x.com', L: 'sis@x.com', L2: 'other@x.com', T2: 'tutor2@x.com', X: 'nobody@x.com' })) {
+  for (const [k, email] of Object.entries({ T: 'tutor@x.com', L: 'sis@x.com', L2: 'other@x.com', T2: 'tutor2@x.com', X: 'nobody@x.com', A: 'admin@x.com' })) {
     const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
     U[k] = r.rows[0].id;
   }
@@ -46,23 +50,44 @@ test('tutor setup, programmes, subjects, invites', async () => {
   const p = await one('T', `select * from become_tutor('Aaryan', 'America/New_York')`);
   assert.equal(p.role, 'tutor');
   assert.equal(p.status, 'active', 'the first tutor is approved straight away');
-  assert.equal(await val('T', `select is_platform_admin()`), true, 'and is the StudyBridge admin');
+  // Admin is its own account: the first tutor holds it only until moving it there
+  assert.equal(await val('T', `select is_platform_admin()`), false, 'a tutor account never has admin powers');
+  assert.equal(await val('T', `select admin_to_move()`), true);
+  await fails(as('T', `select admin_tutors()`), /admins only/);
+  await fails(as('L', `select admin_move_to('admin@x.com')`), /admins only/);
+  await fails(as('T', `select admin_move_to('tutor@x.com')`), /different email/);
+  // An email with no account yet is remembered; signing up with it offers "Set up admin account"
+  assert.equal((await val('T', `select admin_move_to('newadmin@x.com')`)).moved, false);
+  assert.equal(await val('X', `select admin_invited()`), false);
+  await fails(as('X', `select claim_admin()`), /wasn’t chosen/);
+  await fails(as('T', `select * from platform_secrets`), /permission denied/, 'the chosen email stays private');
+  // The account already exists (no role yet): admin moves straight away
+  const moved = await val('T', `select admin_move_to('ADMIN@x.com')`);
+  assert.equal(moved.moved, true);
+  assert.equal(await val('A', `select role from profiles where id = auth.uid()`), 'admin');
+  assert.equal(await val('T', `select admin_to_move()`), false, 'the tutor account lost admin');
+  assert.equal(await val('A', `select is_platform_admin()`), true);
+  assert.equal(await val('A1', `select is_platform_admin()`), false, 'not before the authenticator code');
+  await fails(as('A1', `select admin_tutors()`), /admins only/);
+  assert.equal((await one('A', `select * from become_tutor('Sneaky')`)).role, 'admin', 'the admin account can’t become a tutor');
+  await fails(as('A', `select * from accept_invite('XXXX', 'x')`), /not valid/);
+  await fails(as('A', `select make_admin('x@x.com')`), /permission denied/, 'make_admin is for the SQL editor only');
   // Anyone else can sign up as a tutor, but waits for the admin
   const p2 = await one('T2', `select * from become_tutor('Other tutor')`);
   assert.equal(p2.status, 'pending');
   assert.equal(await val('T2', `select is_platform_admin()`), false);
-  const told = await as('T', `select * from notifications where kind = 'tutor_signup'`);
+  const told = await as('A', `select * from notifications where kind = 'tutor_signup'`);
   assert.equal(told.length, 1, 'admin is told about the new tutor');
   // A waiting tutor can't invite anyone
   await fails(as('T2', `insert into invites (name) values ('x')`), /row-level security/);
   await fails(as('L', `select set_allow_new_tutors(true)`), /admins only/);
   await fails(as('T', `update app_config set tutor_signups_open = false`), /permission denied/);
-  await as('T', `select set_allow_new_tutors(false)`);
+  await as('A', `select set_allow_new_tutors(false)`);
   await fails(as('X', `select become_tutor('x')`), /taking new tutors/);
-  await as('T', `select admin_set_signups(true)`);
+  await as('A', `select admin_set_signups(true)`);
   // Admin approves the new tutor
   await fails(as('T2', `select admin_set_status($1, 'active')`, [U.T2]), /admins only/);
-  await as('T', `select admin_set_status($1, 'active')`, [U.T2]);
+  await as('A', `select admin_set_status($1, 'active')`, [U.T2]);
   assert.equal(await val('T2', `select status from profiles where id = auth.uid()`), 'active');
   assert.equal((await as('T2', `select * from notifications where kind = 'approved'`)).length, 1);
   S.prog = await val('T', `insert into programmes (name) values ('IGCSE') returning id`);
@@ -502,7 +527,7 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   // The other tutor has their own work
   const subj = await val('T2', `insert into subjects (name) values ('Chemistry') returning id`);
   await as('T2', `insert into assignments (title, subject_id) values ('T2 secret quiz', $1)`, [subj]);
-  const tutors = await val('T', `select admin_tutors()`);
+  const tutors = await val('A', `select admin_tutors()`);
   assert.deepEqual(tutors.map((t) => t.email).sort(), ['tutor2@x.com', 'tutor@x.com']);
   const t2 = tutors.find((t) => t.email === 'tutor2@x.com');
   assert.equal(t2.status, 'active');
@@ -510,7 +535,7 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   assert.ok('ai_cents' in t2 && 'storage_bytes' in t2);
   await fails(as('T2', `select admin_tutors()`), /admins only/);
   await fails(as('L', `select admin_accounts($1)`, [U.T]), /admins only/);
-  const mine = await val('T', `select admin_accounts($1)`, [U.T]);
+  const mine = await val('A', `select admin_accounts($1)`, [U.T]);
   assert.deepEqual(mine.map((a) => a.email).sort(), ['other@x.com', 'sis@x.com']);
   // ...but none of the other tutor's content
   assert.equal((await as('T', `select * from subjects where tutor_id = $1`, [U.T2])).length, 0);
@@ -518,45 +543,45 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   await fails(as('T', `select * from platform_secrets`), /permission denied/);
   await fails(as('T', `select * from platform_admins`), /permission denied/);
   // Plans, passwords, pausing
-  await as('T', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
-  assert.equal((await val('T', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_cents, 2500);
-  await as('T', `select admin_set_password($1, 'Reset-Pass-1')`, [U.T2]);
+  await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
+  assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_cents, 2500);
+  await as('A', `select admin_set_password($1, 'Reset-Pass-1')`, [U.T2]);
   assert.equal((await db.query(`select encrypted_password = extensions.crypt('Reset-Pass-1', encrypted_password) ok from auth.users where id = $1`, [U.T2])).rows[0].ok, true);
   await fails(as('T2', `select admin_set_password($1, 'Hacked-123')`, [U.T]), /admins only/);
-  await fails(as('T', `select admin_set_status($1, 'suspended')`, [U.T]), /own account/);
-  await as('T', `select admin_set_status($1, 'suspended')`, [U.T2]);
+  await fails(as('A', `select admin_set_status($1, 'suspended')`, [U.A]), /own account/);
+  await as('A', `select admin_set_status($1, 'suspended')`, [U.T2]);
   const banned = (await db.query(`select banned_until from auth.users where id = $1`, [U.T2])).rows[0].banned_until;
   assert.ok(banned && new Date(banned) > new Date(Date.now() + 365 * 86400000), 'paused tutor can’t sign in');
   await fails(as('T2', `insert into invites (name) values ('x')`), /row-level security/);
-  await as('T', `select admin_set_status($1, 'active')`, [U.T2]);
+  await as('A', `select admin_set_status($1, 'active')`, [U.T2]);
   assert.equal((await db.query(`select banned_until from auth.users where id = $1`, [U.T2])).rows[0].banned_until, null);
   // Shared live video for tutors without their own LiveKit keys
   assert.equal((await val('T2', `select live_status()`)).configured, false);
   await fails(as('T2', `select admin_set_livekit('wss://x.livekit.cloud', 'k', 's')`), /admins only/);
-  await as('T', `select admin_set_livekit('wss://shared.livekit.cloud', 'APIshared', 'shared-secret')`);
+  await as('A', `select admin_set_livekit('wss://shared.livekit.cloud', 'APIshared', 'shared-secret')`);
   const ls2 = await val('T2', `select live_status()`);
   assert.equal(ls2.configured && ls2.shared && !ls2.own, true);
   assert.equal(ls2.url, 'wss://shared.livekit.cloud');
   // Prof key is write-only
-  await fails(as('T', `select admin_set_prof('not-a-key')`), /Claude API key/);
-  await as('T', `select admin_set_prof('sk-ant-test-key', 'claude-sonnet-5-5', 500)`);
-  const st = await val('T', `select admin_settings()`);
+  await fails(as('A', `select admin_set_prof('not-a-key')`), /Claude API key/);
+  await as('A', `select admin_set_prof('sk-ant-test-key', 'claude-sonnet-5-5', 500)`);
+  const st = await val('A', `select admin_settings()`);
   assert.equal(st.prof_key_set, true);
   assert.ok(!JSON.stringify(st).includes('sk-ant'), 'the key is never sent back');
   // The log: admin sees it all, the tutor sees what was done to them, learners nothing
-  const log = await as('T', `select action from admin_log where user_id = $1 order by id`, [U.T2]);
+  const log = await as('A', `select action from admin_log where user_id = $1 order by id`, [U.T2]);
   assert.deepEqual(log.map((r) => r.action), ['approved', 'plan', 'password_reset', 'paused', 'switched_on']);
   assert.equal((await as('T2', `select * from admin_log`)).length, 5);
   assert.equal((await as('L', `select * from admin_log`)).length, 0);
   // Unfinished sign-ups show up; deleting a tutor takes their learners too
-  assert.ok((await val('T', `select admin_accounts(null)`)).some((a) => a.email === 'nobody@x.com'));
+  assert.ok((await val('A', `select admin_accounts(null)`)).some((a) => a.email === 'nobody@x.com'));
   const code = await val('T2', `insert into invites (name) values ('Nobody') returning code`);
   await as('X', `select accept_invite($1, 'Nobody')`, [code]);
-  await fails(as('T', `select admin_delete_account($1)`, [U.T]), /own account/);
-  assert.equal((await val('T', `select admin_delete_account($1)`, [U.T2])).deleted, 2);
+  await fails(as('A', `select admin_delete_account($1)`, [U.A]), /own account/);
+  assert.equal((await val('A', `select admin_delete_account($1)`, [U.T2])).deleted, 2);
   assert.equal((await db.query(`select count(*)::int n from auth.users where id = any($1)`, [[U.T2, U.X]])).rows[0].n, 0);
   assert.equal((await db.query(`select count(*)::int n from public.assignments where title = 'T2 secret quiz'`)).rows[0].n, 0);
-  assert.equal((await as('T', `select * from admin_log where action = 'deleted'`)).length, 1);
+  assert.equal((await as('A', `select * from admin_log where action = 'deleted'`)).length, 1);
 });
 
 test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () => {
@@ -610,7 +635,7 @@ test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () =>
   // Over the allowance: no more Prof this month
   await asService(`select prof_save($1, 'done', null, null, null, null, 1, 1, 600)`, [mark.id]);
   await fails(as('T', `select prof_ask('another quiz please')`), /allowance/);
-  await as('T', `select admin_set_plan($1, 'free', 100000)`, [U.T]);
+  await as('A', `select admin_set_plan($1, 'free', 100000)`, [U.T]);
   // Weekly auto-created work: one job per learner, once a week
   const dow = await val('T', `select extract(dow from now() at time zone 'America/New_York')::int`);
   await as('T', `update prof_settings set auto_create = true, auto_day = $1, auto_hour = 0`, [dow]);
@@ -643,7 +668,7 @@ test('a learner who moves to another tutor takes the parent contact with them', 
   assert.equal((await as('T', `select * from learner_reports where learner_id = $1`, [U.L3])).length, 0, 'the old tutor no longer sees the parent’s contact');
   U.T3 = (await db.query(`insert into auth.users (email) values ('tutor3@x.com') returning id`)).rows[0].id;
   await as('T3', `select become_tutor('Third tutor')`);
-  await as('T', `select admin_set_status($1, 'active')`, [U.T3]);
+  await as('A', `select admin_set_status($1, 'active')`, [U.T3]);
   const inv = await one('T3', `insert into invites (name) values ('Moves') returning code`);
   await as('L3', `select accept_invite($1, 'Moves')`, [inv.code]);
   const ex = await val('T3', `select set_learner_exam($1, 'IB Maths', '2027-05-10')`, [U.L3]);
@@ -651,4 +676,15 @@ test('a learner who moves to another tutor takes the parent contact with them', 
   const row = await one('T3', `select * from learner_reports where learner_id = $1`, [U.L3]);
   assert.equal(row.enabled, false);
   assert.equal(row.parent_phone, null, 'reports start off with a new tutor until the learner switches them on');
+});
+
+test('the email chosen for admin signs up and claims it; tutor sign-up leaves it alone', async () => {
+  U.N = (await db.query(`insert into auth.users (email) values ('Later@x.com') returning id`)).rows[0].id;
+  await db.query(`update platform_secrets set admin_invite = 'later@x.com'`);
+  assert.equal(await val('N', `select admin_invited()`), true);
+  assert.equal((await one('N', `select * from become_tutor('Me')`)).role, null, 'going through “I’m a tutor” doesn’t make it a tutor');
+  assert.equal((await one('N', `select * from claim_admin()`)).role, 'admin');
+  assert.equal(await val('N', `select admin_invited()`), false);
+  assert.equal((await db.query(`select admin_invite from platform_secrets`)).rows[0].admin_invite, null);
+  await fails(as('N', `select claim_admin()`), /wasn’t chosen/);
 });

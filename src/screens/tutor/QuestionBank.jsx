@@ -622,7 +622,7 @@ function AskProf({ onClose, shared = false }) {
   const lk = useLookups();
   const toast = useToast();
   const settings = useQuery('tutor_settings', api.getSettings);
-  const exams = (settings.data?.exam_subjects || []).filter((k) => k.startsWith('cie:') || k.startsWith('ib:'));
+  const exams = [...new Set([...lk.subjects.map((s) => s.exam).filter(Boolean), ...(settings.data?.exam_subjects || [])])].filter((k) => k.startsWith('cie:') || k.startsWith('ib:'));
   const [where, setWhere] = useState(shared ? 'cie:0607' : exams[0] || (lk.subjects[0] ? 's:' + lk.subjects[0].id : ''));
   const [topic, setTopic] = useState('');
   const [count, setCount] = useState(10);

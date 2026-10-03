@@ -109,7 +109,14 @@ export function createHandler(env) {
     const u = await r.json();
     const p = (await rest(`profiles?id=eq.${u.id}&select=id,role,status`))[0];
     if (!p) return null;
-    const admin = (await rest(`platform_admins?user_id=eq.${u.id}&select=user_id`)).length > 0;
+    // Admin = the separate admin account, signed in with two-step login (the token says aal2)
+    let aal = '';
+    try {
+      aal = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).aal || '';
+    } catch {
+      aal = '';
+    }
+    const admin = p.role === 'admin' && aal === 'aal2' && (await rest(`platform_admins?user_id=eq.${u.id}&select=user_id`)).length > 0;
     return { id: u.id, role: p.role, status: p.status, admin };
   }
 
@@ -925,7 +932,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       return json({ removed: await cleanup() });
     }
     if (action === 'kick') {
-      if (user && user.role !== 'tutor') return json({ error: 'Tutors only.' }, 403);
+      if (user && user.role !== 'tutor' && !user.admin) return json({ error: 'Tutors only.' }, 403);
       const p = later(work(cfg));
       if (p) await p;
       return json({ ok: true });

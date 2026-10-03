@@ -1,15 +1,14 @@
-// StudyBridge admin console (only for StudyBridge admins). Accounts and access:
-// approve, pause, reset passwords, delete, plans and Prof allowances, and the
-// keys the server uses. It never shows anyone's work, files, marks or messages.
+// StudyBridge admin console, used only from the separate admin account (after two-step sign-in).
+// Accounts and access: approve, pause, reset passwords, delete, plans and Prof allowances, and
+// the keys the server uses. It never shows anyone's work, files, marks or messages.
 import { useEffect, useState } from 'react';
-import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Field, Modal, Page, Toggle, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, bytes } from '../../lib/format.js';
-import { easyPassword } from './Learners.jsx';
-import { AskProf, ReviewQueue } from './QuestionBank.jsx';
+import { easyPassword } from '../tutor/Learners.jsx';
+import { AskProf, ReviewQueue } from '../tutor/QuestionBank.jsx';
 import * as X from '../../lib/exams.js';
 
 const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
@@ -18,18 +17,16 @@ const MODELS = [
   ['claude-opus-5-5', 'Claude Opus 5.5 (best work, about 2× the cost)'],
   ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (cheapest, simpler work)'],
 ];
-const ACTIONS = { approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed' };
+const ACTIONS = { admin_moved: 'Admin moved to its own account', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed' };
 
-export default function Admin() {
-  const app = useApp();
+export default function AdminHome() {
   const tutors = useQuery('admin-tutors', api.adminTutors);
   const settings = useQuery('admin-settings', api.adminSettings);
   const list = tutors.data || [];
   const pending = list.filter((t) => t.status === 'pending');
   const others = list.filter((t) => t.status !== 'pending');
-  if (!app.me.is_admin) return <Page title="Admin">Only StudyBridge admins can open this.</Page>;
   return (
-    <Page title="Admin" subtitle="Everyone’s accounts and access. You see account details only, never anyone’s work, files, marks or messages. Everything you do here is logged, and tutors can see what was done to their account.">
+    <Page title="Tutors" subtitle="Everyone’s accounts and access. You see account details only, never anyone’s work, files, marks or messages. Everything you do here is logged, and tutors can see what was done to their account.">
       {tutors.error && <div className="error">{tutors.error.message}</div>}
       <div className="admin-stats">
         <div className="stat">
@@ -65,21 +62,44 @@ export default function Admin() {
         <h2>Tutors</h2>
         <div className="stack">
           {others.map((t) => (
-            <TutorRow key={t.id} t={t} self={t.id === app.me.id} />
+            <TutorRow key={t.id} t={t} />
           ))}
           {tutors.data && others.length === 0 && <div className="muted small">No tutors yet.</div>}
         </div>
       </div>
 
       <Unfinished />
-      <SharedBank />
-      <PlatformSettings s={settings.data} />
-      <Log />
     </Page>
   );
 }
 
-function TutorRow({ t, self }) {
+export function SharedBankPage() {
+  return (
+    <Page title="Shared question bank">
+      <SharedBank />
+    </Page>
+  );
+}
+
+export function PlatformPage() {
+  const settings = useQuery('admin-settings', api.adminSettings);
+  return (
+    <Page title="StudyBridge settings" subtitle="Tutor sign-ups, Prof and live video for every tutor.">
+      {settings.error && <div className="error">{settings.error.message}</div>}
+      <PlatformSettings s={settings.data} />
+    </Page>
+  );
+}
+
+export function LogPage() {
+  return (
+    <Page title="What’s been done" subtitle="Every admin action, newest first. Tutors see the ones about their own account.">
+      <Log always />
+    </Page>
+  );
+}
+
+function TutorRow({ t }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [open, setOpen] = useState(false);
@@ -102,7 +122,7 @@ function TutorRow({ t, self }) {
           <Icon name={pending ? 'clock' : t.status === 'suspended' ? 'pause' : 'user'} style={{ color: pending ? 'var(--claude)' : 'var(--accent)' }} />
           <div>
             <div className="strong">
-              {t.name} {self && <span className="pill">You</span>} {t.is_admin && <span className="pill dark">Admin</span>}{' '}
+              {t.name} {t.is_admin && <span className="pill dark">Admin</span>}{' '}
               {t.status === 'suspended' && <span className="pill bad">Paused</span>}
             </div>
             <div className="small muted">{t.email}</div>
@@ -129,15 +149,13 @@ function TutorRow({ t, self }) {
               <button className="btn sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
                 Learners ({t.learners})
               </button>
-              {!self && (
-                <button className="btn sm" onClick={() => setModal('password')}>
-                  Password
-                </button>
-              )}
+              <button className="btn sm" onClick={() => setModal('password')}>
+                Password
+              </button>
               <button className="btn sm" onClick={() => setModal('plan')}>
                 Plan & Prof
               </button>
-              {!self && t.status === 'active' && (
+              {t.status === 'active' && (
                 <button
                   className="btn sm"
                   onClick={async () => {
@@ -148,12 +166,12 @@ function TutorRow({ t, self }) {
                   <Icon name="pause" size={14} /> Pause
                 </button>
               )}
-              {!self && t.status === 'suspended' && (
+              {t.status === 'suspended' && (
                 <button className="btn sm primary" onClick={() => act(() => api.adminSetStatus(t.id, 'active'), `${t.name} switched back on`)}>
                   Switch back on
                 </button>
               )}
-              {!self && !t.is_admin && (
+              {!t.is_admin && (
                 <button className="btn sm danger" onClick={() => setModal('delete')}>
                   <Icon name="trash" size={14} />
                 </button>
@@ -509,13 +527,14 @@ function PlatformSettings({ s }) {
   );
 }
 
-function Log() {
+function Log({ always }) {
   const q = useQuery('admin-log', api.adminLog);
   const list = q.data || [];
-  if (!list.length) return null;
+  if (!list.length && !always) return null;
   return (
     <div className="card">
-      <h2>What’s been done</h2>
+      {!always && <h2>What’s been done</h2>}
+      {!list.length && <div className="muted small">Nothing yet.</div>}
       <div className="list small">
         {list.slice(0, 60).map((x) => (
           <div key={x.id} className="item" style={{ padding: '6px 0' }}>
@@ -549,7 +568,7 @@ function SharedBank() {
   return (
     <div className="card">
       <div className="row wrap between">
-        <h2 style={{ margin: 0 }}>Shared question bank</h2>
+        <h2 style={{ margin: 0 }}>StudyBridge questions</h2>
         <button className="btn claude sm" onClick={() => setAsking(true)}>
           <Icon name="cap" size={16} /> Ask Prof for shared questions
         </button>

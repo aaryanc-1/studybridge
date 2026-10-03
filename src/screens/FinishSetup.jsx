@@ -12,6 +12,10 @@ export default function FinishSetup() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const name = app.me?.display_name || app.user?.user_metadata?.name || '';
+  const [adminInvite, setAdminInvite] = useState(false);
+  useEffect(() => {
+    if (!app.bootError) api.adminInvited().then((v) => setAdminInvite(!!v)).catch(() => {});
+  }, [app.bootError]);
 
   async function act(fn) {
     setBusy(true);
@@ -45,6 +49,22 @@ export default function FinishSetup() {
                 Sign out
               </button>
             </div>
+          </div>
+        ) : adminInvite ? (
+          <div className="card">
+            <h2 className="row">
+              <Icon name="shield" style={{ color: 'var(--accent)' }} /> Set up as the StudyBridge admin
+            </h2>
+            <p className="muted small">This email was chosen as StudyBridge’s admin account. It only manages tutors and StudyBridge settings: no learners, no teaching. Next you’ll set up two-step sign-in with an authenticator app.</p>
+            <div className="row">
+              <button className="btn primary" disabled={busy} onClick={() => act(() => api.claimAdmin())}>
+                Set up admin account
+              </button>
+              <button className="btn ghost" onClick={app.signOut}>
+                Sign out
+              </button>
+            </div>
+            {err && <div className="error">{err}</div>}
           </div>
         ) : (
           <>

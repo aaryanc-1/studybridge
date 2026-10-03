@@ -16,6 +16,8 @@ export default function Settings() {
   const app = useApp();
   const route = useRoute();
   const isTutor = app.me.role === 'tutor';
+  const isLearner = app.me.role === 'learner';
+  const isAdmin = app.me.role === 'admin';
   const focus = route.query.get('s');
   useEffect(() => {
     if (focus) document.getElementById('set-' + focus)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -28,8 +30,9 @@ export default function Settings() {
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
       {isTutor && <AccountHistory />}
-      {!isTutor && <ParentReportsSetting />}
-      {!isTutor && <LearnerNotifications />}
+      {isAdmin && <TwoStepSetting />}
+      {isLearner && <ParentReportsSetting />}
+      {isLearner && <LearnerNotifications />}
       <Device />
       <About />
     </Page>
@@ -73,7 +76,7 @@ function Account() {
         <Avatar person={{ ...app.me, display_name: name, avatar_color: color }} size="lg" />
         <div>
           <div className="strong">{app.me.email}</div>
-          <div className="muted small">{app.me.role === 'tutor' ? 'Tutor' : 'Learner'}</div>
+          <div className="muted small">{{ tutor: 'Tutor', learner: 'Learner', admin: 'StudyBridge admin' }[app.me.role]}</div>
         </div>
       </div>
       <div className="grid g2" style={{ gap: 12 }}>
@@ -130,6 +133,21 @@ function Account() {
           <Icon name="logout" size={18} /> Sign out
         </button>
       </form>
+    </Section>
+  );
+}
+
+// The admin account always uses two-step sign-in; this shows it's on
+function TwoStepSetting() {
+  const app = useApp();
+  const q = useQuery('two-step', api.twoStepState);
+  return (
+    <Section id="two-step" icon="shield" title="Two-step sign-in" sub="Every admin sign-in asks for a code from your authenticator app, so a stolen password alone can’t open Admin.">
+      <div className="row small">
+        <span className={'dot ' + (q.data?.factor ? '' : 'warn')} />
+        <span>{q.data?.factor ? 'On. Codes come from the authenticator app you set up.' : 'Checking…'}</span>
+      </div>
+      <div className="small muted">Lost your phone? Run this in Supabase → SQL Editor, then sign in again to set up a new app: <code>delete from auth.mfa_factors where user_id = '{app.me.id}';</code></div>
     </Section>
   );
 }
@@ -407,7 +425,7 @@ function AccountHistory() {
   const q = useQuery('my-admin-log', api.adminLog);
   const app = useApp();
   const list = (q.data || []).filter((x) => x.user_id === app.me.id || x.tutor_id === app.me.id);
-  if (!list.length || app.me.is_admin) return null;
+  if (!list.length) return null;
   const label = { approved: 'Your account was approved', paused: 'Your account was paused', switched_on: 'Your account was switched back on', password_reset: 'Password reset by StudyBridge', deleted: 'Account deleted by StudyBridge', plan: 'Plan changed' };
   return (
     <Section id="history" icon="shield" title="Changes StudyBridge made to your account" sub="StudyBridge can manage accounts (approvals, passwords) but never sees your work. Every change is listed here.">

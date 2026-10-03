@@ -4,6 +4,7 @@
 // every request executed under the caller's role so the real security rules apply.
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
@@ -18,6 +19,9 @@ create table auth.users (id uuid primary key default gen_random_uuid(), email te
   banned_until timestamptz);
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+create function auth.jwt() returns jsonb language sql stable as $$
+  select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb,
+                  jsonb_build_object('sub', nullif(current_setting('request.jwt.claim.sub', true), ''))) $$;
 grant usage on schema auth to authenticated, anon;
 create schema storage;
 create table storage.buckets (id text primary key, name text, public boolean, file_size_limit bigint);
@@ -35,6 +39,27 @@ grant usage on schema public to service_role;
 `;
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
+
+// Authenticator-app codes (RFC 6238: SHA-1, 6 digits, 30 seconds), so tests can do two-step sign-in
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+export function base32(buf) {
+  let bits = '';
+  for (const b of buf) bits += b.toString(2).padStart(8, '0');
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5) out += B32[parseInt(bits.slice(i, i + 5).padEnd(5, '0'), 2)];
+  return out;
+}
+export function totp(secret, at = Date.now(), step = 0) {
+  let bits = '';
+  for (const c of secret.replace(/=+$/, '').toUpperCase()) bits += B32.indexOf(c).toString(2).padStart(5, '0');
+  const key = Buffer.from((bits.match(/.{8}/g) || []).map((x) => parseInt(x, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(at / 30000) + step));
+  const h = crypto.createHmac('sha1', key).update(counter).digest();
+  const o = h[h.length - 1] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+const reqCtx = new AsyncLocalStorage();
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 
 export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = null } = {}) {
@@ -75,21 +100,31 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
     return fnInfo.get(name);
   }
 
-  function token(user) {
+  function token(user, aal = 'aal1') {
     const now = Math.floor(Date.now() / 1000);
-    return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: user.id, email: user.email, role: 'authenticated', aud: 'authenticated', iat: now, exp: now + 3600 })}.fakesig`;
+    const amr = [{ method: 'password', timestamp: now }, ...(aal === 'aal2' ? [{ method: 'totp', timestamp: now }] : [])];
+    return `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: user.id, email: user.email, role: 'authenticated', aud: 'authenticated', aal, amr, iat: now, exp: now + 3600 })}.fakesig`;
   }
-  function session(user) {
+  function session(user, aal = 'aal1') {
     const rt = crypto.randomBytes(12).toString('hex');
-    refresh.set(rt, user.email);
+    refresh.set(rt, { email: user.email, aal });
     return {
-      access_token: token(user), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600,
+      access_token: token(user, aal), token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600,
       refresh_token: rt, user: userJson(user),
     };
   }
   function userJson(u) {
+    const factors = (u.factors || []).map(({ secret, ...f }) => f);
     return { id: u.id, aud: 'authenticated', role: 'authenticated', email: u.email, user_metadata: u.meta || {}, app_metadata: { provider: 'email' },
-      created_at: new Date().toISOString(), email_confirmed_at: new Date().toISOString() };
+      created_at: new Date().toISOString(), email_confirmed_at: new Date().toISOString(), ...(factors.length ? { factors } : {}) };
+  }
+  function claimsOf(req) {
+    const t = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    try {
+      return JSON.parse(Buffer.from(t.split('.')[1], 'base64url').toString());
+    } catch {
+      return {};
+    }
   }
   function caller(req) {
     const h = req.headers.authorization || '';
@@ -107,6 +142,8 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
   async function as(uid, fnc) {
     return db.transaction(async (tx) => {
       await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [uid && uid !== SERVICE ? uid : '']);
+      const aal = reqCtx.getStore()?.aal || 'aal1';
+      await tx.query(`select set_config('request.jwt.claims', $1, true)`, [uid && uid !== SERVICE ? JSON.stringify({ sub: uid, role: 'authenticated', aal }) : '']);
       await tx.exec(`set local role ${uid === SERVICE ? 'service_role' : uid ? 'authenticated' : 'anon'}`);
       return fnc(tx);
     });
@@ -360,10 +397,10 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
         return [200, session(u)];
       }
       if (gt === 'refresh_token') {
-        const email = refresh.get(b.refresh_token);
-        if (!email) return [400, { code: 400, error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }];
-        if (await banned(users.get(email)?.id)) return [400, { code: 400, error_code: 'user_banned', msg: 'User is banned' }];
-        return [200, session(users.get(email))];
+        const rt = refresh.get(b.refresh_token);
+        if (!rt) return [400, { code: 400, error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }];
+        if (await banned(users.get(rt.email)?.id)) return [400, { code: 400, error_code: 'user_banned', msg: 'User is banned' }];
+        return [200, session(users.get(rt.email), rt.aal)];
       }
     }
     if (route === 'user') {
@@ -375,6 +412,36 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
         if (b.data) u.meta = { ...u.meta, ...b.data };
       }
       return [200, userJson(u)];
+    }
+    // Two-step sign-in (authenticator app)
+    if (route === 'factors' || route.startsWith('factors/')) {
+      const uid = caller(req);
+      const u = [...users.values()].find((x) => x.id === uid);
+      if (!u) return [401, { code: 401, msg: 'Not signed in' }];
+      u.factors ||= [];
+      const [, id, act] = route.split('/');
+      const f = id && u.factors.find((x) => x.id === id);
+      if (route === 'factors' && req.method === 'POST') {
+        const secret = base32(crypto.randomBytes(20));
+        const nf = { id: crypto.randomUUID(), factor_type: 'totp', friendly_name: b.friendly_name || '', status: 'unverified', secret,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        u.factors.push(nf);
+        const uri = `otpauth://totp/${encodeURIComponent(b.issuer || 'StudyBridge')}:${encodeURIComponent(u.email)}?secret=${secret}&issuer=${encodeURIComponent(b.issuer || 'StudyBridge')}`;
+        return [200, { id: nf.id, type: 'totp', friendly_name: nf.friendly_name, totp: { qr_code: '<svg xmlns="http://www.w3.org/2000/svg"/>', secret, uri } }];
+      }
+      if (!f) return [404, { code: 404, error_code: 'mfa_factor_not_found', msg: 'Factor not found' }];
+      if (!act && req.method === 'DELETE') {
+        u.factors = u.factors.filter((x) => x.id !== id);
+        return [200, { id }];
+      }
+      if (act === 'challenge') return [200, { id: crypto.randomUUID(), type: 'totp', expires_at: Math.floor(Date.now() / 1000) + 300 }];
+      if (act === 'verify') {
+        const ok = [-1, 0, 1].some((st) => totp(f.secret, Date.now(), st) === String(b.code || '').trim());
+        if (!ok) return [422, { code: 422, error_code: 'mfa_verification_failed', msg: 'Invalid TOTP code entered' }];
+        f.status = 'verified';
+        return [200, session(u, 'aal2')];
+      }
+      return [404, { msg: 'Not found' }];
     }
     if (route === 'logout') return [204, null];
     if (route === 'settings') return [200, { external: { email: true }, disable_signup: false, mailer_autoconfirm: true }];
@@ -402,13 +469,17 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
     const url = new URL(req.url, 'http://x');
     let out;
     try {
-      if (url.pathname.startsWith('/auth/v1/')) out = await auth(req, url, raw.toString());
-      else if (url.pathname.startsWith('/rest/v1/')) out = await rest(req, url, raw.toString(), caller(req));
-      else if (url.pathname.startsWith('/storage/v1/object/')) out = await storage(req, url, raw, caller(req));
-      else if (url.pathname.startsWith('/functions/v1/')) out = await functions(req, url, raw);
-      else out = [404, { message: 'Not found' }];
+      const store = { aal: claimsOf(req).aal || 'aal1' };
+      out = await reqCtx.run(store, () => handle(req, url, raw));
     } catch (e) {
       out = [e.status || 400, { message: e.message, code: e.code || 'P0001', details: e.detail || null, hint: e.hint || null }];
+    }
+    async function handle(req, url, raw) {
+      if (url.pathname.startsWith('/auth/v1/')) return auth(req, url, raw.toString());
+      if (url.pathname.startsWith('/rest/v1/')) return rest(req, url, raw.toString(), caller(req));
+      if (url.pathname.startsWith('/storage/v1/object/')) return storage(req, url, raw, caller(req));
+      if (url.pathname.startsWith('/functions/v1/')) return functions(req, url, raw);
+      return [404, { message: 'Not found' }];
     }
     const [status, payload, type] = out;
     if (log) console.log(req.method, url.pathname + url.search, status, status >= 400 ? JSON.stringify(payload) : '');

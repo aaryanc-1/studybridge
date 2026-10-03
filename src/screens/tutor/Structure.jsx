@@ -4,6 +4,7 @@ import { Empty, Field, Modal, Page, useConfirm, useToast } from '../../ui/kit.js
 import * as api from '../../lib/api.js';
 import { palette } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
+import * as X from '../../lib/exams.js';
 
 export default function Structure() {
   const lk = useLookups();
@@ -122,6 +123,7 @@ function SubjectRow({ s, onEdit, onDelete }) {
         <div className="row">
           <span className="swatch" style={{ background: s.color || '#0E6B6B', width: 14, height: 14 }} />
           <span className="strong" style={{ fontSize: 16 }}>{s.name}</span>
+          {s.exam && <span className="pill">{X.syllabusLabel(...s.exam.split(':'))}</span>}
           <span className="muted small">
             {learners} learner{learners === 1 ? '' : 's'}
           </span>
@@ -203,13 +205,14 @@ function SubjectForm({ initial, onClose }) {
   const [name, setName] = useState(initial.name || '');
   const [color, setColor] = useState(initial.color || palette[0]);
   const [programme, setProgramme] = useState(initial.programme_id || '');
+  const [exam, setExam] = useState(initial.exam || '');
   const [topics, setTopics] = useState('');
   const [err, setErr] = useState('');
   async function submit(e) {
     e.preventDefault();
     if (!name.trim()) return setErr('Give it a name.');
     try {
-      const s = await api.save('subjects', { ...(initial.id ? { id: initial.id } : {}), name: name.trim(), color, programme_id: programme || null });
+      const s = await api.save('subjects', { ...(initial.id ? { id: initial.id } : {}), name: name.trim(), color, programme_id: programme || null, exam: exam || null });
       const list = topics.split(/\n|,/).map((t) => t.trim()).filter(Boolean);
       for (let i = 0; i < list.length; i++) await api.save('topics', { subject_id: s.id, name: list[i], position: i });
       lk.reload();
@@ -234,6 +237,9 @@ function SubjectForm({ initial, onClose }) {
             ))}
           </select>
         </Field>
+        <Field label="Exam" hint="Optional. Past papers then shows this exam’s papers first for every learner taking this subject.">
+          <ExamSelect value={exam} onChange={setExam} />
+        </Field>
         <Field label="Colour">
           <div className="row wrap">
             {palette.map((c) => (
@@ -255,5 +261,23 @@ function SubjectForm({ initial, onClose }) {
         </div>
       </form>
     </Modal>
+  );
+}
+
+// Every exam StudyBridge knows: Cambridge IGCSE syllabuses and IB Diploma subjects
+export function ExamSelect({ value, onChange, label = 'Exam' }) {
+  return (
+    <select className="select" value={value || ''} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+      <option value="">None</option>
+      {Object.entries(X.BOARDS).map(([b, info]) => (
+        <optgroup key={b} label={info.name}>
+          {X.syllabuses(b).map((s) => (
+            <option key={s.code} value={`${b}:${s.code}`}>
+              {X.syllabusLabel(b, s.code)}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
   );
 }

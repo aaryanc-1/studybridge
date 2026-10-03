@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@supabase/supabase-js';
-import { startFakeSupabase } from './fake-supabase.mjs';
+import { startFakeSupabase, totp } from './fake-supabase.mjs';
 import { startFakeClaude, setMode, seen } from './fake-claude.mjs';
 
 // ---------------- the test ----------------
@@ -32,6 +32,21 @@ const q = async (p) => {
   if (error) throw new Error(error.message);
   return data;
 };
+// The separate StudyBridge admin account, after two-step sign-in. The first tutor moves admin to it.
+let A;
+async function admin() {
+  if (A) return A;
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  A = client();
+  await q(A.auth.signUp({ email: 'admin@x.com', password: 'secret123' }));
+  await q(T.rpc('admin_move_to', { p_email: 'admin@x.com' }));
+  const f = await q(A.auth.mfa.enroll({ factorType: 'totp' }));
+  const before = await A.rpc('admin_settings');
+  assert.match(before.error.message, /admins only/, 'no admin powers before the authenticator code');
+  await q(A.auth.mfa.challengeAndVerify({ factorId: f.id, code: totp(f.totp.secret) }));
+  return A;
+}
 
 test('Prof makes a draft quiz from a request and pages, then marks the hand-in', async () => {
   const T = client();
@@ -48,7 +63,7 @@ test('Prof makes a draft quiz from a request and pages, then marks the hand-in',
   // Not switched on until the admin adds the Claude key
   const off = await T.rpc('prof_ask', { p_prompt: 'Make a quiz' });
   assert.match(off.error.message, /isn’t switched on/);
-  await q(T.rpc('admin_set_prof', { p_key: 'sk-ant-fake-key' }));
+  await q((await admin()).rpc('admin_set_prof', { p_key: 'sk-ant-fake-key' }));
 
   // Signed-out and learner calls are refused
   assert.equal((await kick(client()))[0], 401);
@@ -148,10 +163,12 @@ test('Prof tidies files left behind by deleted accounts', async () => {
   const L = client();
   await q(L.auth.signInWithPassword({ email: 'sis@x.com', password: 'secret123' }));
   const learner = (await L.auth.getUser()).data.user.id;
-  await q(T.rpc('admin_delete_account', { p_user: learner }));
+  await q((await admin()).rpc('admin_delete_account', { p_user: learner }));
   const left = await srv.db.query(`select count(*)::int n from storage.objects where name like $1`, [`${learner}/%`]);
   assert.ok(left.rows[0].n > 0);
-  const { data } = await T.auth.getSession();
+  const tried = await fetch(`${srv.url}/functions/v1/prof`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${(await T.auth.getSession()).data.session.access_token}` }, body: '{"action":"cleanup"}' });
+  assert.equal(tried.status, 403, 'a tutor account can’t');
+  const { data } = await (await admin()).auth.getSession();
   const r = await fetch(`${srv.url}/functions/v1/prof`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${data.session.access_token}` }, body: '{"action":"cleanup"}' });
   assert.equal(r.status, 200);
   assert.ok((await r.json()).removed > 0);
@@ -163,7 +180,7 @@ test('Prof reads a whole book (asks the app for pages) and takes replies', async
   const T = client();
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
   const me = (await T.auth.getUser()).data.user.id;
-  await q(T.rpc('admin_set_plan', { p_user: me, p_plan: 'free', p_ai_limit_cents: 100000 }));
+  await q((await admin()).rpc('admin_set_plan', { p_user: me, p_plan: 'free', p_ai_limit_cents: 100000 }));
   const path = `${me}/files/book.pdf`;
   await q(T.storage.from('library').upload(path, new Uint8Array([37, 80, 68, 70]), { contentType: 'application/pdf' }));
   const book = await q(T.from('files').insert({ name: 'Algebra book.pdf', storage_path: path, mime: 'application/pdf' }).select().single());
@@ -225,13 +242,16 @@ test('Prof writes question-bank questions, checks them, and they wait for approv
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
   const me = (await T.auth.getUser()).data.user.id;
   // Shared StudyBridge questions: admin only
-  const job = await q(T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 10, p_shared: true }));
-  for (let i = 0; i < 4; i++) await kick(T);
-  const j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  const notTutor = await T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 10, p_shared: true });
+  assert.match(notTutor.error.message, /Only the StudyBridge admin/, 'not from a tutor account');
+  const Ad = await admin();
+  const job = await q(Ad.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 10, p_shared: true }));
+  for (let i = 0; i < 4; i++) await kick(Ad);
+  const j = await q(Ad.from('prof_jobs').select('*').eq('id', job.id).single());
   assert.equal(j.status, 'done', j.error || '');
   assert.equal(j.result.bank.count, 10);
   assert.equal(j.result.bank.flagged, 1, 'the deliberately wrong answer is flagged');
-  const rows = await q(T.from('bank_questions').select('*').eq('job_id', job.id).order('created_at'));
+  const rows = await q(Ad.from('bank_questions').select('*').eq('job_id', job.id).order('created_at'));
   assert.equal(rows.length, 10);
   assert.ok(rows.every((r) => r.owner_id === null && r.status === 'review' && r.exam_code === '0607' && r.topic === 'Number' && r.source === 'studybridge'));
   const bad = rows.filter((r) => r.check_result && !r.check_result.ok);
@@ -244,18 +264,18 @@ test('Prof writes question-bank questions, checks them, and they wait for approv
   await q(T2.auth.signUp({ email: 'tutor2@x.com', password: 'secret123' }));
   await q(T2.rpc('become_tutor', { p_name: 'Maria' }));
   const t2 = (await T2.auth.getUser()).data.user.id;
-  await q(T.rpc('admin_set_status', { p_user: t2, p_status: 'active' }));
+  await q(Ad.rpc('admin_set_status', { p_user: t2, p_status: 'active' }));
   const no = await T2.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 5, p_shared: true });
   assert.match(no.error.message, /Only the StudyBridge admin/);
   assert.equal((await q(T2.from('bank_questions').select('id'))).length, 0);
   // The admin approves the good ones and rejects the flagged one
-  await q(T.from('bank_questions').update({ status: 'approved' }).in('id', rows.filter((r) => r.check_result?.ok).map((r) => r.id)));
-  await q(T.from('bank_questions').update({ status: 'rejected' }).eq('id', bad[0].id));
+  await q(Ad.from('bank_questions').update({ status: 'approved' }).in('id', rows.filter((r) => r.check_result?.ok).map((r) => r.id)));
+  await q(Ad.from('bank_questions').update({ status: 'rejected' }).eq('id', bad[0].id));
   assert.equal((await q(T2.from('bank_questions').select('id'))).length, 9, 'every tutor can use approved shared questions');
   const tried = await T2.from('bank_questions').update({ prompt_md: 'changed' }).eq('id', rows[0].id).select();
   assert.equal(tried.data.length, 0, 'tutors can’t change shared questions');
   await q(T2.rpc('bank_used', { p_ids: [rows[0].id] }));
-  assert.equal((await q(T.from('bank_questions').select('uses').eq('id', rows[0].id).single())).uses, 1);
+  assert.equal((await q(Ad.from('bank_questions').select('uses').eq('id', rows[0].id).single())).uses, 1);
 
   // A tutor's own bank questions from Prof wait for that tutor
   const mine = await q(T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Algebra', p_count: 3 }));
