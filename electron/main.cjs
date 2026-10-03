@@ -252,12 +252,21 @@ ipcMain.handle('web:fetch', async (_e, { url, as }) => {
   }
   if (u.protocol !== 'https:' || !WEB_HOSTS.includes(u.hostname)) return { error: 'StudyBridge only opens exam boards’ own websites here.' };
   try {
-    const r = await net.fetch(u.href, { headers: { 'User-Agent': `Mozilla/5.0 StudyBridge/${app.getVersion()}`, Accept: as === 'text' ? 'text/html' : 'application/pdf,*/*' } });
+    // follow redirects ourselves, so every hop stays on an exam board's own site
+    let r;
+    for (let hop = 0; ; hop++) {
+      r = await net.fetch(u.href, { redirect: 'manual', headers: { 'User-Agent': `Mozilla/5.0 StudyBridge/${app.getVersion()}`, Accept: as === 'text' ? 'text/html' : 'application/pdf,*/*' } });
+      if (r.status < 300 || r.status >= 400) break;
+      const loc = r.headers.get('location');
+      if (!loc || hop >= 5) return { error: 'The exam board’s site sent StudyBridge somewhere unexpected.' };
+      u = new URL(loc, u);
+      if (u.protocol !== 'https:' || !WEB_HOSTS.includes(u.hostname)) return { error: 'That link leads away from the exam board’s site.' };
+    }
     if (!r.ok) return { error: `The exam board’s site answered ${r.status}.`, status: r.status };
     const type = r.headers.get('content-type') || '';
-    if (as === 'text') return { text: await r.text(), type };
     const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > 60 * 1024 * 1024) return { error: 'That file is too big.' };
+    if (buf.length > (as === 'text' ? 8 : 60) * 1024 * 1024) return { error: 'That page or file is too big.' };
+    if (as === 'text') return { text: buf.toString('utf8'), type };
     return { bytes: new Uint8Array(buf), type };
   } catch (e) {
     return { error: 'Couldn’t reach the exam board’s site. Check the internet connection.', detail: String(e && e.message) };

@@ -692,7 +692,8 @@ Rules:
       const r = list[x.number - 1];
       if (!r) continue;
       if (!x.agrees) flagged++;
-      await rest(`bank_questions?id=eq.${r.id}`, { method: 'PATCH', body: { check_result: { ok: !!x.agrees, my_answer: String(x.my_answer || '').slice(0, 300), note: String(x.note || '').slice(0, 400) } } });
+      // only questions still waiting (one approved meanwhile is left as the person decided)
+      await rest(`bank_questions?id=eq.${r.id}&status=eq.review`, { method: 'PATCH', body: { check_result: { ok: !!x.agrees, my_answer: String(x.my_answer || '').slice(0, 300), note: String(x.note || '').slice(0, 400) } } });
     }
     const n = list.length;
     const msg = `${n} question${n === 1 ? '' : 's'} on ${c.topic} ${c.shared ? 'for the shared bank' : 'for your bank'}${flagged ? `; the automatic check flagged ${flagged} to look at closely` : '; the automatic check agreed with every answer'}.`;

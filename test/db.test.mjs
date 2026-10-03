@@ -359,8 +359,20 @@ test('weekly parent reports: the learner switches them on; drafts; sent only whe
   await as('T', `update parent_reports set status = 'sent', sent_at = now(), sent_via = 'whatsapp' where id = $1`, [r.id]);
   assert.equal((await as('L', `select * from parent_reports`)).length, 1, 'the learner sees what was sent');
   assert.equal((await as('T2', `select * from parent_reports`)).length, 0);
-  await as('L', `select set_parent_reports(false)`);
+  // only work the learner can see goes in a report (not scheduled-for-later, not other subjects)
+  const soon = new Date(Date.now() + 3 * 864e5).toISOString();
+  const later = await val('T', `insert into assignments (kind, title, visibility, visible_from, due_at) values ('test', 'Surprise test', 'scheduled', now() + interval '2 days', $1) returning id`, [soon]);
+  const other = await val('T', `insert into subjects (name) values ('Chemistry') returning id`);
+  const chem = await val('T', `insert into assignments (kind, title, visibility, subject_id, due_at) values ('homework', 'Chem homework', 'visible', $1, $2) returning id`, [other, soon]);
+  const open = await val('T', `insert into assignments (kind, title, visibility, due_at) values ('homework', 'Open homework', 'visible', $1) returning id`, [soon]);
+  const n2 = await val('T', `select report_numbers($1, now() - interval '4 days', now())`, [U.L]);
+  const titles = n2.next.map((x) => x.title);
+  assert.ok(titles.includes('Open homework'));
+  assert.ok(!titles.includes('Surprise test') && !titles.includes('Chem homework'), 'not work the learner can’t see');
+  await as('T', `delete from assignments where id = any($1)`, [[later, chem, open]]);
+  await as('T', `delete from subjects where id = $1`, [other]);
   await as('T', `delete from parent_reports where id = $1`, [r.id]);
+  // (reports stay on: the last test checks the parent's contact doesn't follow the learner to a new tutor)
 });
 
 test('notes and messages notify instantly; read receipts', async () => {
@@ -605,4 +617,24 @@ test('removing a learner cuts access', async () => {
   assert.equal((await db.query(`select count(*)::int n from public.attempts where learner_id = $1`, [U.L])).rows[0].n, 0);
   assert.equal((await db.query(`select count(*)::int n from public.comments where learner_id = $1`, [U.L])).rows[0].n, 0);
   assert.equal((await db.query(`select count(*)::int n from public.profiles where id = $1`, [U.T])).rows[0].n, 1, 'tutor untouched');
+});
+
+test('a learner who moves to another tutor takes the parent contact with them', async () => {
+  U.L3 = (await db.query(`insert into auth.users (email) values ('l3@x.com') returning id`)).rows[0].id;
+  const i1 = await one('T', `insert into invites (name) values ('Moves') returning code`);
+  await as('L3', `select accept_invite($1, 'Moves')`, [i1.code]);
+  await as('L3', `select set_parent_reports(true, 'Dad', '+260971111111')`);
+  assert.equal((await as('T', `select * from learner_reports where learner_id = $1`, [U.L3])).length, 1);
+  await as('T', `select remove_learner($1)`, [U.L3]);
+  assert.equal((await as('T', `select * from learner_reports where learner_id = $1`, [U.L3])).length, 0, 'the old tutor no longer sees the parent’s contact');
+  U.T3 = (await db.query(`insert into auth.users (email) values ('tutor3@x.com') returning id`)).rows[0].id;
+  await as('T3', `select become_tutor('Third tutor')`);
+  await as('T', `select admin_set_status($1, 'active')`, [U.T3]);
+  const inv = await one('T3', `insert into invites (name) values ('Moves') returning code`);
+  await as('L3', `select accept_invite($1, 'Moves')`, [inv.code]);
+  const ex = await val('T3', `select set_learner_exam($1, 'IB Maths', '2027-05-10')`, [U.L3]);
+  assert.deepEqual(Object.keys(ex).sort(), ['exam_date', 'exam_name'], 'only the exam comes back');
+  const row = await one('T3', `select * from learner_reports where learner_id = $1`, [U.L3]);
+  assert.equal(row.enabled, false);
+  assert.equal(row.parent_phone, null, 'reports start off with a new tutor until the learner switches them on');
 });

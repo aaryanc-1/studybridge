@@ -532,8 +532,12 @@ create table if not exists public.parent_reports (
   sent_via text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (learner_id, week_start)
+  unique (tutor_id, learner_id, week_start)
 );
+do $$ begin
+  alter table public.parent_reports drop constraint if exists parent_reports_learner_id_week_start_key;
+  alter table public.parent_reports add constraint parent_reports_tutor_id_learner_id_week_start_key unique (tutor_id, learner_id, week_start);
+exception when duplicate_table or duplicate_object then null; end $$;
 alter table public.prof_settings add column if not exists auto_reports boolean not null default false;
 
 -- Prof's own notes on pages of a tutor's book, so it reads the notes next time instead of the pictures (cheaper)
@@ -654,11 +658,11 @@ create policy bank_own on public.bank_questions for all
 create policy bank_shared_read on public.bank_questions for select
   using (owner_id is null and status = 'approved' and public._tutor_active());
 -- parent reports: the learner's choice and contact are changed only through set_parent_reports / set_learner_exam
-create policy learner_reports_read on public.learner_reports for select using (learner_id = auth.uid() or tutor_id = auth.uid());
+create policy learner_reports_read on public.learner_reports for select using (learner_id = auth.uid() or (tutor_id = auth.uid() and public.is_my_learner(learner_id)));
 create policy parent_reports_tutor on public.parent_reports for all
   using (tutor_id = auth.uid())
   with check (tutor_id = auth.uid() and public.is_my_learner(learner_id)
-              and (status = 'draft' or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.enabled)));
+              and (status = 'draft' or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.tutor_id = auth.uid() and r.enabled)));
 create policy book_notes_tutor on public.book_notes for select using (tutor_id = auth.uid());
 create policy book_notes_delete on public.book_notes for delete using (tutor_id = auth.uid());
 create policy parent_reports_learner on public.parent_reports for select using (learner_id = auth.uid() and status = 'sent');
@@ -831,6 +835,7 @@ begin
     where exists (select 1 from public.subjects where id = s and tutor_id = inv.tutor_id)
   on conflict do nothing;
   update public.invites set accepted_by = auth.uid(), accepted_at = now() where id = inv.id;
+  delete from public.learner_reports where learner_id = auth.uid() and tutor_id <> inv.tutor_id;
   perform public.notify_user(inv.tutor_id, 'joined', v.display_name || ' joined StudyBridge', 'They accepted your invite.',
     jsonb_build_object('learner_id', auth.uid()));
   return v;
@@ -859,6 +864,7 @@ returns void language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
   delete from public.learner_subjects where learner_id = p_learner;
+  delete from public.learner_reports where learner_id = p_learner; -- the parent's contact goes with the learner
   update public.profiles set tutor_id = null, role = null, programme_id = null where id = p_learner;
 end $$;
 
@@ -1205,7 +1211,8 @@ $$;
 
 -- What a learner is strong and weak at, by topic (last 10 answers per topic). p_released_only: only marks
 -- the learner has been given back (for the learner's own view and for parent reports).
-create or replace function public._learner_topics(p_learner uuid, p_released_only boolean)
+drop function if exists public._learner_topics(uuid, boolean);
+create or replace function public._learner_topics(p_learner uuid, p_released_only boolean, p_tutor uuid default null)
 returns jsonb language sql stable security definer set search_path = public as $$
   select coalesce((
       select jsonb_agg(x order by x ->> 'subject', x ->> 'topic') from (
@@ -1231,7 +1238,7 @@ returns jsonb language sql stable security definer set search_path = public as $
         ) rr
         join public.topics tp on tp.id = rr.topic_id
         join public.subjects sb on sb.id = tp.subject_id
-        where rr.rn <= 10
+        where rr.rn <= 10 and (p_tutor is null or sb.tutor_id = p_tutor)
         group by tp.id, tp.name, sb.id, sb.name
       ) z), '[]')
 $$;
@@ -1241,7 +1248,7 @@ returns jsonb language plpgsql stable security definer set search_path = public 
 begin
   if not public._can_view_learner(p_learner) then raise exception 'Not allowed.'; end if;
   return jsonb_build_object(
-    'topics', public._learner_topics(p_learner, p_learner = auth.uid()),
+    'topics', public._learner_topics(p_learner, p_learner = auth.uid(), case when p_learner = auth.uid() then null else auth.uid() end),
     'time_by_subject', coalesce((
       select jsonb_agg(jsonb_build_object('subject_id', s.id, 'subject', coalesce(s.name, 'Other'), 'seconds', z.seconds))
       from (select subject_id, sum(seconds) seconds from public.activity where learner_id = p_learner group by subject_id) z
@@ -1778,7 +1785,9 @@ begin
   insert into public.learner_reports (learner_id, tutor_id, enabled, parent_name, parent_phone, parent_email)
   values (auth.uid(), v_tutor, coalesce(p_on, false), nullif(trim(coalesce(p_name, '')), ''), v_phone, nullif(trim(coalesce(p_email, '')), ''))
   on conflict (learner_id) do update set enabled = excluded.enabled, parent_name = excluded.parent_name,
-    parent_phone = excluded.parent_phone, parent_email = excluded.parent_email, tutor_id = excluded.tutor_id, updated_at = now()
+    parent_phone = excluded.parent_phone, parent_email = excluded.parent_email, tutor_id = excluded.tutor_id,
+    exam_name = case when learner_reports.tutor_id = excluded.tutor_id then learner_reports.exam_name end,
+    exam_date = case when learner_reports.tutor_id = excluded.tutor_id then learner_reports.exam_date end, updated_at = now()
   returning * into v;
   if p_on then
     perform public.notify_user(v_tutor, 'reports_on', (select display_name from public.profiles where id = auth.uid()) || ' switched on weekly reports',
@@ -1788,65 +1797,82 @@ begin
 end $$;
 
 -- The tutor sets the exam a learner is working towards (shown as a countdown in reports)
+drop function if exists public.set_learner_exam(uuid, text, date);
 create or replace function public.set_learner_exam(p_learner uuid, p_name text, p_date date)
-returns public.learner_reports language plpgsql security definer set search_path = public as $$
+returns jsonb language plpgsql security definer set search_path = public as $$
 declare v public.learner_reports;
 begin
   if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  -- a row left from another tutor is reset: that tutor's parent contact never carries over
+  delete from public.learner_reports where learner_id = p_learner and tutor_id <> auth.uid();
   insert into public.learner_reports (learner_id, tutor_id, exam_name, exam_date)
   values (p_learner, auth.uid(), nullif(trim(coalesce(p_name, '')), ''), p_date)
   on conflict (learner_id) do update set exam_name = excluded.exam_name, exam_date = excluded.exam_date, updated_at = now()
   returning * into v;
-  return v;
+  return jsonb_build_object('exam_name', v.exam_name, 'exam_date', v.exam_date);
 end $$;
 
--- Everything a weekly report says, worked out from the learner's week
+-- Can a given learner see this assignment right now? (same rules as can_learner_see, for any learner)
+create or replace function public._assignment_visible_to(a public.assignments, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select not a.draft
+    and (a.visibility = 'visible' or (a.visibility = 'scheduled' and a.visible_from is not null and a.visible_from <= now()))
+    and (case
+           when a.learner_ids is not null and cardinality(a.learner_ids) > 0 then p_learner = any (a.learner_ids)
+           when a.subject_id is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p_learner and ls.subject_id = a.subject_id)
+           else true
+         end)
+$$;
+
+-- Everything a weekly report says, worked out from the learner's week with THIS tutor. Only work the
+-- learner can see, and only marks they've been given back.
 create or replace function public.report_numbers(p_learner uuid, p_from timestamptz, p_to timestamptz)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
 declare
-  v_tutor uuid;
+  v_tutor uuid := auth.uid();
   r public.learner_reports;
 begin
-  if not (public.is_my_learner(p_learner) or current_user = 'service_role') then raise exception 'Not your learner.'; end if;
-  select tutor_id into v_tutor from public.profiles where id = p_learner;
-  select * into r from public.learner_reports where learner_id = p_learner;
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  select * into r from public.learner_reports where learner_id = p_learner and tutor_id = v_tutor;
   return jsonb_build_object(
     'from', p_from, 'to', p_to,
     'learner', (select display_name from public.profiles where id = p_learner),
     'tutor', (select display_name from public.profiles where id = v_tutor),
     'parent', r.parent_name,
-    'lessons', (select count(*) from public.sessions s where p_learner = any(s.learner_ids) and s.starts_at >= p_from and s.starts_at < least(p_to, now())),
-    'seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and created_at >= p_from and created_at < p_to), 0),
+    'lessons', (select count(*) from public.sessions s where s.tutor_id = v_tutor and p_learner = any(s.learner_ids)
+                 and s.starts_at >= p_from and s.starts_at < least(p_to, now())),
+    'seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and tutor_id = v_tutor
+                          and created_at >= p_from and created_at < p_to), 0),
     'work', coalesce((select jsonb_agg(w order by w ->> 'due_at') from (
         select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at,
           'status', case when t.submitted_at is null then case when a.due_at < now() then 'missing' else 'open' end
                          when a.due_at is not null and t.submitted_at > a.due_at then 'late' else 'on_time' end,
-          'score', case when t.released then t.score end, 'max', t.max_score) as w
+          'score', case when t.rel then t.score end, 'max', t.max_score) as w
         from public.assignments a
-        left join lateral (select * from public.attempts x where x.assignment_id = a.id and x.learner_id = p_learner
+        left join lateral (select x.*, public._is_released(x) as rel from public.attempts x where x.assignment_id = a.id and x.learner_id = p_learner
                            order by x.number desc limit 1) t on true
-        where a.tutor_id = v_tutor and not a.draft and not a.practice and a.visibility <> 'hidden'
-          and (a.learner_ids is null or p_learner = any(a.learner_ids))
-          and (a.subject_id is null or a.learner_ids is not null or exists (select 1 from public.learner_subjects ls where ls.learner_id = p_learner and ls.subject_id = a.subject_id))
+        where a.tutor_id = v_tutor and not a.practice and public._assignment_visible_to(a, p_learner)
           and ((a.due_at >= p_from and a.due_at < p_to) or (a.due_at is null and t.submitted_at >= p_from and t.submitted_at < p_to))
       ) z), '[]'),
     'practice', jsonb_build_object(
       'tries', (select count(*) from public.attempts t join public.assignments a on a.id = t.assignment_id
-                 where t.learner_id = p_learner and a.practice and t.submitted_at >= p_from and t.submitted_at < p_to),
+                 where t.learner_id = p_learner and t.tutor_id = v_tutor and a.practice and t.submitted_at >= p_from and t.submitted_at < p_to),
       'pct', (select round(100 * avg(t.score / nullif(t.max_score, 0))) from public.attempts t join public.assignments a on a.id = t.assignment_id
-               where t.learner_id = p_learner and a.practice and t.submitted_at >= p_from and t.submitted_at < p_to)),
+               where t.learner_id = p_learner and t.tutor_id = v_tutor and a.practice and public._is_released(t)
+                 and t.submitted_at >= p_from and t.submitted_at < p_to)),
     'avg_pct', (select round(100 * avg(t.score / nullif(t.max_score, 0))) from public.attempts t join public.assignments a on a.id = t.assignment_id
-                 where t.learner_id = p_learner and not a.practice and t.released and t.score is not null and t.submitted_at >= p_from and t.submitted_at < p_to),
+                 where t.learner_id = p_learner and t.tutor_id = v_tutor and not a.practice and public._is_released(t) and t.score is not null
+                   and t.submitted_at >= p_from and t.submitted_at < p_to),
     'prev_avg_pct', (select round(100 * avg(t.score / nullif(t.max_score, 0))) from public.attempts t join public.assignments a on a.id = t.assignment_id
-                      where t.learner_id = p_learner and not a.practice and t.released and t.score is not null
+                      where t.learner_id = p_learner and t.tutor_id = v_tutor and not a.practice and public._is_released(t) and t.score is not null
                         and t.submitted_at >= p_from - interval '28 days' and t.submitted_at < p_from),
     'next', coalesce((select jsonb_agg(jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at) order by a.due_at)
         from public.assignments a
-        where a.tutor_id = v_tutor and not a.draft and not a.practice and a.visibility <> 'hidden'
-          and (a.learner_ids is null or p_learner = any(a.learner_ids))
+        where a.tutor_id = v_tutor and not a.practice and public._assignment_visible_to(a, p_learner)
           and a.due_at >= p_to and a.due_at < p_to + interval '7 days'), '[]'),
-    'exam', case when r.exam_date is not null then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - (p_to at time zone 'UTC')::date) end
-  ) || jsonb_build_object('topics', public._learner_topics(p_learner, true));
+    'exam', case when r.exam_date is not null then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - (p_to at time zone 'UTC')::date) end,
+    'topics', public._learner_topics(p_learner, true, v_tutor)
+  );
 end $$;
 
 -- Ask Prof to write a report's summary, comment and next steps (the tutor approves before sending)
@@ -2177,7 +2203,8 @@ end $$;
 grant execute on all functions in schema public to service_role;
 revoke execute on function public._admin_log(text, uuid, jsonb) from public, anon, authenticated;
 revoke execute on function public._storage_bytes(uuid) from public, anon, authenticated;
-revoke execute on function public._learner_topics(uuid, boolean) from public, anon, authenticated;
+revoke execute on function public._learner_topics(uuid, boolean, uuid) from public, anon, authenticated;
+revoke execute on function public._assignment_visible_to(public.assignments, uuid) from public, anon, authenticated;
 revoke execute on function public._prof_month_cents(uuid) from public, anon, authenticated;
 revoke execute on function public.notify_user(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;

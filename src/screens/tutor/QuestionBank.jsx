@@ -379,7 +379,8 @@ export function ReviewQueue({ rows, title, batch = 20 }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const shown = rows.slice(0, batch);
-  const ok = shown.filter((b) => b.check_result?.ok !== false);
+  const ok = shown.filter((b) => b.check_result?.ok === true);
+  const unchecked = shown.filter((b) => !b.check_result).length;
   async function setStatus(ids, status) {
     setBusy(true);
     try {
@@ -402,7 +403,11 @@ export function ReviewQueue({ rows, title, batch = 20 }) {
           <Icon name="check" size={16} /> Approve {ok.length} the check agreed with
         </button>
       </div>
-      <div className="small muted">Check each answer and mark scheme. Questions the automatic check flagged are marked in red; fix or reject those.{rows.length > batch ? ` Showing ${batch} at a time.` : ''}</div>
+      <div className="small muted">
+        Check each answer and mark scheme. Questions the automatic check flagged are marked in red; fix or reject those.
+        {unchecked > 0 && ` ${unchecked} ${unchecked === 1 ? 'is' : 'are'} still being checked.`}
+        {rows.length > batch ? ` Showing ${batch} at a time.` : ''}
+      </div>
       <div className="stack sm">
         {shown.map((b) => (
           <div key={b.id} className={'card bank-q' + (b.check_result?.ok === false ? ' flagged' : '')}>
