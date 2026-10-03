@@ -280,6 +280,28 @@ test('quiz released on submit, answers shown when allowed', async () => {
   assert.equal(d.keys[0].solution_md, 'It is a');
 });
 
+test('practice: any number of tries, marked instantly, the tutor isn\'t pinged; learners never read the bank', async () => {
+  const pr = await val('T', `insert into assignments (kind, title, practice, visibility, release_mode, show_answers, max_attempts, learner_ids)
+     values ('quiz', 'Practice: Number', true, 'visible', 'on_submit', true, 50, $1) returning id`, [[U.L]]);
+  const q = await val('T', `insert into questions (assignment_id, type, marks) values ($1, 'numeric', 1) returning id`, [pr]);
+  await as('T', `insert into question_keys (question_id, answer) values ($1, '{"value":"21","tolerance":"0"}')`, [q]);
+  const before = (await as('T', `select id from notifications where kind = 'submitted'`)).length;
+  for (const [ans, score] of [['20', 0], ['21', 1]]) {
+    const t = await one('L', `select * from start_attempt($1)`, [pr]);
+    await as('L', `select save_response($1, $2, $3)`, [t.id, q, { value: ans }]);
+    const s = await one('L', `select * from submit_attempt($1)`, [t.id]);
+    assert.equal(s.status, 'marked');
+    assert.equal(Number(s.score), score);
+    assert.equal(s.released, true);
+  }
+  assert.equal((await as('T', `select id from notifications where kind = 'submitted'`)).length, before, 'no ping per practice try');
+  // the bank holds answers: learners can't read it, even shared questions
+  await as('T', `insert into bank_questions (owner_id, type, prompt_md, answer) values (auth.uid(), 'numeric', 'x', '{"value":"1"}')`);
+  assert.equal((await as('L', `select id from bank_questions`)).length, 0);
+  await fails(as('L', `insert into bank_questions (owner_id, type, prompt_md) values (auth.uid(), 'numeric', 'x')`), /row-level security/);
+  await as('T', `delete from assignments where id = $1`, [pr]);
+});
+
 test('time, lockdown events, progress and summaries', async () => {
   await as('L', `select log_time('assignment', $1, 500)`, [S.att]);
   await as('L', `select log_time('file', $1, 60)`, [S.fVisible]);

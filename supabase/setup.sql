@@ -406,6 +406,9 @@ exception when duplicate_object then null; end $$;
 create index if not exists idx_files_exam on public.files (tutor_id, exam_board, exam_code);
 alter table public.tutor_settings add column if not exists exam_subjects text[] not null default '{}';
 
+-- Practice: tutor-approved questions a learner can do any time, as often as they like, marked instantly
+alter table public.assignments add column if not exists practice boolean not null default false;
+
 alter table public.lessons add column if not exists draft boolean not null default false;
 alter table public.lessons add column if not exists source text not null default 'tutor';
 alter table public.claude_drafts add column if not exists source text not null default 'claude';
@@ -996,6 +999,8 @@ begin
    where id = t.id returning * into t;
 
   select display_name into v_name from public.profiles where id = auth.uid();
+  -- practice is marked instantly and shows in progress; the tutor isn't pinged each time
+  if a.practice and v_all_auto then return t; end if;
   perform public.notify_user(t.tutor_id, 'submitted',
     coalesce(v_name, 'Your learner') || case when v_redo then ' resubmitted ' else ' submitted ' end || a.title,
     case when v_all_auto then 'Marked automatically: ' || v_total || ' / ' || coalesce(t.max_score, 0) else 'Ready for you to mark.' end,

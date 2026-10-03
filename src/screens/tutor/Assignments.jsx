@@ -68,7 +68,7 @@ export default function Assignments() {
                 <span className="bar-l" style={{ background: lk.subject(a.subject_id)?.color || 'var(--line)' }} />
                 <span className="grow stack sm">
                   <span className="row wrap" style={{ gap: 8 }}>
-                    <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span>
+                    <span className={'kind ' + a.kind}>{a.practice ? 'Practice' : kindLabel[a.kind]}</span>
                     {a.draft && <span className="pill claude"><Icon name="spark" size={12} /> Draft from Claude</span>}
                     {a.lockdown && <span className="pill dark"><Icon name="lock" size={12} /> Lockdown</span>}
                     {a.camera && <span className="pill dark"><Icon name="camera" size={12} /> Camera</span>}

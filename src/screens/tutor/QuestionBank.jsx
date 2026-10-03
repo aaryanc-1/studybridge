@@ -8,6 +8,14 @@ import { typeLabel, kindLabel } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { useApp } from '../../App.jsx';
 
+// A bank topic name ("Algebra") as one of the tutor's own topics in that subject, so progress counts it
+export const topicMatcher = (lk, subjectId) => (name) => {
+  if (!name || !subjectId) return null;
+  const n = name.trim().toLowerCase();
+  const list = lk.topicsOf(subjectId);
+  return (list.find((t) => t.name.trim().toLowerCase() === n) || list.find((t) => t.name.toLowerCase().includes(n) || n.includes(t.name.toLowerCase())))?.id || null;
+};
+
 // Where a bank question belongs: an exam syllabus (0607) or one of the tutor's subjects
 const groupOf = (b, lk) =>
   b.exam_code ? { key: 'x:' + b.exam_code, label: X.syllabusLabel(b.exam_board || 'cie', b.exam_code) } : b.subject_id ? { key: 's:' + b.subject_id, label: lk.subject(b.subject_id)?.name || 'Subject' } : { key: 'none', label: 'No subject' };
@@ -19,6 +27,7 @@ export default function QuestionBank() {
   const bank = useQuery('bank', api.listBank);
   const app = useApp();
   const [asking, setAsking] = useState(false);
+  const [practicing, setPracticing] = useState(false);
   const all = bank.data || [];
   const mine = all.filter((b) => b.owner_id === app.me.id);
   const waiting = mine.filter((b) => b.status === 'review');
@@ -31,14 +40,146 @@ export default function QuestionBank() {
         <div className="small muted">
           {usable.length} question{usable.length === 1 ? '' : 's'} ready to use · yours and StudyBridge’s shared exam-style questions. Learners never see the bank, only the work you set from it.
         </div>
-        <button className="btn claude" onClick={() => setAsking(true)}>
-          <Icon name="cap" size={18} /> Ask Prof for questions
-        </button>
+        <div className="row wrap">
+          <button className="btn" onClick={() => setPracticing(true)} disabled={!usable.length}>
+            <Icon name="target" size={18} /> Set practice for a learner
+          </button>
+          <button className="btn claude" onClick={() => setAsking(true)}>
+            <Icon name="cap" size={18} /> Ask Prof for questions
+          </button>
+        </div>
       </div>
       {waiting.length > 0 && <ReviewQueue rows={waiting} title="Waiting for your approval" />}
       <BankBrowser rows={usable} />
       {asking && <AskProf onClose={() => setAsking(false)} />}
+      {practicing && <PracticeBuilder rows={usable} onClose={() => setPracticing(false)} />}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Practice: questions from the bank on a learner's weakest topics, approved by
+// the tutor, done as often as the learner likes and marked instantly (no AI)
+// ---------------------------------------------------------------------------
+const AUTO = ['mcq', 'numeric'];
+export function PracticeBuilder({ rows, onClose, learnerId = null }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const [learner, setLearner] = useState(learnerId || lk.learners[0]?.id || '');
+  const progress = useQuery(learner ? `progress:${learner}` : null, () => api.learnerProgress(learner));
+  const [onlyWeak, setOnlyWeak] = useState(true);
+  const [sel, setSel] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const who = lk.learners.find((l) => l.id === learner);
+  const weak = (progress.data?.topics || []).filter((t) => t.strength === 'weak' || t.strength === 'developing').sort((a, b) => (a.ratio ?? 0) - (b.ratio ?? 0));
+  const weakNames = weak.map((t) => t.topic.toLowerCase());
+  const isWeak = (b) => !!b.topic && weakNames.some((w) => w === b.topic.toLowerCase() || w.includes(b.topic.toLowerCase()) || b.topic.toLowerCase().includes(w));
+  const auto = rows.filter((b) => AUTO.includes(b.type));
+  const shown = onlyWeak && weak.length ? auto.filter(isWeak) : auto;
+  const chosen = sel ?? shown.slice(0, 10).map((b) => b.id);
+  const toggle = (id) => setSel((s) => ((s ?? chosen).includes(id) ? (s ?? chosen).filter((x) => x !== id) : [...(s ?? chosen), id]));
+  const picked = auto.filter((b) => chosen.includes(b.id));
+  const topics = [...new Set(picked.map((b) => b.topic).filter(Boolean))];
+  const [title, setTitle] = useState('');
+  const subject = (() => {
+    const ids = [...new Set(weak.map((t) => t.subject_id))];
+    return ids.length === 1 ? ids[0] : lk.subjects.length === 1 ? lk.subjects[0].id : null;
+  })();
+
+  async function give() {
+    setBusy(true);
+    try {
+      await api.practiceFromBank(picked, { learnerId: learner, title: title.trim() || `Practice: ${topics.slice(0, 3).join(', ') || 'mixed topics'}`, subject_id: subject, topicIdFor: topicMatcher(lk, subject) });
+      invalidate('assignments');
+      invalidate('bank');
+      toast({ title: `Practice set for ${who?.display_name}`, body: 'They can do it as often as they like; it’s marked straight away.' });
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t set it', body: e.message, tone: 'bad' });
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Set practice for a learner"
+      wide
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy || !picked.length || !learner} onClick={give}>
+            <Icon name="send" size={18} /> Give {picked.length} question{picked.length === 1 ? '' : 's'} to {who?.display_name || '…'}
+          </button>
+        </>
+      }
+    >
+      <div className="grid g2">
+        <Field label="Learner">
+          <select className="select" value={learner} onChange={(e) => (setLearner(e.target.value), setSel(null))}>
+            {lk.learners.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.display_name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Title">
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`Practice: ${topics.slice(0, 3).join(', ') || 'mixed topics'}`} />
+        </Field>
+      </div>
+      <div className="small">
+        {progress.data ? (
+          weak.length ? (
+            <>
+              Topics {who?.display_name} finds hardest:{' '}
+              {weak.slice(0, 6).map((t) => (
+                <span key={t.topic_id} className={'pill ' + (t.strength === 'weak' ? 'bad' : 'warn')} style={{ marginRight: 4 }}>
+                  {t.topic} {Math.round((t.ratio || 0) * 100)}%
+                </span>
+              ))}
+            </>
+          ) : (
+            <span className="muted">No weak topics yet from marked work, so all bank questions are shown.</span>
+          )
+        ) : (
+          <span className="muted">Looking at their progress…</span>
+        )}
+      </div>
+      {weak.length > 0 && (
+        <Seg
+          value={onlyWeak ? 'weak' : 'all'}
+          onChange={(v) => (setOnlyWeak(v === 'weak'), setSel(null))}
+          options={[
+            { value: 'weak', label: 'Their weak topics' },
+            { value: 'all', label: 'All questions' },
+          ]}
+        />
+      )}
+      <div className="tiny muted">Only questions that mark themselves (multiple choice and number answers) are used for practice, so it’s marked instantly with no AI.</div>
+      {shown.length === 0 ? (
+        <div className="note small">No auto-marked questions in the bank {onlyWeak && weak.length ? 'on these topics yet' : 'yet'}. Ask Prof to write some for these topics first.</div>
+      ) : (
+        <div className="stack sm" style={{ maxHeight: 380, overflowY: 'auto' }}>
+          {shown.map((b) => (
+            <label key={b.id} className={'card bank-q row top' + (chosen.includes(b.id) ? ' chosen' : '')}>
+              <input type="checkbox" checked={chosen.includes(b.id)} onChange={() => toggle(b.id)} style={{ marginTop: 4 }} />
+              <span className="grow stack sm">
+                <Markdown src={b.prompt_md} />
+                <span className="row wrap tiny muted" style={{ gap: 8 }}>
+                  {b.topic && <span>{b.topic}</span>}
+                  {b.difficulty && <span>{X.DIFFICULTY[b.difficulty]}</span>}
+                  <span>{typeLabel[b.type]}</span>
+                  <span>Answer: {X.answerText(b)}</span>
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -419,7 +560,7 @@ function MakeAssignment({ rows, onClose }) {
   async function make() {
     setBusy(true);
     try {
-      const a = await api.assignmentFromBank(rows, { title: title.trim() || 'Practice questions', kind, subject_id: subject || null });
+      const a = await api.assignmentFromBank(rows, { title: title.trim() || 'Practice questions', kind, subject_id: subject || null, topicIdFor: topicMatcher(lk, subject) });
       invalidate('assignments');
       invalidate('bank');
       toast({ title: 'Assignment made', body: 'It’s hidden until you post it. Check it over first.' });

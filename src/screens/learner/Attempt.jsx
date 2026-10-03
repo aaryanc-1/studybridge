@@ -176,7 +176,10 @@ export default function Attempt({ id }) {
         camRoom.current?.disconnect();
         if (desktop) await desktop.lockdown.exit();
         invalidate('myattempts', 'attempt');
-        setDone({ queued: !!r.queued, auto });
+        // quizzes and practice are marked the moment they're handed in
+        let marked = null;
+        if (!r.queued) marked = await api.attemptDetail(id).then((x) => (x?.attempt?.status === 'marked' && x.attempt.released ? x.attempt : null)).catch(() => null);
+        setDone({ queued: !!r.queued, auto, marked });
         confetti();
       } catch (e) {
         toast({ title: 'Couldn’t hand in', body: e.message, tone: 'bad' });
@@ -194,6 +197,30 @@ export default function Attempt({ id }) {
   if (detail.error && !d) return <CenterMessage title="This work couldn’t open" body={detail.error.message} />;
   if (!d || !a || !questions.data || !answers) return <Loading label="Opening your work…" />;
 
+  if (done?.marked) {
+    const m = done.marked;
+    const p = m.max_score ? Math.round((Number(m.score) / Number(m.max_score)) * 100) : null;
+    return (
+      <CenterMessage
+        icon="trophy"
+        medal
+        title={`${Number(m.score)} / ${Number(m.max_score)}${p != null ? ` · ${p}%` : ''}`}
+        body={a?.practice ? (p === 100 ? 'All correct. Brilliant!' : 'Marked straight away. See which ones to look at again, then practise as often as you like.') : 'Marked straight away. See which ones you got right.'}
+        action={
+          <div className="row wrap" style={{ justifyContent: 'center' }}>
+            <button className="btn primary big" onClick={() => go(`/results/${id}`)}>
+              See my answers
+            </button>
+            {a?.practice && (
+              <button className="btn big" onClick={() => go(`/work/${a.id}`)}>
+                Practise again
+              </button>
+            )}
+          </div>
+        }
+      />
+    );
+  }
   if (done)
     return (
       <CenterMessage

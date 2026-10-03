@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Link, Loading, Markdown, Modal, Page, Seg, go, useToast } from '../../ui/kit.jsx';
+import { Empty, Link, Loading, Markdown, Modal, Page, Seg, go, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
@@ -13,14 +13,18 @@ export default function Work() {
   const lk = useLookups();
   const assignments = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('myattempts', () => api.myAttempts()).data || [];
-  const [tab, setTab] = useState('todo');
-  const states = (assignments.data || []).map((a) => ({ a, s: workState(a, attempts) }));
+  const route = useRoute();
+  const [tab, setTab] = useState(route.query.get('tab') || 'todo');
+  const all = (assignments.data || []).map((a) => ({ a, s: workState(a, attempts) }));
+  const states = all.filter((x) => !x.a.practice);
+  const practice = all.filter((x) => x.a.practice);
   const groups = {
     todo: states.filter((x) => needsAction(x.s)),
     waiting: states.filter((x) => x.s.key === 'waiting'),
     marked: states.filter((x) => x.s.key === 'marked'),
+    practice,
   };
-  const list = groups[tab];
+  const list = groups[tab] || [];
 
   return (
     <Page title="My work">
@@ -31,15 +35,39 @@ export default function Work() {
           { value: 'todo', label: `To do (${groups.todo.length})` },
           { value: 'waiting', label: `Handed in (${groups.waiting.length})` },
           { value: 'marked', label: `Marked (${groups.marked.length})` },
+          ...(practice.length ? [{ value: 'practice', label: `Practice (${practice.length})` }] : []),
         ]}
       />
+      {tab === 'practice' && <div className="note small">Extra practice from your tutor. Do it as often as you like: it’s marked straight away and shows you the answers.</div>}
       {!assignments.data ? (
         <Loading />
       ) : list.length === 0 ? (
         <Empty>{tab === 'todo' ? 'Nothing to do. Nice.' : 'Nothing here yet.'}</Empty>
       ) : (
         <div className="stack">
-          {list.map(({ a, s }) => {
+          {tab === 'practice' &&
+            list.map(({ a }) => {
+              const mine = attempts.filter((t) => t.assignment_id === a.id && t.score != null && t.max_score);
+              const best = mine.reduce((m, t) => Math.max(m, pct(t.score, t.max_score)), -1);
+              return (
+                <button key={a.id} className="work-card" onClick={() => go(`/work/${a.id}`)}>
+                  <span className="bar-l" style={{ background: lk.subject(a.subject_id)?.color || 'var(--accent)' }} />
+                  <span className="grow stack sm">
+                    <span className="row wrap" style={{ gap: 8 }}>
+                      <span className="kind quiz">Practice</span>
+                      <span className="pill">{mine.length ? `${mine.length} tr${mine.length === 1 ? 'y' : 'ies'}` : 'Not tried yet'}</span>
+                    </span>
+                    <span className="strong" style={{ fontSize: 16 }}>{a.title}</span>
+                    <span className="small muted row wrap" style={{ gap: 10 }}>
+                      {a.subject_id && <SubjectTag id={a.subject_id} />}
+                      {best >= 0 ? `Best ${best}%` : 'Marked straight away'}
+                    </span>
+                  </span>
+                  <span className="btn sm primary">{mine.length ? 'Practise again' : 'Start'}</span>
+                </button>
+              );
+            })}
+          {tab !== 'practice' && list.map(({ a, s }) => {
             const d = due(a.due_at);
             return (
               <button key={a.id} className="work-card" onClick={() => go(s.key === 'marked' || s.key === 'waiting' ? `/results/${s.last.id}` : `/work/${a.id}`)}>

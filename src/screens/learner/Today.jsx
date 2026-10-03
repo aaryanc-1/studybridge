@@ -19,7 +19,8 @@ export default function Today() {
   const progress = useQuery(`progress:${app.me.id}`, () => api.learnerProgress(app.me.id)).data;
   const week = useQuery(`summary:${app.me.id}:week:${weekRange(0).from.toISOString().slice(0, 10)}`, () => api.learnerSummary(app.me.id, weekRange(0).from, weekRange(0).to)).data;
 
-  const states = assignments.map((a) => ({ a, s: workState(a, attempts) }));
+  const states = assignments.filter((a) => !a.practice).map((a) => ({ a, s: workState(a, attempts) }));
+  const practiceNew = assignments.filter((a) => a.practice && !attempts.some((t) => t.assignment_id === a.id));
   const todo = states.filter((x) => needsAction(x.s)).sort((x, y) => (x.a.due_at ? new Date(x.a.due_at) : Infinity) - (y.a.due_at ? new Date(y.a.due_at) : Infinity));
   const back = attempts.filter((t) => t.released && t.submitted_at && Date.now() - new Date(t.submitted_at) < 14 * 86400000).slice(0, 4);
   const nextSession = sessions.find((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > Date.now());
@@ -153,6 +154,16 @@ export default function Today() {
               </div>
             )}
           </div>
+          {practiceNew.length > 0 && (
+            <Link to="/work?tab=practice" className="card tint row">
+              <Icon name="target" style={{ color: 'var(--accent)' }} />
+              <span className="grow">
+                <span className="strong">New practice from your tutor</span>
+                <span className="small muted"> · {practiceNew.map((a) => a.title).join(', ')}. Marked straight away; do it as often as you like.</span>
+              </span>
+              <Icon name="right" />
+            </Link>
+          )}
           {back.length > 0 && (
             <div className="card">
               <h2>Marks back</h2>

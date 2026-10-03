@@ -200,13 +200,25 @@ export async function addQuestionsToAssignment(assignmentId, questions, start = 
     await saveKey({ question_id: saved.id, answer: q.key?.answer || {}, solution_md: q.key?.solution_md || null, mark_scheme_md: q.key?.mark_scheme_md || null });
   }
 }
-export async function assignmentFromBank(rows, { title, kind = 'homework', subject_id = null }) {
+// topicIdFor(name) maps a bank topic ("Algebra") to the tutor's own topic in that subject, for progress
+export async function assignmentFromBank(rows, { title, kind = 'homework', subject_id = null, topicIdFor = () => null }) {
   const a = await save('assignments', { title, kind, subject_id, visibility: 'hidden' });
-  await addQuestionsToAssignment(a.id, rows.map(bankToQuestion));
+  await addQuestionsToAssignment(a.id, rows.map((b) => ({ ...bankToQuestion(b), topic_id: topicIdFor(b.topic) })));
   await sb().rpc('bank_used', { p_ids: rows.map((r) => r.id) });
   return a;
 }
 export const bankUsed = (ids) => sb().rpc('bank_used', { p_ids: ids });
+// Practice for one learner: auto-marked questions, any number of tries, answers shown straight away
+export async function practiceFromBank(rows, { learnerId, title, subject_id = null, topicIdFor = () => null }) {
+  const a = await save('assignments', {
+    title, kind: 'quiz', practice: true, subject_id, learner_ids: [learnerId], visibility: 'hidden',
+    max_attempts: 50, release_mode: 'on_submit', show_answers: true, time_limit_min: null, lockdown: false, camera: false, allow_notes: true,
+  });
+  await addQuestionsToAssignment(a.id, rows.map((b) => ({ ...bankToQuestion(b), topic_id: topicIdFor(b.topic) })));
+  await sb().rpc('bank_used', { p_ids: rows.map((r) => r.id) });
+  // only now does the learner see it, complete
+  return save('assignments', { id: a.id, visibility: 'visible' });
+}
 export async function saveQuestionsToBank(qs, { subject_id = null, topicName = () => null, ref = null } = {}) {
   const rows = qs.map((q) => ({
     owner_id: uid(),
