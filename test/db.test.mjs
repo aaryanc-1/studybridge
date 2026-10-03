@@ -335,6 +335,34 @@ test('time, lockdown events, progress and summaries', async () => {
   assert.equal(sum.by_day.length, 1);
 });
 
+test('weekly parent reports: the learner switches them on; drafts; sent only when on; learner sees what was sent', async () => {
+  await fails(as('T', `select set_parent_reports(true, 'Mum', '+260971234567')`), /Only learners/);
+  await fails(as('L', `select set_parent_reports(true, 'Mum')`), /WhatsApp number or email/);
+  await fails(as('L', `select set_parent_reports(true, 'Mum', '12')`), /doesn’t look right/);
+  await fails(as('L', `insert into learner_reports (learner_id, tutor_id, enabled) values (auth.uid(), $1, true)`, [U.T]), /permission denied/);
+  await as('T', `select set_learner_exam($1, 'IGCSE 0607', '2027-05-01')`, [U.L]);
+  await fails(as('T2', `select set_learner_exam($1, 'x', '2027-05-01')`, [U.L]), /Not your learner/);
+  // a draft can be written while reports are off, but not sent
+  const from = '2026-09-28T00:00:00Z', to = '2026-10-05T00:00:00Z';
+  const nums = await val('T', `select report_numbers($1, $2, $3)`, [U.L, from, to]);
+  assert.equal(nums.exam.name, 'IGCSE 0607');
+  assert.ok(Array.isArray(nums.work) && Array.isArray(nums.topics) && 'avg_pct' in nums);
+  await fails(as('T2', `select report_numbers($1, $2, $3)`, [U.L, from, to]), /Not your learner/);
+  const r = await one('T', `insert into parent_reports (learner_id, week_start, data, summary) values ($1, '2026-09-28', $2, 'A good week') returning *`, [U.L, nums]);
+  await fails(as('T', `update parent_reports set status = 'sent' where id = $1`, [r.id]), /row-level security/);
+  assert.equal((await as('L', `select * from parent_reports`)).length, 0, 'drafts are the tutor’s');
+  const on = await one('L', `select * from set_parent_reports(true, 'Mum', '+260 97 123 4567', 'mum@example.com')`);
+  assert.equal(on.parent_phone, '+260971234567');
+  assert.equal(on.exam_name, 'IGCSE 0607', 'the tutor’s exam date is kept');
+  assert.equal((await as('T', `select * from notifications where kind = 'reports_on'`)).length, 1);
+  assert.equal((await one('T', `select parent_name from learner_reports where learner_id = $1`, [U.L])).parent_name, 'Mum');
+  await as('T', `update parent_reports set status = 'sent', sent_at = now(), sent_via = 'whatsapp' where id = $1`, [r.id]);
+  assert.equal((await as('L', `select * from parent_reports`)).length, 1, 'the learner sees what was sent');
+  assert.equal((await as('T2', `select * from parent_reports`)).length, 0);
+  await as('L', `select set_parent_reports(false)`);
+  await as('T', `delete from parent_reports where id = $1`, [r.id]);
+});
+
 test('notes and messages notify instantly; read receipts', async () => {
   const c = await val('L', `insert into comments (tutor_id, learner_id, assignment_id, question_id, body)
      values ($1, $2, $3, $4, 'I am stuck on Q3') returning id`, [U.T, U.L, S.hw, S.q3]);

@@ -254,3 +254,31 @@ test('Prof writes question-bank questions, checks them, and they wait for approv
   assert.ok(own.every((r) => r.owner_id === me && r.status === 'review' && r.source === 'prof'));
   assert.equal((await q(T2.from('bank_questions').select('id').in('id', own.map((r) => r.id)))).length, 0, 'never another tutor');
 });
+
+test('Prof drafts a weekly parent report; the tutor sends it', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const inv = await q(T.from('invites').insert({ name: 'Sis2' }).select().single());
+  const L = client();
+  await q(L.auth.signUp({ email: 'sis2@x.com', password: 'secret123' }));
+  await q(L.rpc('accept_invite', { p_code: inv.code, p_name: 'Sis' }));
+  const learner = (await L.auth.getUser()).data.user.id;
+  await q(L.rpc('set_parent_reports', { p_on: true, p_name: 'Mum', p_phone: '+260971234567' }));
+  const data = await q(T.rpc('report_numbers', { p_learner: learner, p_from: new Date(Date.now() - 7 * 864e5).toISOString(), p_to: new Date().toISOString() }));
+  assert.equal(data.parent, 'Mum');
+  const rep = await q(T.from('parent_reports').insert({ learner_id: learner, week_start: '2026-09-28', data }).select().single());
+  const job = await q(T.rpc('prof_report', { p_report: rep.id }));
+  await kick(T);
+  const j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  const after = await q(T.from('parent_reports').select('*').eq('id', rep.id).single());
+  assert.match(after.summary, /A steady week for Sis/);
+  assert.equal(after.prof, true);
+  assert.equal(after.status, 'draft', 'Prof never sends it');
+  await q(T.from('parent_reports').update({ status: 'sent', sent_via: 'whatsapp', sent_at: new Date().toISOString() }).eq('id', rep.id));
+  const seenByLearner = await q(L.from('parent_reports').select('summary'));
+  assert.equal(seenByLearner.length, 1);
+  // a sent report can't be redrafted by Prof
+  const again = await T.rpc('prof_report', { p_report: rep.id });
+  assert.match(again.error.message, /Report not found/);
+});

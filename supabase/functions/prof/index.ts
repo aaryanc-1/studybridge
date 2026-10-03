@@ -660,6 +660,49 @@ Rules:
     });
   }
 
+  // ---------------- weekly parent reports ----------------
+  const REPORT_TOOL = {
+    name: 'write_report',
+    description: 'The words of the weekly report. The tutor checks and edits them before sending.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'One sentence: how the week went, with one concrete fact' },
+        comment: { type: 'string', description: '2–4 sentences from the tutor to the parent: what went well, what to work on, specific and kind' },
+        next_week: { type: 'string', description: '1–3 short lines: what’s coming next week and what to practise at home' },
+      },
+      required: ['summary', 'comment', 'next_week'],
+    },
+  };
+  async function stepReport(job, cfg) {
+    const rep = (await rest(`parent_reports?id=eq.${job.context?.report_id}&select=*`))[0];
+    if (!rep || rep.status !== 'draft') throw new Error('That report has already been sent or deleted.');
+    await save(job, 'running', { p_progress: 'Writing the report…', p_input: 0 });
+    const style = (await rest(`prof_settings?tutor_id=eq.${job.tutor_id}&select=style_md`))[0]?.style_md || '';
+    const d = rep.data || {};
+    const res = await claude(cfg, {
+      max_tokens: 1500,
+      system: `You draft the weekly report a tutor sends to a learner's parent. Write as the tutor (${d.tutor || 'the tutor'}), in the first person, to ${d.parent || 'the parent'}.
+Warm, honest and specific; plain words, no jargon; short. Use ONLY facts in the data (never invent marks, lessons or behaviour). If work was missing or late, say so kindly and say what will help. Mention effort where the data shows it (time studied, practice tries). Topics with a low ratio are ones to work on; high ratio are strengths.${style ? `\nThe tutor's own instructions:\n${style}` : ''}`,
+      tools: [REPORT_TOOL],
+      tool_choice: { type: 'tool', name: 'write_report' },
+      messages: [{ role: 'user', content: `This week's data for ${d.learner || 'the learner'}:\n${JSON.stringify(d)}` }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'write_report');
+    if (!call) throw new Error('Prof didn’t write the report. Try again.');
+    const x = call.input || {};
+    await rest(`parent_reports?id=eq.${rep.id}`, {
+      method: 'PATCH',
+      body: { summary: String(x.summary || '').slice(0, 600), comment: String(x.comment || '').slice(0, 2000), next_week: String(x.next_week || '').slice(0, 1000), prof: true, updated_at: new Date().toISOString() },
+    });
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { report_id: rep.id, reply: String(x.summary || '') },
+      p_progress: 'Ready for you to check and send',
+      p_notify: { title: `Prof drafted ${d.learner || 'a'} weekly report`, body: String(x.summary || '').slice(0, 220), ref: { report_id: rep.id, learner_id: rep.learner_id } },
+    });
+  }
+
   // ---------------- marking ----------------
   const MARK_TOOL = {
     name: 'submit_marking',
@@ -771,6 +814,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       if (!cfg.key) throw new Error('Prof isn’t switched on yet. The StudyBridge admin adds the Claude key in Admin → Prof.');
       if (job.kind === 'mark') await stepMark(job, cfg);
       else if (job.kind === 'bank') await stepBank(job, cfg);
+      else if (job.kind === 'report') await stepReport(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

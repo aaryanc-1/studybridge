@@ -19,6 +19,7 @@ import Live, { Watch } from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import { OfficialView } from './PastPapers.jsx';
+import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -27,8 +28,10 @@ function notificationTarget(n) {
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
   if (n.kind === 'prof' && r.bank) return r.shared ? '/admin' : '/library/bank';
+  if (n.kind === 'prof' && r.report_id) return '/reports';
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'tutor_signup') return '/admin';
+  if (n.kind === 'reports_on' || (n.kind === 'prof' && r.report_id)) return '/reports';
   return '/';
 }
 
@@ -41,6 +44,7 @@ export default function TutorApp() {
   const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
   const draftCount = useDraftCounts();
   useProfJobs(); // keeps Prof's requests moving (e.g. sending book pages) on every page
+  const reportsToSend = useWeeklyReports(); // drafts last week's parent reports
   const admin = useQuery(app.me.is_admin ? 'admin-tutors' : null, api.adminTutors, { poll: 60000 });
   const waitingTutors = (admin.data || []).filter((t) => t.status === 'pending').length;
 
@@ -51,6 +55,7 @@ export default function TutorApp() {
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
     { to: '/library', label: 'Library', icon: 'book', also: ['/file', '/lesson'] },
     { to: '/messages', label: 'Messages', icon: 'message', count: unreadNotes },
+    { to: '/reports', label: 'Reports', icon: 'send', count: reportsToSend },
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
     { to: '/structure', label: 'Subjects', icon: 'layers' },
     { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
@@ -74,6 +79,7 @@ export default function TutorApp() {
   else if (a === 'marking') page = <Marking />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;
   else if (a === 'admin') page = <Admin />;
+  else if (a === 'reports') page = <ParentReports />;
   else if (a === 'messages') page = <Messages learnerId={b} />;
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;

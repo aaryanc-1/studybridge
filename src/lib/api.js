@@ -239,6 +239,31 @@ export async function saveQuestionsToBank(qs, { subject_id = null, topicName = (
   return run(sb().from('bank_questions').insert(rows).select());
 }
 
+// ---------------- weekly parent reports ----------------
+export const listLearnerReports = () => run(sb().from('learner_reports').select('*'));
+export const listParentReports = () => run(sb().from('parent_reports').select('*').order('week_start', { ascending: false }).limit(500));
+export const setParentReports = (on, name, phone, email) => run(sb().rpc('set_parent_reports', { p_on: on, p_name: name || null, p_phone: phone || null, p_email: email || null }));
+export const setLearnerExam = (learner, name, date) => run(sb().rpc('set_learner_exam', { p_learner: learner, p_name: name || null, p_date: date || null }));
+// Draft (or refresh the numbers of) a learner's report for one week
+export async function draftReport(learnerId, from, to) {
+  const data = await run(sb().rpc('report_numbers', { p_learner: learnerId, p_from: from.toISOString(), p_to: to.toISOString() }));
+  const week = ymdLocal(from);
+  const existing = await run(sb().from('parent_reports').select('*').eq('learner_id', learnerId).eq('week_start', week).maybeSingle());
+  if (existing) {
+    if (existing.status === 'sent') return existing;
+    return run(sb().from('parent_reports').update({ data, updated_at: new Date().toISOString() }).eq('id', existing.id).select().maybeSingle());
+  }
+  return run(sb().from('parent_reports').insert({ learner_id: learnerId, week_start: week, data }).select().maybeSingle());
+}
+const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export async function profReport(id) {
+  const r = await run(sb().rpc('prof_report', { p_report: id }));
+  callProf().catch(() => {});
+  return r;
+}
+export const saveReport = (id, patch) => run(sb().from('parent_reports').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id).select().maybeSingle());
+export const markReportSent = (id, via) => saveReport(id, { status: 'sent', sent_via: via, sent_at: new Date().toISOString() });
+
 // Images inside questions and lessons (always readable by the tutor's learners)
 export async function uploadImage(file, kind = 'questions') {
   const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');

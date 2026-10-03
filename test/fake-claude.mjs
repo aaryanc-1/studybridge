@@ -57,6 +57,15 @@ function reply(body) {
       ],
     };
   }
+  if (tools.includes('write_report')) {
+    const d = JSON.parse(body.messages[0].content.slice(body.messages[0].content.indexOf('{')));
+    return {
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      usage,
+      content: [tu('write_report', { summary: `A steady week for ${d.learner}: ${d.work.length} piece(s) of work.`, comment: 'She worked hard on her practice. Next we focus on algebra.', next_week: 'Homework on algebra; 10 minutes of practice a day.' })],
+    };
+  }
   // question bank: write questions, then check them (one deliberately wrong answer gets flagged)
   if (tools.includes('save_questions')) {
     const want = Number((body.messages[0].content.match(/Write (\d+) question/) || [])[1] || 3);

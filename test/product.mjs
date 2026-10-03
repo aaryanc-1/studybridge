@@ -47,6 +47,14 @@ const shot = async (page, name) => {
   await page.screenshot({ path: join(SHOTS, `${++shotN}-${name}.png`) });
 };
 const errors = [];
+async function expectValue(loc, re, ms = 30000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (re.test(await loc.inputValue().catch(() => ''))) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  throw new Error(`Timed out waiting for ${re}`);
+}
 const watch = (page, label) => {
   page.on('pageerror', (e) => errors.push(`${label}: ${e.message}`));
   page.on('console', (m) => {
@@ -318,6 +326,34 @@ try {
   const tries = (await tc.from('attempts').select('status,score').eq('assignment_id', prac.id)).data;
   assert.equal(tries[0].status, 'marked');
   assert.equal(Number(tries[0].score), 2);
+
+  step('Weekly parent report: the learner switches it on; the tutor drafts it, Prof writes it, it goes by WhatsApp');
+  await C.goto(web.url + '#/settings');
+  await C.getByText('Send my parent a weekly report').click();
+  await C.getByLabel('Their name').fill('Mum');
+  await C.getByLabel('WhatsApp number').fill('+260 97 123 4567');
+  await C.locator('#set-reports').getByRole('button', { name: 'Save', exact: true }).click();
+  await C.getByText('Weekly reports are on').waitFor();
+  await nav(A, 'Reports').click();
+  await A.getByText(/reports on, to Mum \(WhatsApp\)/).waitFor();
+  await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'This week' }).click();
+  const rep = A.getByRole('dialog', { name: /Anaya: Week of/ });
+  await rep.getByRole('button', { name: 'Ask Prof to write it' }).click();
+  await rep.getByText('Prof is writing…').waitFor();
+  await expectValue(rep.getByLabel('One-line summary'), /A steady week for Anaya/);
+  await rep.locator('.report-preview', { hasText: 'Practice:' }).waitFor();
+  await shot(A, 'parent-report');
+  await A.context().route(/wa\.me|whatsapp\.com/, (r) => r.fulfill({ contentType: 'text/html', body: '<p>WhatsApp</p>' }));
+  const [wa] = await Promise.all([A.waitForEvent('popup'), rep.getByRole('button', { name: 'Send on WhatsApp' }).click()]);
+  assert.match(wa.url(), /^https:\/\/(wa\.me|api\.whatsapp\.com)\/.*260971234567/);
+  assert.match(decodeURIComponent(wa.url()), /Weekly report: Anaya/);
+  await wa.close();
+  await A.getByText('Marked as sent').waitFor();
+  const sentRep = (await tc.from('parent_reports').select('*').eq('status', 'sent').single()).data;
+  assert.equal(sentRep.sent_via, 'whatsapp');
+  await C.reload();
+  await C.getByText('Reports sent so far (1)').click();
+  await C.locator('.report-preview', { hasText: 'A steady week for Anaya' }).waitFor();
   await C.close();
 
   step('Admin adds shared StudyBridge questions; every tutor gets them once approved');

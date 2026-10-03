@@ -565,3 +565,8 @@ label.btn[aria-disabled='true'] { opacity: 0.5; pointer-events: none; }
 .bank-q.flagged { border-color: var(--red-line); background: var(--red-tint); }
 .bank-q .md p:last-child { margin-bottom: 0; }
 .bank-detail { border-top: 1px solid var(--line-soft); padding-top: 8px; }
+
+/* ---------- Parent reports ---------- */
+.report-row { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.report-row:last-child { border-bottom: 0; }
+.report-preview { white-space: pre-wrap; font-family: var(--sans); font-size: 13px; line-height: 1.5; background: #E7F6E3; color: #1d2b1a; border-radius: 12px; padding: 12px 14px; margin: 0; max-height: 460px; overflow-y: auto; }

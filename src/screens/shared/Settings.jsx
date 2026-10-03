@@ -10,6 +10,7 @@ import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone } from '../../lib/config.js';
 import { useUpdateStatus } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
+import { reportText } from '../../lib/reports.js';
 
 export default function Settings() {
   const app = useApp();
@@ -27,6 +28,7 @@ export default function Settings() {
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
       {isTutor && <AccountHistory />}
+      {!isTutor && <ParentReportsSetting />}
       {!isTutor && <LearnerNotifications />}
       <Device />
       <About />
@@ -424,6 +426,67 @@ function AccountHistory() {
   );
 }
 
+// The learner decides whether a parent gets a weekly report, and who
+function ParentReportsSetting() {
+  const toast = useToast();
+  const app = useApp();
+  const mine = useQuery('learner-reports', api.listLearnerReports);
+  const sent = useQuery('parent-reports', api.listParentReports);
+  const cur = (mine.data || []).find((r) => r.learner_id === app.me.id);
+  const [v, setV] = useState(null);
+  useEffect(() => {
+    if (mine.data && !v) setV({ on: !!cur?.enabled, name: cur?.parent_name || '', phone: cur?.parent_phone || '', email: cur?.parent_email || '' });
+  }, [mine.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!v) return null;
+  async function saveIt(next) {
+    try {
+      await api.setParentReports(next.on, next.name, next.phone, next.email);
+      invalidate('learner-reports');
+      toast(next.on ? 'Weekly reports are on' : 'Weekly reports are off');
+      setV(next);
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <Section id="reports" icon="send" title="Weekly report for a parent" sub="If you switch this on, your tutor sends a parent a short weekly report: lessons, work handed in, marks, what you’re strong at and what to work on. Your tutor checks each one, and you can read every report that was sent.">
+      <Toggle checked={v.on} onChange={(on) => (on ? setV({ ...v, on }) : saveIt({ ...v, on: false }))} title="Send my parent a weekly report" />
+      {v.on && (
+        <div className="stack sm">
+          <div className="grid g2">
+            <Field label="Their name">
+              <input className="input" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} placeholder="e.g. Mum" />
+            </Field>
+            <Field label="WhatsApp number" hint="With the country code, e.g. +260 97…">
+              <input className="input" inputMode="tel" value={v.phone} onChange={(e) => setV({ ...v, phone: e.target.value })} placeholder="+260…" />
+            </Field>
+          </div>
+          <Field label="Email (optional)">
+            <input className="input" type="email" value={v.email} onChange={(e) => setV({ ...v, email: e.target.value })} />
+          </Field>
+          <div>
+            <button className="btn primary" onClick={() => saveIt(v)}>
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+      {(sent.data || []).length > 0 && (
+        <details>
+          <summary className="small strong">Reports sent so far ({sent.data.length})</summary>
+          <div className="stack sm" style={{ marginTop: 8 }}>
+            {sent.data.map((r) => (
+              <pre key={r.id} className="report-preview">
+                {reportText(r)}
+              </pre>
+            ))}
+          </div>
+        </details>
+      )}
+    </Section>
+  );
+}
+
 function LearnerNotifications() {
   const [perm, setPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
   if (perm === 'unsupported') return null;
@@ -472,8 +535,9 @@ function Device() {
         <button
           className="btn sm"
           onClick={async () => {
-            if (!(await confirm({ title: 'Remove offline copies?', body: 'Files download again next time you open them. Anything waiting to send is kept.', ok: 'Remove' }))) return;
-            for (const k of await store.blobs.keys()) await store.blobs.del(k);
+            if (!(await confirm({ title: 'Remove offline copies?', body: 'Files download again next time you open them. Anything waiting to send is kept, and so are past papers kept only on this computer.', ok: 'Remove' }))) return;
+            // past papers imported to this computer only live here: never remove them
+            for (const k of await store.blobs.keys()) if (!String(k).startsWith('library/local/')) await store.blobs.del(k);
             setCount(0);
             toast('Offline copies removed');
           }}

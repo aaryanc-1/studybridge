@@ -457,7 +457,7 @@ function ProfSettings({ usage }) {
   const s = useQuery('prof-settings', api.profSettings);
   const [v, setV] = useState(null);
   useEffect(() => {
-    if (s.data !== undefined && !v) setV(s.data || { auto_mark: false, auto_create: false, auto_day: 0, auto_hour: 17, auto_count: 8, auto_kind: 'homework', style_md: '' });
+    if (s.data !== undefined && !v) setV(s.data || { auto_mark: false, auto_reports: false, auto_create: false, auto_day: 0, auto_hour: 17, auto_count: 8, auto_kind: 'homework', style_md: '' });
   }, [s.data]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!v) return null;
   const set = (patch) => setV((x) => ({ ...x, ...patch }));
@@ -467,6 +467,7 @@ function ProfSettings({ usage }) {
     try {
       await api.saveProfSettings({
         auto_mark: next.auto_mark,
+        auto_reports: !!next.auto_reports,
         auto_create: next.auto_create,
         auto_day: Number(next.auto_day),
         auto_hour: Number(next.auto_hour),
@@ -489,6 +490,12 @@ function ProfSettings({ usage }) {
         onChange={(x) => save({ auto_mark: x })}
         title="Mark hand-ins for me"
         sub="When a learner hands in, Prof suggests marks, ticks their working and writes feedback. You check it before anything goes back."
+      />
+      <Toggle
+        checked={!!v.auto_reports}
+        onChange={(x) => save({ auto_reports: x })}
+        title="Write weekly parent reports"
+        sub="Each week Prof writes the words of each report (for learners who switched reports on). You check them in Reports before sending."
       />
       <Toggle
         checked={v.auto_create}
