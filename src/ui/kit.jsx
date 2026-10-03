@@ -284,6 +284,8 @@ export function VisibilityPicker({ value, from, onChange }) {
 }
 
 export function visibilityText(item) {
+  // a draft (from Prof or Claude) is hidden from learners until the tutor approves it, whatever it's set to
+  if (item.draft) return { text: 'Hidden until you approve', tone: 'claude', icon: 'eyeOff' };
   if (item.visibility === 'visible') return { text: 'Visible', tone: 'good', icon: 'eye' };
   if (item.visibility === 'scheduled') {
     const live = item.visible_from && new Date(item.visible_from) <= new Date();

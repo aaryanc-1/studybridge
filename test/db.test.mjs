@@ -372,6 +372,20 @@ test('weekly parent reports: the learner switches them on; drafts; sent only whe
   await as('T', `delete from assignments where id = any($1)`, [[later, chem, open]]);
   await as('T', `delete from subjects where id = $1`, [other]);
   await as('T', `delete from parent_reports where id = $1`, [r.id]);
+  // the server keeps every learner's report up to date: this week daily, last week once it's over
+  await db.query(`update app_config set reports_at = null`);
+  await db.query(`select prof_tick()`);
+  const kept = await as('T', `select * from parent_reports where learner_id = $1 order by week_start`, [U.L]);
+  assert.equal(kept.length, 2, 'this week so far and last week');
+  assert.ok(kept.every((x) => x.status === 'draft' && x.data.learner));
+  const ready = async () => (await as('T', `select id from notifications where kind = 'report_ready'`)).length;
+  assert.equal(await ready(), 1, 'the tutor is told last week’s report is ready');
+  await db.query(`update app_config set reports_at = null`);
+  await db.query(`select prof_tick()`);
+  assert.equal(await ready(), 1, 'only once');
+  assert.equal((await as('L', `select * from parent_reports`)).length, 0, 'drafts stay with the tutor');
+  assert.equal((await as('T2', `select * from parent_reports where learner_id = $1`, [U.L])).length, 0);
+  await as('T', `delete from parent_reports where learner_id = $1`, [U.L]);
   // (reports stay on: the last test checks the parent's contact doesn't follow the learner to a new tutor)
 });
 

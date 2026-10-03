@@ -31,7 +31,7 @@ function notificationTarget(n) {
   if (n.kind === 'prof' && r.report_id) return '/reports';
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'tutor_signup') return '/admin';
-  if (n.kind === 'reports_on' || (n.kind === 'prof' && r.report_id)) return '/reports';
+  if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/reports';
   return '/';
 }
 

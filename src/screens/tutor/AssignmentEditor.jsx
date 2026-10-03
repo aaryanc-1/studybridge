@@ -364,6 +364,7 @@ export default function AssignmentEditor({ id }) {
         <div className="stack lg">
           <div className="card">
             <h3>Who sees it</h3>
+            {a.draft && <div className="small" style={{ color: 'var(--claude)' }}>Nobody yet: a draft stays hidden until you press Approve & post. Then it follows this setting.</div>}
             <VisibilityPicker value={a.visibility} from={a.visible_from} onChange={(v, from) => setField({ visibility: v, visible_from: from })} />
             <AudiencePicker learners={lk.learners} value={a.learner_ids} onChange={(ids) => setField({ learner_ids: ids })} />
             <AudienceNames item={a} />

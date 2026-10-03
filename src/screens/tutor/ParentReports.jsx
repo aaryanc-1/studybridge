@@ -16,43 +16,34 @@ const weekLabel = (w) => {
 // Weekly parent reports: drafted for every learner who switched them on; the
 // tutor checks the words (Prof can write them) and sends them on WhatsApp or email
 // ---------------------------------------------------------------------------
+const thisMonday = () => {
+  const { from } = weekRange(0);
+  return `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}`;
+};
+
 export default function ParentReports() {
   const lk = useLookups();
   const settings = useQuery('learner-reports', api.listLearnerReports);
   const reports = useQuery('parent-reports', api.listParentReports);
-  const [open, setOpen] = useState(null);
+  const [open, setOpen] = useState(null); // { learnerId, reportId? }
   const [exam, setExam] = useState(null);
-  const toast = useToast();
-  const [busy, setBusy] = useState('');
   if (!settings.data || !reports.data) return <Page title="Parent reports"><Loading /></Page>;
   const byLearner = Object.fromEntries(settings.data.map((r) => [r.learner_id, r]));
-  const drafts = reports.data.filter((r) => r.status === 'draft' && byLearner[r.learner_id]?.enabled);
+  const monday = thisMonday();
+  // a finished week's report, for a learner who has reports on, waiting to be sent
+  const ready = reports.data.filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && byLearner[r.learner_id]?.enabled);
   const sent = reports.data.filter((r) => r.status === 'sent');
 
-  async function draftNow(l, offset) {
-    setBusy(l.id);
-    try {
-      const { from, to } = weekRange(offset);
-      const r = await api.draftReport(l.id, from, to);
-      invalidate('parent-reports');
-      setOpen(r);
-    } catch (e) {
-      toast({ title: 'Couldn’t draft it', body: e.message, tone: 'bad' });
-    } finally {
-      setBusy('');
-    }
-  }
-
   return (
-    <Page title="Parent reports" subtitle="A short weekly report for each learner’s parent. Learners switch reports on themselves and give the parent’s contact. You check every report before it goes.">
-      {drafts.length > 0 && (
+    <Page title="Parent reports" subtitle="Every learner’s report stays up to date: this week so far is refreshed every day, and when a week ends it’s ready to send. Learners choose whether a parent gets it (in their Settings); you check every report before it goes.">
+      {ready.length > 0 && (
         <div className="card claude">
           <h2>Ready for you to check and send</h2>
           <div className="list">
-            {drafts.map((r) => {
+            {ready.map((r) => {
               const l = lk.learner(r.learner_id);
               return (
-                <button key={r.id} className="item" onClick={() => setOpen(r)}>
+                <button key={r.id} className="item" onClick={() => setOpen({ learnerId: r.learner_id, reportId: r.id })}>
                   <Avatar person={l || { display_name: r.data?.learner }} />
                   <span className="grow">
                     <span className="name">{r.data?.learner || l?.display_name}</span>
@@ -85,24 +76,18 @@ export default function ParentReports() {
                       {' '}
                       ·{' '}
                       {s?.enabled
-                        ? `reports on, to ${s.parent_name || 'their parent'} (${[s.parent_phone && 'WhatsApp', s.parent_email && 'email'].filter(Boolean).join(' and ')})`
-                        : 'reports off (they switch them on in their Settings)'}
+                        ? `sending to ${s.parent_name || 'their parent'} (${[s.parent_phone && 'WhatsApp', s.parent_email && 'email'].filter(Boolean).join(' and ')})`
+                        : 'not sent to a parent yet (they switch it on in their Settings)'}
                       {s?.exam_date ? ` · ${s.exam_name || 'Exam'} on ${new Date(String(s.exam_date).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}
                     </span>
                   </span>
                   <button className="btn sm ghost" onClick={() => setExam({ l, s })}>
                     <Icon name="calendar" size={16} /> Exam date
                   </button>
-                  {s?.enabled && (
-                    <>
-                      <button className="btn sm" disabled={busy === l.id} onClick={() => draftNow(l, 0)}>
-                        This week
-                      </button>
-                      <button className="btn sm" disabled={busy === l.id} onClick={() => draftNow(l, -1)}>
-                        Last week
-                      </button>
-                    </>
-                  )}
+                  {!s?.enabled && <AskButton learner={l} />}
+                  <button className="btn sm primary" onClick={() => setOpen({ learnerId: l.id })}>
+                    <Icon name="eye" size={16} /> View report
+                  </button>
                 </div>
               );
             })}
@@ -115,7 +100,7 @@ export default function ParentReports() {
           <h2>Sent</h2>
           <div className="list">
             {sent.slice(0, 40).map((r) => (
-              <button key={r.id} className="item" onClick={() => setOpen(r)}>
+              <button key={r.id} className="item" onClick={() => setOpen({ learnerId: r.learner_id, reportId: r.id })}>
                 <Icon name="send" style={{ color: 'var(--accent)' }} />
                 <span className="grow">
                   <span className="name">
@@ -130,9 +115,86 @@ export default function ParentReports() {
           </div>
         </div>
       )}
-      {open && <ReportEditor report={open} contact={byLearner[open.learner_id]} onClose={() => setOpen(null)} />}
+      {open && <ReportViewer {...open} contact={byLearner[open.learnerId]} reports={reports.data} onClose={() => setOpen(null)} />}
       {exam && <ExamModal {...exam} onClose={() => setExam(null)} />}
     </Page>
+  );
+}
+
+// Asks the learner (in a message) to switch on reports for a parent: it's their choice
+function AskButton({ learner }) {
+  const toast = useToast();
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className="btn sm ghost"
+      disabled={done}
+      onClick={async () => {
+        try {
+          await api.sendComment({
+            tutor_id: api.getMe().id,
+            learner_id: learner.id,
+            body: 'Hi! Could you switch on the weekly report for your parent? Open Settings → “Weekly report for a parent”, switch it on and add their WhatsApp number. You can read every report that’s sent.',
+          });
+          setDone(true);
+          toast({ title: `Asked ${learner.display_name}`, body: 'They got a message with how to switch it on.' });
+        } catch (e) {
+          toast({ title: 'Couldn’t send', body: e.message, tone: 'bad' });
+        }
+      }}
+    >
+      <Icon name="message" size={16} /> {done ? 'Asked' : `Ask ${learner.display_name.split(' ')[0]}`}
+    </button>
+  );
+}
+
+// One learner's reports, week by week. This week is refreshed when you open it, so it's as of now.
+function ReportViewer({ learnerId, reportId, contact, reports, onClose }) {
+  const toast = useToast();
+  const lk = useLookups();
+  const l = lk.learner(learnerId);
+  const mine = reports.filter((r) => r.learner_id === learnerId).sort((a, b) => String(b.week_start).localeCompare(String(a.week_start)));
+  const [current, setCurrent] = useState(() => mine.find((r) => r.id === reportId) || null);
+  const [loading, setLoading] = useState(!reportId);
+  const monday = thisMonday();
+
+  async function loadWeek(offset) {
+    setLoading(true);
+    try {
+      const { from, to } = weekRange(offset);
+      const r = await api.draftReport(learnerId, from, to); // fresh numbers (unless already sent)
+      invalidate('parent-reports');
+      setCurrent(r);
+    } catch (e) {
+      toast({ title: 'Couldn’t load the report', body: e.message, tone: 'bad' });
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (!reportId) loadWeek(0);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const weeks = [...new Set([monday, ...mine.map((r) => String(r.week_start).slice(0, 10))])].sort().reverse().slice(0, 12);
+  const pick = (w) => {
+    if (w === monday) return loadWeek(0);
+    const r = mine.find((x) => String(x.week_start).slice(0, 10) === w);
+    if (r) setCurrent(r);
+  };
+  const shown = current ? String(current.week_start).slice(0, 10) : monday;
+
+  return (
+    <Modal title={`${l?.display_name || current?.data?.learner || 'Report'}’s report`} wide onClose={onClose}>
+      <div className="row wrap" style={{ gap: 6 }}>
+        {weeks.map((w) => (
+          <button key={w} className={'pill click' + (w === shown ? ' accent' : '')} onClick={() => pick(w)}>
+            {w === monday ? 'This week so far' : weekLabel(w)}
+            {mine.find((x) => String(x.week_start).slice(0, 10) === w)?.status === 'sent' ? ' · sent' : ''}
+          </button>
+        ))}
+      </div>
+      {loading || !current ? <Loading label="Working out the week…" /> : <ReportBody key={current.id + current.updated_at} report={current} contact={contact} thisWeek={shown === monday} onSent={onClose} />}
+    </Modal>
   );
 }
 
@@ -176,7 +238,8 @@ function ExamModal({ l, s, onClose }) {
   );
 }
 
-function ReportEditor({ report, contact, onClose }) {
+function ReportBody({ report, contact, thisWeek, onSent }) {
+  const onClose = onSent;
   const toast = useToast();
   const [r, setR] = useState(report);
   const [busy, setBusy] = useState(false);
@@ -231,46 +294,29 @@ function ReportEditor({ report, contact, onClose }) {
     }
   }
 
+  const canSend = !!contact?.enabled;
   return (
-    <Modal
-      title={`${d.learner}: ${weekLabel(r.week_start)}`}
-      wide
-      onClose={onClose}
-      foot={
-        sent ? (
-          <button className="btn" onClick={onClose}>
-            Close
-          </button>
-        ) : (
-          <>
-            <button className="btn" onClick={async () => (await saveWords(), toast('Saved'), onClose())}>
-              Save for later
-            </button>
-            <button className="btn" disabled={busy} onClick={() => send('copy')}>
-              <Icon name="copy" size={18} /> Copy
-            </button>
-            {contact?.parent_email && (
-              <button className="btn" disabled={busy} onClick={() => send('email')}>
-                Email
-              </button>
-            )}
-            {contact?.parent_phone && (
-              <button className="btn primary" disabled={busy} onClick={() => send('whatsapp')}>
-                <Icon name="send" size={18} /> Send on WhatsApp
-              </button>
-            )}
-          </>
-        )
-      }
-    >
+    <div className="stack">
+      {!canSend && !sent && (
+        <div className="note small">
+          {d.learner} hasn’t switched on sending this to a parent, so you can read it and write the words, but not send it yet. They switch it on in their Settings.
+        </div>
+      )}
+      {thisWeek && !sent && <div className="tiny muted">This week so far, as of now. It updates every day; the finished report is ready to send after the week ends.</div>}
       <div className="split side-r">
         <div className="stack">
           {!sent && (
             <div className="row wrap between">
               <div className="small muted">
-                To {contact?.parent_name || 'their parent'}
-                {contact?.parent_phone ? ` · WhatsApp ${contact.parent_phone}` : ''}
-                {contact?.parent_email ? ` · ${contact.parent_email}` : ''}
+                {canSend ? (
+                  <>
+                    To {contact?.parent_name || 'their parent'}
+                    {contact?.parent_phone ? ` · WhatsApp ${contact.parent_phone}` : ''}
+                    {contact?.parent_email ? ` · ${contact.parent_email}` : ''}
+                  </>
+                ) : (
+                  'Not being sent to a parent'
+                )}
               </div>
               {usage?.ready && (
                 <button className="btn sm claude" disabled={asked} onClick={askProf}>
@@ -294,39 +340,45 @@ function ReportEditor({ report, contact, onClose }) {
           </div>
         </div>
         <div className="stack sm">
-          <div className="tiny muted strong upper">What they’ll receive</div>
+          <div className="tiny muted strong upper">{canSend ? 'What they’ll receive' : 'The report'}</div>
           <pre className="report-preview">{text}</pre>
         </div>
       </div>
-    </Modal>
+      {sent ? (
+        <div className="small muted">Sent {ago(r.sent_at)}.</div>
+      ) : (
+        <div className="row wrap end">
+          <button className="btn" onClick={async () => (await saveWords(), toast('Saved'))}>
+            Save
+          </button>
+          {canSend && (
+            <>
+              <button className="btn" disabled={busy} onClick={() => send('copy')}>
+                <Icon name="copy" size={18} /> Copy
+              </button>
+              {contact?.parent_email && (
+                <button className="btn" disabled={busy} onClick={() => send('email')}>
+                  Email
+                </button>
+              )}
+              {contact?.parent_phone && (
+                <button className="btn primary" disabled={busy} onClick={() => send('whatsapp')}>
+                  <Icon name="send" size={18} /> Send on WhatsApp
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
-// Drafts last week's report for every learner who has reports on (runs when the tutor's app is open),
-// and asks Prof to write them if the tutor switched that on.
+// How many finished weeks' reports are waiting to be sent (the server drafts them; see _refresh_reports)
 export function useWeeklyReports() {
   const settings = useQuery('learner-reports', api.listLearnerReports);
-  const reports = useQuery('parent-reports', api.listParentReports);
-  const prof = useQuery('prof-settings', api.profSettings);
-  const done = useRef(false);
-  useEffect(() => {
-    if (done.current || !settings.data || !reports.data || prof.data === undefined) return;
-    done.current = true;
-    const { from, to } = weekRange(-1);
-    const week = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}`;
-    (async () => {
-      let made = 0;
-      for (const s of settings.data.filter((x) => x.enabled)) {
-        if (reports.data.some((r) => r.learner_id === s.learner_id && String(r.week_start).slice(0, 10) === week)) continue;
-        try {
-          const r = await api.draftReport(s.learner_id, from, to);
-          made++;
-          if (prof.data?.auto_reports) await api.profReport(r.id).catch(() => {});
-        } catch {}
-      }
-      if (made) invalidate('parent-reports');
-    })();
-  }, [settings.data, reports.data, prof.data]);
+  const reports = useQuery('parent-reports', api.listParentReports, { poll: 15 * 60000 });
+  const monday = thisMonday();
   const enabled = new Set((settings.data || []).filter((x) => x.enabled).map((x) => x.learner_id));
-  return (reports.data || []).filter((r) => r.status === 'draft' && enabled.has(r.learner_id)).length;
+  return (reports.data || []).filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && enabled.has(r.learner_id)).length;
 }

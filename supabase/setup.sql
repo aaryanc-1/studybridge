@@ -539,6 +539,7 @@ do $$ begin
   alter table public.parent_reports add constraint parent_reports_tutor_id_learner_id_week_start_key unique (tutor_id, learner_id, week_start);
 exception when duplicate_table or duplicate_object then null; end $$;
 alter table public.prof_settings add column if not exists auto_reports boolean not null default false;
+alter table public.app_config add column if not exists reports_at timestamptz;
 
 -- Prof's own notes on pages of a tutor's book, so it reads the notes next time instead of the pictures (cheaper)
 create table if not exists public.book_notes (
@@ -1828,11 +1829,17 @@ $$;
 -- learner can see, and only marks they've been given back.
 create or replace function public.report_numbers(p_learner uuid, p_from timestamptz, p_to timestamptz)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
-declare
-  v_tutor uuid := auth.uid();
-  r public.learner_reports;
 begin
   if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  return public._report_numbers(auth.uid(), p_learner, p_from, p_to);
+end $$;
+
+create or replace function public._report_numbers(p_tutor uuid, p_learner uuid, p_from timestamptz, p_to timestamptz)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_tutor uuid := p_tutor;
+  r public.learner_reports;
+begin
   select * into r from public.learner_reports where learner_id = p_learner and tutor_id = v_tutor;
   return jsonb_build_object(
     'from', p_from, 'to', p_to,
@@ -1873,6 +1880,56 @@ begin
     'exam', case when r.exam_date is not null then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - (p_to at time zone 'UTC')::date) end,
     'topics', public._learner_topics(p_learner, true, v_tutor)
   );
+end $$;
+
+-- Every report is kept up to date by the server (pg_cron, hourly check): each learner's report for this
+-- week is refreshed once a day; when a week ends its final numbers are saved and, if the learner has
+-- reports on, the tutor is told it's ready to send (and Prof writes the words if the tutor switched that on).
+create or replace function public._refresh_reports() returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  l record;
+  v_tz text;
+  v_mon date;
+  v_from timestamptz;
+  v_to timestamptz;
+  r public.parent_reports;
+begin
+  for l in select p.id as learner_id, p.tutor_id, p.display_name, t.timezone,
+                  coalesce(ps.auto_reports, false) as auto, coalesce(lr.enabled, false) as enabled
+             from public.profiles p
+             join public.profiles t on t.id = p.tutor_id and t.role = 'tutor' and t.status = 'active'
+             left join public.prof_settings ps on ps.tutor_id = p.tutor_id
+             left join public.learner_reports lr on lr.learner_id = p.id and lr.tutor_id = p.tutor_id
+            where p.role = 'learner' loop
+    v_tz := coalesce((select name from pg_timezone_names where name = l.timezone), 'UTC');
+    v_mon := date_trunc('week', now() at time zone v_tz)::date;
+    v_from := v_mon::timestamp at time zone v_tz;
+    v_to := (v_mon + 7)::timestamp at time zone v_tz;
+    -- this week so far
+    insert into public.parent_reports (tutor_id, learner_id, week_start, data)
+    values (l.tutor_id, l.learner_id, v_mon, public._report_numbers(l.tutor_id, l.learner_id, v_from, v_to))
+    on conflict (tutor_id, learner_id, week_start) do update set data = excluded.data, updated_at = now()
+      where parent_reports.status = 'draft' and parent_reports.updated_at < now() - interval '20 hours';
+    -- last week, once it's over
+    select * into r from public.parent_reports where tutor_id = l.tutor_id and learner_id = l.learner_id and week_start = v_mon - 7;
+    if r.id is null or (r.status = 'draft' and r.updated_at < v_from) then
+      insert into public.parent_reports (tutor_id, learner_id, week_start, data)
+      values (l.tutor_id, l.learner_id, v_mon - 7, public._report_numbers(l.tutor_id, l.learner_id, (v_mon - 7)::timestamp at time zone v_tz, v_from))
+      on conflict (tutor_id, learner_id, week_start) do update set data = excluded.data, updated_at = now()
+        where parent_reports.status = 'draft'
+      returning * into r;
+      if r.id is not null and l.enabled then
+        perform public.notify_user(l.tutor_id, 'report_ready', l.display_name || '’s weekly report is ready',
+          'Check it and send it to their parent.', jsonb_build_object('report_id', r.id, 'learner_id', l.learner_id));
+        if l.auto and not r.prof and public._prof_ready(l.tutor_id) is null
+           and not exists (select 1 from public.prof_jobs where kind = 'report' and context ->> 'report_id' = r.id::text) then
+          insert into public.prof_jobs (tutor_id, kind, prompt, context)
+          values (l.tutor_id, 'report', 'Write a weekly parent report', jsonb_build_object('report_id', r.id));
+        end if;
+      end if;
+    end if;
+  end loop;
 end $$;
 
 -- Ask Prof to write a report's summary, comment and next steps (the tutor approves before sending)
@@ -2037,6 +2094,15 @@ begin
       update public.prof_settings set last_auto_at = now() where tutor_id = s.tutor_id;
     end if;
   end loop;
+  -- parent reports: kept up to date about once an hour
+  if coalesce((select reports_at from public.app_config where id = 1), '-infinity') < now() - interval '55 minutes' then
+    update public.app_config set reports_at = now() where id = 1;
+    begin
+      perform public._refresh_reports();
+    exception when others then
+      raise warning 'parent reports refresh failed: %', sqlerrm;
+    end;
+  end if;
   if exists (select 1 from public.prof_jobs where status = 'queued' and (lease_until is null or lease_until < now())) then
     perform public._prof_kick();
   end if;
@@ -2205,6 +2271,8 @@ revoke execute on function public._admin_log(text, uuid, jsonb) from public, ano
 revoke execute on function public._storage_bytes(uuid) from public, anon, authenticated;
 revoke execute on function public._learner_topics(uuid, boolean, uuid) from public, anon, authenticated;
 revoke execute on function public._assignment_visible_to(public.assignments, uuid) from public, anon, authenticated;
+revoke execute on function public._report_numbers(uuid, uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke execute on function public._refresh_reports() from public, anon, authenticated;
 revoke execute on function public._prof_month_cents(uuid) from public, anon, authenticated;
 revoke execute on function public.notify_user(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;

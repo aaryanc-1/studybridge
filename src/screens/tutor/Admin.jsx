@@ -418,8 +418,8 @@ function PlatformSettings({ s }) {
           await api.adminSetSignups(v);
           invalidate('admin-settings');
         }}
-        title="Accept new tutor sign-ups"
-        sub="New tutors wait for your approval either way. Turn this off to stop new sign-ups completely."
+        title="Show “I’m a tutor” sign-up"
+        sub="On: anyone can sign up as a tutor and waits on this page for you to approve or decline them. Off: the tutor sign-up is closed and the app says StudyBridge isn’t taking new tutors right now (useful when you’re full or not ready). Learners can always join with an invite."
       />
       <hr />
       <h3 className="row">

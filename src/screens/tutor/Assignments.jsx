@@ -69,7 +69,7 @@ export default function Assignments() {
                 <span className="grow stack sm">
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{a.practice ? 'Practice' : kindLabel[a.kind]}</span>
-                    {a.draft && <span className="pill claude"><Icon name="spark" size={12} /> Draft from Claude</span>}
+                    {a.draft && <span className="pill claude"><Icon name={a.source === 'prof' ? 'cap' : 'spark'} size={12} /> Draft from {a.source === 'prof' ? 'Prof' : 'Claude'}</span>}
                     {a.lockdown && <span className="pill dark"><Icon name="lock" size={12} /> Lockdown</span>}
                     {a.camera && <span className="pill dark"><Icon name="camera" size={12} /> Camera</span>}
                     {a.time_limit_min && <span className="pill"><Icon name="clock" size={12} /> {a.time_limit_min} min</span>}
