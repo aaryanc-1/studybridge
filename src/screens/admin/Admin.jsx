@@ -1,4 +1,4 @@
-// StudyBridge admin console, used only from the separate admin account (after two-step sign-in).
+// StudyBridge admin console, used only from the separate admin account .
 // Accounts and access: approve, pause, reset passwords, delete, plans and Prof allowances, and
 // the keys the server uses. It never shows anyone's work, files, marks or messages.
 import { useEffect, useState } from 'react';

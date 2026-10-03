@@ -141,6 +141,7 @@ function usePending() {
 function NotificationBell({ target, inline }) {
   const q = useQuery('notifications', api.listNotifications);
   const [open, setOpen] = useState(false);
+  const [at, setAt] = useState(null); // where the sidebar's list opens (fixed, so the sidebar doesn't clip it or scroll sideways)
   const ref = useRef(null);
   const list = q.data || [];
   const unread = list.filter((n) => !n.read_at);
@@ -166,7 +167,11 @@ function NotificationBell({ target, inline }) {
     <div ref={ref} style={{ position: 'relative', width: inline ? '100%' : 'auto', marginBottom: inline ? 8 : 0 }}>
       <button
         className={inline ? 'nav' : 'btn ghost icon sm'}
-        onClick={() => {
+        onClick={(e) => {
+          if (inline) {
+            const b = e.currentTarget.getBoundingClientRect();
+            setAt({ left: b.left, bottom: window.innerHeight - b.top + 6 });
+          }
           setOpen((o) => !o);
           if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
         }}
@@ -178,7 +183,7 @@ function NotificationBell({ target, inline }) {
         {unread.length > 0 && (inline ? <span className="count">{unread.length}</span> : <span className="pill accent" style={{ padding: '0 6px', marginLeft: -6 }}>{unread.length}</span>)}
       </button>
       {open && (
-        <div className="pop" style={inline ? { left: 0, right: 'auto', top: 'auto', bottom: 'calc(100% + 6px)' } : undefined}>
+        <div className="pop" style={inline ? { position: 'fixed', left: at?.left ?? 12, right: 'auto', top: 'auto', bottom: at?.bottom ?? 80, zIndex: 60, maxHeight: `min(480px, calc(100vh - ${(at?.bottom ?? 80) + 16}px))` } : undefined}>
           <div className="row between" style={{ padding: '4px 8px 8px' }}>
             <span className="strong">Notifications</span>
             {unread.length > 0 && (

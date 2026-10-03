@@ -109,19 +109,43 @@ export function createHandler(env) {
     const u = await r.json();
     const p = (await rest(`profiles?id=eq.${u.id}&select=id,role,status`))[0];
     if (!p) return null;
-    // Admin = the separate admin account, signed in with two-step login (the token says aal2)
-    let aal = '';
-    try {
-      aal = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).aal || '';
-    } catch {
-      aal = '';
-    }
-    const admin = p.role === 'admin' && aal === 'aal2' && (await rest(`platform_admins?user_id=eq.${u.id}&select=user_id`)).length > 0;
+    // Admin = the separate admin account
+    const admin = p.role === 'admin' && (await rest(`platform_admins?user_id=eq.${u.id}&select=user_id`)).length > 0;
     return { id: u.id, role: p.role, status: p.status, admin };
   }
 
   // ---------------- Claude ----------------
+  // Some models don't accept a forced tool choice ("you must call this tool"). For those, ask
+  // with tool_choice auto plus a clear instruction, and nudge once if no tool was called.
+  const noForced = new Set();
   async function claude(cfg, payload) {
+    const forced = payload.tool_choice && ['tool', 'any'].includes(payload.tool_choice.type) ? payload.tool_choice : null;
+    if (forced && noForced.has(cfg.model)) return claudeAuto(cfg, payload, forced);
+    try {
+      return await claudeRaw(cfg, payload);
+    } catch (e) {
+      if (!forced || e instanceof Retry || !/tool_choice/i.test(e.message || '')) throw e;
+      noForced.add(cfg.model);
+      return claudeAuto(cfg, payload, forced);
+    }
+  }
+  async function claudeAuto(cfg, payload, forced) {
+    const name = forced.name || null;
+    const must = `Answer only by calling the ${name ? name + ' tool' : 'right tool'}. Don’t reply with plain text.`;
+    const system = Array.isArray(payload.system) ? [...payload.system, { type: 'text', text: must }] : payload.system ? `${payload.system}\n\n${must}` : must;
+    const p = { ...payload, system, tool_choice: { type: 'auto' } };
+    const called = (r) => (r.content || []).some((b) => b.type === 'tool_use' && (!name || b.name === name));
+    const first = await claudeRaw(cfg, p);
+    if (called(first)) return first;
+    const again = await claudeRaw(cfg, {
+      ...p,
+      messages: [...p.messages, { role: 'assistant', content: first.content?.length ? first.content : [{ type: 'text', text: '…' }] }, { role: 'user', content: `Please call the ${name || 'tool'} now with your answer.` }],
+    });
+    const u = {};
+    for (const k of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) u[k] = (first.usage?.[k] || 0) + (again.usage?.[k] || 0);
+    return { ...again, usage: u };
+  }
+  async function claudeRaw(cfg, payload) {
     let r;
     try {
       r = await fetch(`${ANTHROPIC}/v1/messages`, {

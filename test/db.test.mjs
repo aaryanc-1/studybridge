@@ -15,13 +15,11 @@ const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'u
 let db;
 const U = {};
 
-// 'A' is the separate admin account, signed in with two-step login (aal2). 'A1' is the same account
-// before the authenticator code (aal1).
+// 'A' is the separate StudyBridge admin account.
 async function as(user, sql, params = []) {
   return db.transaction(async (tx) => {
-    const id = user === 'A1' ? U.A : user ? U[user] : '';
+    const id = user ? U[user] : '';
     await tx.query(`select set_config('request.jwt.claim.sub', $1, true)`, [id]);
-    await tx.query(`select set_config('request.jwt.claims', $1, true)`, [id ? JSON.stringify({ sub: id, aal: user === 'A' ? 'aal2' : 'aal1' }) : '']);
     await tx.exec(`set local role ${user ? 'authenticated' : 'anon'}`);
     const r = await tx.query(sql, params);
     return r.rows;
@@ -67,8 +65,6 @@ test('tutor setup, programmes, subjects, invites', async () => {
   assert.equal(await val('A', `select role from profiles where id = auth.uid()`), 'admin');
   assert.equal(await val('T', `select admin_to_move()`), false, 'the tutor account lost admin');
   assert.equal(await val('A', `select is_platform_admin()`), true);
-  assert.equal(await val('A1', `select is_platform_admin()`), false, 'not before the authenticator code');
-  await fails(as('A1', `select admin_tutors()`), /admins only/);
   assert.equal((await one('A', `select * from become_tutor('Sneaky')`)).role, 'admin', 'the admin account can’t become a tutor');
   await fails(as('A', `select * from accept_invite('XXXX', 'x')`), /not valid/);
   await fails(as('A', `select make_admin('x@x.com')`), /permission denied/, 'make_admin is for the SQL editor only');

@@ -19,6 +19,15 @@ export async function startFakeClaude() {
       res.end(JSON.stringify(o));
     };
     if (mode === 'bad-key') return send(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+    // a model that refuses forced tool choices, and answers in text the first time without one
+    if (mode === 'no-forced' || mode === 'no-forced-lazy') {
+      if (body.tool_choice && ['tool', 'any'].includes(body.tool_choice.type))
+        return send(400, { type: 'error', error: { type: 'invalid_request_error', message: 'tool_choice: type "tool" and "any" are not supported for this model.' } });
+      if (mode === 'no-forced-lazy' && body.messages.length === 1) {
+        mode = 'no-forced';
+        return send(200, { role: 'assistant', stop_reason: 'end_turn', usage, content: [{ type: 'text', text: 'Here is the report…' }] });
+      }
+    }
     if (mode === 'busy-once') {
       mode = 'ok';
       return send(529, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } });

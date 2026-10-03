@@ -1,5 +1,4 @@
-// Admin used to live inside the first tutor's account. Now it's its own account (with two-step
-// sign-in), so a tutor account that still holds admin sees this page once to move it.
+// Admin used to live inside the first tutor's account. Now it's its own account, so a tutor account that still holds admin sees this page once to move it.
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
@@ -9,10 +8,10 @@ import * as api from '../../lib/api.js';
 export function MoveAdmin() {
   const app = useApp();
   const toast = useToast();
-  const [email, setEmail] = useState('');
+  const suggestion = app.me.email?.includes('@') ? app.me.email.replace('@', '+admin@') : '';
+  const [email, setEmail] = useState(suggestion);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(null);
-  const suggestion = app.me.email?.includes('@') ? app.me.email.replace('@', '+admin@') : 'you+admin@example.com';
   async function move(e) {
     e.preventDefault();
     setBusy(true);
@@ -29,7 +28,7 @@ export function MoveAdmin() {
     }
   }
   return (
-    <Page title="Admin has its own account now" size="narrow" subtitle="Your tutor account is for teaching. Approving tutors, StudyBridge’s keys and the shared questions now live in a separate admin account, protected by two-step sign-in.">
+    <Page title="Admin has its own account now" size="narrow" subtitle="Your tutor account is for teaching. Approving tutors, StudyBridge’s keys and the shared questions now live in a separate admin account. You sign in to it on the same sign-in page, with its own email and password.">
       <div className="card">
         {waiting ? (
           <>
@@ -37,10 +36,12 @@ export function MoveAdmin() {
             <ol className="small steps">
               <li>Sign out of this tutor account (Settings → Sign out).</li>
               <li>
-                Create an account with <b>{waiting}</b> on the sign-in screen.
+                On the sign-in screen choose <b>Create a tutor account</b> and use <b>{waiting}</b> with a new password. StudyBridge recognises it and won’t make it a tutor.
               </li>
-              <li>When it asks how to set the account up, choose <b>Set up admin account</b>.</li>
-              <li>Scan the code with an authenticator app on your phone. Admin opens.</li>
+              <li>
+                Choose <b>Set up admin account</b>.
+              </li>
+              <li>Admin opens. From then on, sign in with that email to open Admin, and with your usual email to teach.</li>
             </ol>
             <div className="small muted">Until then, this tutor account keeps the admin role. Afterwards it’s only a tutor.</div>
             <div>
@@ -51,8 +52,8 @@ export function MoveAdmin() {
           </>
         ) : (
           <form className="stack" onSubmit={move}>
-            <Field label="Email for the admin account" hint={`A different email from this one. A Gmail “+admin” address works and arrives in the same inbox, e.g. ${suggestion}`}>
-              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={suggestion} autoComplete="off" />
+            <Field label="Email for the admin account" hint="A different email from your tutor one. A Gmail “+admin” address works and arrives in the same inbox." >
+              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you+admin@gmail.com" autoComplete="off" />
             </Field>
             <div>
               <button className="btn primary" disabled={busy || !email.includes('@')}>

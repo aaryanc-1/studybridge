@@ -55,7 +55,7 @@ export default function FinishSetup() {
             <h2 className="row">
               <Icon name="shield" style={{ color: 'var(--accent)' }} /> Set up as the StudyBridge admin
             </h2>
-            <p className="muted small">This email was chosen as StudyBridge’s admin account. It only manages tutors and StudyBridge settings: no learners, no teaching. Next you’ll set up two-step sign-in with an authenticator app.</p>
+            <p className="muted small">This email was chosen as StudyBridge’s admin account. It only manages tutors and StudyBridge settings: no learners, no teaching.</p>
             <div className="row">
               <button className="btn primary" disabled={busy} onClick={() => act(() => api.claimAdmin())}>
                 Set up admin account

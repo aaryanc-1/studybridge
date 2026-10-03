@@ -120,7 +120,7 @@ function SubjectRow({ s, onEdit, onDelete }) {
   return (
     <div className="stack sm" style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 14 }}>
       <div className="row between">
-        <div className="row">
+        <div className="row wrap" style={{ minWidth: 0 }}>
           <span className="swatch" style={{ background: s.color || '#0E6B6B', width: 14, height: 14 }} />
           <span className="strong" style={{ fontSize: 16 }}>{s.name}</span>
           {s.exam && <span className="pill">{X.syllabusLabel(...s.exam.split(':'))}</span>}

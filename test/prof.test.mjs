@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@supabase/supabase-js';
-import { startFakeSupabase, totp } from './fake-supabase.mjs';
+import { startFakeSupabase } from './fake-supabase.mjs';
 import { startFakeClaude, setMode, seen } from './fake-claude.mjs';
 
 // ---------------- the test ----------------
@@ -32,7 +32,7 @@ const q = async (p) => {
   if (error) throw new Error(error.message);
   return data;
 };
-// The separate StudyBridge admin account, after two-step sign-in. The first tutor moves admin to it.
+// The separate StudyBridge admin account. The first tutor moves admin to it.
 let A;
 async function admin() {
   if (A) return A;
@@ -40,11 +40,9 @@ async function admin() {
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
   A = client();
   await q(A.auth.signUp({ email: 'admin@x.com', password: 'secret123' }));
-  await q(T.rpc('admin_move_to', { p_email: 'admin@x.com' }));
-  const f = await q(A.auth.mfa.enroll({ factorType: 'totp' }));
   const before = await A.rpc('admin_settings');
-  assert.match(before.error.message, /admins only/, 'no admin powers before the authenticator code');
-  await q(A.auth.mfa.challengeAndVerify({ factorId: f.id, code: totp(f.totp.secret) }));
+  assert.match(before.error.message, /admins only/, 'no admin powers before the move');
+  await q(T.rpc('admin_move_to', { p_email: 'admin@x.com' }));
   return A;
 }
 
@@ -298,8 +296,12 @@ test('Prof drafts a weekly parent report; the tutor sends it', async () => {
   const data = await q(T.rpc('report_numbers', { p_learner: learner, p_from: new Date(Date.now() - 7 * 864e5).toISOString(), p_to: new Date().toISOString() }));
   assert.equal(data.parent, 'Mum');
   const rep = await q(T.from('parent_reports').insert({ learner_id: learner, week_start: '2026-09-28', data }).select().single());
+  // A model that won't accept "you must call this tool" (and answers in text first): Prof still gets the report
+  setMode('no-forced-lazy');
   const job = await q(T.rpc('prof_report', { p_report: rep.id }));
   await kick(T);
+  setMode('ok');
+  assert.ok(seen.some((x) => x.body.tool_choice?.type === 'auto' && x.body.tools?.[0]?.name === 'write_report' && x.body.messages.length === 3), 'asked again without forcing, then nudged');
   const j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
   assert.equal(j.status, 'done', j.error || '');
   const after = await q(T.from('parent_reports').select('*').eq('id', rep.id).single());

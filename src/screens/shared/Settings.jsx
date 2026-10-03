@@ -17,7 +17,6 @@ export default function Settings() {
   const route = useRoute();
   const isTutor = app.me.role === 'tutor';
   const isLearner = app.me.role === 'learner';
-  const isAdmin = app.me.role === 'admin';
   const focus = route.query.get('s');
   useEffect(() => {
     if (focus) document.getElementById('set-' + focus)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -30,7 +29,6 @@ export default function Settings() {
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
       {isTutor && <AccountHistory />}
-      {isAdmin && <TwoStepSetting />}
       {isLearner && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       <Device />
@@ -133,21 +131,6 @@ function Account() {
           <Icon name="logout" size={18} /> Sign out
         </button>
       </form>
-    </Section>
-  );
-}
-
-// The admin account always uses two-step sign-in; this shows it's on
-function TwoStepSetting() {
-  const app = useApp();
-  const q = useQuery('two-step', api.twoStepState);
-  return (
-    <Section id="two-step" icon="shield" title="Two-step sign-in" sub="Every admin sign-in asks for a code from your authenticator app, so a stolen password alone can’t open Admin.">
-      <div className="row small">
-        <span className={'dot ' + (q.data?.factor ? '' : 'warn')} />
-        <span>{q.data?.factor ? 'On. Codes come from the authenticator app you set up.' : 'Checking…'}</span>
-      </div>
-      <div className="small muted">Lost your phone? Run this in Supabase → SQL Editor, then sign in again to set up a new app: <code>delete from auth.mfa_factors where user_id = '{app.me.id}';</code></div>
     </Section>
   );
 }

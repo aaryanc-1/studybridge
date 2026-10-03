@@ -98,8 +98,7 @@ create table if not exists public.platform_secrets (
 );
 insert into public.platform_secrets (id) values (1) on conflict do nothing;
 
--- The StudyBridge admin is its own account (role 'admin'), never a tutor account, and admin
--- powers only work once that sign-in has passed two-step login (a code from an authenticator app).
+-- The StudyBridge admin is its own account (role 'admin'), never a tutor account.
 do $$ begin
   alter table public.profiles drop constraint if exists profiles_role_check;
   alter table public.profiles add constraint profiles_role_check check (role in ('tutor', 'learner', 'admin'));
@@ -109,7 +108,6 @@ create or replace function public.is_platform_admin() returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (select 1 from public.platform_admins a join public.profiles p on p.id = a.user_id
                   where a.user_id = auth.uid() and p.role = 'admin')
-     and coalesce(auth.jwt() ->> 'aal', '') = 'aal2'
 $$;
 
 -- An approved tutor (pending and paused tutors can't invite anyone or use Prof)

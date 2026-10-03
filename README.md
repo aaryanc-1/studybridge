@@ -27,7 +27,7 @@ One app: **StudyBridge for Windows and Mac** (tutors and learners), plus the sam
 - Library, progress, messages, live lessons.
 
 **StudyBridge admin (you)**
-- Admin is its **own account**, separate from your tutor account, and needs **two-step sign-in** (a code from an authenticator app) every time. A tutor account never has admin powers.
+- Admin is its **own account** (its own email and password), separate from your tutor account. Everyone uses the same sign-in page; StudyBridge opens tutor, learner or admin screens depending on the account. A tutor account never has admin powers.
 - Admin pages: tutors waiting for approval, every tutor's account (status, plan, learners, files used, Prof spend), their learners' accounts, unfinished sign-ups.
 - Approve or decline tutors, pause (suspend) and switch back on, set passwords, delete accounts, plans and Prof allowances.
 - The Claude key for Prof (write-only: it can never be read back), the model, and shared live video for every tutor.
@@ -44,8 +44,8 @@ You need: a **Supabase** project (your existing one is fine: it becomes the cent
    - *Secrets*: `RELEASES_TOKEN` (the token from step 2); `SUPABASE_DB_URL` (Supabase → **Connect** → *Session pooler* connection string, with your database password in it); `SUPABASE_ACCESS_TOKEN` (from [supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens)); `BACKUP_PASSWORD` (any long password, to encrypt backups; keep it somewhere safe).
 4. **Build.** Push to `main` (or Actions → Build → Run workflow). Every build now also updates the database, deploys the Prof server, and publishes the apps to `studybridge-releases`.
 5. **Install** StudyBridge from `studybridge-releases` → the latest release (Windows: `StudyBridge-Setup-….exe`, Mac: the `.dmg` for your chip). Windows may warn about an unknown publisher: **More info → Run anyway**. Mac: open it once, then **System Settings → Privacy & Security → Open Anyway**. After this, it updates itself.
-6. **Sign in** with your usual (tutor) account. The first time, **Admin** in the menu asks for the email of your separate admin account (a Gmail `you+admin@gmail.com` works). Sign out, create an account with that email, choose **Set up admin account**, and scan the code with an authenticator app. From then on, sign in with that email to open Admin.
-   - Lost the phone with the authenticator? In Supabase → SQL Editor run `delete from auth.mfa_factors where user_id = (select id from auth.users where email = 'you+admin@gmail.com');` and sign in again to set up a new one. To make a different account the admin: `select public.make_admin('new@example.com');`
+6. **Sign in** with your usual (tutor) account. The first time, **Admin** in the menu asks for the email of your separate admin account (a Gmail `you+admin@gmail.com` works). Sign out, create an account with that email (“Create a tutor account”), and choose **Set up admin account**. From then on, sign in with that email to open Admin.
+   - To make a different account the admin: Supabase → SQL Editor → `select public.make_admin('new@example.com');`
 7. **Switch Prof on**: Admin → StudyBridge settings → Prof → paste the Claude API key, pick the model (Sonnet 5.5 is the sweet spot), set the default monthly allowance per tutor → **Save** → **Check the Prof server**.
 8. **Live video for everyone (optional)**: at [cloud.livekit.io](https://cloud.livekit.io) → Settings → API keys, then Admin → *Live video for every tutor*.
 9. **Phone alerts**: install **ntfy** on your phone and subscribe to the topic in Settings → Phone alerts. You'll get a push when a tutor signs up.

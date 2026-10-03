@@ -9,7 +9,7 @@ import { join, extname } from 'node:path';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
-import { startFakeSupabase, totp } from './fake-supabase.mjs';
+import { startFakeSupabase } from './fake-supabase.mjs';
 import { startFakeClaude, seen } from './fake-claude.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -85,42 +85,30 @@ try {
   await nav(A, 'Prof').waitFor();
   await nav(A, 'Admin').click();
   await A.getByRole('heading', { name: 'Admin has its own account now' }).waitFor();
-  await A.getByLabel('Email for the admin account').fill('aaryan+admin@example.com');
+  assert.equal(await A.getByLabel('Email for the admin account').inputValue(), 'aaryan+admin@example.com', 'filled in for you');
   await A.getByRole('button', { name: 'Make this the admin account' }).click();
   await A.getByText('aaryan+admin@example.com will be the admin account').waitFor();
   await shot(A, 'tutor-moves-admin');
 
-  step('The admin account signs up, sets up two-step sign-in, and opens Admin');
+  step('The admin account signs up with that email and opens Admin');
   await signUpTutor(ADM, 'Aaryan (admin)', 'aaryan+admin@example.com');
   await ADM.getByRole('heading', { name: /Set up as the StudyBridge admin/ }).waitFor();
   await ADM.getByRole('button', { name: 'Set up admin account' }).click();
-  await ADM.getByRole('heading', { name: 'Set up two-step sign-in' }).waitFor();
-  await ADM.getByAltText('QR code for your authenticator app').waitFor();
-  const key = (await ADM.locator('.twostep-key').innerText()).replace(/\s+/g, '');
-  await shot(ADM, 'admin-two-step-setup');
-  await ADM.getByLabel('Code').fill('000000');
-  await ADM.getByRole('button', { name: 'Turn on and open Admin' }).click();
-  await ADM.getByText(/That code didn’t work/).waitFor();
-  await ADM.getByLabel('Code').fill(totp(key));
-  await ADM.getByRole('button', { name: 'Turn on and open Admin' }).click();
   await nav(ADM, 'Tutors').waitFor();
   assert.equal(await nav(ADM, 'Learners').count(), 0, 'the admin account has no teaching screens');
   await A.reload();
   await nav(A, 'Learners').waitFor();
   assert.equal(await nav(A, 'Admin').count(), 0, 'the tutor account no longer has Admin');
 
-  step('Signing in to the admin account again asks for the code');
+  step('One sign-in page for everyone: the admin email opens Admin');
   await ADM.evaluate(() => localStorage.removeItem('sb.auth'));
   await ADM.goto(web.url);
   await ADM.getByRole('heading', { name: 'Sign in' }).waitFor();
   await ADM.getByLabel('Email').fill('aaryan+admin@example.com');
   await ADM.getByLabel('Password').fill('secret123');
   await ADM.getByRole('button', { name: 'Sign in' }).click();
-  await ADM.getByRole('heading', { name: 'Admin sign-in' }).waitFor();
-  await shot(ADM, 'admin-code');
-  await ADM.getByLabel('Code').fill(totp(key));
-  await ADM.getByRole('button', { name: 'Open Admin' }).click();
   await nav(ADM, 'Tutors').waitFor();
+  await shot(ADM, 'admin-home');
 
   step('Another tutor signs up and waits for approval');
   await B.goto(web.url);
