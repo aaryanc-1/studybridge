@@ -555,3 +555,13 @@ label.btn[aria-disabled='true'] { opacity: 0.5; pointer-events: none; }
 .paper-chip .ms-dot { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--claude); border: 1.5px solid var(--card); }
 .paper-line { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .paper-line:last-child { border-bottom: 0; }
+
+/* ---------- Question bank ---------- */
+.good-text { color: var(--good-ink); }
+.pill.click { cursor: pointer; border: 0; font: inherit; font-size: 12px; font-weight: 600; }
+.md.inline, .md.inline p { display: inline; margin: 0; }
+.bank-q { padding: 12px 14px; }
+.bank-q.chosen { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.bank-q.flagged { border-color: var(--red-line); background: var(--red-tint); }
+.bank-q .md p:last-child { margin-bottom: 0; }
+.bank-detail { border-top: 1px solid var(--line-soft); padding-top: 8px; }

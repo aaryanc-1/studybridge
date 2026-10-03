@@ -331,6 +331,16 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
   }
 
   const pickId = (list, id) => (id && list.some((x) => x.id === id) ? id : null);
+  const multiOf = (x) => x.type === 'mcq' && (x.correct || []).length > 1;
+  const optionsOf = (x) => (x.type === 'mcq' ? (multiOf(x) ? { items: x.options || [], multi: true } : x.options || []) : []);
+  const marksOf = (x) => (typeof x.marks === 'number' && x.marks >= 0 ? x.marks : x.type === 'steps' ? 3 : x.type === 'short' ? 2 : x.type === 'upload' || x.type === 'drawing' ? 4 : 1);
+  function keyOf(x) {
+    if (x.type === 'mcq') return multiOf(x) ? { choices: (x.correct || []).map(String) } : { choice: String((x.correct || [0])[0] ?? 0) };
+    if (x.type === 'numeric') return { value: String(x.answer ?? ''), tolerance: String(x.tolerance ?? 0), ...(x.unit ? { unit: x.unit } : {}) };
+    if (x.type === 'steps' && x.answer) return { final: x.answer };
+    if (x.type === 'short' && x.answer) return { text: x.answer };
+    return {};
+  }
 
   async function runCreateTool(name, input, job, ctx, made) {
     if (name === 'start_assignment') {
@@ -367,23 +377,17 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
       const qs = (input.questions || []).slice(0, 6);
       for (const x of qs) {
         if (!TYPES.includes(x.type)) throw new Error(`Unknown question type ${x.type}`);
-        const multi = x.type === 'mcq' && (x.correct || []).length > 1;
         const q = await insert('questions', {
           tutor_id: job.tutor_id,
           assignment_id: a.id,
           position: a.questions,
           type: x.type,
           prompt_md: String(x.prompt || ''),
-          options: x.type === 'mcq' ? (multi ? { items: x.options || [], multi: true } : x.options || []) : [],
-          marks: typeof x.marks === 'number' && x.marks >= 0 ? x.marks : x.type === 'steps' ? 3 : x.type === 'short' ? 2 : x.type === 'upload' || x.type === 'drawing' ? 4 : 1,
+          options: optionsOf(x),
+          marks: marksOf(x),
           topic_id: pickId(ctx.topics, x.topic_id),
         });
-        let answer = {};
-        if (x.type === 'mcq') answer = multi ? { choices: (x.correct || []).map(String) } : { choice: String((x.correct || [0])[0] ?? 0) };
-        else if (x.type === 'numeric') answer = { value: String(x.answer ?? ''), tolerance: String(x.tolerance ?? 0), ...(x.unit ? { unit: x.unit } : {}) };
-        else if (x.type === 'steps' && x.answer) answer = { final: x.answer };
-        else if (x.type === 'short' && x.answer) answer = { text: x.answer };
-        await insert('question_keys', { tutor_id: job.tutor_id, question_id: q.id, answer, mark_scheme_md: x.mark_scheme || null, solution_md: x.solution || null });
+        await insert('question_keys', { tutor_id: job.tutor_id, question_id: q.id, answer: keyOf(x), mark_scheme_md: x.mark_scheme || null, solution_md: x.solution || null });
         a.questions++;
       }
       return { added: qs.length, total_questions: a.questions };
@@ -518,6 +522,144 @@ ${JSON.stringify({ programmes: ctx.programmes, subjects: ctx.subjects, topics: c
     await save(job, 'queued', { ...use, p_state: { ...st, tries: 0 }, p_progress: progressOf(made) });
   }
 
+  // ---------------- the question bank ----------------
+  const QUESTION_ITEM = CREATE_TOOLS[1].input_schema.properties.questions.items;
+  const BANK_TOOL = {
+    name: 'save_questions',
+    description: 'Save questions to the question bank. They wait for approval before anyone uses them.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          maxItems: 8,
+          items: {
+            ...QUESTION_ITEM,
+            properties: {
+              ...QUESTION_ITEM.properties,
+              type: { type: 'string', enum: ['mcq', 'numeric', 'steps', 'short'] },
+              difficulty: { type: 'integer', enum: [1, 2, 3], description: '1 easy, 2 medium, 3 hard' },
+              topic_id: undefined,
+            },
+            required: ['type', 'prompt', 'difficulty', 'mark_scheme', 'solution'],
+          },
+        },
+      },
+      required: ['questions'],
+    },
+  };
+  delete BANK_TOOL.input_schema.properties.questions.items.properties.topic_id;
+  const CHECK_TOOL = {
+    name: 'submit_checks',
+    description: 'Your independent check of each question.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        checks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              number: { type: 'integer' },
+              my_answer: { type: 'string', description: 'Your own answer, worked out before looking at the stated one' },
+              agrees: { type: 'boolean', description: 'true only if the stated answer AND mark scheme are correct and the question is clear and solvable' },
+              note: { type: 'string', description: 'If it doesn’t agree: what is wrong, briefly' },
+            },
+            required: ['number', 'my_answer', 'agrees'],
+          },
+        },
+      },
+      required: ['checks'],
+    },
+  };
+  const DIFF = { 1: 'easy', 2: 'medium', 3: 'hard' };
+
+  async function stepBank(job, cfg) {
+    const c = job.context || {};
+    const st = job.state && job.state.phase ? job.state : { phase: 'write', made: [], tries: 0 };
+    const where = `${c.board === 'ib' ? 'IB Diploma' : c.board === 'cie' ? 'Cambridge IGCSE' : ''} ${c.code || ''}`.trim();
+    if (job.steps >= MAX_STEPS) throw new Error('Prof stopped: this took too many steps. Try asking for fewer questions.');
+    if (st.phase === 'write') {
+      const n = Math.min(8, (c.count || 10) - st.made.length);
+      const res = await claude(cfg, {
+        max_tokens: 9000,
+        system: `You are Prof, writing exam-style practice questions for StudyBridge's question bank${where ? ` for ${where}` : ''}. Everything you write is checked and approved by a person before anyone uses it.
+Rules:
+- ORIGINAL questions only, in the style and standard of ${where || 'the syllabus'}. Never reproduce or lightly reword real exam-board questions from memory.
+- Types: numeric (one number: answer, tolerance if rounding, unit if any), mcq (options + zero-based correct indexes), steps (maths working line by line; answer = the final line in LaTeX, e.g. "x = 4"), short (brief written answer; answer = model answer). Prefer numeric and steps for maths.
+- Markdown with LaTeX in $...$ and $$...$$. Never use \\( \\). No diagrams or images: every question must be answerable from its text.
+- Each question has marks like the real exam, an exam-board style mark scheme (M1/A1/B1), a short worked solution, and a difficulty (1 easy, 2 medium, 3 hard).
+- Double-check every answer before saving it.`,
+        tools: [BANK_TOOL],
+        tool_choice: { type: 'tool', name: 'save_questions' },
+        messages: [
+          {
+            role: 'user',
+            content: `Write ${n} question${n === 1 ? '' : 's'} on: ${c.topic}.${c.difficulty ? ` Difficulty: ${DIFF[c.difficulty]}.` : ' Mix the difficulty: some easy, mostly medium, some hard.'}${
+              st.made.length ? `\nAlready written (don’t repeat these):\n${st.made.map((m) => '- ' + m.p).join('\n')}` : ''
+            }`,
+          },
+        ],
+      });
+      const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_questions');
+      const qs = (call?.input?.questions || []).filter((x) => ['mcq', 'numeric', 'steps', 'short'].includes(x.type) && x.prompt).slice(0, n);
+      for (const x of qs) {
+        const row = await insert('bank_questions', {
+          owner_id: c.shared ? null : job.tutor_id,
+          status: 'review',
+          exam_board: c.board || null,
+          exam_code: c.code || null,
+          subject_id: c.shared ? null : c.subject_id || null,
+          topic: c.topic,
+          difficulty: [1, 2, 3].includes(x.difficulty) ? x.difficulty : 2,
+          type: x.type,
+          prompt_md: String(x.prompt),
+          options: optionsOf(x),
+          marks: marksOf(x),
+          answer: keyOf(x),
+          mark_scheme_md: x.mark_scheme || null,
+          solution_md: x.solution || null,
+          source: c.shared ? 'studybridge' : 'prof',
+          job_id: job.id,
+        });
+        st.made.push({ id: row.id, p: String(x.prompt).slice(0, 90) });
+      }
+      if (!qs.length) st.empty = (st.empty || 0) + 1;
+      if (st.made.length >= (c.count || 10) || (st.empty || 0) >= 2) st.phase = 'check';
+      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { ...st, tries: 0 }, p_progress: `Writing questions (${st.made.length} of ${c.count})…` });
+      return;
+    }
+    // Check: a second, independent pass solves each question and compares
+    const ids = st.made.map((m) => m.id);
+    if (!ids.length) throw new Error('Prof couldn’t write questions on that topic. Try wording it differently.');
+    const rows = await rest(`bank_questions?id=in.(${ids.join(',')})&select=id,type,prompt_md,options,marks,answer,mark_scheme_md`);
+    const list = ids.map((id) => rows.find((r) => r.id === id)).filter(Boolean);
+    const res = await claude(cfg, {
+      max_tokens: 8000,
+      system: `You are a careful exam checker for ${where || 'a school syllabus'}. For each question, first solve it yourself, then compare with the stated answer and mark scheme. Agree only if the stated answer is correct, the mark scheme fits, and the question is clear and solvable from its text.`,
+      tools: [CHECK_TOOL],
+      tool_choice: { type: 'tool', name: 'submit_checks' },
+      messages: [{ role: 'user', content: JSON.stringify(list.map((r, i) => ({ number: i + 1, type: r.type, question: r.prompt_md, options: r.options, marks: r.marks, stated_answer: r.answer, mark_scheme: r.mark_scheme_md }))) }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'submit_checks');
+    let flagged = 0;
+    for (const x of call?.input?.checks || []) {
+      const r = list[x.number - 1];
+      if (!r) continue;
+      if (!x.agrees) flagged++;
+      await rest(`bank_questions?id=eq.${r.id}`, { method: 'PATCH', body: { check_result: { ok: !!x.agrees, my_answer: String(x.my_answer || '').slice(0, 300), note: String(x.note || '').slice(0, 400) } } });
+    }
+    const n = list.length;
+    const msg = `${n} question${n === 1 ? '' : 's'} on ${c.topic} ${c.shared ? 'for the shared bank' : 'for your bank'}${flagged ? `; the automatic check flagged ${flagged} to look at closely` : '; the automatic check agreed with every answer'}.`;
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_state: { done: true },
+      p_result: { bank: { count: n, flagged, shared: !!c.shared }, reply: msg },
+      p_progress: 'Ready for you to review',
+      p_notify: { title: `Prof wrote ${n} bank questions`, body: msg, ref: { bank: true, shared: !!c.shared } },
+    });
+  }
+
   // ---------------- marking ----------------
   const MARK_TOOL = {
     name: 'submit_marking',
@@ -628,6 +770,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     try {
       if (!cfg.key) throw new Error('Prof isn’t switched on yet. The StudyBridge admin adds the Claude key in Admin → Prof.');
       if (job.kind === 'mark') await stepMark(job, cfg);
+      else if (job.kind === 'bank') await stepBank(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

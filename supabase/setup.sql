@@ -459,12 +459,47 @@ create table if not exists public.prof_jobs (
   finished_at timestamptz
 );
 do $$ begin
+  alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
+  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank'));
+end $$;
+do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
   alter table public.prof_jobs add constraint prof_jobs_status_check
     check (status in ('queued', 'running', 'waiting', 'done', 'failed', 'cancelled'));
 end $$;
 create index if not exists idx_prof_jobs_tutor on public.prof_jobs (tutor_id, created_at desc);
 create index if not exists idx_prof_jobs_status on public.prof_jobs (status, created_at);
+
+-- The question bank: questions a tutor keeps to reuse (their own), and StudyBridge's shared exam-style
+-- questions (owner_id null), which every tutor can use once the StudyBridge admin has approved them.
+-- Answers live here too, so learners never read this table; questions are copied into assignments.
+create table if not exists public.bank_questions (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references public.profiles (id) on delete cascade,
+  status text not null default 'approved' check (status in ('review', 'approved', 'rejected')),
+  exam_board text,
+  exam_code text,
+  subject_id uuid references public.subjects (id) on delete set null,
+  topic text,
+  difficulty int check (difficulty between 1 and 3),
+  type text not null check (type in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing')),
+  prompt_md text not null default '',
+  image_path text,
+  options jsonb not null default '[]',
+  marks numeric not null default 1 check (marks >= 0),
+  answer jsonb not null default '{}',
+  mark_scheme_md text,
+  solution_md text,
+  source text not null default 'tutor',
+  source_ref text,
+  check_result jsonb,
+  job_id uuid references public.prof_jobs (id) on delete set null,
+  uses int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_bank_owner on public.bank_questions (owner_id, status, exam_code);
+create index if not exists idx_bank_shared on public.bank_questions (exam_code, topic) where owner_id is null;
 
 -- Tests and exams: questions stay hidden until the learner starts an attempt.
 create or replace function public._questions_open(p_assignment uuid) returns boolean
@@ -527,6 +562,7 @@ alter table public.platform_secrets enable row level security;
 alter table public.admin_log enable row level security;
 alter table public.prof_settings enable row level security;
 alter table public.prof_jobs enable row level security;
+alter table public.bank_questions enable row level security;
 
 -- (re)create policies
 do $$
@@ -563,6 +599,13 @@ create policy files_tutor on public.files for all using (tutor_id = auth.uid()) 
 create policy files_learner on public.files for select
   using (public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
 create policy lessons_tutor on public.lessons for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+-- question bank: a tutor's own questions; shared ones once approved; the admin reviews shared ones
+create policy bank_own on public.bank_questions for all
+  using (owner_id = auth.uid()) with check (owner_id = auth.uid() and public.my_role() = 'tutor');
+create policy bank_shared_read on public.bank_questions for select
+  using (owner_id is null and status = 'approved' and public._tutor_active());
+create policy bank_admin on public.bank_questions for all
+  using (owner_id is null and public.is_platform_admin()) with check (owner_id is null and public.is_platform_admin());
 create policy lessons_learner on public.lessons for select
   using (not draft and public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
 
@@ -1651,6 +1694,39 @@ begin
   return jsonb_build_object('id', v_id);
 end $$;
 
+-- Ask Prof to write questions for the question bank. Shared StudyBridge questions: admin only.
+create or replace function public.prof_bank(p_board text, p_code text, p_topic text, p_count int default 10,
+  p_difficulty int default null, p_subject uuid default null, p_shared boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  if p_shared and not public.is_platform_admin() then raise exception 'Only the StudyBridge admin adds shared questions.'; end if;
+  if p_subject is not null and not exists (select 1 from public.subjects where id = p_subject and tutor_id = auth.uid()) then
+    raise exception 'Unknown subject.';
+  end if;
+  if length(trim(coalesce(p_topic, ''))) < 2 then raise exception 'Choose a topic.'; end if;
+  if p_count is null or p_count < 1 or p_count > 30 then raise exception 'Ask for 1 to 30 questions.'; end if;
+  if p_difficulty is not null and p_difficulty not between 1 and 3 then raise exception 'Unknown difficulty.'; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'bank', format('%s questions on %s for the question bank', p_count, left(trim(p_topic), 120)),
+    jsonb_build_object('board', left(p_board, 10), 'code', left(p_code, 40), 'topic', left(trim(p_topic), 200), 'count', p_count,
+      'difficulty', p_difficulty, 'subject_id', p_subject, 'shared', coalesce(p_shared, false)))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+-- Counts how often bank questions are used (shared ones can't be edited by tutors)
+create or replace function public.bank_used(p_ids uuid[])
+returns void language sql security definer set search_path = public as $$
+  update public.bank_questions set uses = uses + 1
+   where id = any(p_ids) and (owner_id = auth.uid() or (owner_id is null and status = 'approved' and public._tutor_active()))
+$$;
+
 -- The tutor's app sends the book pages Prof asked for
 create or replace function public.prof_pages(p_job uuid, p_pages jsonb)
 returns void language plpgsql security definer set search_path = public as $$
@@ -1881,6 +1957,8 @@ begin
       if not exists (select 1 from public.assignments where id = new.assignment_id and draft) then
         raise exception 'Prof can only add questions to drafts.';
       end if;
+    elsif tg_table_name = 'bank_questions' then
+      if new.status <> 'review' then raise exception 'Prof’s bank questions wait for approval.'; end if;
     elsif tg_table_name = 'question_keys' then
       if not exists (select 1 from public.questions q join public.assignments a on a.id = q.assignment_id where q.id = new.question_id and a.draft) then
         raise exception 'Prof can only add answers to drafts.';
@@ -1894,7 +1972,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['assignments', 'lessons', 'questions', 'question_keys'] loop
+  foreach t in array array['assignments', 'lessons', 'questions', 'question_keys', 'bank_questions'] loop
     execute format('drop trigger if exists %I on public.%I', t || '_prof_guard', t);
     execute format('create trigger %I before insert or update on public.%I for each row execute function public._prof_guard()', t || '_prof_guard', t);
   end loop;

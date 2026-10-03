@@ -26,6 +26,7 @@ function notificationTarget(n) {
   if (n.kind === 'note' && r.learner_id) return `/messages/${r.learner_id}`;
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
+  if (n.kind === 'prof' && r.bank) return r.shared ? '/admin' : '/library/bank';
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'tutor_signup') return '/admin';
   return '/';

@@ -208,3 +208,49 @@ test('Prof reads a whole book (asks the app for pages) and takes replies', async
   assert.match(text, /Homework from the linear equations chapter/);
   assert.match(text, /Make questions 4 and 5 harder/);
 });
+
+test('Prof writes question-bank questions, checks them, and they wait for approval', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const me = (await T.auth.getUser()).data.user.id;
+  // Shared StudyBridge questions: admin only
+  const job = await q(T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 10, p_shared: true }));
+  for (let i = 0; i < 4; i++) await kick(T);
+  const j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.equal(j.result.bank.count, 10);
+  assert.equal(j.result.bank.flagged, 1, 'the deliberately wrong answer is flagged');
+  const rows = await q(T.from('bank_questions').select('*').eq('job_id', job.id).order('created_at'));
+  assert.equal(rows.length, 10);
+  assert.ok(rows.every((r) => r.owner_id === null && r.status === 'review' && r.exam_code === '0607' && r.topic === 'Number' && r.source === 'studybridge'));
+  const bad = rows.filter((r) => r.check_result && !r.check_result.ok);
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].check_result.note, /should be 14/);
+  assert.ok(seen.some((x) => x.body.tools?.[0]?.name === 'submit_checks'), 'a second, independent check ran');
+
+  // Another tutor: can't ask for shared questions, can't see them until approved
+  const T2 = client();
+  await q(T2.auth.signUp({ email: 'tutor2@x.com', password: 'secret123' }));
+  await q(T2.rpc('become_tutor', { p_name: 'Maria' }));
+  const t2 = (await T2.auth.getUser()).data.user.id;
+  await q(T.rpc('admin_set_status', { p_user: t2, p_status: 'active' }));
+  const no = await T2.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 5, p_shared: true });
+  assert.match(no.error.message, /Only the StudyBridge admin/);
+  assert.equal((await q(T2.from('bank_questions').select('id'))).length, 0);
+  // The admin approves the good ones and rejects the flagged one
+  await q(T.from('bank_questions').update({ status: 'approved' }).in('id', rows.filter((r) => r.check_result?.ok).map((r) => r.id)));
+  await q(T.from('bank_questions').update({ status: 'rejected' }).eq('id', bad[0].id));
+  assert.equal((await q(T2.from('bank_questions').select('id'))).length, 9, 'every tutor can use approved shared questions');
+  const tried = await T2.from('bank_questions').update({ prompt_md: 'changed' }).eq('id', rows[0].id).select();
+  assert.equal(tried.data.length, 0, 'tutors can’t change shared questions');
+  await q(T2.rpc('bank_used', { p_ids: [rows[0].id] }));
+  assert.equal((await q(T.from('bank_questions').select('uses').eq('id', rows[0].id).single())).uses, 1);
+
+  // A tutor's own bank questions from Prof wait for that tutor
+  const mine = await q(T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Algebra', p_count: 3 }));
+  for (let i = 0; i < 3; i++) await kick(T);
+  const own = await q(T.from('bank_questions').select('*').eq('job_id', mine.id));
+  assert.equal(own.length, 3);
+  assert.ok(own.every((r) => r.owner_id === me && r.status === 'review' && r.source === 'prof'));
+  assert.equal((await q(T2.from('bank_questions').select('id').in('id', own.map((r) => r.id)))).length, 0, 'never another tutor');
+});

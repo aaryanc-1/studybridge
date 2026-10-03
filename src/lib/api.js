@@ -173,6 +173,60 @@ export async function officialBlob(url) {
   return blob;
 }
 
+// ---------------- question bank ----------------
+export const listBank = () => run(sb().from('bank_questions').select('*').neq('status', 'rejected').order('created_at', { ascending: false }).limit(2000));
+export const saveBank = (row) => save('bank_questions', row);
+export const setBankStatus = (ids, status) => run(sb().from('bank_questions').update({ status, updated_at: new Date().toISOString() }).in('id', ids));
+export const profBank = ({ board = null, code = null, topic, count = 10, difficulty = null, subject = null, shared = false }) =>
+  run(sb().rpc('prof_bank', { p_board: board, p_code: code, p_topic: topic, p_count: count, p_difficulty: difficulty, p_subject: subject, p_shared: shared })).then((r) => {
+    callProf().catch(() => {});
+    return r;
+  });
+// A bank question as an assignment question (the editor's shape)
+export const bankToQuestion = (b) => ({
+  type: b.type,
+  prompt_md: b.prompt_md,
+  image_path: b.image_path || null,
+  options: b.options || [],
+  marks: b.marks,
+  topic_id: null,
+  key: { answer: b.answer || {}, mark_scheme_md: b.mark_scheme_md || '', solution_md: b.solution_md || '' },
+  _bank: b.id,
+});
+export async function addQuestionsToAssignment(assignmentId, questions, start = 0) {
+  let i = start;
+  for (const q of questions) {
+    const saved = await save('questions', { assignment_id: assignmentId, position: i++, type: q.type, prompt_md: q.prompt_md || '', image_path: q.image_path || null, options: q.type === 'mcq' ? q.options : [], marks: Number(q.marks) || 0, topic_id: q.topic_id || null });
+    await saveKey({ question_id: saved.id, answer: q.key?.answer || {}, solution_md: q.key?.solution_md || null, mark_scheme_md: q.key?.mark_scheme_md || null });
+  }
+}
+export async function assignmentFromBank(rows, { title, kind = 'homework', subject_id = null }) {
+  const a = await save('assignments', { title, kind, subject_id, visibility: 'hidden' });
+  await addQuestionsToAssignment(a.id, rows.map(bankToQuestion));
+  await sb().rpc('bank_used', { p_ids: rows.map((r) => r.id) });
+  return a;
+}
+export const bankUsed = (ids) => sb().rpc('bank_used', { p_ids: ids });
+export async function saveQuestionsToBank(qs, { subject_id = null, topicName = () => null, ref = null } = {}) {
+  const rows = qs.map((q) => ({
+    owner_id: uid(),
+    status: 'approved',
+    subject_id,
+    topic: topicName(q.topic_id) || null,
+    type: q.type,
+    prompt_md: q.prompt_md || '',
+    image_path: q.image_path || null,
+    options: q.type === 'mcq' ? q.options : [],
+    marks: Number(q.marks) || 0,
+    answer: q.key?.answer || {},
+    mark_scheme_md: q.key?.mark_scheme_md || null,
+    solution_md: q.key?.solution_md || null,
+    source: 'tutor',
+    source_ref: ref,
+  }));
+  return run(sb().from('bank_questions').insert(rows).select());
+}
+
 // Images inside questions and lessons (always readable by the tutor's learners)
 export async function uploadImage(file, kind = 'questions') {
   const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');

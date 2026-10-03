@@ -6,6 +6,7 @@ import * as api from '../../lib/api.js';
 import { bytes, ago } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import PastPapers, { OpenBooks } from './PastPapers.jsx';
+import QuestionBank from './QuestionBank.jsx';
 
 export default function Library({ tab = 'files' }) {
   return (
@@ -26,11 +27,12 @@ export default function Library({ tab = 'files' }) {
         options={[
           { value: 'files', label: 'Files', icon: 'file' },
           { value: 'papers', label: 'Past papers', icon: 'clipboard' },
+          { value: 'bank', label: 'Question bank', icon: 'layers' },
           { value: 'textbooks', label: 'Free textbooks', icon: 'book' },
           { value: 'lessons', label: 'Lessons', icon: 'pen' },
         ]}
       />
-      {tab === 'lessons' ? <Lessons /> : tab === 'papers' ? <PastPapers /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
+      {tab === 'lessons' ? <Lessons /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
     </Page>
   );
 }

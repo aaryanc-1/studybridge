@@ -48,7 +48,7 @@ export function useProfJobs() {
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const doneIds = jobs.filter((j) => j.status === 'done').map((j) => j.id).join();
   useEffect(() => {
-    if (doneIds) invalidate('assignments', 'lessons', 'drafts');
+    if (doneIds) invalidate('assignments', 'lessons', 'drafts', 'bank');
   }, [doneIds]);
   return q;
 }
@@ -346,13 +346,18 @@ function Jobs() {
                             <Icon name="book" size={14} /> {l.title}
                           </Link>
                         ))}
+                        {r.bank && (
+                          <Link to={r.bank.shared ? '/admin' : '/library/bank'} className="btn sm">
+                            <Icon name="layers" size={14} /> Review {r.bank.count} bank question{r.bank.count === 1 ? '' : 's'}
+                          </Link>
+                        )}
                         {j.attempt_id && (
                           <Link to={`/marking/${j.attempt_id}`} className="btn sm">
                             Open the submission
                           </Link>
                         )}
                       </div>
-                      {j.kind !== 'mark' && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
+                      {j.kind !== 'mark' && j.kind !== 'bank' && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
                     </>
                   )}
                   {(j.status === 'failed' || j.status === 'cancelled') && (

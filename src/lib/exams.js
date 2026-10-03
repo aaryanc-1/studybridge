@@ -455,3 +455,26 @@ export const OPEN_BOOKS = [
   ...[10, 11, 12].map((g) => ({ title: `Physical Sciences Grade ${g}`, by: 'Siyavula', for: 'Physics and Chemistry', url: `https://www.siyavula.com/read/za/physical-sciences/grade-${g}` })),
   { title: 'Life Sciences Grade 10', by: 'Siyavula', for: 'Biology', url: 'https://www.siyavula.com/read/za/life-sciences/grade-10' },
 ];
+
+// Syllabus topic areas, used to organise the question bank
+export const TOPICS = {
+  '0607': ['Number', 'Algebra', 'Functions', 'Coordinate geometry', 'Geometry', 'Mensuration', 'Trigonometry', 'Transformations and vectors', 'Probability', 'Statistics'],
+  '0580': ['Number', 'Algebra and graphs', 'Coordinate geometry', 'Geometry', 'Mensuration', 'Trigonometry', 'Transformations and vectors', 'Probability', 'Statistics'],
+  '0606': ['Functions', 'Quadratic functions', 'Factors of polynomials', 'Equations, inequalities and graphs', 'Simultaneous equations', 'Logarithmic and exponential functions', 'Straight-line graphs', 'Coordinate geometry of the circle', 'Circular measure', 'Trigonometry', 'Permutations and combinations', 'Series', 'Calculus'],
+};
+export const topicsFor = (code) => TOPICS[code] || [];
+
+// "x = 4", "3 (± 0.1) cm", "B: 12", a model answer…
+export function answerText(q) {
+  const a = q.answer || q.key?.answer || {};
+  const opts = Array.isArray(q.options) ? q.options : q.options?.items || [];
+  if (q.type === 'mcq') {
+    const picks = a.choices || (a.choice != null ? [a.choice] : []);
+    return picks.map((i) => `${String.fromCharCode(65 + Number(i))}: ${opts[Number(i)] ?? '?'}`).join(', ');
+  }
+  if (q.type === 'numeric') return `${a.value ?? ''}${a.tolerance && Number(a.tolerance) ? ` (± ${a.tolerance})` : ''}${a.unit ? ' ' + a.unit : ''}`;
+  if (q.type === 'steps') return a.final || '';
+  if (q.type === 'short') return a.text || '';
+  return '';
+}
+export const DIFFICULTY = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };

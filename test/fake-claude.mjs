@@ -57,6 +57,34 @@ function reply(body) {
       ],
     };
   }
+  // question bank: write questions, then check them (one deliberately wrong answer gets flagged)
+  if (tools.includes('save_questions')) {
+    const want = Number((body.messages[0].content.match(/Write (\d+) question/) || [])[1] || 3);
+    const already = (body.messages[0].content.match(/^- /gm) || []).length;
+    const qs = [];
+    for (let i = 0; i < want; i++) {
+      const k = already + i + 1;
+      qs.push({ type: 'numeric', prompt: `Work out $${k} \\times 7$.`, answer: String(k === 2 ? 15 : k * 7), marks: 1, difficulty: (k % 3) + 1, mark_scheme: 'B1', solution: `$${k} \\times 7 = ${k * 7}$` });
+    }
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_questions', { questions: qs })] };
+  }
+  if (tools.includes('submit_checks')) {
+    const list = JSON.parse(body.messages[0].content);
+    return {
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      usage,
+      content: [
+        tu('submit_checks', {
+          checks: list.map((q) => {
+            const k = Number(q.question.match(/\$(\d+) /)[1]);
+            const ok = String(q.stated_answer.value) === String(k * 7);
+            return { number: q.number, my_answer: String(k * 7), agrees: ok, note: ok ? undefined : `The answer should be ${k * 7}.` };
+          }),
+        }),
+      ],
+    };
+  }
   // making work: (look at book pages →) start → questions → questions → finish
   const last = body.messages[body.messages.length - 1];
   const looks = body.tools.some((t) => t.name === 'look_at_pages');

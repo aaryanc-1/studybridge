@@ -6,6 +6,7 @@ import { StoredImage } from '../../ui/media.jsx';
 import { invalidate, useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { fromLocalInput, toLocalInput, typeLabel, kindLabel } from '../../lib/format.js';
+import { BankPicker } from './QuestionBank.jsx';
 import { useLookups } from '../shared/lookups.jsx';
 import { KIND_DEFAULTS } from './Assignments.jsx';
 import { items, multi } from '../../lib/questions.js';
@@ -67,6 +68,7 @@ export default function AssignmentEditor({ id }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [previewIntro, setPreviewIntro] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -263,7 +265,19 @@ export default function AssignmentEditor({ id }) {
             )}
           </div>
 
-          {qs.length === 0 && <Empty title="No questions yet">Add questions below. Mix any kinds you like.</Empty>}
+          {picking && (
+            <BankPicker
+              onClose={() => setPicking(false)}
+              onPick={(rows) => {
+                setQs((list) => [...list, ...rows.map((b) => ({ ...api.bankToQuestion(b), topic_id: a.topic_id || null, _k: k() }))]);
+                api.bankUsed(rows.map((b) => b.id));
+                setDirty(true);
+                setPicking(false);
+                toast(`Added ${rows.length} question${rows.length === 1 ? '' : 's'} from the bank`);
+              }}
+            />
+          )}
+          {qs.length === 0 && <Empty title="No questions yet">Add questions below, or pick some from the question bank. Mix any kinds you like.</Empty>}
           {qs.map((q, i) => (
             <QuestionEditor
               key={q._k}
@@ -299,7 +313,29 @@ export default function AssignmentEditor({ id }) {
           <div className="card">
             <div className="card-head">
               <h3>Add a question</h3>
-              <span className="muted small">Total: {total} mark{total === 1 ? '' : 's'}</span>
+              <span className="row" style={{ gap: 8 }}>
+                <span className="muted small">Total: {total} mark{total === 1 ? '' : 's'}</span>
+                <button className="btn sm" onClick={() => setPicking(true)}>
+                  <Icon name="layers" size={16} /> From the bank
+                </button>
+                {qs.length > 0 && (
+                  <button
+                    className="btn sm ghost"
+                    title="Keep copies of these questions to reuse"
+                    onClick={async () => {
+                      try {
+                        await api.saveQuestionsToBank(qs, { subject_id: a.subject_id || null, topicName: (id) => lk.topic(id)?.name || lk.topic(a.topic_id)?.name, ref: a.title });
+                        invalidate('bank');
+                        toast({ title: `Saved ${qs.length} question${qs.length === 1 ? '' : 's'} to your bank`, body: 'Find them in Library → Question bank.' });
+                      } catch (e) {
+                        toast({ title: 'Couldn’t save to the bank', body: e.message, tone: 'bad' });
+                      }
+                    }}
+                  >
+                    Save to bank
+                  </button>
+                )}
+              </span>
             </div>
             <div className="grid g3">
               {TYPES.map((t) => (
