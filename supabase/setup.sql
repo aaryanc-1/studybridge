@@ -74,7 +74,21 @@ alter table public.app_config add column if not exists livekit_url text;
 
 alter table public.profiles add column if not exists status text not null default 'active';
 alter table public.profiles add column if not exists plan text not null default 'free';
-alter table public.profiles add column if not exists ai_limit_cents int;
+-- A tutor's own Prof allowance (when the admin set one). Only the admin sees it, so it lives in
+-- its own table nobody reads directly; early builds kept it on profiles, move it over.
+create table if not exists public.prof_limits (
+  tutor_id uuid primary key references public.profiles (id) on delete cascade,
+  cents int not null check (cents >= 0)
+);
+alter table public.prof_limits enable row level security;
+revoke all on public.prof_limits from public, anon, authenticated;
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'ai_limit_cents') then
+    execute 'insert into public.prof_limits (tutor_id, cents) select id, ai_limit_cents from public.profiles where ai_limit_cents is not null on conflict do nothing';
+    execute 'alter table public.profiles drop column ai_limit_cents';
+  end if;
+end $$;
 do $$ begin
   alter table public.profiles add constraint profiles_status_check check (status in ('pending', 'active', 'suspended'));
 exception when duplicate_object then null; end $$;
@@ -1172,6 +1186,17 @@ returns jsonb language sql stable security definer set search_path = public as $
   where t.learner_id = auth.uid() and (p_assignment is null or t.assignment_id = p_assignment)
 $$;
 
+-- Self-marked work: the answers and mark scheme show only once the learner can't change
+-- anything any more (handed in, no redo open, no attempts left).
+alter table public.assignments add column if not exists self_mark boolean not null default false;
+create or replace function public._self_mark_open(t public.attempts, a public.assignments) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce(a.self_mark, false) and t.status in ('submitted', 'marked')
+     and not exists (select 1 from public.attempts x where x.assignment_id = t.assignment_id and x.learner_id = t.learner_id
+                                                     and x.status in ('in_progress', 'returned'))
+     and (select count(*) from public.attempts x where x.assignment_id = t.assignment_id and x.learner_id = t.learner_id) >= a.max_attempts
+$$;
+
 create or replace function public.attempt_detail(p_attempt uuid)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
 declare
@@ -1191,7 +1216,7 @@ begin
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
       'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end,
-      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at),
+      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at, 'self_mark_open', public._self_mark_open(t, a)),
     'responses', coalesce((select jsonb_agg(jsonb_build_object(
         'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
         'marks', case when rel or is_tutor then r.marks end,
@@ -1202,7 +1227,7 @@ begin
         'mistake', case when rel or is_tutor then r.mistake end,
         'self_marks', r.self_marks))
       from public.responses r where r.attempt_id = t.id), '[]'),
-    'keys', case when is_tutor or (rel and a.show_answers) or (a.self_mark and t.status <> 'in_progress') then coalesce((select jsonb_agg(jsonb_build_object(
+    'keys', case when is_tutor or (rel and a.show_answers) or public._self_mark_open(t, a) then coalesce((select jsonb_agg(jsonb_build_object(
         'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
       from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
       else '[]'::jsonb end
@@ -1414,7 +1439,7 @@ end $$;
 create or replace function public.set_live_keys(p_url text, p_key text, p_secret text)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  if public.my_role() <> 'tutor' then raise exception 'Tutors only.'; end if;
+  if public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
   insert into public.tutor_settings (tutor_id, livekit_url) values (auth.uid(), p_url)
     on conflict (tutor_id) do update set livekit_url = excluded.livekit_url;
   insert into public.tutor_secrets (tutor_id, livekit_api_key, livekit_api_secret) values (auth.uid(), p_key, p_secret)
@@ -1593,7 +1618,7 @@ language sql stable security definer set search_path = public as $$
 $$;
 create or replace function public._prof_limit(p_tutor uuid) returns int
 language sql stable security definer set search_path = public as $$
-  select coalesce((select ai_limit_cents from public.profiles where id = p_tutor), (select default_ai_limit_cents from public.app_config where id = 1))
+  select coalesce((select cents from public.prof_limits where tutor_id = p_tutor), (select default_ai_limit_cents from public.app_config where id = 1))
 $$;
 
 create or replace function public.admin_tutors() returns jsonb
@@ -1609,7 +1634,7 @@ begin
       'storage_bytes', public._storage_bytes(p.id),
       'ai_cents', public._prof_month_cents(p.id),
       'ai_limit_cents', public._prof_limit(p.id),
-      'ai_limit_custom', p.ai_limit_cents is not null,
+      'ai_limit_custom', exists (select 1 from public.prof_limits pl where pl.tutor_id = p.id),
       'signup', p.signup, 'app_version', p.app_version, 'last_seen_at', p.last_seen_at
     ) order by (p.status = 'pending') desc, p.created_at)
     from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor'), '[]');
@@ -1668,9 +1693,18 @@ begin
   perform public._admin();
   if not exists (select 1 from public.profiles where id = p_user and role = 'tutor') then raise exception 'That isn’t a tutor account.'; end if;
   if p_ai_limit_cents is not null and p_ai_limit_cents < 0 then raise exception 'The AI limit can’t be negative.'; end if;
-  update public.profiles set plan = coalesce(nullif(trim(p_plan), ''), plan), ai_limit_cents = p_ai_limit_cents where id = p_user;
-  perform public._admin_log('plan', p_user, jsonb_build_object('plan', p_plan, 'ai_limit_cents', p_ai_limit_cents));
+  update public.profiles set plan = coalesce(nullif(trim(p_plan), ''), plan) where id = p_user;
+  if p_ai_limit_cents is null then
+    delete from public.prof_limits where tutor_id = p_user;
+  else
+    insert into public.prof_limits (tutor_id, cents) values (p_user, p_ai_limit_cents)
+      on conflict (tutor_id) do update set cents = excluded.cents;
+  end if;
+  -- the log is readable by the tutor it's about, so it never holds Prof amounts
+  perform public._admin_log('plan', p_user, jsonb_build_object('plan', p_plan));
 end $$;
+-- earlier builds wrote the amount into the log
+update public.admin_log set detail = detail - 'ai_limit_cents' where detail ? 'ai_limit_cents';
 
 create or replace function public.admin_set_password(p_user uuid, p_password text)
 returns void language plpgsql security definer set search_path = public, extensions as $$
@@ -2507,10 +2541,10 @@ begin
                and (l.learner_ids is null or cardinality(l.learner_ids) = 0 or p.id = any (l.learner_ids))
             union
             select a.topic_id from public.assignments a
-             where a.subject_id = p_subject and a.topic_id is not null and not a.draft and public._assignment_visible_to(a, p.id)
+             where a.subject_id = p_subject and a.topic_id is not null and not a.draft and a.source <> 'self' and public._assignment_visible_to(a, p.id)
             union
             select q.topic_id from public.questions q join public.assignments a on a.id = q.assignment_id
-             where a.subject_id = p_subject and q.topic_id is not null and not a.draft and public._assignment_visible_to(a, p.id)
+             where a.subject_id = p_subject and q.topic_id is not null and not a.draft and a.source <> 'self' and public._assignment_visible_to(a, p.id)
           ) z where tid is not null), '[]')
       ) order by p.display_name)
       from public.profiles p join public.learner_subjects ls on ls.learner_id = p.id and ls.subject_id = p_subject
@@ -2525,8 +2559,17 @@ end $$;
 -- =====================================================================
 alter table public.profiles add column if not exists study_goal_min int not null default 10;
 -- Self-marking: the learner marks their own hand-in against the mark scheme first; the tutor then checks it
-alter table public.assignments add column if not exists self_mark boolean not null default false;
 alter table public.responses add column if not exists self_marks numeric;
+-- Self-marked work has one attempt (the answers show after it)
+create or replace function public._self_mark_one_try() returns trigger language plpgsql as $$
+begin
+  if new.self_mark then new.max_attempts := 1; end if;
+  return new;
+end $$;
+drop trigger if exists assignments_self_mark on public.assignments;
+create trigger assignments_self_mark before insert or update of self_mark, max_attempts on public.assignments
+  for each row execute function public._self_mark_one_try();
+update public.assignments set max_attempts = 1 where self_mark and max_attempts <> 1;
 alter table public.attempts add column if not exists self_marked_at timestamptz;
 do $$ begin
   alter table public.activity drop constraint if exists activity_kind_check;
@@ -2815,6 +2858,7 @@ begin
   select * into a from public.assignments where id = t.assignment_id;
   if not a.self_mark then raise exception 'This work isn’t self-marked.'; end if;
   if t.status <> 'submitted' then raise exception 'Hand it in first; once your tutor has marked it, it can’t change.'; end if;
+  if not public._self_mark_open(t, a) then raise exception 'You can mark it once you’ve used all your attempts.'; end if;
   for k, v in select * from jsonb_each_text(coalesce(p_marks, '{}')) loop
     update public.responses r set self_marks = greatest(0, least(q.marks, nullif(v, '')::numeric))
       from public.questions q where q.id = r.question_id and r.attempt_id = t.id and r.question_id::text = k;
@@ -2858,7 +2902,7 @@ declare
   streak int := 0;
   goal int;
 begin
-  if not (v_l = auth.uid() or public.is_my_learner(v_l)) then raise exception 'Not your learner.'; end if;
+  if auth.uid() is null or v_l is null or not (v_l = auth.uid() or coalesce(public.is_my_learner(v_l), false)) then raise exception 'Not your learner.'; end if;
   select * into p from public.profiles where id = v_l;
   goal := coalesce(p.study_goal_min, 10) * 60;
   v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = p.timezone), 'UTC'))::date;
@@ -2893,7 +2937,7 @@ returns jsonb language sql stable security definer set search_path = public as $
       'taught', exists (select 1 from public.taught_topics tt where tt.learner_id = auth.uid() and tt.topic_id = t.id)
              or exists (select 1 from public.lessons l where l.topic_id = t.id and l.visibility = 'visible'
                           and (l.learner_ids is null or cardinality(l.learner_ids) = 0 or auth.uid() = any (l.learner_ids)))
-             or exists (select 1 from public.assignments a where a.topic_id = t.id and not a.draft and public._assignment_visible_to(a, auth.uid())))
+             or exists (select 1 from public.assignments a where a.topic_id = t.id and not a.draft and a.source <> 'self' and public._assignment_visible_to(a, auth.uid())))
     order by t.subject_id, t.position, t.name), '[]')
   from public.topics t
   join public.learner_subjects ls on ls.subject_id = t.subject_id and ls.learner_id = auth.uid()
@@ -2906,18 +2950,36 @@ $$;
 -- 1.4: calendar link. Each person gets a private link their calendar app (Google, Apple,
 -- Outlook) subscribes to: live lessons and due dates, kept up to date. Served by the Prof server.
 -- =====================================================================
-alter table public.profiles add column if not exists calendar_token text;
-create unique index if not exists profiles_calendar_token on public.profiles (calendar_token) where calendar_token is not null;
+-- The links live in their own table that nobody can read directly (a link is as good as a
+-- password for someone's timetable). Earlier 1.4 builds kept them on profiles; move them over.
+create table if not exists public.calendar_tokens (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  token text not null unique,
+  created_at timestamptz not null default now()
+);
+alter table public.calendar_tokens enable row level security;
+revoke all on public.calendar_tokens from public, anon, authenticated;
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'calendar_token') then
+    execute 'insert into public.calendar_tokens (user_id, token) select id, calendar_token from public.profiles where calendar_token is not null on conflict do nothing';
+    execute 'drop index if exists public.profiles_calendar_token';
+    execute 'alter table public.profiles drop column calendar_token';
+  end if;
+end $$;
 
 create or replace function public.my_calendar_token(p_reset boolean default false)
 returns text language plpgsql security definer set search_path = public as $$
 declare v text;
 begin
-  if public.my_role() not in ('tutor', 'learner') then raise exception 'Tutors and learners only.'; end if;
-  select calendar_token into v from public.profiles where id = auth.uid();
+  if auth.uid() is null or public.my_role() is null or public.my_role() not in ('tutor', 'learner') then
+    raise exception 'Tutors and learners only.';
+  end if;
+  select token into v from public.calendar_tokens where user_id = auth.uid();
   if v is null or p_reset then
     v := encode(extensions.gen_random_bytes(18), 'hex');
-    update public.profiles set calendar_token = v where id = auth.uid();
+    insert into public.calendar_tokens (user_id, token) values (auth.uid(), v)
+      on conflict (user_id) do update set token = excluded.token, created_at = now();
   end if;
   return v;
 end $$;
@@ -2928,7 +2990,7 @@ returns jsonb language plpgsql stable security definer set search_path = public 
 declare p public.profiles;
 begin
   if p_token is null or length(p_token) < 20 then return null; end if;
-  select * into p from public.profiles where calendar_token = p_token;
+  select pr.* into p from public.calendar_tokens c join public.profiles pr on pr.id = c.user_id where c.token = p_token;
   if p.id is null or p.role not in ('tutor', 'learner') then return null; end if;
   if p.role = 'tutor' and p.status <> 'active' then return null; end if;
   return jsonb_build_object(
@@ -3062,7 +3124,7 @@ begin
     'plans', coalesce((select jsonb_agg(jsonb_build_object('board', board, 'code', code, 'components', components, 'note', note, 'updated_at', updated_at)) from public.sb_paper_plans), '[]'),
     'papers', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'board', p.board, 'code', p.code, 'level', p.level, 'paper', p.paper, 'number', p.number,
         'title', p.title, 'status', p.status, 'flagged', p.flagged, 'check_note', p.check_note, 'total_marks', p.total_marks, 'items', jsonb_array_length(p.items),
-        'uses', p.uses, 'created_at', p.created_at, 'job_status', j.status, 'job_progress', j.progress, 'job_error', j.error) order by p.board, p.code, p.level, p.paper, p.number)
+        'uses', p.uses, 'created_at', p.created_at, 'job_id', p.job_id, 'job_status', j.status, 'job_progress', j.progress, 'job_error', j.error) order by p.board, p.code, p.level, p.paper, p.number)
       from public.sb_papers p left join public.prof_jobs j on j.id = p.job_id), '[]'),
     -- what a paper has cost so far on average (for the estimate before writing more)
     'avg_cents', (select round(avg(c.cents), 2) from (
@@ -3070,6 +3132,26 @@ begin
          where j.kind = 'paper' and j.context ->> 'mode' = 'write' and j.status = 'done' group by j.id) c),
     'model', (select prof_model from public.app_config where id = 1));
 end $$;
+
+-- A paper whose job failed or was stopped shows as "couldn't be written"; trying again starts it afresh
+create or replace function public._paper_job_status() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.kind = 'paper' and new.status is distinct from old.status and new.context ? 'paper_id' then
+    if new.status in ('failed', 'cancelled') then
+      update public.sb_papers set status = 'failed' where id = (new.context ->> 'paper_id')::uuid and status = 'writing';
+    elsif new.status = 'queued' and old.status in ('failed', 'cancelled') then
+      update public.sb_papers set status = 'writing', items = '[]', flagged = 0, check_note = null
+       where id = (new.context ->> 'paper_id')::uuid and status = 'failed';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists prof_jobs_paper on public.prof_jobs;
+create trigger prof_jobs_paper after update of status on public.prof_jobs
+  for each row execute function public._paper_job_status();
+update public.sb_papers p set status = 'failed'
+  from public.prof_jobs j where j.id = p.job_id and p.status = 'writing' and j.status in ('failed', 'cancelled');
 
 create or replace function public.admin_paper_status(p_ids uuid[], p_status text)
 returns void language plpgsql security definer set search_path = public as $$
@@ -3161,7 +3243,8 @@ create or replace function public.report_error(p_message text, p_stack text defa
   p_version text default null, p_platform text default null)
 returns void language plpgsql security definer set search_path = public as $$
 declare
-  v_who text := coalesce(auth.uid()::text, 'anon');
+  v_who text := auth.uid()::text;
+  v_ip text;
   v_n int;
   msg text := left(coalesce(nullif(trim(p_message), ''), 'Unknown error'), 500);
   frames text;
@@ -3171,10 +3254,21 @@ declare
   r text := (select role from public.profiles where id = auth.uid());
   a uuid;
 begin
-  -- at most 30 reports a day per person (and 200 from signed-out screens), so nobody can flood it
+  -- at most 30 reports a day per person; signed-out screens (the sign-in page) 20 a day per
+  -- internet address and 300 a day altogether, so nobody can flood it
+  if auth.uid() is null then
+    begin
+      v_ip := nullif(trim(split_part(nullif(current_setting('request.headers', true), '')::json ->> 'x-forwarded-for', ',', 1)), '');
+    exception when others then v_ip := null;
+    end;
+    v_who := 'ip:' || left(coalesce(v_ip, 'unknown'), 64);
+    insert into public.app_error_quota (who, day, n) values ('anon', current_date, 1)
+    on conflict (who, day) do update set n = app_error_quota.n + 1 returning app_error_quota.n into v_n;
+    if v_n > 300 then return; end if;
+  end if;
   insert into public.app_error_quota (who, day, n) values (v_who, current_date, 1)
   on conflict (who, day) do update set n = app_error_quota.n + 1 returning app_error_quota.n into v_n;
-  if v_n > (case when auth.uid() is null then 200 else 30 end) then return; end if;
+  if v_n > (case when auth.uid() is null then 20 else 30 end) then return; end if;
   -- the same problem groups together across versions: message + top of the stack, without build hashes or positions
   frames := array_to_string((string_to_array(regexp_replace(coalesce(p_stack, ''), '[-.][A-Za-z0-9_]{8}\.(js|mjs)', '.js', 'g'), E'\n'))[1:3], E'\n');
   frames := regexp_replace(frames, ':\d+:\d+', '', 'g');
@@ -3190,6 +3284,12 @@ begin
     users = case when array_length(e.users, 1) >= 50 then e.users else (select array_agg(distinct x) from unnest(e.users || excluded.users) x) end,
     resolved_at = null
   returning (xmax = 0) into is_new;
+  if (is_new or coalesce(was_resolved, false)) and auth.uid() is null then
+    -- new problems from signed-out screens: tell the admin about 5 a day at most (the rest still show in Problems)
+    insert into public.app_error_quota (who, day, n) values ('anon-told', current_date, 1)
+    on conflict (who, day) do update set n = app_error_quota.n + 1 returning app_error_quota.n into v_n;
+    if v_n > 5 then return; end if;
+  end if;
   if is_new or coalesce(was_resolved, false) then
     for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
       perform public.notify_user(a, 'problem', 'New problem in StudyBridge', left(msg, 200), jsonb_build_object('fingerprint', fp));
@@ -3389,7 +3489,7 @@ begin
     'last_seen_at', p.last_seen_at, 'app_version', p.app_version, 'platform', p.platform, 'signup', p.signup,
     'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
     'storage_bytes', public._storage_bytes(p.id),
-    'ai_cents', public._prof_month_cents(p.id), 'ai_limit_cents', public._prof_limit(p.id), 'ai_limit_custom', p.ai_limit_cents is not null,
+    'ai_cents', public._prof_month_cents(p.id), 'ai_limit_cents', public._prof_limit(p.id), 'ai_limit_custom', exists (select 1 from public.prof_limits pl where pl.tutor_id = p.id),
     'ai_by_month', coalesce((select jsonb_agg(jsonb_build_object('month', to_char(m, 'Mon YY'), 'cents', c) order by m)
         from (select gs::date m, coalesce((select sum(cost_cents) from public.prof_costs where tutor_id = p.id and created_at >= gs and created_at < gs + interval '1 month'), 0) c
                 from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month') gs) z), '[]'),
@@ -3422,6 +3522,14 @@ revoke execute on function public._make_admin(text, uuid) from public, anon, aut
 revoke execute on function public._prof_alert(uuid) from public, anon, authenticated;
 revoke execute on function public.calendar_feed(text) from public, anon, authenticated;
 revoke execute on function public.make_admin(text) from public, anon, authenticated, service_role;
+-- Prof money is the admin's business only: tutors can't ask for their allowance or read it
+revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
+revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;
+revoke all on public.prof_limits from public, anon, authenticated;
+revoke all on public.calendar_tokens from public, anon, authenticated;
+-- The app only needs the minimum version from the settings row; the rest goes through admin functions
+revoke select on public.app_config from public, anon, authenticated;
+grant select (id, min_version) on public.app_config to authenticated;
 
 -- ---------------------------------------------------------------------
 -- File storage: 'library' (tutor uploads) and 'work' (learner answers)

@@ -541,6 +541,18 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   // Plans, passwords, pausing
   await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
   assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_cents, 2500);
+  // ...which the tutor can't see anywhere: not on their profile, the log, the settings row or by asking
+  assert.equal(JSON.stringify(await as('T2', `select * from profiles where id = auth.uid()`)).includes('2500'), false);
+  assert.equal(JSON.stringify(await as('T2', `select * from admin_log`)).includes('2500'), false);
+  await fails(as('T2', `select * from prof_limits`), /permission denied/);
+  await fails(as('T2', `select _prof_limit(auth.uid())`), /permission denied/);
+  await fails(as('T2', `select _prof_ready(auth.uid())`), /permission denied/);
+  await fails(as('T2', `select default_ai_limit_cents from app_config`), /permission denied/);
+  await fails(as('T2', `select * from app_config`), /permission denied/);
+  assert.deepEqual(Object.keys(await val('T2', `select prof_usage()`)).sort(), ['ready', 'server_seen_at', 'why_not']);
+  await as('A', `select admin_set_plan($1, 'Pro', null)`, [U.T2]);
+  assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_custom, false, 'back to the default allowance');
+  await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
   await as('A', `select admin_set_password($1, 'Reset-Pass-1')`, [U.T2]);
   assert.equal((await db.query(`select encrypted_password = extensions.crypt('Reset-Pass-1', encrypted_password) ok from auth.users where id = $1`, [U.T2])).rows[0].ok, true);
   await fails(as('T2', `select admin_set_password($1, 'Hacked-123')`, [U.T]), /admins only/);
@@ -566,8 +578,8 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   assert.ok(!JSON.stringify(st).includes('sk-ant'), 'the key is never sent back');
   // The log: admin sees it all, the tutor sees what was done to them, learners nothing
   const log = await as('A', `select action from admin_log where user_id = $1 order by id`, [U.T2]);
-  assert.deepEqual(log.map((r) => r.action), ['approved', 'plan', 'password_reset', 'paused', 'switched_on']);
-  assert.equal((await as('T2', `select * from admin_log`)).length, 5);
+  assert.deepEqual(log.map((r) => r.action), ['approved', 'plan', 'plan', 'plan', 'password_reset', 'paused', 'switched_on']);
+  assert.equal((await as('T2', `select * from admin_log`)).length, 7);
   assert.equal((await as('L', `select * from admin_log`)).length, 0);
   // Unfinished sign-ups show up; deleting a tutor takes their learners too
   assert.ok((await val('A', `select admin_accounts(null)`)).some((a) => a.email === 'nobody@x.com'));
@@ -716,6 +728,21 @@ test('crash reports, the admin inbox, announcements, overview', async () => {
   // Too many from one person are dropped
   for (let i = 0; i < 35; i++) await as('L', `select report_error($1)`, ['spam ' + i]);
   assert.ok((await val('A', `select admin_errors()`)).filter((e) => e.message.startsWith('spam')).length <= 30);
+  // Signed out: counted per internet address (one flood doesn't silence everyone), and the admin
+  // is told about a few new ones a day at most
+  const fromIp = (ip, msg) =>
+    db.transaction(async (tx) => {
+      await tx.query(`select set_config('request.jwt.claim.sub', '', true), set_config('request.headers', $1, true)`, [JSON.stringify({ 'x-forwarded-for': `${ip}, 10.0.0.1` })]);
+      await tx.exec(`set local role anon`);
+      await tx.query(`select report_error($1)`, [msg]);
+    });
+  const told0 = (await as('A', `select * from notifications where kind = 'problem'`)).length;
+  for (let i = 0; i < 25; i++) await fromIp('1.2.3.4', 'flood ' + i);
+  await fromIp('5.6.7.8', 'real sign-in bug');
+  const all = await val('A', `select admin_errors()`);
+  assert.equal(all.filter((e) => e.message.startsWith('flood')).length, 20, '20 a day from one address');
+  assert.ok(all.some((e) => e.message === 'real sign-in bug'), 'another address still gets through');
+  assert.ok((await as('A', `select * from notifications where kind = 'problem'`)).length - told0 <= 5);
 
   // Contact StudyBridge: tutor writes, admin replies, tutor sees it
   const fid = await val('T', `select send_feedback('idea', 'Please add flashcards')`);
@@ -890,9 +917,18 @@ test('self-study: flashcards with spaced repetition, mistake cards, practice the
   assert.ok(ss.cards_due >= 2);
   assert.equal((await val('TC', `select study_summary($1)`, [U.LC])).streak, 3, 'her tutor sees it');
   await fails(as('T', `select study_summary($1)`, [U.LC]), /Not your learner/);
+  await fails(as(null, `select study_summary($1)`, [U.LC]), /Not your learner|permission denied/, 'not without signing in');
   const mt = await val('LC', `select my_topics()`);
   assert.deepEqual(mt.map((x) => x.name), ['Number', 'Algebra', 'Geometry']);
   assert.ok(mt.find((x) => x.name === 'Algebra').taught);
+  // practice she starts herself doesn't count as taught
+  const geo = await val('TC', `select id from topics where name = 'Geometry'`);
+  const own = (await db.query(`insert into assignments (tutor_id, kind, title, practice, visibility, learner_ids, subject_id, topic_id, source)
+     values ($1, 'quiz', 'Own geometry', true, 'visible', $2, $3, $4, 'self') returning id`, [U.TC, [U.LC], sub, geo])).rows[0].id;
+  await db.query(`insert into questions (tutor_id, assignment_id, type, marks, prompt_md, topic_id) values ($3, $1, 'numeric', 1, 'Angle?', $2)`, [own, geo, U.TC]);
+  assert.equal(mt.find((x) => x.name === 'Geometry').taught, false);
+  assert.equal((await val('LC', `select my_topics()`)).find((x) => x.name === 'Geometry').taught, false);
+  assert.ok(!(await val('TC', `select coverage($1)`, [sub])).learners[0].taught.includes(geo));
 });
 
 test('self-marked work: the learner sees the mark scheme after handing in and gives her own marks; the tutor sees them', async () => {
@@ -914,6 +950,22 @@ test('self-marked work: the learner sees the mark scheme after handing in and gi
   assert.ok(td.attempt.self_marked_at);
   assert.equal((await as('TC', `select * from notifications where kind = 'self_marked'`)).length, 1);
   await fails(as('L2', `select save_self_marks($1, '{}')`, [t.id]), /Attempt not found/);
+  // Self-marked work has one attempt, so the mark scheme can't help a second try
+  assert.equal(await val('TC', `select max_attempts from assignments where id = $1`, [a]), 1);
+  assert.equal(await val('TC', `update assignments set max_attempts = 3 where id = $1 returning max_attempts`, [a]), 1);
+  // ...and while a redo is open, the answers are hidden again
+  await db.query(`update attempts set status = 'returned' where id = $1`, [t.id]);
+  const redo = await val('LC', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual(redo.keys, []);
+  assert.equal(redo.attempt.self_mark_open, false);
+  // older self-marked work that allowed more tries: hidden until the tries are used up
+  await db.query(`update attempts set status = 'submitted' where id = $1`, [t.id]);
+  await db.query(`alter table assignments disable trigger assignments_self_mark`);
+  await db.query(`update assignments set max_attempts = 2 where id = $1`, [a]);
+  await db.query(`alter table assignments enable trigger assignments_self_mark`);
+  assert.deepEqual((await val('LC', `select attempt_detail($1)`, [t.id])).keys, []);
+  await fails(as('LC', `select save_self_marks($1, $2)`, [t.id, { [q]: 1 }]), /used all your attempts/);
+  await db.query(`update assignments set max_attempts = 1 where id = $1`, [a]);
 });
 
 test('calendar: only the server reads a feed', async () => {
@@ -921,6 +973,12 @@ test('calendar: only the server reads a feed', async () => {
   assert.equal(tok.length, 36);
   await fails(as('TC', `select calendar_feed($1)`, [tok]), /permission denied/);
   await fails(as('A', `select my_calendar_token()`), /Tutors and learners only/);
+  await fails(as(null, `select my_calendar_token()`), /Tutors and learners only|permission denied/);
+  // a learner can't read their tutor's link (it would show other learners' lessons)
+  await fails(as('LC', `select * from calendar_tokens`), /permission denied/);
+  const cols = (await as('LC', `select * from profiles where role = 'tutor' limit 1`))[0] || {};
+  assert.equal(Object.keys(cols).some((k) => /calendar/.test(k)), false);
+  assert.equal(JSON.stringify(await as('LC', `select * from profiles`)).includes(tok), false);
 });
 
 test('StudyBridge papers: only approved ones reach tutors; only the admin writes or fixes them', async () => {
@@ -940,4 +998,16 @@ test('StudyBridge papers: only approved ones reach tutors; only the admin writes
   assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 1);
   assert.equal((await as('LC', `select * from sb_papers where id = $1`, [pid])).length, 0, 'learners get papers only through their tutor');
   await fails(as('TC', `select * from sb_paper_plans`), /permission denied/);
+  // A paper whose job fails (or is stopped) shows as failed, not "writing" for ever; trying again restarts it
+  const wp = (await db.query(`insert into sb_papers (board, code, paper, number) values ('cie', '0607', '4', 1) returning id`)).rows[0].id;
+  const wj = (await db.query(`insert into prof_jobs (tutor_id, kind, prompt, context) values ($1, 'paper', 'x', $2) returning id`, [U.A, { mode: 'write', paper_id: wp }])).rows[0].id;
+  await db.query(`update sb_papers set job_id = $2 where id = $1`, [wp, wj]);
+  await db.query(`update prof_jobs set status = 'failed', error = 'nope' where id = $1`, [wj]);
+  const fp = (await val('A', `select admin_papers()`)).papers.find((p) => p.id === wp);
+  assert.equal(fp.status, 'failed');
+  assert.equal(fp.job_id, wj);
+  await as('A', `select prof_retry($1)`, [wj]);
+  assert.equal((await db.query(`select status from sb_papers where id = $1`, [wp])).rows[0].status, 'writing');
+  await db.query(`update prof_jobs set status = 'cancelled' where id = $1`, [wj]);
+  assert.equal((await db.query(`select status from sb_papers where id = $1`, [wp])).rows[0].status, 'failed');
 });

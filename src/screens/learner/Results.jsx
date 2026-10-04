@@ -79,7 +79,7 @@ export default function Results({ id }) {
             </button>
           </div>
         </div>
-      ) : !rel && d.attempt.self_mark && t.status === 'submitted' ? (
+      ) : !rel && d.attempt.self_mark_open && t.status === 'submitted' ? (
         <SelfMark d={d} questions={questions} keys={keys} byQ={byQ} />
       ) : !rel ? (
         <div className="card tint">

@@ -420,8 +420,8 @@ export default function AssignmentEditor({ id }) {
               <Field label="Time limit (minutes)">
                 <input className="input" type="number" min="1" value={a.time_limit_min || ''} placeholder="None" onChange={(e) => setField({ time_limit_min: e.target.value ? Number(e.target.value) : null })} />
               </Field>
-              <Field label="Attempts allowed">
-                <input className="input" type="number" min="1" max="20" value={a.max_attempts} onChange={(e) => setField({ max_attempts: e.target.value })} />
+              <Field label="Attempts allowed" hint={a.self_mark ? 'One, as they mark it themselves' : undefined}>
+                <input className="input" type="number" min="1" max="20" value={a.self_mark ? 1 : a.max_attempts} disabled={!!a.self_mark} onChange={(e) => setField({ max_attempts: e.target.value })} />
               </Field>
             </div>
             <Toggle checked={a.allow_notes} onChange={(v) => setField({ allow_notes: v })} icon="message" title="Allow notes to you" sub="They can leave you a note on any question while working." />
@@ -439,10 +439,10 @@ export default function AssignmentEditor({ id }) {
             <Toggle checked={a.show_answers} onChange={(v) => setField({ show_answers: v })} icon="eye" title="Show answers & solutions" sub="Once marks are released, they see the correct answers and your worked solutions." />
             <Toggle
               checked={!!a.self_mark}
-              onChange={(v) => setField({ self_mark: v })}
+              onChange={(v) => setField(v ? { self_mark: v, max_attempts: 1 } : { self_mark: v })}
               icon="checkCircle"
               title="They mark it themselves first"
-              sub="After handing in, they see the mark scheme and give themselves marks. You then check their marks (and your own) before returning it. Good for past papers."
+              sub="After handing in (one attempt), they see the mark scheme and give themselves marks. You then check their marks (and your own) before returning it. Good for past papers."
             />
           </div>
           <div className="card">

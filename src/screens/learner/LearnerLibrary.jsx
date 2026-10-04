@@ -28,10 +28,10 @@ export default function LearnerLibrary() {
             { value: 'files', label: `Books & files (${f.length})`, icon: 'file' },
           ]}
         />
-        {lk.subjects.length > 1 && (
+        {lk.mySubjects.length > 1 && (
           <select className="select" style={{ width: 'auto', minHeight: 38 }} value={subject} onChange={(e) => setSubject(e.target.value)} aria-label="Subject">
             <option value="">All subjects</option>
-            {lk.subjects.map((s) => (
+            {lk.mySubjects.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>

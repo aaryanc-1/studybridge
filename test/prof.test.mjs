@@ -361,6 +361,8 @@ test('calendar link: lessons and due dates as a calendar feed; private per perso
   const soon = new Date(Date.now() + 2 * 86400000).toISOString();
   await q(T.from('sessions').insert({ title: 'Algebra; lesson, part 1', starts_at: soon, duration_min: 45, learner_ids: [learner] }));
   await q(T.from('sessions').insert({ title: 'Someone else', starts_at: soon, learner_ids: [] }));
+  const longTitle = 'Révision: équations du second degré ✏️ — '.repeat(4) + 'line one\rline two';
+  await q(T.from('sessions').insert({ title: longTitle, starts_at: soon, duration_min: 30, learner_ids: [learner] }));
   await q(T.from('assignments').insert({ title: 'Homework 7', kind: 'homework', visibility: 'visible', due_at: soon, learner_ids: [learner] }));
   await q(T.from('assignments').insert({ title: 'Secret draft', kind: 'homework', visibility: 'visible', draft: true, due_at: soon }));
   const lt = await q(L.rpc('my_calendar_token'));
@@ -375,6 +377,12 @@ test('calendar link: lessons and due dates as a calendar feed; private per perso
   assert.match(ics, /SUMMARY:Due: Homework 7/);
   assert.ok(!ics.includes('Someone else') && !ics.includes('Secret draft'), 'only hers, and no drafts');
   assert.match(ics, /DTSTART:\d{8}T\d{6}Z/);
+  // lines at most 75 bytes, no stray carriage returns, and the long title survives unfolding
+  const raw = ics.split('\r\n');
+  assert.ok(raw.every((l) => Buffer.byteLength(l, 'utf8') <= 75), 'folded by bytes');
+  assert.ok(raw.every((l) => !l.includes('\r') && !l.includes('\n')));
+  const unfolded = ics.replace(/\r\n /g, '');
+  assert.ok(unfolded.includes('SUMMARY:' + longTitle.replace(/\r/g, '\\n').replace(/,/g, '\\,')), 'nothing lost or split mid-character');
   const tt = await q(T.rpc('my_calendar_token'));
   const tics = await (await get(tt)).text();
   assert.match(tics, /Someone else/);

@@ -1026,7 +1026,7 @@ Rules: one idea per card; the front is a short prompt (a question, key term, "fo
         method: 'PATCH',
         body: { title: String(call.input.title || paper.title).slice(0, 200), duration_min: call.input.duration_min || c.duration_min || null, total_marks: call.input.total_marks || qs.reduce((a, q) => a + Number(q.marks || 0), 0), instructions_md: String(call.input.instructions || '').slice(0, 3000), items: [] },
       });
-      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { phase: 'write', outline: qs, next: 0 }, p_progress: `Planned ${qs.length} parts; writing…` });
+      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { phase: 'write', outline: qs, next: 0, tries: 0 }, p_progress: `Planned ${qs.length} parts; writing…` });
       return;
     }
     if (st.phase === 'write') {
@@ -1049,11 +1049,22 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
         marks: Number(x.marks) >= 0 ? Number(x.marks) : 1, topic: x.topic ? String(x.topic).slice(0, 120) : null,
         mark_scheme: String(x.mark_scheme || '').slice(0, 4000), solution: x.solution ? String(x.solution).slice(0, 6000) : null,
       }));
+      if (!items.length) {
+        // nothing usable came back: try these parts again (a few times), then give up on the paper
+        const tries = (st.tries || 0) + 1;
+        const labels = batch.map((q) => q.label).join(', ');
+        if (tries > 3) {
+          await save(job, 'failed', { ...usageArgs(cfg, res.usage), p_error: `Prof couldn’t write parts ${labels}.` });
+          return;
+        }
+        await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { ...st, tries }, p_progress: `Trying parts ${labels} again…`, p_retry_in: 10 });
+        return;
+      }
       const now = (await rest(`sb_papers?id=eq.${paper.id}&select=items`))[0]?.items || [];
       await rest(`sb_papers?id=eq.${paper.id}`, { method: 'PATCH', body: { items: [...now, ...items] } });
       const next = st.next + batch.length;
       const phase = next >= st.outline.length ? 'check' : 'write';
-      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { ...st, phase, next }, p_progress: `Writing (${Math.min(next, st.outline.length)} of ${st.outline.length} parts)…` });
+      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { ...st, phase, next, tries: 0 }, p_progress: `Writing (${Math.min(next, st.outline.length)} of ${st.outline.length} parts)…` });
       return;
     }
     // independent check of everything with a definite answer
@@ -1250,16 +1261,25 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
   const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...CORS, 'content-type': 'application/json' } });
 
   // A person's calendar link (live lessons and due dates) for Google / Apple / Outlook calendar
-  const icsText = (t) => String(t || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const icsText = (t) => String(t || '').replace(/\\/g, '\\\\').replace(/\r\n|\r|\n/g, '\\n').replace(/([,;])/g, '\\$1');
   const icsTime = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  // lines are at most 75 bytes (not characters), never splitting a character
+  const utf8 = new TextEncoder();
   const fold = (line) => {
     const out = [];
-    let s = line;
-    while (s.length > 74) {
-      out.push(s.slice(0, 74));
-      s = ' ' + s.slice(74);
+    let cur = '';
+    let bytes = 0;
+    for (const ch of line) {
+      const n = utf8.encode(ch).length;
+      if (bytes + n > 75) {
+        out.push(cur);
+        cur = ' ';
+        bytes = 1;
+      }
+      cur += ch;
+      bytes += n;
     }
-    out.push(s);
+    out.push(cur);
     return out.join('\r\n');
   };
   async function calendar(token) {

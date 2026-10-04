@@ -136,7 +136,7 @@ function Cards({ onReview }) {
           </div>
         </>
       )}
-      {making && <OwnCard subjects={lk.subjects} onDone={() => setMaking(false)} />}
+      {making && <OwnCard subjects={lk.mySubjects} onDone={() => setMaking(false)} />}
     </div>
   );
 }
@@ -217,22 +217,24 @@ function Review({ onDone }) {
   useEffect(() => {
     if (d.ready && queue === null) setQueue(d.queue.slice(0, 60));
   }, [d.ready]); // eslint-disable-line react-hooks/exhaustive-deps
-  // time spent counts towards the daily goal
+  // time spent counts towards the daily goal (only while the app is in front; each second once)
+  const subjectNow = useRef(null);
+  subjectNow.current = queue?.[i]?.subject_id || null;
   useEffect(() => {
-    const t = setInterval(() => {
-      if (document.hidden) return;
+    const flush = (min) => {
       const s = (Date.now() - lastLog.current) / 1000;
-      if (s >= 30) {
-        api.logStudy(Math.min(120, s), queue?.[i]?.subject_id || null);
-        lastLog.current = Date.now();
-      }
+      if (s >= min) api.logStudy(Math.min(120, s), subjectNow.current);
+      lastLog.current = Date.now();
+    };
+    const t = setInterval(() => {
+      if (document.hidden) lastLog.current = Date.now();
+      else if ((Date.now() - lastLog.current) / 1000 >= 30) flush(30);
     }, 10000);
     return () => {
       clearInterval(t);
-      const s = (Date.now() - lastLog.current) / 1000;
-      if (s >= 5) api.logStudy(Math.min(120, s));
+      flush(5);
     };
-  }, [queue, i]);
+  }, []);
   useEffect(() => {
     const h = (e) => {
       if (e.key === ' ' && !flipped) (e.preventDefault(), setFlipped(true));
@@ -318,7 +320,7 @@ function Practice() {
   const [topic, setTopic] = useState('');
   const [minutes, setMinutes] = useState(10);
   const [busy, setBusy] = useState('');
-  const subjects = lk.subjects.filter((s) => topics.some((t) => t.subject_id === s.id));
+  const subjects = lk.mySubjects.filter((s) => topics.some((t) => t.subject_id === s.id));
   useEffect(() => {
     if (!subject && subjects[0]) setSubject(subjects[0].id);
   }, [subjects.length]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -435,7 +437,7 @@ function Plan() {
             <span className="grow">
               {x.code ? <span className="muted">{x.code} </span> : null}
               {x.name}
-              {lk.subjects.length > 1 && <span className="meta">{lk.subject(x.subject_id)?.name}</span>}
+              {lk.mySubjects.length > 1 && <span className="meta">{lk.subject(x.subject_id)?.name}</span>}
             </span>
           </div>
         ))}
@@ -454,13 +456,13 @@ function FormulaSheets() {
   const [text, setText] = useState(null);
   const [view, setView] = useState(false);
   useEffect(() => {
-    if (!subject && lk.subjects[0]) setSubject(lk.subjects[0].id);
-  }, [lk.subjects.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!subject && lk.mySubjects[0]) setSubject(lk.mySubjects[0].id);
+  }, [lk.mySubjects.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const lastSaved = useRef({});
   const saved = lastSaved.current[subject] ?? ((notes.data || []).find((n) => n.subject_id === subject)?.body_md || '');
   useEffect(() => setText(null), [subject]);
   const value = text ?? saved;
-  if (!lk.subjects.length) return null;
+  if (!lk.mySubjects.length) return null;
   async function save() {
     const current = lastSaved.current[subject] ?? ((notes.data || []).find((n) => n.subject_id === subject)?.body_md || '');
     if (text === null || text === current) return;
@@ -480,9 +482,9 @@ function FormulaSheets() {
           <Icon name="sigma" style={{ color: 'var(--accent)' }} /> My formula sheet
         </h2>
         <div className="row" style={{ gap: 6 }}>
-          {lk.subjects.length > 1 && (
+          {lk.mySubjects.length > 1 && (
             <select className="select sm" value={subject} onChange={(e) => (save(), setSubject(e.target.value))} aria-label="Subject">
-              {lk.subjects.map((s) => (
+              {lk.mySubjects.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>

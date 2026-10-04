@@ -586,7 +586,7 @@ function Log({ always }) {
             </span>
             <span className="grow">
               <b>{ACTIONS[x.action] || x.action}</b> · {x.detail?.name || x.email || 'account'}
-              {x.action === 'plan' && x.detail?.plan ? ` → ${x.detail.plan}${x.detail.ai_limit_cents != null ? `, Prof ${money(x.detail.ai_limit_cents)}/month` : ''}` : ''}
+              {x.action === 'plan' && x.detail?.plan ? ` → ${x.detail.plan}` : ''}
               {x.action === 'deleted' && x.detail?.learners ? ` (and ${x.detail.learners} learner${x.detail.learners > 1 ? 's' : ''})` : ''}
             </span>
           </div>

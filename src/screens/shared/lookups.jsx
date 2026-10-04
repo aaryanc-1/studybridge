@@ -10,7 +10,8 @@ export function LookupsProvider({ children, tutor }) {
   const topics = useQuery('topics', api.listTopics);
   const programmes = useQuery('programmes', api.listProgrammes);
   const learners = useQuery(tutor ? 'learners' : null, api.listLearners);
-  const links = useQuery(tutor ? 'learner_subjects' : null, api.listLearnerSubjects);
+  // a tutor gets every learner's subjects; a learner only their own
+  const links = useQuery('learner_subjects', api.listLearnerSubjects);
 
   const value = useMemo(() => {
     const s = subjects.data || [];
@@ -20,6 +21,8 @@ export function LookupsProvider({ children, tutor }) {
     const ls = links.data || [];
     return {
       subjects: s,
+      // the subjects this person works in: all of them for a tutor, the ones a learner takes
+      mySubjects: tutor || !ls.length ? s : s.filter((x) => ls.some((k) => k.subject_id === x.id)),
       topics: t,
       programmes: p,
       learners: l,

@@ -210,7 +210,7 @@ function Review({ papers }) {
   const [open, setOpen] = useState(null);
   const [filter, setFilter] = useState('review');
   const writing = papers.filter((p) => p.status === 'writing');
-  const failed = papers.filter((p) => p.job_status === 'failed');
+  const failed = papers.filter((p) => p.status === 'failed');
   const list = papers.filter((p) => (filter === 'all' ? true : p.status === filter));
   const clean = papers.filter((p) => p.status === 'review' && !p.flagged);
   async function setStatus(ids, status, msg) {
@@ -231,6 +231,7 @@ function Review({ papers }) {
             ['review', 'To review'],
             ['approved', 'Approved'],
             ['rejected', 'Rejected'],
+            ...(failed.length ? [['failed', 'Couldn’t write']] : []),
             ['all', 'All'],
           ].map(([k, l]) => (
             <button key={k} className={'pill click' + (filter === k ? ' accent' : '')} onClick={() => setFilter(k)}>
@@ -244,7 +245,14 @@ function Review({ papers }) {
           <div className="spinner sm" /> Writing {writing.length} paper{writing.length === 1 ? '' : 's'}… {writing.find((p) => p.job_status === 'running')?.job_progress || ''}
         </div>
       )}
-      {failed.length > 0 && <div className="small bad-text">{failed.length} couldn’t be written: {failed[0].job_error}</div>}
+      {failed.length > 0 && filter !== 'failed' && (
+        <div className="small bad-text">
+          {failed.length} couldn’t be written{failed[0].job_error ? `: ${failed[0].job_error}` : ''}.{' '}
+          <button className="linkbtn" onClick={() => setFilter('failed')}>
+            See {failed.length === 1 ? 'it' : 'them'}
+          </button>
+        </div>
+      )}
       {filter === 'review' && clean.length > 0 && (
         <div>
           <button className="btn sm primary" onClick={() => setStatus(clean.map((p) => p.id), 'approved', `${clean.length} approved`)}>
@@ -260,12 +268,32 @@ function Review({ papers }) {
                 {X.syllabusLabel(p.board, p.code)} · {paperSlot(p)} · SB {p.number}
               </span>
               <span className="meta">
-                {p.status === 'writing' ? p.job_progress || 'Waiting to be written' : `${p.items} parts${p.total_marks ? ` · ${Number(p.total_marks)} marks` : ''}`}
-                {p.flagged ? ` · check flagged ${p.flagged}` : p.status !== 'writing' ? ' · check agreed' : ''}
+                {p.status === 'writing'
+                  ? p.job_progress || 'Waiting to be written'
+                  : p.status === 'failed'
+                    ? `Couldn’t be written${p.job_error ? `: ${p.job_error}` : ''}`
+                    : `${p.items} parts${p.total_marks ? ` · ${Number(p.total_marks)} marks` : ''}`}
+                {p.flagged ? ` · check flagged ${p.flagged}` : !['writing', 'failed'].includes(p.status) ? ' · check agreed' : ''}
                 {p.uses ? ` · used ${p.uses}×` : ''}
               </span>
             </span>
-            {p.status !== 'writing' && (
+            {p.status === 'failed' && p.job_id && (
+              <button
+                className="btn sm"
+                onClick={async () => {
+                  try {
+                    await api.profRetry(p.job_id);
+                    invalidate('admin-papers');
+                    toast('Writing it again');
+                  } catch (e) {
+                    toast({ title: 'Couldn’t start it', body: e.message, tone: 'bad' });
+                  }
+                }}
+              >
+                <Icon name="refresh" size={14} /> Try again
+              </button>
+            )}
+            {!['writing', 'failed'].includes(p.status) && (
               <button className="btn sm" onClick={() => setOpen(p)}>
                 Open
               </button>
