@@ -39,6 +39,9 @@ export default function Today() {
     if (days.has(ymd(d))) streak++;
     else if (i > 0 || streak > 0) break;
   }
+  // the same streak as Study shows (worked out by the server in her own time zone)
+  const study = useQuery('study', () => api.studySummary()).data;
+  if (study && Number.isFinite(study.streak)) streak = study.streak;
   const monday = weekRange(0).from;
   const weekDays = Array.from({ length: 7 }, (_, i) => new Date(monday.getTime() + i * 86400000));
   const hour = new Date().getHours();

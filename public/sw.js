@@ -1,6 +1,6 @@
 // Keeps the StudyBridge web app usable offline (phone / browser).
 // App files are cached as they load; your data is cached separately by the app.
-const CACHE = 'studybridge-v1';
+const CACHE = 'studybridge-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {

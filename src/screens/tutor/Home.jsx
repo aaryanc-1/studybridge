@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Avatar, Empty, Link, Page, go } from '../../ui/kit.jsx';
@@ -21,7 +21,7 @@ export default function Home() {
   const sessions = useQuery('sessions', api.listSessions).data || [];
   const activity = useQuery('activity', api.listActivity).data || [];
   const files = useQuery('files', api.listFiles).data || [];
-  const settings = useQuery('settings', api.getSettings).data;
+  const profJobs = useQuery('prof-jobs', api.profJobs).data || [];
 
   const aById = useMemo(() => Object.fromEntries(assignments.map((a) => [a.id, a])), [assignments]);
   const toMark = attempts.filter((a) => a.status === 'submitted');
@@ -35,14 +35,31 @@ export default function Home() {
     .sort((x, y) => new Date(x.due_at) - new Date(y.due_at));
   const upcoming = sessions.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > Date.now()).slice(0, 4);
 
+  // Getting started: each step says why it matters and goes straight to the right place
+  const work = assignments.filter((a) => !a.draft && a.source !== 'self');
   const setup = [
-    { done: lk.subjects.length > 0, label: 'Add your programmes and subjects', to: '/structure' },
-    { done: lk.learners.length > 0, label: 'Invite your first learner', to: '/learners' },
-    { done: files.length > 0, label: 'Upload a textbook or worksheet (PDF)', to: '/library' },
-    { done: assignments.length > 0, label: 'Set the first piece of work', to: '/assignments' },
-    { done: !!settings?.livekit_url, label: 'Turn on live video (for sessions and exam cameras)', to: '/settings' },
+    { done: lk.subjects.length > 0, label: 'Add a subject', sub: 'e.g. Mathematics. Everything (work, papers, progress) is filed under it.', to: '/structure' },
+    {
+      done: lk.subjects.length > 0 && lk.subjects.every((x) => x.exam),
+      label: 'Say which exam it’s for',
+      sub: 'e.g. Cambridge IGCSE 0607. Past papers and practice papers then show up for it.',
+      to: '/library/papers',
+    },
+    { done: lk.topics.length > 0, label: 'Set out the syllabus', sub: 'Prof can do it in a minute. The topics drive progress and the coverage map.', to: '/library/syllabus' },
+    { done: lk.learners.length > 0, label: 'Invite your first learner', sub: 'They get a code to join on their computer or phone.', to: '/learners' },
+    { done: work.length > 0, label: 'Give them their first work', sub: 'A quiz, homework or a past paper. Quizzes mark themselves.', to: '/assignments' },
+    { done: profJobs.length > 0, label: 'Ask Prof for something', sub: 'A quiz on a topic, flashcards, or marking. You approve everything first.', to: '/prof' },
+    { done: sessions.length > 0, label: 'Book a live lesson', sub: 'Video and whiteboard in the app; it goes in your calendar too.', to: '/live' },
   ];
   const setupLeft = setup.filter((s) => !s.done).length;
+  const [hideSetup, setHideSetup] = useState(() => {
+    try {
+      return localStorage.getItem('sb.setupHidden') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const next = setup.find((s) => !s.done);
 
   return (
     <Page eyebrow={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} title={`${greeting()}, ${app.me.display_name.split(' ')[0]}`}>
@@ -53,22 +70,41 @@ export default function Home() {
         <Kpi n={dur(weekSeconds())} l={lk.learners.length === 1 ? `${lk.learners[0].display_name.split(' ')[0]} studied this week` : 'Your learners studied this week'} to={lk.learners.length === 1 ? `/learners/${lk.learners[0].id}` : '/learners'} />
       </div>
 
-      {setupLeft > 0 && (
-        <div className="card tint">
+      {setupLeft > 0 && !hideSetup && (
+        <div className="card tint setup">
           <div className="card-head">
             <h2>Get StudyBridge ready</h2>
-            <span className="small muted">{setup.length - setupLeft} of {setup.length} done</span>
+            <span className="row small muted" style={{ gap: 10 }}>
+              {setup.length - setupLeft} of {setup.length} done
+              <button
+                className="linkbtn small"
+                onClick={() => {
+                  setHideSetup(true);
+                  try {
+                    localStorage.setItem('sb.setupHidden', '1');
+                  } catch {
+                    /* fine */
+                  }
+                }}
+              >
+                Hide
+              </button>
+            </span>
+          </div>
+          <div className="setup-bar" aria-hidden="true">
+            <span style={{ width: `${(100 * (setup.length - setupLeft)) / setup.length}%` }} />
           </div>
           <div className="list">
             {setup.map((s) => (
-              <Link key={s.label} to={s.to} className="item">
-                <Icon name={s.done ? 'checkCircle' : 'circle'} style={{ color: s.done ? 'var(--good)' : 'var(--muted)' }} />
+              <Link key={s.label} to={s.to} className={'item' + (s === next ? ' next' : '')}>
+                <Icon name={s.done ? 'checkCircle' : 'circle'} style={{ color: s.done ? 'var(--good)' : s === next ? 'var(--accent)' : 'var(--muted)' }} />
                 <span className="grow">
                   <span className="name" style={{ textDecoration: s.done ? 'line-through' : 'none', color: s.done ? 'var(--muted)' : undefined }}>
                     {s.label}
                   </span>
+                  {!s.done && <span className="meta">{s.sub}</span>}
                 </span>
-                <Icon name="right" size={18} />
+                {s === next ? <span className="btn sm primary">Start</span> : <Icon name="right" size={18} />}
               </Link>
             ))}
           </div>

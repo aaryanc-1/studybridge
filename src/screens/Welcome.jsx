@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../App.jsx';
-import Icon, { Logo } from '../ui/Icon.jsx';
+import Icon, { Wordmark } from '../ui/Icon.jsx';
 import { Field, useToast, copyText } from '../ui/kit.jsx';
 import { decodeInvite, validateServer, normaliseUrl, getServer, desktop, builtInServer } from '../lib/config.js';
 import { sb, friendly } from '../lib/supabase.js';
@@ -17,7 +17,7 @@ export default function Welcome() {
     <div className="welcome">
       <div className="box">
         <div className="hero">
-          <Logo size={52} />
+          <Wordmark />
           {step === 'start' && (
             <>
               <h1>Welcome to StudyBridge</h1>

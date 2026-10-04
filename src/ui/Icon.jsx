@@ -1,3 +1,5 @@
+import markUrl from '../assets/logo-mark.png';
+import wordUrl from '../assets/logo-wordmark.png';
 // Line icons (24px grid, 1.8 stroke)
 const P = {
   search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14ZM20 20l-4-4',
@@ -91,14 +93,10 @@ export default function Icon({ name, size = 20, stroke = 1.8, className, style, 
   );
 }
 
+// The StudyBridge logo: a tutor helping a learner up onto an open book (brand/; icons: npm run icons)
 export function Logo({ size = 30, className = 'logo' }) {
-  return (
-    <svg className={className} width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
-      <rect width="64" height="64" rx="16" fill="#0E6B6B" />
-      <path d="M12 42c6-10 14-15 20-15s14 5 20 15" fill="none" stroke="#fff" strokeWidth="5" strokeLinecap="round" />
-      <path d="M17 42V33M32 42V27M47 42V33" stroke="#fff" strokeWidth="4" strokeLinecap="round" />
-      <path d="M9 42h46" stroke="#F2C66D" strokeWidth="5" strokeLinecap="round" />
-      <circle cx="32" cy="17" r="4.5" fill="#F2C66D" />
-    </svg>
-  );
+  return <img className={className} src={markUrl} alt="" aria-hidden="true" width={Math.round(size * 1.4)} height={size} style={{ objectFit: 'contain' }} />;
+}
+export function Wordmark({ height = 48, className = 'wordmark' }) {
+  return <img className={className} src={wordUrl} alt="StudyBridge" height={height} width={Math.round(height * 4.4)} style={{ objectFit: 'contain' }} />;
 }

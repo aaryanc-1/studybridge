@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
-import Icon, { Logo } from '../ui/Icon.jsx';
+import Icon, { Wordmark } from '../ui/Icon.jsx';
 import { Field } from '../ui/kit.jsx';
 import { decodeInvite } from '../lib/config.js';
 import * as api from '../lib/api.js';
@@ -34,7 +34,7 @@ export default function FinishSetup() {
     <div className="welcome">
       <div className="box">
         <div className="hero">
-          <Logo size={52} />
+          <Wordmark />
           <h1>Almost there</h1>
           <p className="lead">{app.bootError ? 'StudyBridge couldn’t load your account.' : 'Join your tutor with your invite, or set this account up as the tutor.'}</p>
         </div>
@@ -116,7 +116,7 @@ export function WaitingForApproval() {
     <div className="welcome">
       <div className="box">
         <div className="hero">
-          <Logo size={52} />
+          <Wordmark />
           <h1>{paused ? 'Your account is paused' : `Thanks, ${app.me.display_name.split(' ')[0]}!`}</h1>
           <p className="lead">
             {paused
