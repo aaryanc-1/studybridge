@@ -591,7 +591,7 @@ test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () =>
   assert.equal((await as('L', `select * from prof_jobs`)).length, 0);
   const u = await val('T', `select prof_usage()`);
   assert.equal(u.ready, true);
-  assert.equal(u.limit_cents, 500);
+  assert.ok(!('limit_cents' in u) && !('used_cents' in u), 'tutors never see money');
   // Only the server can claim and run jobs
   await fails(as('T', `select * from prof_claim()`), /permission denied/);
   const claimed = await asService(`select * from prof_claim()`);
@@ -613,7 +613,9 @@ test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () =>
     [j.id, { assignment_ids: [aid] }, { title: 'Prof made: Prof quiz', body: 'Review it', ref: { assignment_id: aid } }]);
   const done = await one('T', `select * from prof_jobs where id = $1`, [j.id]);
   assert.equal(done.status, 'done');
-  assert.equal(Number(done.cost_cents), 0.7);
+  assert.equal(Number(done.cost_cents), 0, 'the job itself carries no cost');
+  assert.equal(Number((await asService(`select cost_cents from prof_costs where job_id = $1`, [j.id]))[0].cost_cents), 0.7);
+  await fails(as('T', `select * from prof_costs`), /permission denied/, 'only the admin sees what Prof costs');
   assert.equal((await as('T', `select * from notifications where kind = 'prof'`)).length, 1);
   // Tutor approves it: now the learner sees it
   await as('T', `update assignments set draft = false, learner_ids = $2 where id = $1`, [aid, [U.L]]);
@@ -628,9 +630,19 @@ test('Prof: asking, limits, auto-marking, weekly work, drafts only', async () =>
   const mc = (await asService(`select prof_mark_context($1) c`, [t.id]))[0].c;
   assert.equal(mc.questions[0].learner_answer.text, 'Because');
   assert.equal(mc.learner, 'Sis');
-  // Over the allowance: no more Prof this month
+  // 80% of the allowance: the admin is told (once); the tutor isn't
+  await asService(`select prof_save($1, 'running', null, null, null, null, 1, 1, 400)`, [mark.id]);
+  const warn = await as('A', `select * from notifications where kind = 'prof_limit'`);
+  assert.equal(warn.length, 1);
+  assert.match(warn[0].title, /80%/);
+  assert.equal((await as('T', `select * from notifications where kind = 'prof_limit'`)).length, 0);
+  await asService(`select prof_save($1, 'running', null, null, null, null, 1, 1, 1)`, [mark.id]);
+  assert.equal((await as('A', `select * from notifications where kind = 'prof_limit'`)).length, 1, 'only once');
+  // Over the allowance: no more Prof this month; the tutor sees no amounts, the admin gets told
   await asService(`select prof_save($1, 'done', null, null, null, null, 1, 1, 600)`, [mark.id]);
-  await fails(as('T', `select prof_ask('another quiz please')`), /allowance/);
+  await fails(as('T', `select prof_ask('another quiz please')`), /unavailable right now/);
+  assert.equal((await as('A', `select * from notifications where kind = 'prof_limit'`)).length, 2);
+  assert.match((await val('T', `select prof_usage()`)).why_not, /StudyBridge has been told/);
   await as('A', `select admin_set_plan($1, 'free', 100000)`, [U.T]);
   // Weekly auto-created work: one job per learner, once a week
   const dow = await val('T', `select extract(dow from now() at time zone 'America/New_York')::int`);
@@ -683,4 +695,66 @@ test('the email chosen for admin signs up and claims it; tutor sign-up leaves it
   assert.equal(await val('N', `select admin_invited()`), false);
   assert.equal((await db.query(`select admin_invite from platform_secrets`)).rows[0].admin_invite, null);
   await fails(as('N', `select claim_admin()`), /wasn’t chosen/);
+});
+
+test('crash reports, the admin inbox, announcements, overview', async () => {
+  // Anyone (even signed out) can report a crash; the same problem groups, the admin is told once
+  await as('L', `select report_error('TypeError: x is undefined', 'at render (index-BljjbUb4.js:10:5)\nat x (index-BljjbUb4.js:2:1)', '#/work', '1.1.30', 'iPhone/iPad')`);
+  await as('T', `select report_error('TypeError: x is undefined', 'at render (index-Zq9xYw1a.js:11:7)\nat x (index-Zq9xYw1a.js:2:9)', '#/', '1.1.31', 'desktop Windows')`);
+  await as(null, `select report_error('Boom on sign in', null, '#/', '1.1.31', 'browser')`);
+  await fails(as('T', `select * from app_errors`), /permission denied/);
+  const errs = await val('A', `select admin_errors()`);
+  const te = errs.find((e) => e.message.startsWith('TypeError'));
+  assert.equal(te.count, 2, 'grouped across versions');
+  assert.equal(te.people, 2);
+  assert.ok(te.roles.includes('tutor'));
+  assert.equal((await as('A', `select * from notifications where kind = 'problem'`)).length, 2);
+  await as('A', `select admin_resolve_error($1)`, [te.id]);
+  await as('L', `select report_error('TypeError: x is undefined', 'at render (index-AAAAAAAA.js:1:1)\nat x (index-AAAAAAAA.js:2:2)')`);
+  assert.equal((await as('A', `select * from notifications where kind = 'problem'`)).length, 3, 'told again when a fixed one comes back');
+  await fails(as('T', `select admin_errors()`), /admins only/);
+  // Too many from one person are dropped
+  for (let i = 0; i < 35; i++) await as('L', `select report_error($1)`, ['spam ' + i]);
+  assert.ok((await val('A', `select admin_errors()`)).filter((e) => e.message.startsWith('spam')).length <= 30);
+
+  // Contact StudyBridge: tutor writes, admin replies, tutor sees it
+  const fid = await val('T', `select send_feedback('idea', 'Please add flashcards')`);
+  await fails(as('L', `select send_feedback('idea', 'hi there')`), /Only tutors/);
+  assert.equal((await val('A', `select admin_feedback()`)).length, 1);
+  assert.equal((await as('L', `select * from feedback`)).length, 0);
+  await as('A', `select admin_reply_feedback($1, 'Coming in 1.4!')`, [fid]);
+  assert.equal((await one('T', `select * from feedback where id = $1`, [fid])).reply, 'Coming in 1.4!');
+  assert.equal((await as('T', `select * from notifications where kind = 'feedback_reply'`)).length, 1);
+  await fails(as('T', `select admin_reply_feedback($1, 'x')`, [fid]), /admins only/);
+
+  // Announcements: tutors see tutor ones, learners only "everyone" ones; ended ones disappear
+  const a1 = await val('A', `select admin_announce('Update tonight', 'Restart when asked', 'tutors')`);
+  await val('A', `select admin_announce('Hello everyone', '', 'everyone')`);
+  await fails(as('T', `insert into announcements (title) values ('x')`), /permission denied/);
+  assert.equal((await as('T', `select * from announcements`)).length, 2);
+  assert.equal((await as('L', `select * from announcements`)).length, 1);
+  await as('A', `select admin_end_announcement($1)`, [a1]);
+  assert.equal((await as('T', `select * from announcements`)).length, 1);
+
+  // App versions, notes, sign-up answers, minimum version, overview
+  await as('T', `select seen('1.1.31', 'desktop Windows')`);
+  await as('A', `select admin_set_note($1, 'My own account')`, [U.T]);
+  const det = await val('A', `select admin_tutor($1)`, [U.T]);
+  assert.equal(det.app_version, '1.1.31');
+  assert.equal(det.note, 'My own account');
+  assert.equal(det.ai_by_month.length, 6);
+  await fails(as('T', `select * from admin_notes`), /permission denied/);
+  await fails(as('A', `select admin_set_min_version('one')`), /like 1\.1\.25/);
+  await as('A', `select admin_set_min_version('1.1.30')`);
+  assert.equal(await val('T', `select min_version from app_config`), '1.1.30');
+  const ov = await val('A', `select admin_overview()`);
+  assert.ok(ov.tutors >= 1 && ov.learners >= 1);
+  assert.ok(ov.versions.some((v) => v.version === '1.1.31'));
+  assert.equal(ov.feedback_open, 0);
+  assert.ok(ov.health && 'backup_at' in ov.health);
+  await fails(as('T', `select admin_overview()`), /admins only/);
+  U.T9 = (await db.query(`insert into auth.users (email) values ('newtutor@x.com') returning id`)).rows[0].id;
+  await as('T9', `select * from become_tutor('Newbie', 'UTC', $1)`, [{ subjects: 'IB Physics', country: 'Zambia', learners: '1–5', junk: 'x' }]);
+  const nt = (await val('A', `select admin_tutors()`)).find((t) => t.id === U.T9);
+  assert.deepEqual(nt.signup, { subjects: 'IB Physics', country: 'Zambia', learners: '1–5' });
 });

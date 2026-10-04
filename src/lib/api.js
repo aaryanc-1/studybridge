@@ -32,7 +32,7 @@ export async function session() {
   return data.session;
 }
 export const getProfile = (id) => run(sb().from('profiles').select('*').eq('id', id).maybeSingle());
-export const becomeTutor = (name) => run(sb().rpc('become_tutor', { p_name: name, p_timezone: timezone() }));
+export const becomeTutor = (name, signup = null) => run(sb().rpc('become_tutor', { p_name: name, p_timezone: timezone(), p_signup: signup }));
 export const acceptInvite = (code, name) => run(sb().rpc('accept_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
 export const updateProfile = (patch) => run(sb().from('profiles').update(patch).eq('id', uid()).select().maybeSingle());
 export const changePassword = (password) => run(sb().auth.updateUser({ password }));
@@ -426,6 +426,29 @@ export async function adminDeleteAccount(id) {
   return r;
 }
 export const adminSettings = () => run(sb().rpc('admin_settings'));
+export const adminOverview = () => run(sb().rpc('admin_overview'));
+export const adminTutor = (id) => run(sb().rpc('admin_tutor', { p_user: id }));
+export const adminSetNote = (id, body) => run(sb().rpc('admin_set_note', { p_user: id, p_body: body }));
+export const adminErrors = () => run(sb().rpc('admin_errors'));
+export const adminResolveError = (id, resolved = true) => run(sb().rpc('admin_resolve_error', { p_id: id, p_resolved: resolved }));
+export const adminFeedback = () => run(sb().rpc('admin_feedback'));
+export const adminReplyFeedback = (id, reply, close = true) => run(sb().rpc('admin_reply_feedback', { p_id: id, p_reply: reply, p_close: close }));
+export const adminAnnounce = (title, body, audience, until) => run(sb().rpc('admin_announce', { p_title: title, p_body: body, p_audience: audience, p_until: until || null }));
+export const adminEndAnnouncement = (id) => run(sb().rpc('admin_end_announcement', { p_id: id }));
+export const adminSetMinVersion = (v) => run(sb().rpc('admin_set_min_version', { p_version: v || null }));
+export const listAnnouncements = () => run(sb().from('announcements').select('*').order('created_at', { ascending: false }).limit(50));
+export const sendFeedback = (kind, body) => run(sb().rpc('send_feedback', { p_kind: kind, p_body: body, p_version: appVersion() }));
+export const myFeedback = () => run(sb().from('feedback').select('*').order('created_at', { ascending: false }).limit(30));
+export const appConfig = () => run(sb().from('app_config').select('min_version').eq('id', 1).maybeSingle());
+export function appVersion() {
+  return import.meta.env?.VITE_APP_VERSION || desktop?.version || null;
+}
+export function platformName() {
+  if (desktop) return `desktop ${navigator.userAgent.includes('Mac') ? 'Mac' : navigator.userAgent.includes('Windows') ? 'Windows' : 'Linux'}`;
+  const ua = navigator.userAgent;
+  return /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : 'browser';
+}
+export const markSeen = () => run(sb().rpc('seen', { p_version: appVersion() || 'dev', p_platform: platformName() }));
 export const adminSetSignups = (open) => run(sb().rpc('admin_set_signups', { p_open: open }));
 export const adminSetProf = ({ key, model, defaultLimitCents }) =>
   run(sb().rpc('admin_set_prof', { p_key: key || null, p_model: model || null, p_default_limit_cents: defaultLimitCents ?? null }));
@@ -449,7 +472,7 @@ export async function callProf(action = 'kick') {
   return body;
 }
 export const profJobs = () =>
-  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,cost_cents,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
+  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
 export const profUsage = () => run(sb().rpc('prof_usage'));
 export const profSettings = () => run(sb().from('prof_settings').select('*').eq('tutor_id', uid()).maybeSingle());
 export const saveProfSettings = (patch) =>

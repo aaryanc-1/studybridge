@@ -10,6 +10,12 @@ import FinishSetup, { WaitingForApproval } from './screens/FinishSetup.jsx';
 import TutorApp from './screens/tutor/TutorApp.jsx';
 import LearnerApp from './screens/learner/LearnerApp.jsx';
 import AdminApp from './screens/admin/AdminApp.jsx';
+import { installErrorReporting } from './lib/errors.js';
+
+installErrorReporting();
+
+// "1.1.25" → comparable number
+const vnum = (v) => (String(v || '').match(/^(\d+)\.(\d+)\.(\d+)/) || []).slice(1).reduce((a, x) => a * 10000 + Number(x), 0);
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
@@ -54,6 +60,7 @@ export default function App() {
       if (p?.role === 'admin') p = { ...p, is_admin: true };
       if (p) await store.set(`profile:${u.id}`, p);
       api.setMe(p);
+      if (p?.role) api.markSeen().catch(() => {});
       setBootError(null);
       setProfile(p || null);
     } catch (e) {
@@ -131,8 +138,21 @@ export default function App() {
     if (user !== undefined) desktop?.updates?.ok?.().catch?.(() => {});
   }, [user]);
 
+  // The admin can require a minimum version (e.g. after a database change old apps can't handle)
+  const [tooOld, setTooOld] = useState(null);
+  useEffect(() => {
+    if (!profile?.role) return;
+    const mine = api.appVersion();
+    if (!mine) return;
+    api
+      .appConfig()
+      .then((c) => setTooOld(c?.min_version && vnum(mine) < vnum(c.min_version) ? c.min_version : null))
+      .catch(() => {});
+  }, [profile?.role]);
+
   let body;
-  if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
+  if (tooOld) body = <UpdateRequired need={tooOld} />;
+  else if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
   else if (!server || !user) body = <Welcome />;
   else if (!profile || !profile.role) body = <FinishSetup />;
   else if (profile.role === 'admin') body = <AdminApp />;
@@ -146,5 +166,46 @@ export default function App() {
         <ConfirmProvider>{body}</ConfirmProvider>
       </ToastProvider>
     </AppCtx.Provider>
+  );
+}
+
+function UpdateRequired({ need }) {
+  const [msg, setMsg] = useState('');
+  return (
+    <div className="welcome">
+      <div className="box">
+        <div className="hero">
+          <h1>Please update StudyBridge</h1>
+          <p className="lead">This version is too old to keep working with StudyBridge. Version {need} or newer is needed.</p>
+        </div>
+        <div className="card">
+          {desktop ? (
+            <>
+              <div className="small">Updating takes a minute and keeps all your work.</div>
+              <button
+                className="btn primary"
+                onClick={async () => {
+                  setMsg('Getting the update…');
+                  try {
+                    await desktop.updates.check();
+                    const r = await desktop.updates.apply();
+                    if (r?.error) setMsg(r.error);
+                  } catch (e) {
+                    setMsg(e.message);
+                  }
+                }}
+              >
+                Update now
+              </button>
+            </>
+          ) : (
+            <button className="btn primary" onClick={() => location.reload()}>
+              Reload
+            </button>
+          )}
+          {msg && <div className="small muted">{msg}</div>}
+        </div>
+      </div>
+    </div>
   );
 }

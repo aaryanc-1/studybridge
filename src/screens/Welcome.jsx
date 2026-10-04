@@ -212,6 +212,7 @@ function Account({ role, onBack }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
+  const [about, setAbout] = useState({ subjects: '', country: '', learners: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -225,7 +226,7 @@ function Account({ role, onBack }) {
       const d = mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
       const user = d.user || d.session?.user;
       if (role === 'tutor') {
-        await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0]);
+        await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0], mode === 'new' ? about : null);
       } else {
         const inv = decodeInvite(sessionStorage.getItem('sb.pendingInvite'));
         if (inv) await api.acceptInvite(inv.code, name.trim());
@@ -263,6 +264,28 @@ function Account({ role, onBack }) {
       <Field label="Password" hint={mode === 'new' ? 'At least 6 characters.' : null}>
         <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete={mode === 'new' ? 'new-password' : 'current-password'} required />
       </Field>
+      {role === 'tutor' && mode === 'new' && (
+        <>
+          <Field label="What do you teach?" hint="Optional. Helps StudyBridge approve you quickly.">
+            <input className="input" value={about.subjects} onChange={(e) => setAbout({ ...about, subjects: e.target.value })} placeholder="e.g. IGCSE Maths and Physics" />
+          </Field>
+          <div className="grid g2" style={{ gap: 12 }}>
+            <Field label="Country">
+              <input className="input" value={about.country} onChange={(e) => setAbout({ ...about, country: e.target.value })} autoComplete="country-name" />
+            </Field>
+            <Field label="How many learners?">
+              <select className="select" value={about.learners} onChange={(e) => setAbout({ ...about, learners: e.target.value })}>
+                <option value="">—</option>
+                {['1–5', '6–15', '16–40', 'More than 40'].map((x) => (
+                  <option key={x} value={x}>
+                    {x}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </>
+      )}
       {err && <div className="error">{err}</div>}
       <div className="row between">
         <button type="button" className="btn ghost" onClick={onBack}>

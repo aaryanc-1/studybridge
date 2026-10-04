@@ -47,3 +47,6 @@ jobs:
           name: ${{ env.NAME }}
           path: ${{ env.NAME }}.tgz.gpg
           retention-days: 30
+      - name: Tell Admin the backup worked
+        if: env.DB_URL != '' && env.BACKUP_PASSWORD != ''
+        run: /usr/lib/postgresql/17/bin/psql "$DB_URL" -qc "update public.app_config set backup_at = now() where id = 1" || true

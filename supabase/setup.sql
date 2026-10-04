@@ -473,6 +473,35 @@ create table if not exists public.prof_jobs (
   updated_at timestamptz not null default now(),
   finished_at timestamptz
 );
+
+-- What each Prof job cost. Only the StudyBridge admin sees money; tutors never do.
+create table if not exists public.prof_costs (
+  id bigserial primary key,
+  job_id uuid unique references public.prof_jobs (id) on delete set null,
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  model text,
+  input_tokens int not null default 0,
+  output_tokens int not null default 0,
+  cost_cents numeric not null default 0
+);
+create index if not exists idx_prof_costs_tutor on public.prof_costs (tutor_id, created_at);
+-- Move what older versions kept on the job itself
+insert into public.prof_costs (job_id, tutor_id, created_at, model, input_tokens, output_tokens, cost_cents)
+  select id, tutor_id, created_at, model, input_tokens, output_tokens, cost_cents from public.prof_jobs
+   where cost_cents <> 0 or input_tokens <> 0 or output_tokens <> 0
+  on conflict (job_id) do nothing;
+update public.prof_jobs set cost_cents = 0, input_tokens = 0, output_tokens = 0
+ where cost_cents <> 0 or input_tokens <> 0 or output_tokens <> 0;
+
+-- Warnings already sent to the admin (80% / 100% of a tutor's monthly Prof allowance)
+create table if not exists public.prof_alerts (
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  month date not null,
+  level int not null,
+  at timestamptz not null default now(),
+  primary key (tutor_id, month, level)
+);
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
   alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report'));
@@ -593,6 +622,8 @@ revoke insert, update, delete on public.app_config from anon, authenticated;
 revoke all on public.tutor_secrets from anon, authenticated;
 revoke all on public.platform_secrets from anon, authenticated;
 revoke all on public.platform_admins from anon, authenticated;
+revoke all on public.prof_costs from anon, authenticated;
+revoke all on public.prof_alerts from anon, authenticated;
 revoke insert, update, delete on public.admin_log from anon, authenticated;
 revoke insert, update, delete on public.prof_jobs from anon, authenticated;
 revoke insert, update, delete on public.learner_reports from anon, authenticated;
@@ -621,6 +652,8 @@ alter table public.tutor_settings enable row level security;
 alter table public.tutor_secrets enable row level security;
 alter table public.app_config enable row level security;
 alter table public.platform_admins enable row level security;
+alter table public.prof_costs enable row level security;
+alter table public.prof_alerts enable row level security;
 alter table public.platform_secrets enable row level security;
 alter table public.admin_log enable row level security;
 alter table public.prof_settings enable row level security;
@@ -782,7 +815,9 @@ $$;
 -- ---------------------------------------------------------------------
 -- Tutor + learner setup
 -- ---------------------------------------------------------------------
-create or replace function public.become_tutor(p_name text, p_timezone text default 'UTC')
+drop function if exists public.become_tutor(text, text);
+-- p_signup: what a new tutor told us when signing up (subjects, country, how many learners), for the admin
+create or replace function public.become_tutor(p_name text, p_timezone text default 'UTC', p_signup jsonb default null)
 returns public.profiles language plpgsql security definer set search_path = public as $$
 declare
   v public.profiles;
@@ -806,7 +841,9 @@ begin
   end if;
   update public.profiles
      set role = 'tutor', status = case when v_first then 'active' else 'pending' end,
-         display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone)
+         display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone),
+         signup = jsonb_strip_nulls(jsonb_build_object(
+           'subjects', left(p_signup ->> 'subjects', 300), 'country', left(p_signup ->> 'country', 100), 'learners', left(p_signup ->> 'learners', 50)))
    where id = auth.uid() returning * into v;
   insert into public.tutor_settings (tutor_id) values (auth.uid()) on conflict do nothing;
   if v_first then
@@ -1547,7 +1584,7 @@ end $$;
 -- Prof's spending: this calendar month, and the tutor's monthly allowance
 create or replace function public._prof_month_cents(p_tutor uuid) returns numeric
 language sql stable security definer set search_path = public as $$
-  select coalesce(sum(cost_cents), 0) from public.prof_jobs where tutor_id = p_tutor and created_at >= date_trunc('month', now())
+  select coalesce(sum(cost_cents), 0) from public.prof_costs where tutor_id = p_tutor and created_at >= date_trunc('month', now())
 $$;
 create or replace function public._prof_limit(p_tutor uuid) returns int
 language sql stable security definer set search_path = public as $$
@@ -1567,7 +1604,8 @@ begin
       'storage_bytes', public._storage_bytes(p.id),
       'ai_cents', public._prof_month_cents(p.id),
       'ai_limit_cents', public._prof_limit(p.id),
-      'ai_limit_custom', p.ai_limit_cents is not null
+      'ai_limit_custom', p.ai_limit_cents is not null,
+      'signup', p.signup, 'app_version', p.app_version, 'last_seen_at', p.last_seen_at
     ) order by (p.status = 'pending') desc, p.created_at)
     from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor'), '[]');
 end $$;
@@ -1762,7 +1800,7 @@ begin
     'livekit_url', c.livekit_url, 'livekit_set', s.livekit_api_key is not null and s.livekit_api_secret is not null,
     'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
     'pg_cron', exists (select 1 from pg_extension where extname = 'pg_cron'),
-    'ai_cents_month', (select coalesce(sum(cost_cents), 0) from public.prof_jobs where created_at >= date_trunc('month', now())))
+    'ai_cents_month', (select coalesce(sum(cost_cents), 0) from public.prof_costs where created_at >= date_trunc('month', now())))
     from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
 end $$;
 
@@ -1830,7 +1868,7 @@ begin
     return 'Prof isn’t switched on yet. (The StudyBridge admin adds the Claude key in Admin.)';
   end if;
   if public._prof_month_cents(p_tutor) >= public._prof_limit(p_tutor) then
-    return 'Prof has used this month’s allowance. It resets on the 1st.';
+    return 'Prof is unavailable right now. StudyBridge has been told and will sort it out.';
   end if;
   return null;
 end $$;
@@ -2147,12 +2185,40 @@ begin
   perform public._prof_kick();
 end $$;
 
+-- Whether Prof can work right now. Tutors never see money (only the StudyBridge admin does).
 create or replace function public.prof_usage() returns jsonb
 language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('used_cents', public._prof_month_cents(auth.uid()), 'limit_cents', public._prof_limit(auth.uid()),
-    'ready', public._prof_ready(auth.uid()) is null, 'why_not', public._prof_ready(auth.uid()),
+  select jsonb_build_object('ready', public._prof_ready(auth.uid()) is null, 'why_not', public._prof_ready(auth.uid()),
     'server_seen_at', (select prof_seen_at from public.app_config where id = 1))
 $$;
+
+-- Tell the admin when a tutor reaches 80% and 100% of this month's Prof allowance (once each)
+create or replace function public._prof_alert(p_tutor uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  used numeric := public._prof_month_cents(p_tutor);
+  lim int := public._prof_limit(p_tutor);
+  lvl int;
+  who text;
+  a uuid;
+begin
+  if lim is null or lim <= 0 then return; end if;
+  lvl := case when used >= lim then 100 when used >= lim * 0.8 then 80 else 0 end;
+  if lvl = 0 then return; end if;
+  -- 100% also counts as having passed 80%
+  insert into public.prof_alerts (tutor_id, month, level) values (p_tutor, date_trunc('month', now())::date, lvl) on conflict do nothing;
+  if not found then return; end if;
+  if lvl = 100 then
+    insert into public.prof_alerts (tutor_id, month, level) values (p_tutor, date_trunc('month', now())::date, 80) on conflict do nothing;
+  end if;
+  select display_name into who from public.profiles where id = p_tutor;
+  for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
+    perform public.notify_user(a, 'prof_limit',
+      case when lvl = 100 then coalesce(who, 'A tutor') || ' has run out of Prof this month' else coalesce(who, 'A tutor') || ' has used 80% of Prof this month' end,
+      format('$%s of $%s. Raise their allowance in Tutors → Plan & Prof.', to_char(used / 100, 'FM999990.00'), to_char(lim::numeric / 100, 'FM999990.00')),
+      jsonb_build_object('user_id', p_tutor, 'level', lvl));
+  end loop;
+end $$;
 
 -- Auto-marking: when a learner hands in, Prof drafts the marks (if the tutor switched it on)
 create or replace function public.on_attempt_submitted() returns trigger
@@ -2241,13 +2307,20 @@ begin
      set status = case when status = 'cancelled' then status else p_status end,
          state = coalesce(p_state, state), result = coalesce(p_result, result),
          progress = coalesce(p_progress, progress), error = p_error,
-         input_tokens = input_tokens + coalesce(p_input, 0), output_tokens = output_tokens + coalesce(p_output, 0),
-         cost_cents = cost_cents + coalesce(p_cost, 0), model = coalesce(p_model, model),
+         model = coalesce(p_model, model),
          steps = steps + case when coalesce(p_input, 0) > 0 then 1 else 0 end,
          lease_until = case when p_retry_in is not null then now() + make_interval(secs => p_retry_in)
                             when p_status = 'running' then lease_until end,
          updated_at = now(), finished_at = case when p_status in ('done', 'failed') then now() end
    where id = p_job returning * into j;
+  if j.id is not null and (coalesce(p_input, 0) > 0 or coalesce(p_output, 0) > 0 or coalesce(p_cost, 0) > 0) then
+    insert into public.prof_costs (job_id, tutor_id, model, input_tokens, output_tokens, cost_cents)
+    values (j.id, j.tutor_id, p_model, coalesce(p_input, 0), coalesce(p_output, 0), coalesce(p_cost, 0))
+    on conflict (job_id) do update set input_tokens = prof_costs.input_tokens + excluded.input_tokens,
+      output_tokens = prof_costs.output_tokens + excluded.output_tokens, cost_cents = prof_costs.cost_cents + excluded.cost_cents,
+      model = coalesce(excluded.model, prof_costs.model);
+    perform public._prof_alert(j.tutor_id);
+  end if;
   if j.status = p_status and p_notify is not null then
     perform public.notify_user(j.tutor_id, 'prof', p_notify ->> 'title', p_notify ->> 'body',
       coalesce(p_notify -> 'ref', '{}') || jsonb_build_object('job_id', j.id));
@@ -2359,6 +2432,292 @@ begin
   end loop;
 end $$;
 
+-- =====================================================================
+-- 1.4: crash reports, a fuller admin console (overview, notes, announcements,
+-- feedback inbox, sign-up answers, app versions, minimum version, health)
+-- =====================================================================
+alter table public.profiles add column if not exists app_version text;
+alter table public.profiles add column if not exists platform text;
+alter table public.profiles add column if not exists last_seen_at timestamptz;
+alter table public.profiles add column if not exists signup jsonb not null default '{}';
+alter table public.app_config add column if not exists min_version text;
+alter table public.app_config add column if not exists backup_at timestamptz;
+
+-- The app says which version it is, once each time it opens (for Admin: who's on an old version)
+create or replace function public.seen(p_version text, p_platform text)
+returns void language sql security definer set search_path = public as $$
+  update public.profiles set app_version = left(p_version, 30), platform = left(p_platform, 30), last_seen_at = now()
+   where id = auth.uid()
+$$;
+
+-- ---------------- crash reports ----------------
+-- Only the error itself (message, where, which version, what device). Never anyone's work.
+create table if not exists public.app_errors (
+  id bigserial primary key,
+  fingerprint text not null unique,
+  message text not null,
+  stack text,
+  screen text,
+  app_version text,
+  platform text,
+  roles text[] not null default '{}',
+  users uuid[] not null default '{}',
+  count int not null default 1,
+  first_at timestamptz not null default now(),
+  last_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+create table if not exists public.app_error_quota (
+  who text not null,
+  day date not null default current_date,
+  n int not null default 0,
+  primary key (who, day)
+);
+alter table public.app_errors enable row level security;
+alter table public.app_error_quota enable row level security;
+revoke all on public.app_errors from anon, authenticated;
+revoke all on public.app_error_quota from anon, authenticated;
+
+create or replace function public.report_error(p_message text, p_stack text default null, p_screen text default null,
+  p_version text default null, p_platform text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_who text := coalesce(auth.uid()::text, 'anon');
+  v_n int;
+  msg text := left(coalesce(nullif(trim(p_message), ''), 'Unknown error'), 500);
+  frames text;
+  fp text;
+  is_new boolean;
+  was_resolved boolean;
+  r text := (select role from public.profiles where id = auth.uid());
+  a uuid;
+begin
+  -- at most 30 reports a day per person (and 200 from signed-out screens), so nobody can flood it
+  insert into public.app_error_quota (who, day, n) values (v_who, current_date, 1)
+  on conflict (who, day) do update set n = app_error_quota.n + 1 returning app_error_quota.n into v_n;
+  if v_n > (case when auth.uid() is null then 200 else 30 end) then return; end if;
+  -- the same problem groups together across versions: message + top of the stack, without build hashes or positions
+  frames := array_to_string((string_to_array(regexp_replace(coalesce(p_stack, ''), '[-.][A-Za-z0-9_]{8}\.(js|mjs)', '.js', 'g'), E'\n'))[1:3], E'\n');
+  frames := regexp_replace(frames, ':\d+:\d+', '', 'g');
+  fp := md5(msg || '|' || frames);
+  select resolved_at is not null into was_resolved from public.app_errors where fingerprint = fp;
+  insert into public.app_errors as e (fingerprint, message, stack, screen, app_version, platform, roles, users)
+  values (fp, msg, left(p_stack, 4000), left(p_screen, 200), left(p_version, 30), left(p_platform, 60),
+          case when r is null then '{}' else array[r] end, case when auth.uid() is null then '{}' else array[auth.uid()] end)
+  on conflict (fingerprint) do update set
+    count = e.count + 1, last_at = now(), stack = coalesce(excluded.stack, e.stack), screen = coalesce(excluded.screen, e.screen),
+    app_version = coalesce(excluded.app_version, e.app_version), platform = coalesce(excluded.platform, e.platform),
+    roles = (select array_agg(distinct x) from unnest(e.roles || excluded.roles) x),
+    users = case when array_length(e.users, 1) >= 50 then e.users else (select array_agg(distinct x) from unnest(e.users || excluded.users) x) end,
+    resolved_at = null
+  returning (xmax = 0) into is_new;
+  if is_new or coalesce(was_resolved, false) then
+    for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
+      perform public.notify_user(a, 'problem', 'New problem in StudyBridge', left(msg, 200), jsonb_build_object('fingerprint', fp));
+    end loop;
+  end if;
+end $$;
+grant execute on function public.report_error(text, text, text, text, text) to anon, authenticated;
+
+create or replace function public.admin_errors() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((select jsonb_agg(jsonb_build_object('id', id, 'message', message, 'stack', stack, 'screen', screen,
+      'app_version', app_version, 'platform', platform, 'roles', roles, 'people', coalesce(array_length(users, 1), 0),
+      'count', count, 'first_at', first_at, 'last_at', last_at, 'resolved_at', resolved_at)
+    order by (resolved_at is null) desc, last_at desc) from (select * from public.app_errors order by last_at desc limit 300) z), '[]');
+end $$;
+
+create or replace function public.admin_resolve_error(p_id bigint, p_resolved boolean default true)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_errors set resolved_at = case when p_resolved then now() end where id = p_id;
+end $$;
+
+-- ---------------- private notes about a tutor (only the admin) ----------------
+create table if not exists public.admin_notes (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  body text not null default '',
+  updated_at timestamptz not null default now()
+);
+alter table public.admin_notes enable row level security;
+revoke all on public.admin_notes from anon, authenticated;
+create or replace function public.admin_set_note(p_user uuid, p_body text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  insert into public.admin_notes (user_id, body) values (p_user, left(coalesce(p_body, ''), 5000))
+  on conflict (user_id) do update set body = excluded.body, updated_at = now();
+end $$;
+
+-- ---------------- announcements ----------------
+create table if not exists public.announcements (
+  id uuid primary key default gen_random_uuid(),
+  title text not null check (length(title) between 1 and 120),
+  body text not null default '' check (length(body) <= 2000),
+  audience text not null default 'tutors' check (audience in ('tutors', 'everyone')),
+  until timestamptz,
+  created_at timestamptz not null default now(),
+  ended_at timestamptz
+);
+alter table public.announcements enable row level security;
+revoke all on public.announcements from anon, authenticated;
+grant select on public.announcements to authenticated;
+drop policy if exists announcements_read on public.announcements;
+create policy announcements_read on public.announcements for select using (
+  public.is_platform_admin()
+  or (ended_at is null and (until is null or until > now())
+      and (audience = 'everyone' or public.my_role() = 'tutor')));
+
+create or replace function public.admin_announce(p_title text, p_body text, p_audience text default 'tutors', p_until timestamptz default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  perform public._admin();
+  insert into public.announcements (title, body, audience, until) values (trim(p_title), coalesce(p_body, ''), coalesce(p_audience, 'tutors'), p_until)
+  returning id into v;
+  return v;
+end $$;
+create or replace function public.admin_end_announcement(p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.announcements set ended_at = now() where id = p_id;
+end $$;
+
+-- ---------------- "Contact StudyBridge": tutors' messages to the admin ----------------
+create table if not exists public.feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null default 'question' check (kind in ('problem', 'idea', 'question')),
+  body text not null check (length(body) between 2 and 4000),
+  app_version text,
+  created_at timestamptz not null default now(),
+  reply text,
+  replied_at timestamptz,
+  closed_at timestamptz
+);
+alter table public.feedback enable row level security;
+revoke all on public.feedback from anon, authenticated;
+grant select on public.feedback to authenticated;
+drop policy if exists feedback_read on public.feedback;
+create policy feedback_read on public.feedback for select using (user_id = auth.uid() or public.is_platform_admin());
+
+create or replace function public.send_feedback(p_kind text, p_body text, p_version text default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v uuid;
+  who text;
+  a uuid;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if public.my_role() is distinct from 'tutor' then raise exception 'Only tutors can send these.'; end if;
+  if (select count(*) from public.feedback where user_id = auth.uid() and created_at > now() - interval '1 day') >= 20 then
+    raise exception 'That’s a lot of messages today. Try again tomorrow.';
+  end if;
+  insert into public.feedback (user_id, kind, body, app_version) values (auth.uid(), coalesce(p_kind, 'question'), trim(p_body), left(p_version, 30))
+  returning id into v;
+  select display_name into who from public.profiles where id = auth.uid();
+  for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
+    perform public.notify_user(a, 'feedback', coalesce(who, 'Someone') || ' wrote to StudyBridge', left(trim(p_body), 200), jsonb_build_object('feedback_id', v));
+  end loop;
+  return v;
+end $$;
+
+create or replace function public.admin_feedback() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((select jsonb_agg(jsonb_build_object('id', f.id, 'kind', f.kind, 'body', f.body, 'created_at', f.created_at,
+      'reply', f.reply, 'replied_at', f.replied_at, 'closed_at', f.closed_at, 'app_version', f.app_version,
+      'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'role', p.role, 'user_id', p.id)
+    order by (f.closed_at is null) desc, f.created_at desc)
+    from public.feedback f join public.profiles p on p.id = f.user_id left join auth.users u on u.id = p.id), '[]');
+end $$;
+
+create or replace function public.admin_reply_feedback(p_id uuid, p_reply text, p_close boolean default true)
+returns void language plpgsql security definer set search_path = public as $$
+declare f public.feedback;
+begin
+  perform public._admin();
+  update public.feedback set reply = nullif(trim(coalesce(p_reply, '')), ''), replied_at = case when nullif(trim(coalesce(p_reply, '')), '') is not null then now() else replied_at end,
+         closed_at = case when p_close then now() end
+   where id = p_id returning * into f;
+  if f.id is not null and nullif(trim(coalesce(p_reply, '')), '') is not null then
+    perform public.notify_user(f.user_id, 'feedback_reply', 'StudyBridge replied', left(f.reply, 200), jsonb_build_object('feedback_id', f.id));
+  end if;
+end $$;
+
+-- ---------------- minimum app version, health and the overview ----------------
+create or replace function public.admin_set_min_version(p_version text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_version is not null and p_version !~ '^\d+\.\d+\.\d+$' then raise exception 'Use a version like 1.1.25.'; end if;
+  update public.app_config set min_version = nullif(p_version, '') where id = 1;
+end $$;
+
+create or replace function public.admin_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_storage bigint;
+begin
+  perform public._admin();
+  begin
+    execute 'select coalesce(sum((metadata ->> ''size'')::bigint), 0) from storage.objects' into v_storage;
+  exception when others then v_storage := null;
+  end;
+  return jsonb_build_object(
+    'tutors', (select count(*) from public.profiles where role = 'tutor' and status = 'active'),
+    'pending', (select count(*) from public.profiles where role = 'tutor' and status = 'pending'),
+    'learners', (select count(*) from public.profiles where role = 'learner'),
+    'active_7d', (select count(*) from public.profiles where role in ('tutor', 'learner') and last_seen_at > now() - interval '7 days'),
+    'signins_7d', (select count(*) from auth.users where last_sign_in_at > now() - interval '7 days'),
+    'assignments_30d', (select count(*) from public.assignments where created_at > now() - interval '30 days' and not draft),
+    'handins_30d', (select count(*) from public.attempts where submitted_at > now() - interval '30 days'),
+    'prof_month_cents', (select coalesce(sum(cost_cents), 0) from public.prof_costs where created_at >= date_trunc('month', now())),
+    'prof_by_month', coalesce((select jsonb_agg(jsonb_build_object('month', to_char(m, 'Mon YY'), 'cents', c) order by m)
+        from (select gs::date m, coalesce((select sum(cost_cents) from public.prof_costs where created_at >= gs and created_at < gs + interval '1 month'), 0) c
+                from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month') gs) z), '[]'),
+    'storage_bytes', v_storage,
+    'problems_open', (select count(*) from public.app_errors where resolved_at is null),
+    'feedback_open', (select count(*) from public.feedback where closed_at is null),
+    'versions', coalesce((select jsonb_agg(jsonb_build_object('version', coalesce(app_version, 'unknown'), 'people', n) order by n desc)
+        from (select app_version, count(*) n from public.profiles where role in ('tutor', 'learner') and last_seen_at > now() - interval '30 days'
+               group by app_version) z), '[]'),
+    'min_version', (select min_version from public.app_config where id = 1),
+    'health', jsonb_build_object(
+      'prof_key', exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null),
+      'prof_seen_at', (select prof_seen_at from public.app_config where id = 1),
+      'reports_at', (select reports_at from public.app_config where id = 1),
+      'backup_at', (select backup_at from public.app_config where id = 1),
+      'pg_cron', exists (select 1 from pg_extension where extname = 'pg_cron'),
+      'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
+      'jobs_failed_24h', (select count(*) from public.prof_jobs where status = 'failed' and updated_at > now() - interval '1 day'),
+      'jobs_stuck', (select count(*) from public.prof_jobs where status in ('queued', 'running') and updated_at < now() - interval '30 minutes'))
+  );
+end $$;
+
+-- One tutor in detail (still account details only, never their work)
+create or replace function public.admin_tutor(p_user uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return (select jsonb_build_object(
+    'id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'status', p.status, 'plan', p.plan,
+    'timezone', p.timezone, 'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at,
+    'last_seen_at', p.last_seen_at, 'app_version', p.app_version, 'platform', p.platform, 'signup', p.signup,
+    'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+    'storage_bytes', public._storage_bytes(p.id),
+    'ai_cents', public._prof_month_cents(p.id), 'ai_limit_cents', public._prof_limit(p.id), 'ai_limit_custom', p.ai_limit_cents is not null,
+    'ai_by_month', coalesce((select jsonb_agg(jsonb_build_object('month', to_char(m, 'Mon YY'), 'cents', c) order by m)
+        from (select gs::date m, coalesce((select sum(cost_cents) from public.prof_costs where tutor_id = p.id and created_at >= gs and created_at < gs + interval '1 month'), 0) c
+                from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month') gs) z), '[]'),
+    'note', (select body from public.admin_notes where user_id = p.id))
+    from public.profiles p left join auth.users u on u.id = p.id where p.id = p_user and p.role = 'tutor');
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -2381,6 +2740,7 @@ revoke execute on function public._prof_month_cents(uuid) from public, anon, aut
 revoke execute on function public.notify_user(uuid, text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 revoke execute on function public._make_admin(text, uuid) from public, anon, authenticated, service_role;
+revoke execute on function public._prof_alert(uuid) from public, anon, authenticated;
 revoke execute on function public.make_admin(text) from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------

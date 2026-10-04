@@ -28,6 +28,7 @@ export default function Settings() {
       {isTutor && <PhoneApp />}
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
+      {isTutor && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
       {isLearner && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
@@ -205,7 +206,7 @@ function PhoneAlerts() {
 function PhoneApp() {
   const app = useApp();
   const toast = useToast();
-  const [web, setWeb] = useState(() => localStorage.getItem('sb.webUrl') || (!desktop && location.protocol.startsWith('http') ? location.origin + location.pathname : ''));
+  const [web, setWeb] = useState(() => localStorage.getItem('sb.webUrl') || import.meta.env.VITE_WEB_URL || (!desktop && location.protocol.startsWith('http') ? location.origin + location.pathname : ''));
   const [qr, setQr] = useState('');
   const link = web && /^https?:\/\//.test(web) ? connectLink(web, app.server) : '';
   useEffect(() => {
@@ -214,7 +215,7 @@ function PhoneApp() {
   }, [link]);
   return (
     <Section id="phone" icon="phone" title="Use StudyBridge on your phone" sub="The phone version is the same app in your phone’s browser. Add it to your home screen and it works like an app, including offline.">
-      <Field label="Your StudyBridge web address" hint="Where you put the web version (see the setup guide: drag the “web” folder onto Netlify Drop). Only needed once.">
+      <Field label="Your StudyBridge web address" hint="Each update publishes the phone version here automatically. Change it only if you host it somewhere else (e.g. your own domain).">
         <input
           className="input"
           value={web}
@@ -399,6 +400,72 @@ function ClaudeConnector() {
           </div>
         </li>
       </ol>
+    </Section>
+  );
+}
+
+// Write to StudyBridge (the admin): a problem, an idea or a question. Replies come back here.
+function ContactStudyBridge() {
+  const toast = useToast();
+  const q = useQuery('my-feedback', api.myFeedback);
+  const [kind, setKind] = useState('question');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const list = q.data || [];
+  return (
+    <Section id="contact" icon="message" title="Contact StudyBridge" sub="A problem, an idea or a question. StudyBridge replies here and you get a notification.">
+      <div className="row wrap" style={{ gap: 6 }}>
+        {[
+          ['question', 'Question'],
+          ['problem', 'Something’s wrong'],
+          ['idea', 'Idea'],
+        ].map(([k, l]) => (
+          <button key={k} type="button" className={'pill click' + (kind === k ? ' accent' : '')} onClick={() => setKind(k)}>
+            {l}
+          </button>
+        ))}
+      </div>
+      <textarea className="textarea" value={body} onChange={(e) => setBody(e.target.value)} maxLength={4000} placeholder="Write it here…" aria-label="Your message" />
+      <div>
+        <button
+          className="btn primary"
+          disabled={busy || body.trim().length < 2}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.sendFeedback(kind, body.trim());
+              setBody('');
+              invalidate('my-feedback');
+              toast('Sent. StudyBridge will reply here.');
+            } catch (e) {
+              toast({ title: 'Couldn’t send', body: e.message, tone: 'bad' });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Send
+        </button>
+      </div>
+      {list.length > 0 && (
+        <div className="list small">
+          {list.map((f) => (
+            <div key={f.id} className="item" style={{ alignItems: 'flex-start' }}>
+              <span className="grow">
+                <span className="pre-wrap">{f.body}</span>
+                <span className="meta">
+                  {new Date(f.created_at).toLocaleDateString()} · {f.reply ? 'Answered' : f.closed_at ? 'Closed' : 'Waiting for a reply'}
+                </span>
+                {f.reply && (
+                  <span className="note small" style={{ display: 'block', marginTop: 6 }}>
+                    <b>StudyBridge:</b> {f.reply}
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </Section>
   );
 }

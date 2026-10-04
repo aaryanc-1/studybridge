@@ -460,6 +460,41 @@ try {
   await ADM.locator('.item', { hasText: 'maria@example.com' }).filter({ hasText: 'Paused' }).waitFor();
   await shot(ADM, 'admin-log');
 
+  step('Admin overview, a tutor’s message and the reply, an announcement, a crash report');
+  await nav(A, 'Learners').waitFor();
+  await A.goto(web.url + '#/settings?s=contact');
+  await A.getByLabel('Your message').fill('Could learners get flashcards?');
+  await A.getByRole('button', { name: 'Idea' }).click();
+  await A.getByRole('button', { name: 'Send', exact: true }).click();
+  await A.getByText('Waiting for a reply').waitFor();
+  await nav(ADM, 'Inbox').click();
+  await ADM.getByText('Could learners get flashcards?').waitFor();
+  await ADM.getByPlaceholder('Your reply (optional)').fill('Yes, they are coming in 1.4.');
+  await ADM.getByRole('button', { name: 'Send reply' }).click();
+  await ADM.getByText('Reply sent').waitFor();
+  await A.reload();
+  await A.getByText('StudyBridge:').waitFor();
+  await nav(ADM, 'Announcements').click();
+  await ADM.getByLabel('Title').fill('New update tonight');
+  await ADM.getByRole('button', { name: 'Post announcement' }).click();
+  await ADM.getByText('Announcement is live').waitFor();
+  await A.reload();
+  await A.locator('.announce', { hasText: 'New update tonight' }).waitFor();
+  await shot(A, 'tutor-announcement');
+  await A.locator('.announce').getByRole('button', { name: 'Close' }).click();
+  await A.locator('.announce').waitFor({ state: 'detached' });
+  await tc.rpc('report_error', { p_message: 'TypeError: cannot read things of undefined', p_stack: 'at Thing (index-abcdefgh.js:1:2)', p_screen: '#/library', p_version: '1.1.99', p_platform: 'desktop Windows' });
+  await nav(ADM, 'Problems').click();
+  await ADM.getByText('TypeError: cannot read things of undefined').waitFor();
+  await shot(ADM, 'admin-problems');
+  await nav(ADM, 'Overview').click();
+  await ADM.getByRole('heading', { name: 'System health' }).waitFor();
+  await shot(ADM, 'admin-overview');
+  await nav(ADM, 'Tutors').click();
+  await ADM.locator('.tutor-row a', { hasText: 'Aaryan Chouhan' }).click();
+  await ADM.getByRole('heading', { name: 'Your notes' }).waitFor();
+  await shot(ADM, 'admin-tutor');
+
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');
 } catch (e) {

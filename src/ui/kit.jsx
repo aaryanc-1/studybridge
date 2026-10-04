@@ -389,8 +389,9 @@ export class ErrorBoundary extends Component {
   static getDerivedStateFromError(error) {
     return { error };
   }
-  componentDidCatch(error) {
+  componentDidCatch(error, info) {
     console.warn('Screen error:', error);
+    import('../lib/errors.js').then((m) => m.reportError(error, `${error?.stack || ''}\n${info?.componentStack || ''}`.trim())).catch(() => {});
   }
   render() {
     if (!this.state.error) return this.props.children;

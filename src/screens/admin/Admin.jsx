@@ -1,4 +1,4 @@
-// StudyBridge admin console, used only from the separate admin account .
+// StudyBridge admin console, used only from the separate admin account.
 // Accounts and access: approve, pause, reset passwords, delete, plans and Prof allowances, and
 // the keys the server uses. It never shows anyone's work, files, marks or messages.
 import { useEffect, useState } from 'react';
@@ -11,15 +11,15 @@ import { easyPassword } from '../tutor/Learners.jsx';
 import { AskProf, ReviewQueue } from '../tutor/QuestionBank.jsx';
 import * as X from '../../lib/exams.js';
 
-const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
+export const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
 const MODELS = [
   ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (recommended: great work, lower cost)'],
   ['claude-opus-5-5', 'Claude Opus 5.5 (best work, about 2× the cost)'],
   ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (cheapest, simpler work)'],
 ];
-const ACTIONS = { admin_moved: 'Admin moved to its own account', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed' };
+const ACTIONS = { admin_moved: 'Admin moved to its own account', allowance: 'Prof allowance raised', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed' };
 
-export default function AdminHome() {
+export function TutorsPage() {
   const tutors = useQuery('admin-tutors', api.adminTutors);
   const settings = useQuery('admin-settings', api.adminSettings);
   const list = tutors.data || [];
@@ -99,7 +99,7 @@ export function LogPage() {
   );
 }
 
-function TutorRow({ t }) {
+export function TutorRow({ t }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [open, setOpen] = useState(false);
@@ -122,7 +122,7 @@ function TutorRow({ t }) {
           <Icon name={pending ? 'clock' : t.status === 'suspended' ? 'pause' : 'user'} style={{ color: pending ? 'var(--claude)' : 'var(--accent)' }} />
           <div>
             <div className="strong">
-              {t.name} {t.is_admin && <span className="pill dark">Admin</span>}{' '}
+              <a href={`#/tutors/${t.id}`}>{t.name}</a> {t.is_admin && <span className="pill dark">Admin</span>}{' '}
               {t.status === 'suspended' && <span className="pill bad">Paused</span>}
             </div>
             <div className="small muted">{t.email}</div>
@@ -180,6 +180,17 @@ function TutorRow({ t }) {
           )}
         </div>
       </div>
+      {pending && t.signup && Object.keys(t.signup).length > 0 && (
+        <div className="small">
+          {t.signup.subjects && (
+            <span>
+              Teaches <b>{t.signup.subjects}</b>
+            </span>
+          )}
+          {t.signup.country && <span> · {t.signup.country}</span>}
+          {t.signup.learners && <span> · {t.signup.learners} learners</span>}
+        </div>
+      )}
       <div className="facts">
         <span>
           Plan <b>{t.plan}</b>
@@ -193,7 +204,9 @@ function TutorRow({ t }) {
         </span>
         <span>Joined {ago(t.joined_at)}</span>
         <span>{t.last_sign_in_at ? `Last signed in ${ago(t.last_sign_in_at)}` : 'Never signed in'}</span>
+        {t.app_version && <span>App {t.app_version}</span>}
       </div>
+      {!pending && Number(t.ai_cents) >= 0.8 * Number(t.ai_limit_cents) && <RaiseAllowance t={t} />}
       {open && <LearnerList tutor={t} />}
       {modal === 'password' && <PasswordModal person={t} onClose={() => setModal(null)} />}
       {modal === 'plan' && <PlanModal t={t} onClose={() => setModal(null)} />}
@@ -202,7 +215,37 @@ function TutorRow({ t }) {
   );
 }
 
-function LearnerList({ tutor }) {
+// One tap to give a tutor more Prof this month
+export function RaiseAllowance({ t, onDone }) {
+  const toast = useToast();
+  const out = Number(t.ai_cents) >= Number(t.ai_limit_cents);
+  return (
+    <div className={'row wrap small ' + (out ? 'bad-text' : '')} style={{ gap: 6 }}>
+      <Icon name="cap" size={16} />
+      <span>{out ? 'Out of Prof this month.' : 'Over 80% of this month’s Prof.'} Raise the allowance:</span>
+      {[500, 1000, 2000].map((add) => (
+        <button
+          key={add}
+          className="btn sm"
+          onClick={async () => {
+            try {
+              await api.adminSetPlan(t.id, t.plan || 'free', Number(t.ai_limit_cents) + add);
+              invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview');
+              toast(`${t.name}: allowance now ${money(Number(t.ai_limit_cents) + add)} a month`);
+              onDone?.();
+            } catch (e) {
+              toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+            }
+          }}
+        >
+          +{money(add)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function LearnerList({ tutor }) {
   const q = useQuery(`admin-accounts:${tutor.id}`, () => api.adminAccounts(tutor.id));
   const [modal, setModal] = useState(null);
   const list = q.data || [];
@@ -232,7 +275,7 @@ function LearnerList({ tutor }) {
   );
 }
 
-function PasswordModal({ person, onClose }) {
+export function PasswordModal({ person, onClose }) {
   const toast = useToast();
   const [pw, setPw] = useState('');
   const [done, setDone] = useState('');
@@ -286,7 +329,7 @@ function PasswordModal({ person, onClose }) {
   );
 }
 
-function PlanModal({ t, onClose }) {
+export function PlanModal({ t, onClose }) {
   const toast = useToast();
   const [plan, setPlan] = useState(t.plan || 'free');
   const [custom, setCustom] = useState(!!t.ai_limit_custom);
@@ -331,7 +374,7 @@ function PlanModal({ t, onClose }) {
   );
 }
 
-function DeleteModal({ person, tutor, onClose }) {
+export function DeleteModal({ person, tutor, onClose }) {
   const toast = useToast();
   const [typed, setTyped] = useState('');
   const first = (person.name || '').split(' ')[0] || 'delete';

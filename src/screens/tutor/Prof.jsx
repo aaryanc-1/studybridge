@@ -11,7 +11,6 @@ import { compressImage } from '../../lib/image.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { DraftsWaiting } from './ClaudeInbox.jsx';
 
-const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
 const busy = (j) => j.status === 'queued' || j.status === 'running' || j.status === 'waiting';
 const sending = new Set(); // page requests this app is answering
 
@@ -481,7 +480,6 @@ function ProfSettings({ usage }) {
       toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
     }
   }
-  const pctUsed = usage ? Math.min(100, Math.round((100 * usage.used_cents) / Math.max(1, usage.limit_cents))) : 0;
   return (
     <div className="card" id="prof-settings">
       <h2>Prof’s settings</h2>
@@ -544,19 +542,6 @@ function ProfSettings({ usage }) {
           Save
         </button>
       </div>
-      {usage && (
-        <div className="stack sm">
-          <div className="row between small">
-            <span className="muted">Prof this month</span>
-            <span>
-              {money(usage.used_cents)} of {money(usage.limit_cents)}
-            </span>
-          </div>
-          <div className="bar">
-            <span style={{ width: pctUsed + '%' }} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

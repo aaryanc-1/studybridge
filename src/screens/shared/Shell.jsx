@@ -77,6 +77,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
           </div>
         )}
         {banner}
+        {app.me.role !== 'admin' && <Announcements />}
         <UpdateBanner />
         <div className="content">
           <ErrorBoundary key={route.path}>{children}</ErrorBoundary>
@@ -249,6 +250,44 @@ export function useIsNarrow() {
     },
     () => window.innerWidth <= 900,
   );
+}
+
+// Messages from StudyBridge (the admin) at the top of the app; each can be closed
+function Announcements() {
+  const q = useQuery('announcements', api.listAnnouncements, { poll: 10 * 60000 });
+  const [gone, setGone] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('sb.announcementsClosed') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const list = (q.data || []).filter((a) => !a.ended_at && (!a.until || new Date(a.until) > new Date()) && !gone.includes(a.id)).slice(0, 2);
+  if (!list.length) return null;
+  return list.map((a) => (
+    <div key={a.id} className="announce" role="status">
+      <Icon name="send" size={18} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 2 }} />
+      <span className="grow">
+        <b>{a.title}</b>
+        {a.body && <span className="pre-wrap"> {a.body}</span>}
+      </span>
+      <button
+        className="btn ghost icon sm"
+        aria-label="Close"
+        onClick={() => {
+          const next = [...gone, a.id].slice(-50);
+          setGone(next);
+          try {
+            localStorage.setItem('sb.announcementsClosed', JSON.stringify(next));
+          } catch {
+            /* fine */
+          }
+        }}
+      >
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  ));
 }
 
 // "A new version is ready" (desktop app). Restarting never happens during a locked exam.

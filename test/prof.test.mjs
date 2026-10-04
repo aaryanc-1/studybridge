@@ -77,7 +77,8 @@ test('Prof makes a draft quiz from a request and pages, then marks the hand-in',
   const j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
   assert.equal(j.status, 'done', j.error || '');
   assert.equal(j.steps, 4);
-  assert.ok(Number(j.cost_cents) > 0);
+  const spent = await srv.db.query(`select cost_cents from prof_costs where job_id = $1`, [job.id]);
+  assert.ok(Number(spent.rows[0].cost_cents) > 0, 'what it cost is kept where only the admin sees it');
   assert.equal(j.result.assignments[0].questions, 5);
   assert.match(j.result.reply, /5-question quiz/);
 

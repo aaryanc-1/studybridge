@@ -6,13 +6,17 @@ import * as api from '../../lib/api.js';
 import Shell from '../shared/Shell.jsx';
 import { LookupsProvider } from '../shared/lookups.jsx';
 import Settings from '../shared/Settings.jsx';
-import AdminHome, { SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
+import { TutorsPage, SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
+import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage } from './AdminPages.jsx';
 import { useProfJobs } from '../tutor/Prof.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
   if (n.kind === 'prof' && r.bank) return '/bank';
-  if (n.kind === 'tutor_signup') return '/';
+  if (n.kind === 'tutor_signup') return '/tutors';
+  if (n.kind === 'prof_limit' && r.user_id) return `/tutors/${r.user_id}`;
+  if (n.kind === 'problem') return '/problems';
+  if (n.kind === 'feedback') return '/inbox';
   return '/';
 }
 
@@ -20,25 +24,37 @@ export default function AdminApp() {
   const route = useRoute();
   const tutors = useQuery('admin-tutors', api.adminTutors, { poll: 60000 });
   const bank = useQuery('bank', api.listBank, { poll: 120000 });
+  const overview = useQuery('admin-overview', api.adminOverview, { poll: 60000 });
   useProfJobs(); // keeps Prof's shared-question jobs moving
   const waiting = (tutors.data || []).filter((t) => t.status === 'pending').length;
   const toReview = (bank.data || []).filter((b) => b.owner_id === null && b.status === 'review').length;
+  const o = overview.data || {};
   const nav = [
-    { to: '/', label: 'Tutors', icon: 'users', count: waiting },
+    { to: '/', label: 'Overview', icon: 'home' },
+    { to: '/tutors', label: 'Tutors', icon: 'users', count: waiting },
+    { to: '/inbox', label: 'Inbox', icon: 'message', count: o.feedback_open },
+    { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
+    { to: '/announcements', label: 'Announcements', icon: 'send' },
     { to: '/bank', label: 'StudyBridge questions', icon: 'cap', count: toReview, tone: 'claude' },
     { to: '/platform', label: 'StudyBridge settings', icon: 'shield' },
     { to: '/log', label: 'What’s been done', icon: 'clipboard' },
   ];
-  const [a] = route.parts;
+  const tabs = [nav[0], nav[1], nav[2], nav[3]];
+  const [a, b] = route.parts;
   let page;
-  if (a === 'bank') page = <SharedBankPage />;
+  if (a === 'tutors' && b) page = <TutorPage id={b} />;
+  else if (a === 'tutors') page = <TutorsPage />;
+  else if (a === 'inbox') page = <InboxPage />;
+  else if (a === 'problems') page = <ProblemsPage />;
+  else if (a === 'announcements') page = <AnnouncementsPage />;
+  else if (a === 'bank') page = <SharedBankPage />;
   else if (a === 'platform') page = <PlatformPage />;
   else if (a === 'log') page = <LogPage />;
   else if (a === 'settings') page = <Settings />;
-  else page = <AdminHome />;
+  else page = <Overview />;
   return (
     <LookupsProvider>
-      <Shell nav={nav} tabs={nav} roleLabel="Admin" notificationTarget={notificationTarget} theme="admin">
+      <Shell nav={nav} tabs={tabs} roleLabel="Admin" notificationTarget={notificationTarget} theme="admin">
         {page}
       </Shell>
     </LookupsProvider>
