@@ -915,3 +915,10 @@ test('self-marked work: the learner sees the mark scheme after handing in and gi
   assert.equal((await as('TC', `select * from notifications where kind = 'self_marked'`)).length, 1);
   await fails(as('L2', `select save_self_marks($1, '{}')`, [t.id]), /Attempt not found/);
 });
+
+test('calendar: only the server reads a feed', async () => {
+  const tok = await val('TC', `select my_calendar_token()`);
+  assert.equal(tok.length, 36);
+  await fails(as('TC', `select calendar_feed($1)`, [tok]), /permission denied/);
+  await fails(as('A', `select my_calendar_token()`), /Tutors and learners only/);
+});

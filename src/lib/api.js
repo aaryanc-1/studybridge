@@ -494,6 +494,11 @@ export const getStudyNotes = (learnerId = null) => run(sb().from('study_notes').
 export const saveStudyNotes = (subjectId, body) =>
   run(sb().from('study_notes').upsert({ learner_id: uid(), subject_id: subjectId, body_md: body, updated_at: new Date().toISOString() }, { onConflict: 'learner_id,subject_id' }));
 export const logStudy = (seconds, subjectId = null) => logTime('study', subjectId, seconds);
+export async function calendarLink(reset = false) {
+  const token = await run(sb().rpc('my_calendar_token', { p_reset: reset }));
+  const s = getServer();
+  return s && token ? `${s.url}/functions/v1/prof?calendar=${token}` : null;
+}
 export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks', { p_attempt: attemptId, p_marks: marks }));
 
 // ---------------- syllabus & coverage ----------------

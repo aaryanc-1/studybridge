@@ -365,8 +365,9 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
     }
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v);
-    const r = await prof(new Request(base + url.pathname, { method: req.method, headers, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : raw }));
+    const r = await prof(new Request(base + url.pathname + url.search, { method: req.method, headers, body: req.method === 'GET' || req.method === 'HEAD' ? undefined : raw }));
     const text = await r.text();
+    if (!(r.headers.get('content-type') || '').includes('json')) return [r.status, Buffer.from(text), r.headers.get('content-type') || 'text/plain'];
     return [r.status, text ? JSON.parse(text) : null];
   }
 

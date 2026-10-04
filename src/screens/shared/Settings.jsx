@@ -24,6 +24,7 @@ export default function Settings() {
   return (
     <Page title="Settings" size="narrow">
       <Account />
+      {(isTutor || isLearner) && <CalendarLink />}
       {isTutor && <PhoneAlerts />}
       {isTutor && <PhoneApp />}
       {isTutor && <LiveKeys />}
@@ -400,6 +401,55 @@ function ClaudeConnector() {
           </div>
         </li>
       </ol>
+    </Section>
+  );
+}
+
+// A private link that puts lessons and due dates in the person's own calendar app
+function CalendarLink() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [link, setLink] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    api.calendarLink().then(setLink).catch((e) => setErr(e.message));
+  }, []);
+  const webcal = link ? link.replace(/^https?:/, 'webcal:') : '';
+  return (
+    <Section id="calendar" icon="calendar" title="Your calendar" sub="Live lessons and due dates in Google, Apple or Outlook calendar, in your own time zone. It updates by itself (calendar apps check every few hours).">
+      {err && <div className="error">{err}</div>}
+      {link && (
+        <>
+          <div className="row wrap">
+            <a className="btn primary" href={`https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal)}`} target="_blank" rel="noreferrer">
+              <Icon name="calendar" size={16} /> Add to Google Calendar
+            </a>
+            <a className="btn" href={webcal}>
+              Apple / Outlook calendar
+            </a>
+            <button className="btn" onClick={() => (copyText(link), toast('Calendar link copied'))}>
+              <Icon name="copy" size={16} /> Copy link
+            </button>
+          </div>
+          <div className="small muted">
+            Keep the link to yourself: anyone with it can see your lessons and due dates.{' '}
+            <button
+              className="linkbtn"
+              onClick={async () => {
+                if (!(await confirm({ title: 'Make a new link?', body: 'The old link stops working. Add the new one to your calendar again.', ok: 'New link' }))) return;
+                try {
+                  setLink(await api.calendarLink(true));
+                  toast('New calendar link made');
+                } catch (e) {
+                  toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Make a new link
+            </button>
+          </div>
+        </>
+      )}
     </Section>
   );
 }

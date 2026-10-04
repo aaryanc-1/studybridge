@@ -2901,6 +2901,53 @@ returns jsonb language sql stable security definer set search_path = public as $
 $$;
 
 -- =====================================================================
+-- 1.4: calendar link. Each person gets a private link their calendar app (Google, Apple,
+-- Outlook) subscribes to: live lessons and due dates, kept up to date. Served by the Prof server.
+-- =====================================================================
+alter table public.profiles add column if not exists calendar_token text;
+create unique index if not exists profiles_calendar_token on public.profiles (calendar_token) where calendar_token is not null;
+
+create or replace function public.my_calendar_token(p_reset boolean default false)
+returns text language plpgsql security definer set search_path = public as $$
+declare v text;
+begin
+  if public.my_role() not in ('tutor', 'learner') then raise exception 'Tutors and learners only.'; end if;
+  select calendar_token into v from public.profiles where id = auth.uid();
+  if v is null or p_reset then
+    v := encode(extensions.gen_random_bytes(18), 'hex');
+    update public.profiles set calendar_token = v where id = auth.uid();
+  end if;
+  return v;
+end $$;
+
+-- Only the Prof server calls this (with the token from the link)
+create or replace function public.calendar_feed(p_token text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare p public.profiles;
+begin
+  if p_token is null or length(p_token) < 20 then return null; end if;
+  select * into p from public.profiles where calendar_token = p_token;
+  if p.id is null or p.role not in ('tutor', 'learner') then return null; end if;
+  if p.role = 'tutor' and p.status <> 'active' then return null; end if;
+  return jsonb_build_object(
+    'name', 'StudyBridge · ' || p.display_name,
+    'events', coalesce((select jsonb_agg(e) from (
+      select jsonb_build_object('uid', 's-' || s.id, 'title', s.title, 'start', s.starts_at, 'end', s.starts_at + make_interval(mins => s.duration_min),
+                                'description', 'Live lesson on StudyBridge. Open the app to join.') e
+        from public.sessions s
+       where s.starts_at > now() - interval '60 days' and s.starts_at < now() + interval '400 days'
+         and ((p.role = 'tutor' and s.tutor_id = p.id) or (p.role = 'learner' and p.id = any (s.learner_ids)))
+      union all
+      select jsonb_build_object('uid', 'a-' || a.id, 'title', 'Due: ' || a.title, 'start', a.due_at, 'end', a.due_at + interval '15 minutes',
+                                'description', initcap(a.kind) || ' due on StudyBridge.')
+        from public.assignments a
+       where a.due_at is not null and not a.draft and a.source <> 'self'
+         and a.due_at > now() - interval '60 days' and a.due_at < now() + interval '400 days'
+         and ((p.role = 'tutor' and a.tutor_id = p.id) or (p.role = 'learner' and a.tutor_id = p.tutor_id and public._assignment_visible_to(a, p.id)))
+    ) z), '[]'));
+end $$;
+
+-- =====================================================================
 -- 1.4: crash reports, a fuller admin console (overview, notes, announcements,
 -- feedback inbox, sign-up answers, app versions, minimum version, health)
 -- =====================================================================
@@ -3209,6 +3256,7 @@ revoke execute on function public.notify_user(uuid, text, text, text, jsonb) fro
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 revoke execute on function public._make_admin(text, uuid) from public, anon, authenticated, service_role;
 revoke execute on function public._prof_alert(uuid) from public, anon, authenticated;
+revoke execute on function public.calendar_feed(text) from public, anon, authenticated;
 revoke execute on function public.make_admin(text) from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------

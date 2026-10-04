@@ -1033,9 +1033,44 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
 
   const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...CORS, 'content-type': 'application/json' } });
 
+  // A person's calendar link (live lessons and due dates) for Google / Apple / Outlook calendar
+  const icsText = (t) => String(t || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const icsTime = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const fold = (line) => {
+    const out = [];
+    let s = line;
+    while (s.length > 74) {
+      out.push(s.slice(0, 74));
+      s = ' ' + s.slice(74);
+    }
+    out.push(s);
+    return out.join('\r\n');
+  };
+  async function calendar(token) {
+    let feed = null;
+    try {
+      feed = await rpc('calendar_feed', { p_token: token });
+    } catch {
+      feed = null;
+    }
+    if (!feed) return new Response('Calendar not found. Get a new link in StudyBridge → Settings.', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    const now = icsTime(new Date());
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//StudyBridge//Calendar//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${icsText(feed.name)}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H'];
+    for (const e of feed.events || []) {
+      lines.push('BEGIN:VEVENT', `UID:${e.uid}@studybridge`, `DTSTAMP:${now}`, `DTSTART:${icsTime(e.start)}`, `DTEND:${icsTime(e.end)}`, `SUMMARY:${icsText(e.title)}`, `DESCRIPTION:${icsText(e.description)}`, 'END:VEVENT');
+    }
+    lines.push('END:VCALENDAR');
+    return new Response(lines.map(fold).join('\r\n') + '\r\n', {
+      status: 200,
+      headers: { 'content-type': 'text/calendar; charset=utf-8', 'cache-control': 'max-age=900', 'content-disposition': 'inline; filename="studybridge.ics"' },
+    });
+  }
+
   return async function handle(req) {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     if (!SB || !KEY) return json({ error: 'Prof is missing its Supabase settings.' }, 500);
+    const reqUrl = new URL(req.url);
+    if (req.method === 'GET' && reqUrl.searchParams.get('calendar')) return calendar(reqUrl.searchParams.get('calendar'));
     let body = {};
     try {
       body = await req.json();
