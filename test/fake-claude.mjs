@@ -66,6 +66,33 @@ function reply(body) {
       ],
     };
   }
+  if (tools.includes('save_plan')) {
+    const ib = /IB Diploma/.test(body.messages[0].content);
+    const components = ib
+      ? [
+          { paper: '1', level: 'SL', name: 'Paper 1 (no calculator)', duration_min: 90, marks: 80, writable: true, structure: 'Section A short; Section B long' },
+          { paper: '1', level: 'HL', name: 'Paper 1 (no calculator)', duration_min: 120, marks: 110, writable: true, structure: 'Section A short; Section B long' },
+          { paper: '3', level: 'HL', name: 'Paper 3', duration_min: 75, marks: 55, writable: false, why_not: 'Built on extended investigations' },
+        ]
+      : [
+          { paper: '2', name: 'Paper 2 (Core)', duration_min: 75, marks: 60, writable: true, structure: 'Short-answer questions, calculator' },
+          { paper: '4', name: 'Paper 4 (Extended)', duration_min: 150, marks: 120, writable: true, structure: 'Structured questions, calculator' },
+          { paper: '6', name: 'Paper 6 (Investigation and modelling)', writable: false, why_not: 'Needs extended investigation tasks' },
+        ];
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_plan', { components, note: 'Syllabus for 2025–2027.' })] };
+  }
+  if (tools.includes('save_outline')) {
+    const questions = Array.from({ length: 8 }, (_, i) => ({ label: String(i + 1), topic: i < 4 ? 'Number' : 'Algebra', marks: 2, plan: `Part ${i + 1}` }));
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_outline', { title: 'Practice paper', duration_min: 75, total_marks: 16, instructions: 'Answer all questions.', questions })] };
+  }
+  if (tools.includes('save_items')) {
+    const want = (body.messages[0].content.match(/Write these parts in full now: (.*)\./) || [])[1] || '1';
+    const items = want.split(',').map((l) => l.trim()).map((label) => {
+      const k = Number(label);
+      return { label, prompt: `Work out $${k} \\times 7$.`, type: 'numeric', answer: String(k === 3 ? 22 : k * 7), marks: 2, topic: k <= 4 ? 'Number' : 'Algebra', mark_scheme: 'M1 A1', solution: `$${k} \\times 7 = ${k * 7}$` };
+    });
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_items', { items })] };
+  }
   if (tools.includes('save_cards')) {
     const want = Number((body.messages[0].content.match(/Write (\d+) flashcards/) || [])[1] || 5);
     const list = Array.from({ length: want }, (_, i) => ({ front: `Card ${i + 1}: what is $${i + 2}^2$?`, back: `$${(i + 2) ** 2}$` }));

@@ -1872,7 +1872,8 @@ begin
   if not exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null) then
     return 'Prof isn’t switched on yet. (The StudyBridge admin adds the Claude key in Admin.)';
   end if;
-  if public._prof_month_cents(p_tutor) >= public._prof_limit(p_tutor) then
+  if public._prof_month_cents(p_tutor) >= public._prof_limit(p_tutor)
+     and not exists (select 1 from public.profiles where id = p_tutor and role = 'admin') then
     return 'Prof is unavailable right now. StudyBridge has been told and will sort it out.';
   end if;
   return null;
@@ -2298,7 +2299,8 @@ returns setof public.prof_jobs language sql security definer set search_path = p
   update public.prof_jobs j set status = 'running', lease_until = now() + interval '170 seconds', updated_at = now()
    where j.id = (select id from public.prof_jobs
                   where status = 'queued' and (lease_until is null or lease_until < now()) and (p_job is null or id = p_job)
-                  order by created_at limit 1 for update skip locked)
+                  -- tutors' requests first; StudyBridge's paper sets in the background, one paper finished before the next starts
+                  order by (kind = 'paper'), (state = '{}'::jsonb), created_at limit 1 for update skip locked)
   returning j.*
 $$;
 
@@ -2946,6 +2948,168 @@ begin
          and ((p.role = 'tutor' and a.tutor_id = p.id) or (p.role = 'learner' and a.tutor_id = p.tutor_id and public._assignment_visible_to(a, p.id)))
     ) z), '[]'));
 end $$;
+
+-- =====================================================================
+-- 1.4: StudyBridge practice papers. Original papers Prof writes in the exact format of each
+-- exam paper (never copies of real papers), approved by the StudyBridge admin, then shared
+-- with every tutor. Written in the background, one job per paper, with an automatic check.
+-- =====================================================================
+create table if not exists public.sb_paper_plans (
+  board text not null,
+  code text not null,
+  components jsonb not null default '[]',
+  note text,
+  updated_at timestamptz not null default now(),
+  primary key (board, code)
+);
+create table if not exists public.sb_papers (
+  id uuid primary key default gen_random_uuid(),
+  board text not null check (board in ('cie', 'ib')),
+  code text not null,
+  level text,
+  paper text not null,
+  number int not null default 1,
+  title text,
+  duration_min int,
+  total_marks numeric,
+  instructions_md text,
+  items jsonb not null default '[]',
+  status text not null default 'writing' check (status in ('writing', 'review', 'approved', 'rejected', 'failed')),
+  check_note text,
+  flagged int not null default 0,
+  job_id uuid references public.prof_jobs (id) on delete set null,
+  uses int not null default 0,
+  created_at timestamptz not null default now(),
+  approved_at timestamptz
+);
+create index if not exists idx_sb_papers_slot on public.sb_papers (board, code, level, paper);
+alter table public.sb_paper_plans enable row level security;
+alter table public.sb_papers enable row level security;
+revoke all on public.sb_paper_plans from anon, authenticated;
+revoke all on public.sb_papers from anon, authenticated;
+grant select on public.sb_papers to authenticated;
+drop policy if exists sb_papers_read on public.sb_papers;
+create policy sb_papers_read on public.sb_papers for select using (public.is_platform_admin() or (status = 'approved' and public._tutor_active()));
+
+create or replace function public._admin_prof() returns uuid
+language plpgsql stable security definer set search_path = public as $$
+declare v_err text;
+begin
+  perform public._admin();
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  return auth.uid();
+end $$;
+
+-- Step 1: Prof works out which written papers a syllabus has (and which can't be written as text)
+create or replace function public.admin_paper_plan(p_board text, p_codes text[], p_labels text[])
+returns int language plpgsql security definer set search_path = public as $$
+declare
+  i int;
+  me uuid := public._admin_prof();
+begin
+  if p_board not in ('cie', 'ib') then raise exception 'Unknown exam board.'; end if;
+  for i in 1 .. coalesce(array_length(p_codes, 1), 0) loop
+    if exists (select 1 from public.prof_jobs where kind = 'paper' and status in ('queued', 'running')
+                and context ->> 'mode' = 'plan' and context ->> 'code' = p_codes[i]) then continue; end if;
+    insert into public.prof_jobs (tutor_id, kind, prompt, context)
+    values (me, 'paper', 'Work out the papers for ' || p_labels[i],
+            jsonb_build_object('mode', 'plan', 'board', p_board, 'code', p_codes[i], 'label', p_labels[i]));
+  end loop;
+  perform public._prof_kick();
+  return coalesce(array_length(p_codes, 1), 0);
+end $$;
+
+-- Step 2: write papers. p_slots: [{board, code, label, level, paper, name, count}]
+create or replace function public.admin_write_papers(p_slots jsonb)
+returns int language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := public._admin_prof();
+  sl jsonb;
+  k int;
+  n int := 0;
+  v_num int;
+  v_paper uuid;
+  v_job uuid;
+begin
+  for sl in select * from jsonb_array_elements(coalesce(p_slots, '[]')) loop
+    for k in 1 .. greatest(0, least(coalesce((sl ->> 'count')::int, 0), 10)) loop
+      select coalesce(max(number), 0) + 1 into v_num from public.sb_papers
+       where board = sl ->> 'board' and code = sl ->> 'code' and paper = sl ->> 'paper' and level is not distinct from nullif(sl ->> 'level', '');
+      insert into public.sb_papers (board, code, level, paper, number, title)
+      values (sl ->> 'board', sl ->> 'code', nullif(sl ->> 'level', ''), sl ->> 'paper', v_num,
+              left(format('StudyBridge practice paper %s · %s', v_num, coalesce(sl ->> 'name', 'Paper ' || (sl ->> 'paper'))), 200))
+      returning id into v_paper;
+      insert into public.prof_jobs (tutor_id, kind, prompt, context)
+      values (me, 'paper', left(format('Practice paper %s for %s %s', v_num, sl ->> 'label', coalesce(sl ->> 'name', 'Paper ' || (sl ->> 'paper'))), 300),
+              jsonb_build_object('mode', 'write', 'paper_id', v_paper, 'board', sl ->> 'board', 'code', sl ->> 'code', 'label', sl ->> 'label',
+                                 'level', nullif(sl ->> 'level', ''), 'paper', sl ->> 'paper', 'name', sl ->> 'name', 'number', v_num,
+                                 'duration_min', sl -> 'duration_min', 'marks', sl -> 'marks', 'structure', sl ->> 'structure'))
+      returning id into v_job;
+      update public.sb_papers set job_id = v_job where id = v_paper;
+      n := n + 1;
+    end loop;
+  end loop;
+  perform public._prof_kick();
+  return n;
+end $$;
+
+create or replace function public.admin_papers() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return jsonb_build_object(
+    'plans', coalesce((select jsonb_agg(jsonb_build_object('board', board, 'code', code, 'components', components, 'note', note, 'updated_at', updated_at)) from public.sb_paper_plans), '[]'),
+    'papers', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'board', p.board, 'code', p.code, 'level', p.level, 'paper', p.paper, 'number', p.number,
+        'title', p.title, 'status', p.status, 'flagged', p.flagged, 'check_note', p.check_note, 'total_marks', p.total_marks, 'items', jsonb_array_length(p.items),
+        'uses', p.uses, 'created_at', p.created_at, 'job_status', j.status, 'job_progress', j.progress, 'job_error', j.error) order by p.board, p.code, p.level, p.paper, p.number)
+      from public.sb_papers p left join public.prof_jobs j on j.id = p.job_id), '[]'),
+    -- what a paper has cost so far on average (for the estimate before writing more)
+    'avg_cents', (select round(avg(c.cents), 2) from (
+        select sum(pc.cost_cents) cents from public.prof_costs pc join public.prof_jobs j on j.id = pc.job_id
+         where j.kind = 'paper' and j.context ->> 'mode' = 'write' and j.status = 'done' group by j.id) c),
+    'model', (select prof_model from public.app_config where id = 1));
+end $$;
+
+create or replace function public.admin_paper_status(p_ids uuid[], p_status text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_status not in ('approved', 'rejected', 'review') then raise exception 'Unknown status.'; end if;
+  update public.sb_papers set status = p_status, approved_at = case when p_status = 'approved' then now() end
+   where id = any (p_ids) and status in ('review', 'approved', 'rejected');
+end $$;
+
+-- Fix one part of a paper (e.g. one the check flagged): its answer, mark scheme or worked solution
+create or replace function public.admin_paper_item(p_id uuid, p_index int, p_patch jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  it jsonb;
+  allowed jsonb;
+begin
+  perform public._admin();
+  select items -> p_index into it from public.sb_papers where id = p_id;
+  if it is null then raise exception 'That part isn’t there.'; end if;
+  select coalesce(jsonb_object_agg(key, value), '{}') into allowed from jsonb_each(coalesce(p_patch, '{}'))
+   where key in ('prompt', 'answer', 'mark_scheme', 'solution', 'marks');
+  it := (it || allowed) - 'check' || jsonb_build_object('check', jsonb_build_object('ok', true, 'note', 'Fixed by StudyBridge'));
+  update public.sb_papers set items = jsonb_set(items, array[p_index::text], it),
+         flagged = (select count(*) from jsonb_array_elements(jsonb_set(items, array[p_index::text], it)) x where x -> 'check' ->> 'ok' = 'false')
+   where id = p_id;
+end $$;
+
+create or replace function public.admin_delete_paper(p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.prof_jobs set status = 'cancelled' where id = (select job_id from public.sb_papers where id = p_id) and status in ('queued', 'running');
+  delete from public.sb_papers where id = p_id;
+end $$;
+
+create or replace function public.paper_used(p_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.sb_papers set uses = uses + 1 where id = p_id and status = 'approved' and public._tutor_active()
+$$;
 
 -- =====================================================================
 -- 1.4: crash reports, a fuller admin console (overview, notes, announcements,

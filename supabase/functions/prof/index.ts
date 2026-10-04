@@ -879,6 +879,221 @@ Rules: one idea per card; the front is a short prompt (a question, key term, "fo
     });
   }
 
+  // ---------------- StudyBridge practice papers ----------------
+  const PLAN_TOOL = {
+    name: 'save_plan',
+    description: 'The written exam papers this syllabus has, as they are assessed now.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        components: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              paper: { type: 'string', description: 'Paper number/code as the board uses it, e.g. "1", "2", "4", "3"' },
+              level: { type: 'string', description: 'IB only: "SL" or "HL" (one entry per level that sits this paper). Empty for IGCSE.' },
+              name: { type: 'string', description: 'e.g. "Paper 4 (Extended)", "Paper 1 (no calculator)"' },
+              duration_min: { type: 'integer' },
+              marks: { type: 'integer' },
+              writable: { type: 'boolean', description: 'false if it can’t be written well as text: listening/audio, practical, coursework/IA, set-text or case-study material we can’t supply, or source papers that need real historical documents' },
+              why_not: { type: 'string', description: 'If not writable: why, in a few words' },
+              structure: { type: 'string', description: 'Sections, number and style of questions, calculator rules: enough to write a paper in this exact format' },
+            },
+            required: ['paper', 'name', 'writable'],
+          },
+        },
+        note: { type: 'string', description: 'Which syllabus version/exam years this is for; anything to check' },
+      },
+      required: ['components'],
+    },
+  };
+  const OUTLINE_TOOL = {
+    name: 'save_outline',
+    description: 'The plan of the paper before writing it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        duration_min: { type: 'integer' },
+        total_marks: { type: 'integer' },
+        instructions: { type: 'string', description: 'Instructions to candidates, as on the front of a real paper (Markdown)' },
+        questions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'e.g. "1", "2(a)", "2(b)(i)", "Section A, Q3"' },
+              topic: { type: 'string' },
+              marks: { type: 'number' },
+              plan: { type: 'string', description: 'What this part asks, in a few words' },
+            },
+            required: ['label', 'marks', 'plan'],
+          },
+        },
+      },
+      required: ['questions', 'total_marks'],
+    },
+  };
+  const ITEMS_TOOL = {
+    name: 'save_items',
+    description: 'Fully written parts of the paper, in order.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              stem: { type: 'string', description: 'Shared lead-in for a multi-part question; only on its first part' },
+              prompt: { type: 'string', description: 'The part’s question (Markdown, LaTeX in $...$)' },
+              type: { type: 'string', enum: ['numeric', 'mcq', 'steps', 'short', 'upload'] },
+              options: { type: 'array', items: { type: 'string' }, description: 'mcq only' },
+              correct: { type: 'array', items: { type: 'integer' }, description: 'mcq only: zero-based correct indexes' },
+              answer: { type: 'string', description: 'numeric: the number; steps: final line in LaTeX; short: model answer; upload (long/extended answers): leave empty' },
+              tolerance: { type: 'number' },
+              unit: { type: 'string' },
+              marks: { type: 'number' },
+              topic: { type: 'string' },
+              mark_scheme: { type: 'string', description: 'Exam-board style (M1/A1/B1 for maths; marking points/levels for essays)' },
+              solution: { type: 'string', description: 'A worked solution or model answer' },
+            },
+            required: ['label', 'prompt', 'type', 'marks', 'mark_scheme'],
+          },
+        },
+      },
+      required: ['items'],
+    },
+  };
+  const paperWhere = (c) => `${c.board === 'ib' ? 'IB Diploma' : 'Cambridge IGCSE'} ${c.label || c.code}${c.level ? ' ' + c.level : ''} ${c.name || 'Paper ' + c.paper}`;
+  const PAPER_RULES = `Rules:
+- ENTIRELY ORIGINAL: new questions, numbers, contexts and texts. Never reproduce, adapt or lightly reword a real past-paper question you remember.
+- Same format as the real paper: sections, number of questions and parts, marks per part, total marks, command terms, difficulty curve, calculator rules.
+- Text only: no diagrams, graphs or images. Where the real paper would use a diagram, describe it fully in words or choose a question that doesn't need one.
+- Never invent quotations from real people, publications or historical documents. Reading passages you write must be clearly fictional or general (no real named authors).
+- Markdown with LaTeX in $...$ and $$...$$ (never \\( \\)).`;
+
+  async function stepPaper(job, cfg) {
+    const c = job.context || {};
+    if (job.steps >= MAX_STEPS) throw new Error('Prof stopped: this paper took too many steps.');
+    if (c.mode === 'plan') {
+      await save(job, 'running', { p_progress: 'Working out the papers…', p_input: 0 });
+      const res = await claude(cfg, {
+        max_tokens: 5000,
+        system: `You know exam assessment structures. List the written examination papers of ${c.board === 'ib' ? 'the IB Diploma subject' : 'Cambridge IGCSE syllabus'} ${c.label} as currently assessed (latest syllabus), with duration, marks and the structure of each. For the IB, give one entry per level (SL/HL) that sits each paper. Mark as not writable anything that can't be written well as plain text (listening, practical, coursework/IA, papers built on pre-released or set texts/case studies we can't supply, source-based papers that need real historical documents).`,
+        tools: [PLAN_TOOL],
+        tool_choice: { type: 'tool', name: 'save_plan' },
+        messages: [{ role: 'user', content: `Exam: ${c.label} (${c.board === 'ib' ? 'IB Diploma' : 'Cambridge IGCSE ' + c.code})` }],
+      });
+      const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_plan');
+      const comps = (call?.input?.components || []).filter((x) => x && x.paper).slice(0, 20).map((x) => ({
+        paper: String(x.paper).slice(0, 10), level: ['SL', 'HL'].includes(x.level) ? x.level : null, name: String(x.name || 'Paper ' + x.paper).slice(0, 100),
+        duration_min: Number.isFinite(x.duration_min) ? x.duration_min : null, marks: Number.isFinite(x.marks) ? x.marks : null,
+        writable: x.writable !== false, why_not: x.why_not ? String(x.why_not).slice(0, 200) : null, structure: String(x.structure || '').slice(0, 1500),
+      }));
+      if (!comps.length) throw new Error(`Prof couldn’t work out the papers for ${c.label}.`);
+      await rest(`sb_paper_plans?on_conflict=board,code`, {
+        method: 'POST', prefer: 'resolution=merge-duplicates',
+        body: { board: c.board, code: c.code, components: comps, note: String(call.input.note || '').slice(0, 500), updated_at: new Date().toISOString() },
+      });
+      await save(job, 'done', { ...usageArgs(cfg, res.usage), p_result: { reply: `${comps.length} papers for ${c.label}` }, p_progress: 'Done' });
+      return;
+    }
+    // writing one paper: outline, then the parts in batches, then an independent check
+    const paper = (await rest(`sb_papers?id=eq.${c.paper_id}&select=*`))[0];
+    if (!paper) {
+      await save(job, 'done', { p_result: { reply: 'Paper was deleted' }, p_progress: 'Deleted', p_input: 0 });
+      return;
+    }
+    const st = job.state && job.state.phase ? job.state : { phase: 'outline', next: 0 };
+    const where = paperWhere(c);
+    if (st.phase === 'outline') {
+      const others = await rest(`sb_papers?board=eq.${c.board}&code=eq.${encodeURIComponent(c.code)}&paper=eq.${encodeURIComponent(c.paper)}&id=neq.${paper.id}&select=items&limit=5`);
+      const seen = others.flatMap((p) => (p.items || []).map((i) => String(i.topic || '') + ': ' + String(i.prompt || '').slice(0, 60))).slice(0, 60);
+      const res = await claude(cfg, {
+        max_tokens: 5000,
+        system: `You are writing StudyBridge practice paper ${c.number} for ${where}${c.duration_min ? ` (${c.duration_min} minutes` + (c.marks ? `, ${c.marks} marks)` : ')') : ''}. First plan it.\n${PAPER_RULES}${c.structure ? `\nThe real paper's format: ${c.structure}` : ''}`,
+        tools: [OUTLINE_TOOL],
+        tool_choice: { type: 'tool', name: 'save_outline' },
+        messages: [{ role: 'user', content: `Plan the whole paper: every question and part with its marks, covering the syllabus like a real paper.${seen.length ? `\nOther StudyBridge papers for this already cover (vary from them):\n${seen.join('\n')}` : ''}` }],
+      });
+      const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_outline');
+      const qs = (call?.input?.questions || []).filter((x) => x && x.label).slice(0, 80);
+      if (!qs.length) throw new Error('Prof couldn’t plan this paper.');
+      await rest(`sb_papers?id=eq.${paper.id}`, {
+        method: 'PATCH',
+        body: { title: String(call.input.title || paper.title).slice(0, 200), duration_min: call.input.duration_min || c.duration_min || null, total_marks: call.input.total_marks || qs.reduce((a, q) => a + Number(q.marks || 0), 0), instructions_md: String(call.input.instructions || '').slice(0, 3000), items: [] },
+      });
+      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { phase: 'write', outline: qs, next: 0 }, p_progress: `Planned ${qs.length} parts; writing…` });
+      return;
+    }
+    if (st.phase === 'write') {
+      const batch = st.outline.slice(st.next, st.next + 6);
+      const res = await claude(cfg, {
+        max_tokens: 12000,
+        system: `You are writing StudyBridge practice paper ${c.number} for ${where}.\n${PAPER_RULES}
+Question types: numeric (one number: answer, tolerance if rounding, unit), mcq (options + correct indexes), steps (maths working; answer = final line in LaTeX), short (brief answer; answer = model answer), upload (extended/essay answers written on paper; give a full mark scheme and a model answer in solution).
+Give each part an exam-board style mark scheme and a worked solution. Double-check every answer.`,
+        tools: [ITEMS_TOOL],
+        tool_choice: { type: 'tool', name: 'save_items' },
+        messages: [{ role: 'user', content: `The paper's plan:\n${st.outline.map((q) => `${q.label} [${q.marks}] ${q.topic ? q.topic + ': ' : ''}${q.plan}`).join('\n')}\n\nWrite these parts in full now: ${batch.map((q) => q.label).join(', ')}.` }],
+      });
+      const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_items');
+      const items = (call?.input?.items || []).filter((x) => x && x.prompt).slice(0, 10).map((x) => ({
+        label: String(x.label || '').slice(0, 30), stem: x.stem ? String(x.stem).slice(0, 4000) : null, prompt: String(x.prompt).slice(0, 4000),
+        type: ['numeric', 'mcq', 'steps', 'short', 'upload'].includes(x.type) ? x.type : 'upload',
+        options: x.type === 'mcq' && Array.isArray(x.options) ? x.options.map((o) => String(o).slice(0, 500)).slice(0, 8) : [],
+        answer: x.type === 'mcq' ? { choices: (x.correct || []).filter((n) => Number.isInteger(n)) } : x.type === 'numeric' ? { value: String(x.answer || ''), tolerance: x.tolerance ? String(x.tolerance) : '0', unit: x.unit || '' } : x.type === 'steps' ? { final: String(x.answer || '') } : x.type === 'short' ? { text: String(x.answer || '') } : {},
+        marks: Number(x.marks) >= 0 ? Number(x.marks) : 1, topic: x.topic ? String(x.topic).slice(0, 120) : null,
+        mark_scheme: String(x.mark_scheme || '').slice(0, 4000), solution: x.solution ? String(x.solution).slice(0, 6000) : null,
+      }));
+      const now = (await rest(`sb_papers?id=eq.${paper.id}&select=items`))[0]?.items || [];
+      await rest(`sb_papers?id=eq.${paper.id}`, { method: 'PATCH', body: { items: [...now, ...items] } });
+      const next = st.next + batch.length;
+      const phase = next >= st.outline.length ? 'check' : 'write';
+      await save(job, 'queued', { ...usageArgs(cfg, res.usage), p_state: { ...st, phase, next }, p_progress: `Writing (${Math.min(next, st.outline.length)} of ${st.outline.length} parts)…` });
+      return;
+    }
+    // independent check of everything with a definite answer
+    const items = paper.items || [];
+    if (!items.length) throw new Error('Prof couldn’t write this paper.');
+    const checkable = items.map((x, i) => ({ ...x, n: i + 1 })).filter((x) => x.type !== 'upload');
+    let flagged = 0;
+    const notes = [];
+    let usage = {};
+    if (checkable.length) {
+      const res = await claude(cfg, {
+        max_tokens: 8000,
+        system: `You are a careful exam checker for ${where}. For each part, first solve it yourself, then compare with the stated answer and mark scheme. Agree only if the stated answer is correct, the mark scheme fits, and the part is clear and solvable from its text.`,
+        tools: [CHECK_TOOL],
+        tool_choice: { type: 'tool', name: 'submit_checks' },
+        messages: [{ role: 'user', content: JSON.stringify(checkable.map((x) => ({ number: x.n, label: x.label, stem: x.stem, question: x.prompt, type: x.type, options: x.options, marks: x.marks, stated_answer: x.answer, mark_scheme: x.mark_scheme }))) }],
+      });
+      usage = res.usage;
+      const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'submit_checks');
+      for (const x of call?.input?.checks || []) {
+        const it = items[x.number - 1];
+        if (!it) continue;
+        it.check = { ok: !!x.agrees, my_answer: String(x.my_answer || '').slice(0, 300), note: String(x.note || '').slice(0, 400) };
+        if (!x.agrees) {
+          flagged++;
+          notes.push(`${it.label}: ${it.check.note || 'answer disagrees'}`);
+        }
+      }
+    }
+    await rest(`sb_papers?id=eq.${paper.id}`, { method: 'PATCH', body: { items, status: 'review', flagged, check_note: notes.join('\n').slice(0, 2000) || null } });
+    const msg = `${paper.title || 'Practice paper'}: ${items.length} parts${flagged ? `; the check flagged ${flagged}` : '; the check agreed with every answer'}.`;
+    await save(job, 'done', {
+      ...usageArgs(cfg, usage),
+      p_state: { done: true },
+      p_result: { paper: { id: paper.id }, reply: msg },
+      p_progress: 'Ready to review',
+      ...(flagged ? { p_notify: { title: 'A StudyBridge paper needs a look', body: msg, ref: { paper_id: paper.id } } } : {}),
+    });
+  }
+
   // ---------------- marking ----------------
   const MARK_TOOL = {
     name: 'submit_marking',
@@ -993,6 +1208,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       else if (job.kind === 'report') await stepReport(job, cfg);
       else if (job.kind === 'syllabus') await stepSyllabus(job, cfg);
       else if (job.kind === 'cards') await stepCards(job, cfg);
+      else if (job.kind === 'paper') await stepPaper(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

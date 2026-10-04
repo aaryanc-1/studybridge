@@ -236,7 +236,7 @@ export default function AssignmentEditor({ id }) {
           <div className="row top">
             <Icon name={a.source === 'prof' ? 'cap' : 'spark'} style={{ color: 'var(--claude)', flexShrink: 0 }} />
             <div className="stack sm">
-              <div className="strong">Drafted by {a.source === 'prof' ? 'Prof' : 'Claude'}. Learners can’t see it yet.</div>
+              <div className="strong">{a.source === 'studybridge' ? 'A StudyBridge practice paper, copied for you' : `Drafted by ${a.source === 'prof' ? 'Prof' : 'Claude'}`}. Learners can’t see it yet.</div>
               <div className="small">Check the questions, answers and mark schemes, change anything you like, then press Approve & post. It follows the “Who sees it” setting once approved.</div>
             </div>
           </div>

@@ -499,6 +499,35 @@ export async function calendarLink(reset = false) {
   const s = getServer();
   return s && token ? `${s.url}/functions/v1/prof?calendar=${token}` : null;
 }
+// ---------------- StudyBridge practice papers ----------------
+export const adminPapers = () => run(sb().rpc('admin_papers'));
+export const adminPaperPlan = (board, codes, labels) => run(sb().rpc('admin_paper_plan', { p_board: board, p_codes: codes, p_labels: labels })).then((r) => (callProf().catch(() => {}), r));
+export const adminWritePapers = (slots) => run(sb().rpc('admin_write_papers', { p_slots: slots })).then((r) => (callProf().catch(() => {}), r));
+export const adminPaperStatus = (ids, status) => run(sb().rpc('admin_paper_status', { p_ids: ids, p_status: status }));
+export const adminDeletePaper = (id) => run(sb().rpc('admin_delete_paper', { p_id: id }));
+export const adminPaperItem = (id, index, patch) => run(sb().rpc('admin_paper_item', { p_id: id, p_index: index, p_patch: patch }));
+export const getSbPaper = (id) => run(sb().from('sb_papers').select('*').eq('id', id).maybeSingle());
+export const listSbPapers = (board, code) => run(sb().from('sb_papers').select('id,board,code,level,paper,number,title,duration_min,total_marks,status').eq('board', board).eq('code', code).eq('status', 'approved').order('paper').order('number'));
+// A StudyBridge paper → a draft test of the tutor's own (they check it, then give it to learners)
+export async function assignmentFromPaper(paper, { subject_id = null, topicIdFor = () => null } = {}) {
+  const a = await save('assignments', {
+    title: paper.title || 'StudyBridge practice paper', kind: 'test', subject_id, visibility: 'hidden', draft: true,
+    time_limit_min: paper.duration_min || null, instructions_md: paper.instructions_md || '', show_answers: true, source: 'studybridge',
+  });
+  await addQuestionsToAssignment(
+    a.id,
+    (paper.items || []).map((x) => ({
+      type: x.type === 'upload' ? 'upload' : x.type,
+      prompt_md: `${x.stem ? x.stem + '\n\n' : ''}**${x.label}** ${x.prompt}`,
+      options: x.options || [],
+      marks: x.marks,
+      topic_id: topicIdFor(x.topic),
+      key: { answer: x.answer || {}, mark_scheme_md: x.mark_scheme || '', solution_md: x.solution || '' },
+    })),
+  );
+  sb().rpc('paper_used', { p_id: paper.id }).then(() => {}, () => {});
+  return a;
+}
 export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks', { p_attempt: attemptId, p_marks: marks }));
 
 // ---------------- syllabus & coverage ----------------

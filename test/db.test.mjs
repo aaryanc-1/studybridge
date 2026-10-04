@@ -922,3 +922,22 @@ test('calendar: only the server reads a feed', async () => {
   await fails(as('TC', `select calendar_feed($1)`, [tok]), /permission denied/);
   await fails(as('A', `select my_calendar_token()`), /Tutors and learners only/);
 });
+
+test('StudyBridge papers: only approved ones reach tutors; only the admin writes or fixes them', async () => {
+  const pid = (await db.query(`insert into sb_papers (board, code, paper, number, status, items) values ('cie', '0607', '2', 9, 'review', $1) returning id`,
+    [JSON.stringify([{ label: '1', prompt: 'x', type: 'numeric', answer: { value: '1' }, marks: 1, check: { ok: false, note: 'wrong' } }])])).rows[0].id;
+  assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 0);
+  await fails(as('TC', `insert into sb_papers (board, code, paper) values ('cie', '0607', '2')`), /permission denied/);
+  await fails(as('TC', `select admin_paper_status($1, 'approved')`, [[pid]]), /admins only/);
+  await fails(as('TC', `select admin_write_papers('[]')`), /admins only/);
+  await as('A', `select admin_paper_item($1, 0, $2)`, [pid, { answer: { value: '2' }, owner: 'nope' }]);
+  const fixed = (await db.query(`select items, flagged from sb_papers where id = $1`, [pid])).rows[0];
+  assert.equal(fixed.items[0].answer.value, '2');
+  assert.equal(fixed.items[0].check.ok, true);
+  assert.equal(fixed.items[0].owner, undefined, 'only answer/mark scheme/solution/prompt/marks can change');
+  assert.equal(fixed.flagged, 0);
+  await as('A', `select admin_paper_status($1, 'approved')`, [[pid]]);
+  assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 1);
+  assert.equal((await as('LC', `select * from sb_papers where id = $1`, [pid])).length, 0, 'learners get papers only through their tutor');
+  await fails(as('TC', `select * from sb_paper_plans`), /permission denied/);
+});

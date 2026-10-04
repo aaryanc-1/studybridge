@@ -634,3 +634,18 @@ a.study-nudge { display: flex; align-items: center; gap: 14px; text-decoration: 
 .card-tile.pick input { position: absolute; top: 10px; right: 10px; }
 .card-tile.pick.off { opacity: 0.45; }
 .selfmark-q { background: var(--card, #fff); border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+
+/* StudyBridge practice papers */
+.paper-chip.sb { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sb-shelf { gap: 8px; }
+.paper-item { border-top: 1px solid var(--line-soft); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.paper-item.flagged { background: #FFF4F1; border-radius: 10px; padding: 10px; }
+.paper-item .label { min-width: 46px; }
+.paper-item .stem { color: var(--ink-2); }
+.paper-item .scheme { border-left: 3px solid var(--accent-tint); padding-left: 10px; display: flex; flex-direction: column; gap: 6px; }
+.mcq-list { margin: 6px 0 0; padding-left: 22px; }
+.mcq-list li.right { color: #1B6B3A; font-weight: 600; }
+.subject-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 12px; max-height: 320px; overflow-y: auto; }
+.subject-picks .pick { display: flex; gap: 6px; align-items: center; font-size: 13.5px; padding: 3px 0; cursor: pointer; }
+.subject-picks .pick.on { font-weight: 600; }
+table.papers-plan tr.quiet td { color: var(--muted); }

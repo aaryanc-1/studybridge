@@ -384,3 +384,38 @@ test('calendar link: lessons and due dates as a calendar feed; private per perso
   assert.equal((await get(lt)).status, 404, 'the old link stops working');
   void me;
 });
+
+test('StudyBridge practice papers: Prof works out the papers, writes them in the background, checks them; tutors see only approved ones', async () => {
+  const A = await admin();
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const no = await T.rpc('admin_paper_plan', { p_board: 'cie', p_codes: ['0607'], p_labels: ['International Mathematics'] });
+  assert.match(no.error.message, /admins only/);
+  await q(A.rpc('admin_paper_plan', { p_board: 'cie', p_codes: ['0607'], p_labels: ['International Mathematics'] }));
+  await kick(A);
+  let all = await q(A.rpc('admin_papers'));
+  const plan = all.plans.find((p) => p.code === '0607');
+  assert.equal(plan.components.length, 3);
+  assert.equal(plan.components.find((c) => c.paper === '6').writable, false);
+  // write 2 of Paper 2 (one job per paper; tutors' jobs would go first)
+  const n = await q(A.rpc('admin_write_papers', { p_slots: [{ board: 'cie', code: '0607', label: 'International Mathematics', paper: '2', name: 'Paper 2 (Core)', count: 2, structure: 'Short answers' }] }));
+  assert.equal(n, 2);
+  for (let i = 0; i < 14; i++) await kick(A);
+  all = await q(A.rpc('admin_papers'));
+  const ps = all.papers.filter((p) => p.code === '0607' && p.paper === '2');
+  assert.deepEqual(ps.map((p) => p.number), [1, 2]);
+  assert.ok(ps.every((p) => p.status === 'review' && p.items === 8), JSON.stringify(ps));
+  assert.equal(ps[0].flagged, 1, 'the deliberately wrong answer is flagged');
+  assert.match(ps[0].check_note, /^3:/);
+  assert.ok(Number(all.avg_cents) > 0, 'what a paper costs, for the next estimate');
+  // tutors see nothing until approved
+  assert.equal((await q(T.from('sb_papers').select('id'))).length, 0);
+  await q(A.rpc('admin_paper_status', { p_ids: [ps[0].id], p_status: 'approved' }));
+  const seen = await q(T.from('sb_papers').select('*'));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].items.length, 8);
+  assert.equal(seen[0].items[0].answer.value, '7');
+  await q(T.rpc('paper_used', { p_id: ps[0].id }));
+  const bad = await T.from('sb_papers').update({ status: 'approved' }).eq('id', ps[1].id).select();
+  assert.ok(bad.error || !bad.data.length, 'tutors can’t approve');
+});

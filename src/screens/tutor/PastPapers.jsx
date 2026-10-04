@@ -7,6 +7,7 @@ import * as X from '../../lib/exams.js';
 import { bytes, ago } from '../../lib/format.js';
 import { FileSettings } from './Library.jsx';
 import { useLookups } from '../shared/lookups.jsx';
+import { SbPaperShelf } from '../shared/SbPapers.jsx';
 
 const THIS_YEAR = new Date().getFullYear();
 const SESSION_MONTH = { m: 3, s: 5, w: 11, may: 5, nov: 11 };
@@ -157,9 +158,15 @@ export default function PastPapers() {
           )}
         </Empty>
       ) : board === 'cie' ? (
-        <CieSyllabus code={code} mine={mine.filter((f) => f.exam_board === 'cie' && f.exam_code === code)} onOpen={setPanel} />
+        <>
+          <SbPaperShelf board="cie" code={code} />
+          <CieSyllabus code={code} mine={mine.filter((f) => f.exam_board === 'cie' && f.exam_code === code)} onOpen={setPanel} />
+        </>
       ) : (
-        <IbSyllabus syl={syl} mine={mine.filter((f) => f.exam_board === 'ib' && f.exam_code === code)} onOpen={setPanel} />
+        <>
+          <SbPaperShelf board="ib" code={code} />
+          <IbSyllabus syl={syl} mine={mine.filter((f) => f.exam_board === 'ib' && f.exam_code === code)} onOpen={setPanel} />
+        </>
       )}
 
       {panel && <SlotPanel req={panel} files={files.data || []} onClose={() => setPanel(null)} />}

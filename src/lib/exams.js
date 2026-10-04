@@ -483,3 +483,8 @@ export function answerText(q) {
   return '';
 }
 export const DIFFICULTY = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
+
+// The subjects the International School of Lusaka teaches (IB list from ibo.org; IGCSE list is a
+// best guess to adjust). Used as the starting choice for StudyBridge practice papers.
+export const ISL_IB = ['math-aa', 'math-ai', 'business', 'biology', 'chemistry', 'physics', 'computer-science', 'economics', 'psychology', 'history', 'geography', 'english-a-langlit', 'french-b', 'spanish-b', 'french-ab', 'spanish-ab'];
+export const ISL_IGCSE = ['0500', '0511', '0475', '0580', '0607', '0606', '0610', '0620', '0625', '0478', '0450', '0455', '0460', '0470', '0520', '0530'];
