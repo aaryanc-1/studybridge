@@ -504,7 +504,7 @@ create table if not exists public.prof_alerts (
 );
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
-  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper'));
+  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards'));
 end $$;
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
@@ -1190,7 +1190,8 @@ begin
       'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
-      'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end),
+      'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end,
+      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at),
     'responses', coalesce((select jsonb_agg(jsonb_build_object(
         'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
         'marks', case when rel or is_tutor then r.marks end,
@@ -1198,10 +1199,11 @@ begin
         'feedback_md', case when rel or is_tutor then r.feedback_md end,
         'step_marks', case when rel or is_tutor then r.step_marks else '[]'::jsonb end,
         'annotation_path', case when rel or is_tutor then r.annotation_path end,
-        'mistake', case when rel or is_tutor then r.mistake end))
+        'mistake', case when rel or is_tutor then r.mistake end,
+        'self_marks', r.self_marks))
       from public.responses r where r.attempt_id = t.id), '[]'),
-    'keys', case when is_tutor or (rel and a.show_answers) then coalesce((select jsonb_agg(jsonb_build_object(
-        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor then k.mark_scheme_md end, 'solution_md', k.solution_md))
+    'keys', case when is_tutor or (rel and a.show_answers) or (a.self_mark and t.status <> 'in_progress') then coalesce((select jsonb_agg(jsonb_build_object(
+        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
       from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
       else '[]'::jsonb end
   );
@@ -1228,6 +1230,8 @@ begin
     select subject_id, topic_id into v_subject, v_topic from public.lessons where id = p_ref;
   elsif p_kind = 'file' then
     select subject_id, topic_id into v_subject, v_topic from public.files where id = p_ref;
+  elsif p_kind = 'study' then
+    select id into v_subject from public.subjects where id = p_ref;
   elsif p_kind <> 'session' then
     return;
   end if;
@@ -1504,6 +1508,7 @@ begin
     was_live := old.visibility = 'visible' and not coalesce((to_jsonb(old) ->> 'draft')::boolean, false);
   end if;
   if not is_live or was_live then return new; end if;
+  if tg_table_name = 'assignments' and new.source = 'self' then return new; end if;  -- practice the learner started
   if tg_table_name = 'assignments' then
     v_title := 'New ' || new.kind || ': ' || new.title;
   else
@@ -2509,6 +2514,391 @@ begin
       from public.profiles p join public.learner_subjects ls on ls.learner_id = p.id and ls.subject_id = p_subject
       where p.role = 'learner' and p.tutor_id = auth.uid()), '[]'));
 end $$;
+
+-- =====================================================================
+-- 1.4: self-study for learners. Everything they study is made or approved by their tutor
+-- (learners never use AI): flashcards (spaced repetition), mistake cards, practice from the
+-- tutor-approved question bank (daily quiz, a topic, worked example then "you try", timed drills),
+-- formula sheets, a revision plan and a daily goal with a streak.
+-- =====================================================================
+alter table public.profiles add column if not exists study_goal_min int not null default 10;
+-- Self-marking: the learner marks their own hand-in against the mark scheme first; the tutor then checks it
+alter table public.assignments add column if not exists self_mark boolean not null default false;
+alter table public.responses add column if not exists self_marks numeric;
+alter table public.attempts add column if not exists self_marked_at timestamptz;
+do $$ begin
+  alter table public.activity drop constraint if exists activity_kind_check;
+  alter table public.activity add constraint activity_kind_check check (kind in ('assignment', 'lesson', 'file', 'session', 'study'));
+end $$;
+
+-- ---------------- flashcards ----------------
+create table if not exists public.cards (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  learner_id uuid references public.profiles (id) on delete cascade,        -- null = everyone taking the subject
+  subject_id uuid references public.subjects (id) on delete cascade,
+  topic_id uuid references public.topics (id) on delete set null,
+  front_md text not null check (length(front_md) between 1 and 4000),
+  back_md text not null default '' check (length(back_md) <= 8000),
+  source text not null default 'tutor' check (source in ('tutor', 'prof', 'mistake', 'own')),
+  question_id uuid references public.questions (id) on delete cascade,
+  created_by uuid default auth.uid() references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_cards_tutor on public.cards (tutor_id, subject_id);
+create unique index if not exists cards_one_mistake on public.cards (learner_id, question_id) where source = 'mistake';
+alter table public.cards enable row level security;
+drop policy if exists cards_tutor on public.cards;
+create policy cards_tutor on public.cards for all
+  using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and source in ('tutor', 'prof')
+              and (learner_id is null or public.is_my_learner(learner_id))
+              and (subject_id is null or exists (select 1 from public.subjects s where s.id = subject_id and s.tutor_id = auth.uid())));
+drop policy if exists cards_learner_read on public.cards;
+create policy cards_learner_read on public.cards for select using (
+  tutor_id = public.my_tutor() and public.my_role() = 'learner'
+  and (learner_id = auth.uid()
+       or (learner_id is null and (subject_id is null or exists (select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = cards.subject_id)))));
+-- learners can make their own cards (no AI): only for themselves
+drop policy if exists cards_learner_own on public.cards;
+create policy cards_learner_own on public.cards for insert with check (
+  source = 'own' and learner_id = auth.uid() and created_by = auth.uid() and tutor_id = public.my_tutor() and public.my_role() = 'learner'
+  and (subject_id is null or exists (select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = cards.subject_id)));
+drop policy if exists cards_learner_edit on public.cards;
+create policy cards_learner_edit on public.cards for update using (source = 'own' and learner_id = auth.uid())
+  with check (source = 'own' and learner_id = auth.uid() and created_by = auth.uid());
+drop policy if exists cards_learner_delete on public.cards;
+create policy cards_learner_delete on public.cards for delete using (source in ('own', 'mistake') and learner_id = auth.uid());
+
+create table if not exists public.card_reviews (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  card_id uuid not null references public.cards (id) on delete cascade,
+  due_at timestamptz not null default now(),
+  interval_days numeric not null default 0,
+  ease numeric not null default 2.5,
+  reps int not null default 0,
+  lapses int not null default 0,
+  last_grade int,
+  last_at timestamptz,
+  primary key (learner_id, card_id)
+);
+alter table public.card_reviews enable row level security;
+revoke insert, update, delete on public.card_reviews from anon, authenticated;
+drop policy if exists card_reviews_read on public.card_reviews;
+create policy card_reviews_read on public.card_reviews for select using (learner_id = auth.uid() or public.is_my_learner(learner_id));
+
+-- One review: 0 = again, 1 = hard, 2 = good, 3 = easy (spaced repetition, SM-2 style)
+create or replace function public.review_card(p_card uuid, p_grade int)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  r public.card_reviews;
+  g int := greatest(0, least(3, coalesce(p_grade, 2)));
+  v_ease numeric;
+  v_int numeric;
+begin
+  if not exists (select 1 from public.cards c where c.id = p_card
+                  and c.tutor_id = public.my_tutor() and public.my_role() = 'learner'
+                  and (c.learner_id = auth.uid() or (c.learner_id is null and (c.subject_id is null or exists (
+                        select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = c.subject_id))))) then
+    raise exception 'Card not found.';
+  end if;
+  select * into r from public.card_reviews where learner_id = auth.uid() and card_id = p_card;
+  v_ease := coalesce(r.ease, 2.5);
+  if g = 0 then
+    v_ease := greatest(1.3, v_ease - 0.2);
+    v_int := 0;  -- again today (in 10 minutes)
+  else
+    v_ease := greatest(1.3, v_ease + case g when 1 then -0.15 when 2 then 0 else 0.15 end);
+    v_int := case
+      when coalesce(r.reps, 0) = 0 then case g when 1 then 1 when 2 then 1 else 3 end
+      when coalesce(r.reps, 0) = 1 then case g when 1 then 2 when 2 then 3 else 6 end
+      else round(greatest(1, r.interval_days) * case g when 1 then 1.2 when 2 then v_ease else v_ease * 1.3 end, 1) end;
+  end if;
+  insert into public.card_reviews as cr (learner_id, card_id, due_at, interval_days, ease, reps, lapses, last_grade, last_at)
+  values (auth.uid(), p_card, case when v_int = 0 then now() + interval '10 minutes' else now() + make_interval(days => ceil(v_int)::int) end,
+          v_int, v_ease, case when g = 0 then 0 else 1 end, case when g = 0 then 1 else 0 end, g, now())
+  on conflict (learner_id, card_id) do update set
+    due_at = excluded.due_at, interval_days = excluded.interval_days, ease = excluded.ease,
+    reps = case when g = 0 then 0 else cr.reps + 1 end, lapses = cr.lapses + case when g = 0 then 1 else 0 end,
+    last_grade = g, last_at = now()
+  returning * into r;
+  return to_jsonb(r);
+end $$;
+
+-- Mistake cards: every question a learner lost marks on (once it's marked and released) becomes a card.
+-- The back shows the worked solution only if the tutor lets them see answers for that work.
+create or replace function public.sync_mistake_cards()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if public.my_role() is distinct from 'learner' then return 0; end if;
+  insert into public.cards (tutor_id, learner_id, subject_id, topic_id, front_md, back_md, source, question_id, created_by)
+  select distinct on (q.id) a.tutor_id, auth.uid(), a.subject_id, coalesce(q.topic_id, a.topic_id),
+         left(coalesce(nullif(q.prompt_md, ''), '(question)'), 4000),
+         left(case when a.show_answers then
+                trim(both E'\n' from concat_ws(E'\n\n',
+                  case when q.type = 'mcq' then 'Answer: ' || (select string_agg(chr(65 + c::int) || ': ' || coalesce(
+                      case when jsonb_typeof(q.options) = 'array' then q.options ->> c::int else q.options -> 'items' ->> c::int end, '?'), ', ')
+                    from jsonb_array_elements_text(coalesce(k.answer -> 'choices', case when k.answer ? 'choice' then jsonb_build_array(k.answer -> 'choice') end)) c) end,
+                  case when k.answer ? 'value' then 'Answer: ' || (k.answer ->> 'value') || coalesce(' ' || (k.answer ->> 'unit'), '') end,
+                  case when k.answer ? 'final' then 'Answer: $' || (k.answer ->> 'final') || '$' end,
+                  case when k.answer ? 'text' then 'Answer: ' || (k.answer ->> 'text') end,
+                  nullif(k.solution_md, ''), case when nullif(r.feedback_md, '') is not null then 'Your tutor said: ' || r.feedback_md end))
+              else coalesce('Your tutor said: ' || nullif(r.feedback_md, ''), 'Look back at this question in your marked work, or ask your tutor.') end, 8000),
+         'mistake', q.id, auth.uid()
+    from public.responses r
+    join public.attempts t on t.id = r.attempt_id
+    join public.questions q on q.id = r.question_id
+    join public.assignments a on a.id = t.assignment_id
+    left join public.question_keys k on k.question_id = q.id
+   where r.learner_id = auth.uid() and r.marks is not null and r.marks < q.marks and q.marks > 0
+     and t.status in ('marked', 'returned') and public._is_released(t)
+     and q.image_path is null
+     and not exists (select 1 from public.cards c where c.learner_id = auth.uid() and c.question_id = q.id and c.source = 'mistake')
+   order by q.id, t.submitted_at desc
+  on conflict do nothing;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- Ask Prof for flashcards on a topic. They come back for the tutor to pick from; nothing reaches learners until then.
+create or replace function public.prof_cards(p_subject uuid, p_topic text, p_count int default 12, p_note text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+  s public.subjects;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  select * into s from public.subjects where id = p_subject and tutor_id = auth.uid();
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if length(trim(coalesce(p_topic, ''))) < 2 then raise exception 'Choose a topic.'; end if;
+  if p_count is null or p_count < 1 or p_count > 40 then raise exception 'Ask for 1 to 40 cards.'; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'cards', format('%s flashcards on %s', p_count, left(trim(p_topic), 120)),
+    jsonb_build_object('subject_id', s.id, 'subject', s.name, 'exam', s.exam, 'topic', left(trim(p_topic), 200), 'count', p_count, 'note', left(coalesce(p_note, ''), 500)))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+-- ---------------- practice the learner starts themselves ----------------
+-- Built from the tutor's approved question bank (their own questions + StudyBridge's shared ones),
+-- auto-marked questions only, any number of tries, answers shown straight away.
+create or replace function public.start_practice(p_mode text, p_subject uuid default null, p_topic text default null,
+  p_count int default 5, p_minutes int default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v_subjects uuid[];
+  v_codes text[];
+  v_weak text[];
+  v_today date;
+  v_id uuid;
+  v_ex public.bank_questions;
+  v_title text;
+  v_instr text := '';
+  v_subject uuid := p_subject;
+  n int := greatest(1, least(coalesce(p_count, 5), 20));
+  b public.bank_questions;
+  qid uuid;
+  i int := 0;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.role is distinct from 'learner' then raise exception 'For learners.'; end if;
+  if not public._tutor_active(me.tutor_id) then raise exception 'Practice isn’t available right now.'; end if;
+  if p_mode not in ('daily', 'topic', 'learn', 'drill') then raise exception 'Unknown practice.'; end if;
+  v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = me.timezone), 'UTC'))::date;
+  -- one daily quiz a day
+  if p_mode = 'daily' then
+    select id into v_id from public.assignments
+     where tutor_id = me.tutor_id and source = 'self' and learner_ids = array[me.id] and title = 'Daily quiz · ' || to_char(v_today, 'DD Mon')
+     order by created_at desc limit 1;
+    if v_id is not null then return jsonb_build_object('assignment_id', v_id, 'existing', true); end if;
+    n := 5;
+  end if;
+  select array_agg(ls.subject_id) into v_subjects from public.learner_subjects ls where ls.learner_id = me.id;
+  if v_subject is not null and not (v_subject = any (coalesce(v_subjects, '{}'))) then raise exception 'Unknown subject.'; end if;
+  select array_agg(split_part(s.exam, ':', 2)) into v_codes from public.subjects s
+   where s.id = any (coalesce(case when v_subject is not null then array[v_subject] else v_subjects end, '{}')) and s.exam is not null;
+  -- topics this learner finds hard come first in the daily quiz
+  select array_agg(lower(x ->> 'topic')) into v_weak from jsonb_array_elements(public._learner_topics(me.id, true, null)) x
+   where x ->> 'strength' in ('weak', 'developing');
+
+  -- worked example first: one with a written solution
+  if p_mode = 'learn' then
+    select bq.* into v_ex from public.bank_questions bq
+     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+       and bq.type in ('mcq', 'numeric') and bq.image_path is null
+       and ((v_subject is null and (bq.subject_id = any (coalesce(v_subjects, '{}')) or bq.exam_code = any (coalesce(v_codes, '{}'))))
+            or (v_subject is not null and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))))
+       and (p_topic is null or lower(bq.topic) = lower(trim(p_topic)))
+       and nullif(bq.solution_md, '') is not null
+     order by random() limit 1;
+    if v_ex.id is null then raise exception 'There’s no worked example for this topic yet. Try “Practise a topic” instead.'; end if;
+    v_instr := E'**Worked example**\n\n' || v_ex.prompt_md || E'\n\n**Solution**\n\n' || v_ex.solution_md || E'\n\n---\n\n**Now you try** the questions below. Same idea, different numbers.';
+  end if;
+  create temporary table if not exists _picked (bid uuid, ord int) on commit drop;
+  delete from _picked;
+  insert into _picked
+  select bq.id, row_number() over () from (
+    select bq.id from public.bank_questions bq
+     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+       and bq.type in ('mcq', 'numeric') and bq.image_path is null
+       and ((v_subject is null and (bq.subject_id = any (coalesce(v_subjects, '{}')) or bq.exam_code = any (coalesce(v_codes, '{}'))))
+            or (v_subject is not null and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))))
+       and (p_topic is null or lower(bq.topic) = lower(trim(p_topic)))
+       and bq.id is distinct from v_ex.id
+     order by case when p_mode = 'daily' and lower(bq.topic) = any (coalesce(v_weak, '{}')) then 0 else 1 end, random()
+     limit n) bq;
+  if not exists (select 1 from _picked) then
+    raise exception '%', case when p_mode = 'learn' then 'There aren’t enough questions on this topic yet for “you try”.'
+                              else 'There aren’t any practice questions for this yet. Ask your tutor to add some to the question bank.' end;
+  end if;
+  if v_subject is null then
+    select coalesce(bq.subject_id, (select s.id from public.subjects s where s.id = any (coalesce(v_subjects, '{}')) and split_part(s.exam, ':', 2) = bq.exam_code limit 1))
+      into v_subject from public.bank_questions bq join _picked p on p.bid = bq.id order by p.ord limit 1;
+  end if;
+  v_title := case p_mode
+    when 'daily' then 'Daily quiz · ' || to_char(v_today, 'DD Mon')
+    when 'learn' then 'Worked example: ' || coalesce(nullif(trim(p_topic), ''), 'mixed')
+    when 'drill' then 'Timed drill' || coalesce(': ' || nullif(trim(p_topic), ''), '') || coalesce(' · ' || p_minutes || ' min', '')
+    else 'Practice: ' || coalesce(nullif(trim(p_topic), ''), 'mixed') end;
+  insert into public.assignments (tutor_id, title, kind, practice, subject_id, learner_ids, visibility, draft, max_attempts,
+     release_mode, show_answers, time_limit_min, lockdown, camera, allow_notes, source, instructions_md)
+  values (me.tutor_id, left(v_title, 200), 'quiz', true, v_subject, array[me.id], 'visible', false, 50,
+     'on_submit', true, case when p_mode = 'drill' then greatest(1, least(coalesce(p_minutes, 10), 180)) end, false, false, true, 'self', v_instr)
+  returning id into v_id;
+  for b in select bq.* from public.bank_questions bq join _picked p on p.bid = bq.id order by p.ord loop
+    insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+    values (v_id, me.tutor_id, i, b.type, b.prompt_md, b.options, b.marks,
+            (select t.id from public.topics t where t.tutor_id = me.tutor_id and lower(t.name) = lower(b.topic)
+               and (t.subject_id = v_subject or v_subject is null) limit 1))
+    returning id into qid;
+    insert into public.question_keys (question_id, tutor_id, answer, mark_scheme_md, solution_md)
+    values (qid, me.tutor_id, b.answer, b.mark_scheme_md, b.solution_md);
+    i := i + 1;
+  end loop;
+  update public.bank_questions set uses = uses + 1 where id in (select bid from _picked) or id = v_ex.id;
+  return jsonb_build_object('assignment_id', v_id, 'questions', i);
+end $$;
+
+-- Topics a learner can practise (from the bank their tutor approved), per subject
+create or replace function public.practice_topics()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('subject_id', z.subject_id, 'topic', z.topic, 'questions', z.n, 'examples', z.ex) order by z.topic), '[]')
+  from (
+    select s.id subject_id, bq.topic, count(*) n, count(*) filter (where nullif(bq.solution_md, '') is not null) ex
+      from public.learner_subjects ls
+      join public.subjects s on s.id = ls.subject_id
+      join public.bank_questions bq on (bq.subject_id = s.id or (s.exam is not null and bq.exam_code = split_part(s.exam, ':', 2)))
+     where ls.learner_id = auth.uid() and bq.status = 'approved' and (bq.owner_id = public.my_tutor() or bq.owner_id is null)
+       and bq.type in ('mcq', 'numeric') and bq.image_path is null and bq.topic is not null and public.my_role() = 'learner'
+     group by s.id, bq.topic) z
+$$;
+
+-- The learner's own marks for a self-marked hand-in (before the tutor checks it)
+create or replace function public.save_self_marks(p_attempt uuid, p_marks jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  k text;
+  v text;
+  who text;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  if not a.self_mark then raise exception 'This work isn’t self-marked.'; end if;
+  if t.status <> 'submitted' then raise exception 'Hand it in first; once your tutor has marked it, it can’t change.'; end if;
+  for k, v in select * from jsonb_each_text(coalesce(p_marks, '{}')) loop
+    update public.responses r set self_marks = greatest(0, least(q.marks, nullif(v, '')::numeric))
+      from public.questions q where q.id = r.question_id and r.attempt_id = t.id and r.question_id::text = k;
+  end loop;
+  update public.attempts set self_marked_at = now() where id = t.id;
+  select display_name into who from public.profiles where id = auth.uid();
+  perform public.notify_user(t.tutor_id, 'self_marked', coalesce(who, 'Your learner') || ' marked their own work: ' || a.title,
+    'Check their marks and confirm them.', jsonb_build_object('attempt_id', t.id));
+end $$;
+
+-- ---------------- formula sheets (the learner's own notes per subject) ----------------
+create table if not exists public.study_notes (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  subject_id uuid not null references public.subjects (id) on delete cascade,
+  body_md text not null default '' check (length(body_md) <= 30000),
+  updated_at timestamptz not null default now(),
+  primary key (learner_id, subject_id)
+);
+alter table public.study_notes enable row level security;
+drop policy if exists study_notes_own on public.study_notes;
+create policy study_notes_own on public.study_notes for all
+  using (learner_id = auth.uid())
+  with check (learner_id = auth.uid() and exists (select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = study_notes.subject_id));
+drop policy if exists study_notes_tutor on public.study_notes;
+create policy study_notes_tutor on public.study_notes for select using (public.is_my_learner(learner_id));
+
+-- ---------------- daily goal, streak, what to revise ----------------
+create or replace function public.set_study_goal(p_minutes int)
+returns void language sql security definer set search_path = public as $$
+  update public.profiles set study_goal_min = greatest(5, least(coalesce(p_minutes, 10), 180)) where id = auth.uid() and role = 'learner'
+$$;
+
+-- p_learner: the learner themselves, or (for their tutor) one of their learners
+create or replace function public.study_summary(p_learner uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  p public.profiles;
+  v_today date;
+  d date;
+  streak int := 0;
+  goal int;
+begin
+  if not (v_l = auth.uid() or public.is_my_learner(v_l)) then raise exception 'Not your learner.'; end if;
+  select * into p from public.profiles where id = v_l;
+  goal := coalesce(p.study_goal_min, 10) * 60;
+  v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = p.timezone), 'UTC'))::date;
+  -- streak: days in a row with some study (today counts once started; not having started yet today doesn't break it)
+  d := v_today;
+  if coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = d), 0) = 0 then d := d - 1; end if;
+  while coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = d), 0) > 0 loop
+    streak := streak + 1;
+    d := d - 1;
+    exit when streak > 999;
+  end loop;
+  return jsonb_build_object(
+    'goal_min', coalesce(p.study_goal_min, 10),
+    'today_sec', coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = v_today), 0),
+    'streak', streak,
+    'days', coalesce((select jsonb_agg(jsonb_build_object('day', g::date, 'sec', coalesce((select sum(seconds) from public.activity a where a.learner_id = v_l and a.day = g::date), 0)) order by g)
+                        from generate_series(v_today - 13, v_today, interval '1 day') g), '[]'),
+    'cards_due', (select count(*) from public.cards c
+                   where c.tutor_id = p.tutor_id and (c.learner_id = v_l or (c.learner_id is null and (c.subject_id is null or exists (
+                          select 1 from public.learner_subjects ls where ls.learner_id = v_l and ls.subject_id = c.subject_id))))
+                     and not exists (select 1 from public.card_reviews r where r.learner_id = v_l and r.card_id = c.id and r.due_at > now())),
+    'cards_learned', (select count(*) from public.card_reviews r where r.learner_id = v_l and r.interval_days >= 7),
+    'mistakes', (select count(*) from public.cards c where c.learner_id = v_l and c.source = 'mistake'),
+    'exam', (select jsonb_build_object('name', exam_name, 'date', exam_date) from public.learner_reports where learner_id = v_l and exam_date is not null));
+end $$;
+
+-- The learner's own topics with how they're doing (for the revision plan)
+create or replace function public.my_topics()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'code', t.code, 'subject_id', t.subject_id,
+      'strength', coalesce(x.strength, 'none'), 'ratio', x.ratio,
+      'taught', exists (select 1 from public.taught_topics tt where tt.learner_id = auth.uid() and tt.topic_id = t.id)
+             or exists (select 1 from public.lessons l where l.topic_id = t.id and l.visibility = 'visible'
+                          and (l.learner_ids is null or cardinality(l.learner_ids) = 0 or auth.uid() = any (l.learner_ids)))
+             or exists (select 1 from public.assignments a where a.topic_id = t.id and not a.draft and public._assignment_visible_to(a, auth.uid())))
+    order by t.subject_id, t.position, t.name), '[]')
+  from public.topics t
+  join public.learner_subjects ls on ls.subject_id = t.subject_id and ls.learner_id = auth.uid()
+  left join lateral (select y ->> 'strength' strength, (y ->> 'ratio')::numeric ratio
+                       from jsonb_array_elements(public._learner_topics(auth.uid(), true, null)) y where y ->> 'topic_id' = t.id::text limit 1) x on true
+  where public.my_role() = 'learner'
+$$;
 
 -- =====================================================================
 -- 1.4: crash reports, a fuller admin console (overview, notes, announcements,

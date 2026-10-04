@@ -475,6 +475,27 @@ export const profJobs = () =>
   run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
 export const profUsage = () => run(sb().rpc('prof_usage'));
 
+// ---------------- self-study: flashcards, practice, notes, goal ----------------
+export const listCards = () => run(sb().from('cards').select('*').order('created_at', { ascending: true }).limit(5000));
+export const myReviews = () => run(sb().from('card_reviews').select('*').eq('learner_id', uid()).limit(5000));
+export const reviewCard = (cardId, grade) => run(sb().rpc('review_card', { p_card: cardId, p_grade: grade }));
+export const syncMistakeCards = () => run(sb().rpc('sync_mistake_cards'));
+export const addCards = (rows) => run(sb().from('cards').insert(rows.map((r) => ({ tutor_id: uid(), source: 'tutor', ...r }))).select());
+export const addOwnCard = (row) => run(sb().from('cards').insert({ ...row, source: 'own', learner_id: uid(), created_by: uid(), tutor_id: me?.tutor_id }).select().maybeSingle());
+export const profCards = (subjectId, topic, count = 12, note = '') =>
+  run(sb().rpc('prof_cards', { p_subject: subjectId, p_topic: topic, p_count: count, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
+export const startPractice = (mode, { subject = null, topic = null, count = 5, minutes = null } = {}) =>
+  run(sb().rpc('start_practice', { p_mode: mode, p_subject: subject, p_topic: topic, p_count: count, p_minutes: minutes }));
+export const practiceTopics = () => run(sb().rpc('practice_topics'));
+export const studySummary = (learnerId = null) => run(sb().rpc('study_summary', { p_learner: learnerId }));
+export const setStudyGoal = (minutes) => run(sb().rpc('set_study_goal', { p_minutes: minutes }));
+export const myTopics = () => run(sb().rpc('my_topics'));
+export const getStudyNotes = (learnerId = null) => run(sb().from('study_notes').select('*').eq('learner_id', learnerId || uid()));
+export const saveStudyNotes = (subjectId, body) =>
+  run(sb().from('study_notes').upsert({ learner_id: uid(), subject_id: subjectId, body_md: body, updated_at: new Date().toISOString() }, { onConflict: 'learner_id,subject_id' }));
+export const logStudy = (seconds, subjectId = null) => logTime('study', subjectId, seconds);
+export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks', { p_attempt: attemptId, p_marks: marks }));
+
 // ---------------- syllabus & coverage ----------------
 export const profSyllabus = (subjectId, label, note = '') => run(sb().rpc('prof_syllabus', { p_subject: subjectId, p_label: label, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
 export const coverage = (subjectId) => run(sb().rpc('coverage', { p_subject: subjectId }));

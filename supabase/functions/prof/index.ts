@@ -829,6 +829,56 @@ Rules: follow the official syllabus as closely as you know it; don't add content
     });
   }
 
+  // ---------------- flashcards ----------------
+  const CARDS_TOOL = {
+    name: 'save_cards',
+    description: 'Flashcards for the tutor to pick from. Front: a short prompt; back: the answer.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cards: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              front: { type: 'string', description: 'A short question, term or prompt (Markdown, LaTeX in $...$)' },
+              back: { type: 'string', description: 'The answer: a definition, formula, method or worked step (Markdown, LaTeX in $...$), short' },
+            },
+            required: ['front', 'back'],
+          },
+        },
+      },
+      required: ['cards'],
+    },
+  };
+  async function stepCards(job, cfg) {
+    const c = job.context || {};
+    await save(job, 'running', { p_progress: 'Writing flashcards…', p_input: 0 });
+    const style = (await rest(`prof_settings?tutor_id=eq.${job.tutor_id}&select=style_md`))[0]?.style_md || '';
+    const [board, code] = String(c.exam || '').split(':');
+    const where = board === 'cie' ? `Cambridge IGCSE ${code}` : board === 'ib' ? `IB Diploma (${code})` : c.subject;
+    const res = await claude(cfg, {
+      max_tokens: 6000,
+      system: `You write revision flashcards for StudyBridge, for a learner studying ${where}. The tutor picks which ones to use.
+Rules: one idea per card; the front is a short prompt (a question, key term, "formula for…", "how do you…"), the back is a short, exact answer in the syllabus's own terms. Cover definitions, formulas, key facts, methods and common mistakes for the topic. Markdown with LaTeX in $...$. No images.${style ? `\nThe tutor's own instructions:\n${style}` : ''}`,
+      tools: [CARDS_TOOL],
+      tool_choice: { type: 'tool', name: 'save_cards' },
+      messages: [{ role: 'user', content: `Write ${c.count || 12} flashcards on: ${c.topic}.${c.note ? `\nThe tutor adds: ${c.note}` : ''}` }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_cards');
+    const cards = (call?.input?.cards || [])
+      .filter((x) => x && x.front && x.back)
+      .slice(0, 40)
+      .map((x) => ({ front: String(x.front).slice(0, 1000), back: String(x.back).slice(0, 3000) }));
+    if (!cards.length) throw new Error('Prof didn’t write any cards. Try again.');
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { cards: { subject_id: c.subject_id, topic: c.topic, list: cards }, reply: `${cards.length} flashcards on ${c.topic}` },
+      p_progress: 'Ready for you to pick',
+      p_notify: { title: `Prof wrote ${cards.length} flashcards on ${c.topic}`, body: 'Pick the ones to give your learners.', ref: { cards: true, subject_id: c.subject_id } },
+    });
+  }
+
   // ---------------- marking ----------------
   const MARK_TOOL = {
     name: 'submit_marking',
@@ -942,6 +992,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       else if (job.kind === 'bank') await stepBank(job, cfg);
       else if (job.kind === 'report') await stepReport(job, cfg);
       else if (job.kind === 'syllabus') await stepSyllabus(job, cfg);
+      else if (job.kind === 'cards') await stepCards(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

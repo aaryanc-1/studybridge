@@ -610,3 +610,27 @@ table.coverage td:first-child { white-space: normal; min-width: 180px; }
 .cov-cell.strong { background: #DFF2E6; color: #1B6B3A; border-color: #BFE3CB; }
 .cov-cell.developing { background: #FBF0D9; color: #7A5A12; border-color: #F0DDB0; }
 .cov-cell.weak { background: #FBE3DF; color: #9B2C1F; border-color: #F2C3BB; }
+
+/* Study */
+.study-goal .streak, .study-nudge .streak { display: flex; align-items: center; gap: 4px; font-family: var(--serif); font-size: 24px; font-weight: 700; color: var(--muted); }
+.streak.on { color: #D9822B; }
+.study-days { display: flex; gap: 5px; flex-wrap: wrap; }
+.dot-day { width: 16px; height: 16px; border-radius: 5px; background: var(--sunk); border: 1px solid var(--line-soft); }
+.dot-day.some { background: #F6DFB5; border-color: #EBCB8C; }
+.dot-day.hit { background: #D9822B; border-color: #C2701F; }
+a.study-nudge { display: flex; align-items: center; gap: 14px; text-decoration: none; color: inherit; flex-direction: row; }
+.flashcard { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 18px; padding: 22px; min-height: 240px; display: flex; flex-direction: column; gap: 16px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,0.05); }
+.flashcard .face { font-size: 18px; }
+.flashcard .face.back { border-top: 1px dashed var(--line); padding-top: 16px; }
+.grade-row { justify-content: center; gap: 10px; }
+.grade-row .btn { min-width: 90px; }
+.center-card { align-items: center; text-align: center; }
+.formula-preview { border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px 14px; background: var(--sunk); }
+.textarea.tall { min-height: 220px; font-family: var(--mono, ui-monospace, monospace); font-size: 13.5px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.card-tile { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: var(--card, #fff); }
+.card-tile .back { border-top: 1px dashed var(--line); padding-top: 6px; color: var(--ink-2); }
+.card-tile.pick { cursor: pointer; position: relative; }
+.card-tile.pick input { position: absolute; top: 10px; right: 10px; }
+.card-tile.pick.off { opacity: 0.45; }
+.selfmark-q { background: var(--card, #fff); border: 1px solid var(--line-soft); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }

@@ -8,6 +8,7 @@ import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import PastPapers, { OpenBooks } from './PastPapers.jsx';
 import QuestionBank from './QuestionBank.jsx';
 import Syllabus from './Syllabus.jsx';
+import Flashcards from './Flashcards.jsx';
 
 export default function Library({ tab = 'files' }) {
   return (
@@ -30,11 +31,12 @@ export default function Library({ tab = 'files' }) {
           { value: 'syllabus', label: 'Syllabus', icon: 'target' },
           { value: 'papers', label: 'Past papers', icon: 'clipboard' },
           { value: 'bank', label: 'Question bank', icon: 'layers' },
+          { value: 'cards', label: 'Flashcards', icon: 'flame' },
           { value: 'textbooks', label: 'Free textbooks', icon: 'book' },
           { value: 'lessons', label: 'Lessons', icon: 'pen' },
         ]}
       />
-      {tab === 'lessons' ? <Lessons /> : tab === 'syllabus' ? <Syllabus /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
+      {tab === 'lessons' ? <Lessons /> : tab === 'syllabus' ? <Syllabus /> : tab === 'cards' ? <Flashcards /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
     </Page>
   );
 }

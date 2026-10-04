@@ -350,6 +350,11 @@ function Jobs() {
                             <Icon name="layers" size={14} /> Review {r.bank.count} bank question{r.bank.count === 1 ? '' : 's'}
                           </Link>
                         )}
+                        {r.cards && (
+                          <Link to={`/library/cards?subject=${r.cards.subject_id}`} className="btn sm">
+                            <Icon name="flame" size={14} /> Pick from {r.cards.list.length} flashcards
+                          </Link>
+                        )}
                         {r.syllabus && (
                           <Link to={`/library/syllabus?subject=${r.syllabus.subject_id}`} className="btn sm">
                             <Icon name="target" size={14} /> Check {r.syllabus.topics.length} topics

@@ -333,3 +333,18 @@ test('Prof sets out a syllabus; nothing changes until the tutor uses it', async 
   const bad = await other.rpc('prof_syllabus', { p_subject: subj.id, p_label: 'x y z' });
   assert.ok(bad.error);
 });
+
+test('Prof writes flashcards for the tutor to pick from; learners get nothing until then', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const subj = (await q(T.from('subjects').select('id').eq('name', 'Maths 0607')))[0];
+  const job = await q(T.rpc('prof_cards', { p_subject: subj.id, p_topic: 'Algebra', p_count: 6 }));
+  await kick(T);
+  const j = await q(T.from('prof_jobs').select('status,result,error').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.equal(j.result.cards.list.length, 6);
+  assert.match(j.result.cards.list[0].front, /what is/);
+  assert.equal((await q(T.from('cards').select('id').eq('subject_id', subj.id))).length, 0);
+  const tooMany = await T.rpc('prof_cards', { p_subject: subj.id, p_topic: 'Algebra', p_count: 99 });
+  assert.match(tooMany.error.message, /1 to 40/);
+});

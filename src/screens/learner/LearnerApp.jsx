@@ -14,11 +14,13 @@ import Messages from '../shared/Messages.jsx';
 import Live from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
+import Study from './Study.jsx';
 import { ErrorBoundary, Page } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
   if (n.kind === 'marked' && r.attempt_id) return `/results/${r.attempt_id}`;
+  if (n.kind === 'cards') return '/study';
   if (n.kind === 'message') return '/messages';
   if (n.kind === 'session') return '/live';
   if (n.kind === 'assignment' && r.assignment_id) return `/work/${r.assignment_id}`;
@@ -48,18 +50,20 @@ export default function LearnerApp() {
   const nav = [
     { to: '/', label: 'Today', icon: 'home' },
     { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
+    { to: '/study', label: 'Study', icon: 'flame' },
     { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
     { to: '/progress', label: 'Progress', icon: 'chart' },
     { to: '/messages', label: 'Messages', icon: 'message', count: unread },
     { to: '/live', label: 'Live', icon: 'video' },
   ];
-  const tabs = [nav[0], nav[1], nav[2], nav[4], nav[3]];
+  const tabs = [nav[0], nav[1], nav[2], nav[5], nav[3]];
 
   let page;
   if (!a) page = <Today />;
   else if (a === 'work' && b) page = <WorkDetail id={b} />;
   else if (a === 'work') page = <Work />;
   else if (a === 'results' && b) page = <Results id={b} />;
+  else if (a === 'study') page = <Study />;
   else if (a === 'library') page = <LearnerLibrary />;
   else if (a === 'lesson' && b) page = <LessonView id={b} />;
   else if (a === 'file' && b) page = <FileView id={b} />;

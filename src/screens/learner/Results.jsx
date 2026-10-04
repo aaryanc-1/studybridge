@@ -79,6 +79,8 @@ export default function Results({ id }) {
             </button>
           </div>
         </div>
+      ) : !rel && d.attempt.self_mark && t.status === 'submitted' ? (
+        <SelfMark d={d} questions={questions} keys={keys} byQ={byQ} />
       ) : !rel ? (
         <div className="card tint">
           <div className="row">
@@ -161,5 +163,85 @@ export default function Results({ id }) {
         <Thread learnerId={app.me.id} all={comments} assignments={[a]} assignmentId={a.id} compact />
       </div>
     </Page>
+  );
+}
+
+// Self-marked work: after handing in, the learner marks it against the mark scheme; the tutor checks it
+function SelfMark({ d, questions, keys, byQ }) {
+  const toast = useToast();
+  const [marks, setMarks] = useState(() => Object.fromEntries(questions.map((q) => [q.id, byQ[q.id]?.self_marks ?? ''])));
+  const [busy, setBusy] = useState(false);
+  const done = !!d.attempt.self_marked_at;
+  const total = questions.reduce((s, q) => s + (Number(marks[q.id]) || 0), 0);
+  const max = questions.reduce((s, q) => s + Number(q.marks || 0), 0);
+  return (
+    <div className="card tint stack">
+      <div>
+        <div className="strong">{done ? 'You marked your work. Your tutor is checking it.' : 'Now mark your own work'}</div>
+        <div className="small muted">Read each mark scheme, compare it with your answer, and give yourself the marks you earned. Be honest: your tutor checks them.</div>
+      </div>
+      {questions.map((q, i) => {
+        const k = keys[q.id];
+        return (
+          <div key={q.id} className="selfmark-q">
+            <div className="row between wrap">
+              <span className="strong">Question {i + 1}</span>
+              <label className="row small" style={{ gap: 6 }}>
+                My marks
+                <input
+                  className="input sm num"
+                  type="number"
+                  min="0"
+                  max={Number(q.marks)}
+                  step="0.5"
+                  value={marks[q.id]}
+                  onChange={(e) => setMarks({ ...marks, [q.id]: e.target.value })}
+                  aria-label={`My marks for question ${i + 1}`}
+                />
+                / {Number(q.marks)}
+              </label>
+            </div>
+            <QuestionPrompt q={q} />
+            <div className="label">Your answer</div>
+            <AnswerDisplay q={q} mine answer={byQ[q.id]?.answer || {}} keyAns={k?.answer} stepMarks={[]} />
+            {k?.mark_scheme_md && (
+              <div className="note small">
+                <div className="tiny strong">Mark scheme</div>
+                <Markdown src={k.mark_scheme_md} />
+              </div>
+            )}
+            {k?.solution_md && (
+              <details>
+                <summary className="linkbtn small">Worked solution</summary>
+                <Markdown src={k.solution_md} />
+              </details>
+            )}
+          </div>
+        );
+      })}
+      <div className="row between wrap">
+        <span className="strong">
+          Total: {total} / {max}
+        </span>
+        <button
+          className="btn primary"
+          disabled={busy || questions.some((q) => marks[q.id] === '' || marks[q.id] == null)}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.saveSelfMarks(d.attempt.id, marks);
+              invalidate(`attempt:${d.attempt.id}`);
+              toast('Marks sent to your tutor');
+            } catch (e) {
+              toast({ title: 'Couldn’t save them', body: e.message, tone: 'bad' });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {done ? 'Update my marks' : 'Send my marks'}
+        </button>
+      </div>
+    </div>
   );
 }

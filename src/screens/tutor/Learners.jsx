@@ -6,6 +6,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { encodeInvite } from '../../lib/config.js';
 import { ago, dur, kindLabel, pct, weekRange, ymd, when } from '../../lib/format.js';
+import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
@@ -270,9 +271,12 @@ export function LearnerDetail({ id, tab = 'progress' }) {
         options={[
           { value: 'progress', label: 'Progress & summaries' },
           { value: 'work', label: `Work (${attempts.length})` },
+          { value: 'study', label: 'Study' },
         ]}
       />
-      {tab === 'work' ? (
+      {tab === 'study' ? (
+        <StudyForTutor learnerId={id} />
+      ) : tab === 'work' ? (
         <div className="card pad0">
           {attempts.length === 0 ? (
             <div style={{ padding: 20 }}>

@@ -19,7 +19,8 @@ export default function Assignments() {
   const attempts = useQuery('attempts', api.listAttempts).data || [];
   const [filter, setFilter] = useState('all');
   const [creating, setCreating] = useState(false);
-  const list = (q.data || []).filter((a) => filter === 'all' || (filter === 'drafts' ? a.draft : a.kind === filter && !a.draft));
+  // practice a learner started themselves (Study) isn't listed here; it shows in their progress
+  const list = (q.data || []).filter((a) => a.source !== 'self').filter((a) => filter === 'all' || (filter === 'drafts' ? a.draft : a.kind === filter && !a.draft));
   const drafts = (q.data || []).filter((a) => a.draft).length;
 
   return (

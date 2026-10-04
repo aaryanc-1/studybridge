@@ -66,6 +66,11 @@ function reply(body) {
       ],
     };
   }
+  if (tools.includes('save_cards')) {
+    const want = Number((body.messages[0].content.match(/Write (\d+) flashcards/) || [])[1] || 5);
+    const list = Array.from({ length: want }, (_, i) => ({ front: `Card ${i + 1}: what is $${i + 2}^2$?`, back: `$${(i + 2) ** 2}$` }));
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_cards', { cards: list })] };
+  }
   if (tools.includes('save_syllabus')) {
     const topics = [
       { code: '1', name: 'Number', details: ['Types of number', 'Fractions, decimals and percentages', 'Standard form'] },

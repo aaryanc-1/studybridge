@@ -352,6 +352,11 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
         <span className="muted small">{typeLabel[q.type]}</span>
         <span className="grow" />
         {r.auto_marks != null && <span className="pill">Auto-marked {Number(r.auto_marks)}/{max}</span>}
+        {r.self_marks != null && (
+          <button className="pill click" title="Use their own mark" onClick={() => onEdit({ marks: Number(r.self_marks) })}>
+            Their own mark {Number(r.self_marks)}/{max}
+          </button>
+        )}
         {r.redo && <span className="pill warn">Redo</span>}
       </div>
       <QuestionPrompt q={q} />

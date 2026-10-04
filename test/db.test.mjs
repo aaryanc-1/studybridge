@@ -786,3 +786,132 @@ test('syllabus topics, taught marks and the coverage map', async () => {
   assert.equal((await as('LC', `select * from taught_topics`)).length, 1, 'the learner can see what was marked for them');
   await fails(as('TC', `select prof_syllabus($1, 'x')`, [sub]), /Say which exam|switched on|unavailable/);
 });
+
+test('self-study: flashcards with spaced repetition, mistake cards, practice the learner starts, notes, goal and streak', async () => {
+  const sub = await val('TC', `select id from subjects where name = 'Maths'`);
+  const alg = await val('TC', `select id from topics where name = 'Algebra'`);
+  // Tutor cards: for everyone taking the subject, or one learner; learners only read their own
+  const c1 = await val('TC', `insert into cards (tutor_id, subject_id, topic_id, front_md, back_md) values (auth.uid(), $1, $2, 'Expand (x+1)^2', 'x^2+2x+1') returning id`, [sub, alg]);
+  await as('TC', `insert into cards (tutor_id, subject_id, learner_id, front_md, back_md) values (auth.uid(), $1, $2, 'Only you', 'yes')`, [sub, U.LC]);
+  await fails(as('TC', `insert into cards (tutor_id, subject_id, front_md, source) values (auth.uid(), $1, 'x', 'mistake')`, [sub]), /row-level security/);
+  await fails(as('T', `insert into cards (tutor_id, subject_id, front_md) values ($1, $2, 'x')`, [U.TC, sub]), /row-level security/);
+  assert.equal((await as('LC', `select * from cards`)).length, 2);
+  assert.equal((await as('L', `select * from cards where tutor_id = $1`, [U.TC])).length, 0, 'another tutor’s learner sees none');
+  // Learners make their own cards (no AI), only for themselves
+  await as('LC', `insert into cards (tutor_id, learner_id, subject_id, front_md, back_md, source, created_by) values ($1, auth.uid(), $2, 'Mine', 'ok', 'own', auth.uid())`, [U.TC, sub]);
+  await fails(as('LC', `insert into cards (tutor_id, subject_id, front_md, source) values ($1, $2, 'For all', 'tutor')`, [U.TC, sub]), /row-level security/);
+  await fails(as('LC', `delete from cards where id = $1`, [c1]), /./).catch(() => {});
+  assert.equal((await as('LC', `select * from cards where id = $1`, [c1])).length, 1, 'learners can’t delete the tutor’s cards');
+  // Spaced repetition
+  let r = await val('LC', `select review_card($1, 2)`, [c1]);
+  assert.equal(Number(r.interval_days), 1);
+  r = await val('LC', `select review_card($1, 2)`, [c1]);
+  assert.equal(Number(r.interval_days), 3);
+  r = await val('LC', `select review_card($1, 3)`, [c1]);
+  assert.ok(Number(r.interval_days) > 6 && Number(r.ease) > 2.5);
+  r = await val('LC', `select review_card($1, 0)`, [c1]);
+  assert.equal(r.reps, 0);
+  assert.equal(r.lapses, 1);
+  assert.ok(new Date(r.due_at) - Date.now() < 15 * 60000, '“again” comes back in minutes');
+  await fails(as('L', `select review_card($1, 2)`, [c1]), /Card not found/);
+  await fails(as('LC', `insert into card_reviews (learner_id, card_id) values (auth.uid(), $1)`, [c1]), /permission denied/);
+  assert.equal((await as('TC', `select * from card_reviews where learner_id = $1`, [U.LC])).length, 1, 'the tutor can see progress');
+
+  // Mistake cards: a question she lost marks on (released) becomes her card, with the answer when the tutor shows answers
+  const pr = await val('TC', `insert into assignments (kind, title, practice, visibility, release_mode, show_answers, max_attempts, learner_ids, subject_id)
+     values ('quiz', 'Algebra check', true, 'visible', 'on_submit', true, 5, $1, $2) returning id`, [[U.LC], sub]);
+  const q = await val('TC', `insert into questions (assignment_id, type, marks, prompt_md, topic_id) values ($1, 'numeric', 2, 'Solve 2x = 24', $2) returning id`, [pr, alg]);
+  await as('TC', `insert into question_keys (question_id, answer, solution_md) values ($1, '{"value":"12"}', 'Divide both sides by 2.')`, [q]);
+  const t = await one('LC', `select * from start_attempt($1)`, [pr]);
+  await as('LC', `select save_response($1, $2, $3)`, [t.id, q, { value: '10' }]);
+  await as('LC', `select submit_attempt($1)`, [t.id]);
+  assert.equal(await val('LC', `select sync_mistake_cards()`), 1);
+  assert.equal(await val('LC', `select sync_mistake_cards()`), 0, 'only once');
+  const mc = await one('LC', `select * from cards where source = 'mistake'`);
+  assert.match(mc.front_md, /Solve 2x = 24/);
+  assert.match(mc.back_md, /Answer: 12/);
+  assert.match(mc.back_md, /Divide both sides/);
+  assert.equal(mc.topic_id, alg);
+  assert.equal(await val('TC', `select sync_mistake_cards()`), 0, 'tutors have none');
+
+  // Practice the learner starts: from the tutor's approved bank (auto-marked kinds only), no "new work" notification
+  for (let i = 1; i <= 6; i++)
+    await as('TC', `insert into bank_questions (owner_id, subject_id, topic, type, prompt_md, answer, marks, solution_md, status)
+       values (auth.uid(), $1, 'Algebra', 'numeric', $2, $3, 1, $4, 'approved')`, [sub, `Solve x + ${i} = ${i * 2}`, { value: String(i) }, i === 1 ? `x = ${i}` : null]);
+  await as('TC', `insert into bank_questions (owner_id, subject_id, topic, type, prompt_md, status) values (auth.uid(), $1, 'Algebra', 'short', 'Explain', 'approved')`, [sub]);
+  await as('TC', `insert into bank_questions (owner_id, subject_id, topic, type, prompt_md, answer, status) values (auth.uid(), $1, 'Algebra', 'numeric', 'Not yet', '{"value":"1"}', 'review')`, [sub]);
+  const pt = await val('LC', `select practice_topics()`);
+  assert.deepEqual(pt.map((x) => [x.topic, x.questions, x.examples]), [['Algebra', 6, 1]]);
+  const before = (await as('LC', `select * from notifications where kind = 'assignment'`)).length;
+  const daily = await val('LC', `select start_practice('daily')`);
+  assert.equal(daily.questions, 5);
+  assert.equal((await val('LC', `select start_practice('daily')`)).assignment_id, daily.assignment_id, 'one daily quiz a day');
+  assert.equal((await as('LC', `select * from notifications where kind = 'assignment'`)).length, before, 'no notification for practice she started');
+  const da = await one('LC', `select * from assignments where id = $1`, [daily.assignment_id]);
+  assert.equal(da.practice, true);
+  assert.equal(da.source, 'self');
+  assert.deepEqual(da.learner_ids, [U.LC]);
+  assert.equal((await as('LC', `select * from questions where assignment_id = $1 and type not in ('mcq', 'numeric')`, [daily.assignment_id])).length, 0);
+  const lq = (await as('LC', `select * from questions where assignment_id = $1`, [daily.assignment_id]))[0];
+  assert.equal(lq.topic_id, alg, 'tagged with the tutor’s own topic');
+  // worked example then "you try"
+  const learn = await val('LC', `select start_practice('learn', $1, 'Algebra', 3)`, [sub]);
+  const la = await one('LC', `select * from assignments where id = $1`, [learn.assignment_id]);
+  assert.match(la.instructions_md, /Worked example[\s\S]*x = 1[\s\S]*Now you try/);
+  assert.equal(learn.questions, 3);
+  // timed drill
+  const drill = await val('LC', `select start_practice('drill', $1, 'Algebra', 4, 7)`, [sub]);
+  assert.equal((await one('LC', `select time_limit_min from assignments where id = $1`, [drill.assignment_id])).time_limit_min, 7);
+  await fails(as('LC', `select start_practice('topic', $1, 'Calculus')`, [sub]), /aren’t any practice questions/);
+  await fails(as('TC', `select start_practice('daily')`), /For learners/);
+  await fails(as('L', `select start_practice('topic', $1, 'Algebra')`, [sub]), /Unknown subject|For learners/);
+  // it plays like any practice: start, answer, marked instantly
+  const at = await one('LC', `select * from start_attempt($1)`, [drill.assignment_id]);
+  const dq = (await as('LC', `select * from questions where assignment_id = $1 order by position`, [drill.assignment_id]))[0];
+  await as('LC', `select save_response($1, $2, $3)`, [at.id, dq.id, { value: '999' }]);
+  assert.equal((await one('LC', `select * from submit_attempt($1)`, [at.id])).status, 'marked');
+
+  // Formula sheet: hers to write; her tutor can read it; nobody else
+  await as('LC', `insert into study_notes (learner_id, subject_id, body_md) values (auth.uid(), $1, '$a^2+b^2=c^2$')`, [sub]);
+  assert.equal((await as('TC', `select * from study_notes where learner_id = $1`, [U.LC])).length, 1);
+  assert.equal((await as('T', `select * from study_notes where learner_id = $1`, [U.LC])).length, 0);
+  await fails(as('TC', `update study_notes set body_md = 'x' where learner_id = $1 returning *`, [U.LC]).then((r) => { if (!r.length) throw new Error('no rows'); }), /no rows/);
+
+  // Goal and streak: study counts (flashcards log time as 'study')
+  await as('LC', `select set_study_goal(15)`);
+  await as('LC', `select log_time('study', $1, 120)`, [sub]);
+  await db.query(`insert into activity (learner_id, tutor_id, kind, seconds, day) values ($1, $2, 'study', 600, (now() at time zone 'UTC')::date - 1), ($1, $2, 'study', 60, (now() at time zone 'UTC')::date - 2), ($1, $2, 'study', 60, (now() at time zone 'UTC')::date - 4)`, [U.LC, U.TC]);
+  const ss = await val('LC', `select study_summary()`);
+  assert.equal(ss.goal_min, 15);
+  assert.equal(ss.streak, 3, 'today, yesterday and the day before; the gap stops it');
+  assert.ok(ss.today_sec >= 120);
+  assert.equal(ss.days.length, 14);
+  assert.equal(ss.mistakes, 1);
+  assert.ok(ss.cards_due >= 2);
+  assert.equal((await val('TC', `select study_summary($1)`, [U.LC])).streak, 3, 'her tutor sees it');
+  await fails(as('T', `select study_summary($1)`, [U.LC]), /Not your learner/);
+  const mt = await val('LC', `select my_topics()`);
+  assert.deepEqual(mt.map((x) => x.name), ['Number', 'Algebra', 'Geometry']);
+  assert.ok(mt.find((x) => x.name === 'Algebra').taught);
+});
+
+test('self-marked work: the learner sees the mark scheme after handing in and gives her own marks; the tutor sees them', async () => {
+  const sub = await val('TC', `select id from subjects where name = 'Maths'`);
+  const a = await val('TC', `insert into assignments (kind, title, visibility, self_mark, subject_id) values ('test', 'Past paper', 'visible', true, $1) returning id`, [sub]);
+  const q = await val('TC', `insert into questions (assignment_id, type, marks, prompt_md) values ($1, 'short', 4, 'Prove it') returning id`, [a]);
+  await as('TC', `insert into question_keys (question_id, answer, mark_scheme_md, solution_md) values ($1, '{"text":"QED"}', 'M1 for setup, A1 for answer', 'Full proof')`, [q]);
+  const t = await one('LC', `select * from start_attempt($1)`, [a]);
+  assert.deepEqual((await val('LC', `select attempt_detail($1)`, [t.id])).keys, [], 'no mark scheme before handing in');
+  await as('LC', `select save_response($1, $2, '{"text":"my proof"}')`, [t.id, q]);
+  await fails(as('LC', `select save_self_marks($1, $2)`, [t.id, { [q]: 3 }]), /Hand it in first/);
+  await as('LC', `select submit_attempt($1)`, [t.id]);
+  const d = await val('LC', `select attempt_detail($1)`, [t.id]);
+  assert.equal(d.attempt.self_mark, true);
+  assert.equal(d.keys[0].mark_scheme_md, 'M1 for setup, A1 for answer');
+  await as('LC', `select save_self_marks($1, $2)`, [t.id, { [q]: 9 }]);
+  const td = await val('TC', `select attempt_detail($1)`, [t.id]);
+  assert.equal(Number(td.responses[0].self_marks), 4, 'capped at the question’s marks');
+  assert.ok(td.attempt.self_marked_at);
+  assert.equal((await as('TC', `select * from notifications where kind = 'self_marked'`)).length, 1);
+  await fails(as('L2', `select save_self_marks($1, '{}')`, [t.id]), /Attempt not found/);
+});

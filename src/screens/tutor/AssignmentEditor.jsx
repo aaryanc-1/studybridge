@@ -128,6 +128,7 @@ export default function AssignmentEditor({ id }) {
           release_mode: a.release_mode,
           release_at: a.release_mode === 'at' ? a.release_at : null,
           show_answers: !!a.show_answers,
+          self_mark: !!a.self_mark,
           draft: publish || post ? false : a.draft,
           updated_at: new Date().toISOString(),
         };
@@ -436,6 +437,13 @@ export default function AssignmentEditor({ id }) {
             </Field>
             {a.release_mode === 'at' && <input className="input" type="datetime-local" aria-label="Release marks from" value={toLocalInput(a.release_at)} onChange={(e) => setField({ release_at: fromLocalInput(e.target.value) })} />}
             <Toggle checked={a.show_answers} onChange={(v) => setField({ show_answers: v })} icon="eye" title="Show answers & solutions" sub="Once marks are released, they see the correct answers and your worked solutions." />
+            <Toggle
+              checked={!!a.self_mark}
+              onChange={(v) => setField({ self_mark: v })}
+              icon="checkCircle"
+              title="They mark it themselves first"
+              sub="After handing in, they see the mark scheme and give themselves marks. You then check their marks (and your own) before returning it. Good for past papers."
+            />
           </div>
           <div className="card">
             <h3>Attached from the library</h3>
