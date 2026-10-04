@@ -409,9 +409,38 @@ function AskAgain({ subject, onDone }) {
 
 // ---------------------------------------------------------------------------
 const STRENGTH = { strong: 'Strong', developing: 'Getting there', weak: 'Needs work' };
+const LABEL = { ...STRENGTH, taught: 'Taught', not_yet: 'Not yet' };
+const CHOICES = ['strong', 'developing', 'weak', 'taught', 'not_yet'];
+// The menu sits over the page, under its cell (or above it near the bottom of the window):
+// the table scrolls sideways, which would cut off anything inside it
+function menuPlace(el) {
+  const r = el.getBoundingClientRect();
+  const h = 260;
+  return { left: Math.max(8, Math.min(r.left, window.innerWidth - 210)), top: r.bottom + h + 8 > window.innerHeight ? Math.max(8, r.top - h - 4) : r.bottom + 4 };
+}
 function Coverage({ subject }) {
   const q = useQuery(`coverage:${subject.id}`, () => api.coverage(subject.id));
   const toast = useToast();
+  const [menu, setMenu] = useState(null); // { id: `${learner}:${topic}`, el: the cell's button }
+  const [, follow] = useState(0); // the menu follows its cell when the page scrolls
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e) => {
+      if (!e.target.closest?.('.cov-pick')) setMenu(null);
+    };
+    const esc = (e) => e.key === 'Escape' && setMenu(null);
+    const away = () => follow((n) => n + 1);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    window.addEventListener('scroll', away, true);
+    window.addEventListener('resize', away);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+      window.removeEventListener('scroll', away, true);
+      window.removeEventListener('resize', away);
+    };
+  }, [menu]);
   const c = q.data;
   if (!c) return null;
   if (!c.learners.length)
@@ -420,18 +449,30 @@ function Coverage({ subject }) {
         Coverage shows here once a learner takes {subject.name}.
       </div>
     );
+  async function pick(l, t, state) {
+    setMenu(null);
+    try {
+      await api.setTopicState(l.id, t.id, state);
+      invalidate(`coverage:${subject.id}`);
+    } catch (e) {
+      toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+    }
+  }
   return (
     <div className="card">
       <h2>Coverage</h2>
       <div className="small muted">
-        What each learner has been taught and how they’re doing, topic by topic. Taught comes from lessons and work you’ve given them; click a cell to mark a topic as taught yourself (e.g. in a live lesson).
+        What each learner has been taught and how they’re doing, topic by topic. StudyBridge fills it in from lessons, work and their marked answers. Click any cell to set it yourself (e.g. after a live lesson).
       </div>
-      <div className="row wrap small" style={{ gap: 10 }}>
-        <span className="cov-cell strong sm">Strong</span>
-        <span className="cov-cell developing sm">Getting there</span>
-        <span className="cov-cell weak sm">Needs work</span>
-        <span className="cov-cell taught sm">Taught</span>
-        <span className="cov-cell sm">Not yet</span>
+      <div className="row wrap small cov-key" aria-label="Key">
+        {CHOICES.map((k) => (
+          <span key={k} className="row" style={{ gap: 6 }}>
+            <i className={'cov-dot ' + k} /> {LABEL[k]}
+          </span>
+        ))}
+        <span className="row" style={{ gap: 6 }}>
+          <i className="cov-mine" /> set by you
+        </span>
       </div>
       <div className="table-wrap">
         <table className="table coverage">
@@ -452,26 +493,50 @@ function Coverage({ subject }) {
                 </td>
                 {c.learners.map((l) => {
                   const sc = l.scores[t.id];
-                  const marked = l.marked.includes(t.id);
-                  const taught = marked || l.taught.includes(t.id);
-                  const state = sc && sc.strength !== 'none' ? sc.strength : taught ? 'taught' : '';
+                  const set = (l.set || {})[t.id] || (l.marked.includes(t.id) ? 'taught' : null);
+                  const auto = sc && sc.strength !== 'none' ? sc.strength : l.taught.includes(t.id) ? 'taught' : 'not_yet';
+                  // your own call wins, except a plain "taught" doesn't hide how their answers are going
+                  const state = set && !(set === 'taught' && auto !== 'not_yet' && auto !== 'taught') ? set : auto;
+                  const fromAnswers = state === auto && sc && sc.strength !== 'none';
+                  const id = `${l.id}:${t.id}`;
+                  const why = [
+                    set ? `You set: ${LABEL[set]}` : null,
+                    sc ? `Their answers: ${Math.round(100 * sc.ratio)}% over ${sc.answered} answer${sc.answered === 1 ? '' : 's'}` : null,
+                    !set && l.taught.includes(t.id) ? 'Taught in a lesson or work' : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ');
                   return (
-                    <td key={l.id}>
+                    <td key={l.id} className="cov-pick">
                       <button
-                        className={'cov-cell ' + state}
-                        title={sc ? `${Math.round(100 * sc.ratio)}% over ${sc.answered} answer${sc.answered === 1 ? '' : 's'}` : marked ? 'You marked this as taught (click to undo)' : taught ? 'Taught in a lesson or work' : 'Click to mark as taught'}
-                        onClick={async () => {
-                          if (!marked && taught) return;
-                          try {
-                            await api.setTaught(l.id, t.id, !marked);
-                            invalidate(`coverage:${subject.id}`);
-                          } catch (e) {
-                            toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
-                          }
+                        className={'cov-cell ' + (state === 'not_yet' ? '' : state) + (set && state === set ? ' mine' : '')}
+                        title={(why || 'Not taught yet') + ' · click to change'}
+                        aria-haspopup="menu"
+                        aria-expanded={menu?.id === id}
+                        onClick={(e) => {
+                          if (menu?.id === id) return setMenu(null);
+                          setMenu({ id, el: e.currentTarget });
                         }}
                       >
-                        {sc && sc.strength !== 'none' ? `${Math.round(100 * sc.ratio)}%` : taught ? 'Taught' : '—'}
+                        {fromAnswers ? `${Math.round(100 * sc.ratio)}%` : state === 'not_yet' ? '—' : LABEL[state]}
                       </button>
+                      {menu?.id === id && (
+                        <div className="cov-menu" role="menu" style={menuPlace(menu.el)}>
+                          <div className="tiny muted">
+                            {l.name.split(' ')[0]} · {t.name}
+                          </div>
+                          {CHOICES.map((k) => (
+                            <button key={k} role="menuitem" className={'cov-option' + (set === k ? ' on' : '')} onClick={() => pick(l, t, k)}>
+                              <i className={'cov-dot ' + k} /> {LABEL[k]}
+                            </button>
+                          ))}
+                          {set && (
+                            <button role="menuitem" className="cov-option" onClick={() => pick(l, t, null)}>
+                              <Icon name="refresh" size={14} /> Let StudyBridge decide
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   );
                 })}
@@ -480,7 +545,7 @@ function Coverage({ subject }) {
           </tbody>
         </table>
       </div>
-      <div className="tiny muted">{Object.values(STRENGTH).join(' · ')} are from their marked answers (last 10 per topic).</div>
+      <div className="tiny muted">Percentages are from their marked answers (last 10 per topic). Anything you set yourself has a dot.</div>
     </div>
   );
 }

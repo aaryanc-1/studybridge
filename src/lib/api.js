@@ -427,6 +427,8 @@ export async function adminDeleteAccount(id) {
 }
 export const adminSettings = () => run(sb().rpc('admin_settings'));
 export const adminOverview = () => run(sb().rpc('admin_overview'));
+export const adminProf = () => run(sb().rpc('admin_prof'));
+export const adminSetProfCredit = (balanceCents, lowCents = null) => run(sb().rpc('admin_set_prof_credit', { p_balance_cents: balanceCents, p_low_cents: lowCents }));
 export const adminTutor = (id) => run(sb().rpc('admin_tutor', { p_user: id }));
 export const adminSetNote = (id, body) => run(sb().rpc('admin_set_note', { p_user: id, p_body: body }));
 export const adminErrors = () => run(sb().rpc('admin_errors'));
@@ -533,10 +535,13 @@ export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks
 // ---------------- syllabus & coverage ----------------
 export const profSyllabus = (subjectId, label, note = '') => run(sb().rpc('prof_syllabus', { p_subject: subjectId, p_label: label, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
 export const coverage = (subjectId) => run(sb().rpc('coverage', { p_subject: subjectId }));
-export async function setTaught(learnerId, topicId, on) {
-  if (on) return run(sb().from('taught_topics').upsert({ learner_id: learnerId, topic_id: topicId, tutor_id: uid() }, { onConflict: 'learner_id,topic_id' }));
+// The tutor's own call on a topic for a learner: 'taught' | 'not_yet' | 'weak' | 'developing' | 'strong',
+// or null to go back to what lessons, work and marked answers say
+export async function setTopicState(learnerId, topicId, state) {
+  if (state) return run(sb().from('taught_topics').upsert({ learner_id: learnerId, topic_id: topicId, tutor_id: uid(), state }, { onConflict: 'learner_id,topic_id' }));
   return run(sb().from('taught_topics').delete().eq('learner_id', learnerId).eq('topic_id', topicId));
 }
+export const setTaught = (learnerId, topicId, on) => setTopicState(learnerId, topicId, on ? 'taught' : null);
 // Put a list of topics into a subject: adds the new ones, updates codes/details of ones with the same name
 export async function applyTopics(subjectId, list, existing = []) {
   const byName = new Map(existing.map((t) => [t.name.trim().toLowerCase(), t]));

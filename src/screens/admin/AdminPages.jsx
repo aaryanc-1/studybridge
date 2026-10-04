@@ -73,11 +73,23 @@ export function Overview() {
         <Stat n={o.handins_30d} l="Hand-ins (30 days)" />
         <Stat n={o.problems_open} l="Problems to look at" to="#/problems" tone={o.problems_open ? 'warn' : ''} />
         <Stat n={o.feedback_open} l="Messages to answer" to="#/inbox" tone={o.feedback_open ? 'warn' : ''} />
+        <Stat n={o.prof_credit_left_cents != null ? money(Math.max(0, o.prof_credit_left_cents)) : '—'} l="Prof credit left" to="#/prof" tone={o.prof_credit_left_cents != null && o.prof_credit_left_cents < 500 ? 'warn' : ''} />
       </div>
       <div className="grid g2" style={{ gap: 16 }}>
         <div className="card">
-          <h2>Prof spend</h2>
-          <div className="small muted">What Prof cost on your Claude key, by month. This month so far: {money(o.prof_month_cents)}.</div>
+          <h2>
+            <a href="#/prof">Prof spend</a>
+          </h2>
+          <div className="small muted">
+            What Prof cost on your Claude key, by month. This month so far: {money(o.prof_month_cents)}.{' '}
+            {o.prof_credit_left_cents != null ? (
+              <>
+                Credit left: about <b>{money(Math.max(0, o.prof_credit_left_cents))}</b>.
+              </>
+            ) : (
+              <a href="#/prof">Enter your Claude credit</a>
+            )}
+          </div>
           <Bars rows={o.prof_by_month || []} value={(r) => Number(r.cents)} label={(r) => money(r.cents)} />
         </div>
         <div className="card">
@@ -448,5 +460,155 @@ export function AnnouncementsPage() {
         ))}
       </div>
     </Page>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Prof: what it costs on your Claude key, and roughly how much credit is left
+const JOB_KIND = { ask: 'Asked Prof (making work, answers)', mark: 'Marking', auto: 'Weekly auto work', bank: 'Question bank', report: 'Parent reports', syllabus: 'Syllabus', paper: 'StudyBridge papers', cards: 'Flashcards', other: 'Other' };
+export function ProfPage() {
+  const q = useQuery('admin-prof', api.adminProf, { poll: 60000 });
+  const d = q.data;
+  if (q.error) return <Page title="Prof"><div className="error">{q.error.message}</div></Page>;
+  if (!d) return <Loading />;
+  const c = d.credit || {};
+  const maxDay = Math.max(1, ...(d.days || []).map((x) => Number(x.cents)));
+  const days30 = (d.days || []).reduce((a, x) => a + Number(x.cents), 0);
+  const perDay = days30 / 30;
+  const daysLeft = c.left_cents != null && perDay > 0 ? Math.floor(Math.max(0, c.left_cents) / perDay) : null;
+  return (
+    <Page title="Prof" subtitle="What Prof costs on your Claude key. Only you see this; tutors never see money.">
+      <div className="admin-stats">
+        <Stat n={c.left_cents != null ? money(Math.max(0, c.left_cents)) : '—'} l="Credit left (about)" tone={c.left_cents != null && c.left_cents <= c.low_cents ? 'warn' : ''} />
+        <Stat n={money(d.month_cents)} l="This month" />
+        <Stat n={money(d.last_month_cents)} l="Last month" />
+        <Stat n={daysLeft != null ? (daysLeft > 365 ? '365+' : daysLeft) : '—'} l="Days it lasts at this rate" />
+      </div>
+      <Credit c={c} />
+      <div className="card">
+        <h2>Last 30 days</h2>
+        <div className="small muted">
+          {money(days30)} in 30 days, about {money(perDay)} a day{d.model ? ` (model: ${d.model})` : ''}.
+        </div>
+        <div className="day-bars" role="img" aria-label="Prof spend per day, last 30 days">
+          {(d.days || []).map((x) => (
+            <span key={x.day} title={`${x.day}: ${money(x.cents)}`}>
+              <i style={{ height: `${Math.max(Number(x.cents) > 0 ? 3 : 0, (100 * Number(x.cents)) / maxDay)}%` }} />
+            </span>
+          ))}
+        </div>
+        <div className="row between tiny muted">
+          <span>{d.days?.[0]?.day}</span>
+          <span>Today</span>
+        </div>
+      </div>
+      <div className="grid g2" style={{ gap: 16 }}>
+        <div className="card">
+          <h2>Who used it this month</h2>
+          {!(d.by_tutor || []).length ? (
+            <div className="small muted">Nobody yet this month.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Jobs</th>
+                  <th>Spent</th>
+                  <th>Allowance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.by_tutor.map((t) => (
+                  <tr key={t.id}>
+                    <td>{t.role === 'tutor' ? <a href={`#/tutors/${t.id}`}>{t.name}</a> : `${t.name} (admin)`}</td>
+                    <td>{t.jobs}</td>
+                    <td>{money(t.cents)}</td>
+                    <td className={t.limit_cents != null && Number(t.cents) >= 0.8 * t.limit_cents ? 'bad-text' : 'muted'}>{t.limit_cents != null ? money(t.limit_cents) : 'none'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="tiny muted">Change a tutor’s allowance on their page in Tutors.</div>
+        </div>
+        <div className="card">
+          <h2>What it was used for this month</h2>
+          {!(d.by_kind || []).length ? (
+            <div className="small muted">Nothing yet this month.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Job</th>
+                  <th>Times</th>
+                  <th>Spent</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.by_kind.map((k) => (
+                  <tr key={k.kind}>
+                    <td>{JOB_KIND[k.kind] || k.kind}</td>
+                    <td>{k.jobs}</td>
+                    <td>{money(k.cents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </Page>
+  );
+}
+
+function Credit({ c }) {
+  const toast = useToast();
+  const [bal, setBal] = useState('');
+  const [low, setLow] = useState(((c.low_cents ?? 500) / 100).toFixed(2));
+  async function save(clear = false) {
+    const b = clear ? null : Math.round(Number(String(bal).replace(/[$,\s]/g, '')) * 100);
+    const l = Math.round(Number(String(low).replace(/[$,\s]/g, '')) * 100);
+    if (!clear && !(b >= 0)) return toast({ title: 'Type the credit in dollars, e.g. 25.40', tone: 'bad' });
+    try {
+      await api.adminSetProfCredit(b, l >= 0 ? l : null);
+      invalidate('admin-prof', 'admin-overview');
+      setBal('');
+      toast(clear ? 'Stopped counting down' : 'Saved. StudyBridge counts down from this as Prof works.');
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <div className="card">
+      <h2>Claude credit</h2>
+      <div className="small muted">
+        Anthropic doesn’t let apps read how much credit is on a Claude key, so StudyBridge counts down for you: type in what the{' '}
+        <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noreferrer">
+          Claude Console → Billing
+        </a>{' '}
+        page shows, and it subtracts what Prof spends. You’ll get a notification when it runs low. Update it whenever you top up.
+      </div>
+      {c.balance_cents != null && (
+        <div className="small">
+          You entered {money(c.balance_cents)} {ago(c.set_at)}; Prof has spent {money(c.spent_cents)} since, so about <b>{money(Math.max(0, c.balance_cents - c.spent_cents))}</b> is left.
+        </div>
+      )}
+      <div className="row wrap" style={{ gap: 10, alignItems: 'flex-end' }}>
+        <Field label="Credit on your Claude key now ($)">
+          <input className="input" style={{ maxWidth: 160 }} inputMode="decimal" value={bal} onChange={(e) => setBal(e.target.value)} placeholder="e.g. 25.40" />
+        </Field>
+        <Field label="Tell me below ($)">
+          <input className="input" style={{ maxWidth: 120 }} inputMode="decimal" value={low} onChange={(e) => setLow(e.target.value)} />
+        </Field>
+        <button className="btn primary" disabled={!bal.trim()} onClick={() => save(false)}>
+          Save
+        </button>
+        {c.balance_cents != null && (
+          <button className="btn ghost" onClick={() => save(true)}>
+            Stop counting
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

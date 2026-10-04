@@ -2361,6 +2361,7 @@ begin
       output_tokens = prof_costs.output_tokens + excluded.output_tokens, cost_cents = prof_costs.cost_cents + excluded.cost_cents,
       model = coalesce(excluded.model, prof_costs.model);
     perform public._prof_alert(j.tutor_id);
+    perform public._prof_credit_spend(coalesce(p_cost, 0));
   end if;
   if j.status = p_status and p_notify is not null then
     perform public.notify_user(j.tutor_id, 'prof', p_notify ->> 'title', p_notify ->> 'body',
@@ -2495,6 +2496,12 @@ create policy taught_tutor on public.taught_topics for all
               and exists (select 1 from public.topics t where t.id = topic_id and t.tutor_id = auth.uid()));
 drop policy if exists taught_learner on public.taught_topics;
 create policy taught_learner on public.taught_topics for select using (learner_id = auth.uid());
+-- The tutor's own call on a topic for a learner: taught, not yet (even if a lesson covered it), or how
+-- well they know it (overrides what their marked answers say)
+alter table public.taught_topics add column if not exists state text not null default 'taught';
+do $$ begin
+  alter table public.taught_topics add constraint taught_topics_state_check check (state in ('taught', 'not_yet', 'weak', 'developing', 'strong'));
+exception when duplicate_object then null; end $$;
 
 -- Ask Prof to set out a subject's syllabus as topics. The tutor checks it and chooses to use it.
 create or replace function public.prof_syllabus(p_subject uuid, p_label text, p_note text default null)
@@ -2533,8 +2540,10 @@ begin
         'scores', coalesce((select jsonb_object_agg(x ->> 'topic_id', jsonb_build_object('answered', x -> 'answered', 'ratio', x -> 'ratio', 'strength', x -> 'strength'))
                               from jsonb_array_elements(public._learner_topics(p.id, false, auth.uid())) x
                              where x ->> 'subject_id' = p_subject::text), '{}'),
-        'marked', coalesce((select jsonb_agg(topic_id) from public.taught_topics tt where tt.learner_id = p.id
+        'marked', coalesce((select jsonb_agg(topic_id) from public.taught_topics tt where tt.learner_id = p.id and tt.state <> 'not_yet'
                               and tt.topic_id in (select id from public.topics where subject_id = p_subject)), '[]'),
+        'set', coalesce((select jsonb_object_agg(topic_id, state) from public.taught_topics tt where tt.learner_id = p.id
+                              and tt.topic_id in (select id from public.topics where subject_id = p_subject)), '{}'),
         'taught', coalesce((select jsonb_agg(distinct tid) from (
             select l.topic_id tid from public.lessons l
              where l.subject_id = p_subject and l.topic_id is not null and l.visibility <> 'hidden'
@@ -2933,14 +2942,16 @@ end $$;
 create or replace function public.my_topics()
 returns jsonb language sql stable security definer set search_path = public as $$
   select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'code', t.code, 'subject_id', t.subject_id,
-      'strength', coalesce(x.strength, 'none'), 'ratio', x.ratio,
-      'taught', exists (select 1 from public.taught_topics tt where tt.learner_id = auth.uid() and tt.topic_id = t.id)
-             or exists (select 1 from public.lessons l where l.topic_id = t.id and l.visibility = 'visible'
+      'strength', coalesce(case when tt.state in ('weak', 'developing', 'strong') then tt.state end, x.strength, 'none'), 'ratio', x.ratio,
+      'taught', coalesce(tt.state <> 'not_yet', false)
+             or (tt.state is null and (
+                 exists (select 1 from public.lessons l where l.topic_id = t.id and l.visibility = 'visible'
                           and (l.learner_ids is null or cardinality(l.learner_ids) = 0 or auth.uid() = any (l.learner_ids)))
-             or exists (select 1 from public.assignments a where a.topic_id = t.id and not a.draft and a.source <> 'self' and public._assignment_visible_to(a, auth.uid())))
+              or exists (select 1 from public.assignments a where a.topic_id = t.id and not a.draft and a.source <> 'self' and public._assignment_visible_to(a, auth.uid())))))
     order by t.subject_id, t.position, t.name), '[]')
   from public.topics t
   join public.learner_subjects ls on ls.subject_id = t.subject_id and ls.learner_id = auth.uid()
+  left join public.taught_topics tt on tt.learner_id = auth.uid() and tt.topic_id = t.id
   left join lateral (select y ->> 'strength' strength, (y ->> 'ratio')::numeric ratio
                        from jsonb_array_elements(public._learner_topics(auth.uid(), true, null)) y where y ->> 'topic_id' = t.id::text limit 1) x on true
   where public.my_role() = 'learner'
@@ -3456,6 +3467,7 @@ begin
     'assignments_30d', (select count(*) from public.assignments where created_at > now() - interval '30 days' and not draft),
     'handins_30d', (select count(*) from public.attempts where submitted_at > now() - interval '30 days'),
     'prof_month_cents', (select coalesce(sum(cost_cents), 0) from public.prof_costs where created_at >= date_trunc('month', now())),
+    'prof_credit_left_cents', (select balance_cents - spent_cents from public.prof_credit where id = 1),
     'prof_by_month', coalesce((select jsonb_agg(jsonb_build_object('month', to_char(m, 'Mon YY'), 'cents', c) order by m)
         from (select gs::date m, coalesce((select sum(cost_cents) from public.prof_costs where created_at >= gs and created_at < gs + interval '1 month'), 0) c
                 from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month') gs) z), '[]'),
@@ -3475,6 +3487,81 @@ begin
       'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
       'jobs_failed_24h', (select count(*) from public.prof_jobs where status = 'failed' and updated_at > now() - interval '1 day'),
       'jobs_stuck', (select count(*) from public.prof_jobs where status in ('queued', 'running') and updated_at < now() - interval '30 minutes'))
+  );
+end $$;
+
+-- ---------------------------------------------------------------------
+-- Prof's credit: Anthropic doesn't tell apps how much credit is left on a Claude key, so the admin
+-- types in what the Claude Console shows and StudyBridge counts down from it with what Prof spends.
+-- The admin is told once when it runs low.
+-- ---------------------------------------------------------------------
+create table if not exists public.prof_credit (
+  id int primary key default 1 check (id = 1),
+  balance_cents numeric,
+  set_at timestamptz,
+  spent_cents numeric not null default 0,
+  low_cents numeric not null default 500,
+  told_at timestamptz
+);
+insert into public.prof_credit (id) values (1) on conflict do nothing;
+alter table public.prof_credit enable row level security;
+revoke all on public.prof_credit from public, anon, authenticated;
+
+create or replace function public._prof_credit_spend(p_cents numeric) returns void
+language plpgsql security definer set search_path = public as $$
+declare c public.prof_credit;
+begin
+  if coalesce(p_cents, 0) <= 0 then return; end if;
+  update public.prof_credit set spent_cents = spent_cents + p_cents where id = 1 and balance_cents is not null returning * into c;
+  if c.id is null or c.told_at is not null then return; end if;
+  if c.balance_cents - c.spent_cents <= c.low_cents then
+    update public.prof_credit set told_at = now() where id = 1;
+    perform public.notify_user(pa.user_id, 'prof_credit', 'Prof’s Claude credit is running low',
+      format('About $%s left of the credit you entered. Top up in the Claude Console, then update it in Admin → Prof.',
+             to_char(greatest(0, c.balance_cents - c.spent_cents) / 100, 'FM999990.00')), '{}')
+      from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin';
+  end if;
+end $$;
+
+create or replace function public.admin_set_prof_credit(p_balance_cents numeric, p_low_cents numeric default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_balance_cents is not null and p_balance_cents < 0 then raise exception 'The credit can’t be negative.'; end if;
+  update public.prof_credit set balance_cents = p_balance_cents, set_at = case when p_balance_cents is null then null else now() end,
+         spent_cents = 0, told_at = null, low_cents = coalesce(p_low_cents, low_cents) where id = 1;
+end $$;
+
+-- Everything about Prof's spending, for the admin
+create or replace function public.admin_prof() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c public.prof_credit;
+begin
+  perform public._admin();
+  select * into c from public.prof_credit where id = 1;
+  return jsonb_build_object(
+    'credit', jsonb_build_object('balance_cents', c.balance_cents, 'set_at', c.set_at, 'spent_cents', c.spent_cents,
+                                 'left_cents', case when c.balance_cents is not null then c.balance_cents - c.spent_cents end, 'low_cents', c.low_cents),
+    'model', (select prof_model from public.app_config where id = 1),
+    'key_set', exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null),
+    'month_cents', (select coalesce(sum(cost_cents), 0) from public.prof_costs where created_at >= date_trunc('month', now())),
+    'last_month_cents', (select coalesce(sum(cost_cents), 0) from public.prof_costs
+                          where created_at >= date_trunc('month', now()) - interval '1 month' and created_at < date_trunc('month', now())),
+    'days', coalesce((select jsonb_agg(jsonb_build_object('day', to_char(d, 'DD Mon'), 'cents', c2) order by d)
+        from (select gs::date d, coalesce((select sum(cost_cents) from public.prof_costs where created_at >= gs and created_at < gs + interval '1 day'), 0) c2
+                from generate_series(date_trunc('day', now()) - interval '29 days', date_trunc('day', now()), interval '1 day') gs) z), '[]'),
+    'by_tutor', coalesce((select jsonb_agg(x order by (x ->> 'cents')::numeric desc) from (
+        select jsonb_build_object('id', p.id, 'name', p.display_name, 'role', p.role,
+               'cents', coalesce(sum(pc.cost_cents), 0), 'jobs', count(pc.id),
+               'limit_cents', case when p.role = 'tutor' then public._prof_limit(p.id) end) x
+          from public.prof_costs pc join public.profiles p on p.id = pc.tutor_id
+         where pc.created_at >= date_trunc('month', now())
+         group by p.id) t), '[]'),
+    'by_kind', coalesce((select jsonb_agg(jsonb_build_object('kind', k, 'cents', cents, 'jobs', n) order by cents desc) from (
+        select coalesce(j.kind, 'other') k, sum(pc.cost_cents) cents, count(*) n
+          from public.prof_costs pc left join public.prof_jobs j on j.id = pc.job_id
+         where pc.created_at >= date_trunc('month', now())
+         group by 1) z), '[]')
   );
 end $$;
 
@@ -3525,6 +3612,8 @@ revoke execute on function public.make_admin(text) from public, anon, authentica
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;
+revoke execute on function public._prof_credit_spend(numeric) from public, anon, authenticated;
+revoke all on public.prof_credit from public, anon, authenticated;
 revoke all on public.prof_limits from public, anon, authenticated;
 revoke all on public.calendar_tokens from public, anon, authenticated;
 -- The app only needs the minimum version from the settings row; the rest goes through admin functions

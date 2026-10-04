@@ -265,10 +265,10 @@ function SubjectForm({ initial, onClose }) {
 }
 
 // Every exam StudyBridge knows: Cambridge IGCSE syllabuses and IB Diploma subjects
-export function ExamSelect({ value, onChange, label = 'Exam' }) {
+export function ExamSelect({ value, onChange, label = 'Exam', none = 'None' }) {
   return (
     <select className="select" value={value || ''} onChange={(e) => onChange(e.target.value)} aria-label={label}>
-      <option value="">None</option>
+      <option value="">{none}</option>
       {Object.entries(X.BOARDS).map(([b, info]) => (
         <optgroup key={b} label={info.name}>
           {X.syllabuses(b).map((s) => (

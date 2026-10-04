@@ -550,6 +550,21 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   await fails(as('T2', `select default_ai_limit_cents from app_config`), /permission denied/);
   await fails(as('T2', `select * from app_config`), /permission denied/);
   assert.deepEqual(Object.keys(await val('T2', `select prof_usage()`)).sort(), ['ready', 'server_seen_at', 'why_not']);
+  // The admin's Claude credit: counted down as Prof spends, told once when low; nobody else sees it
+  await fails(as('T2', `select admin_prof()`), /admins only/);
+  await fails(as('T2', `select * from prof_credit`), /permission denied/);
+  await fails(as('T2', `select admin_set_prof_credit(100)`), /admins only/);
+  await as('A', `select admin_set_prof_credit(1000, 300)`);
+  await db.query(`select _prof_credit_spend(600)`);
+  assert.equal(Number((await val('A', `select admin_prof()`)).credit.left_cents), 400);
+  assert.equal((await as('A', `select * from notifications where kind = 'prof_credit'`)).length, 0);
+  await db.query(`select _prof_credit_spend(150)`);
+  await db.query(`select _prof_credit_spend(10)`);
+  assert.equal((await as('A', `select * from notifications where kind = 'prof_credit'`)).length, 1, 'told once');
+  assert.equal(Number((await val('A', `select admin_overview()`)).prof_credit_left_cents), 240);
+  const ap = await val('A', `select admin_prof()`);
+  assert.equal(ap.days.length, 30);
+  assert.ok(Array.isArray(ap.by_tutor) && Array.isArray(ap.by_kind));
   await as('A', `select admin_set_plan($1, 'Pro', null)`, [U.T2]);
   assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_custom, false, 'back to the default allowance');
   await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
@@ -811,6 +826,20 @@ test('syllabus topics, taught marks and the coverage map', async () => {
   assert.ok(!l.taught.includes(t3) && !l.marked.includes(t3));
   await fails(as('T', `select coverage($1)`, [sub]), /Unknown subject/);
   assert.equal((await as('LC', `select * from taught_topics`)).length, 1, 'the learner can see what was marked for them');
+  // The tutor's own call: a level, or "not yet" even after a lesson; and back to automatic
+  await as('TC', `update taught_topics set state = 'strong' where learner_id = $1 and topic_id = $2`, [U.LC, t2]);
+  await as('TC', `insert into taught_topics (learner_id, topic_id, state) values ($1, $2, 'not_yet')`, [U.LC, t1]);
+  await fails(as('TC', `insert into taught_topics (learner_id, topic_id, state) values ($1, $2, 'genius')`, [U.LC, t3]), /check constraint/);
+  const cov2 = (await val('TC', `select coverage($1)`, [sub])).learners[0];
+  assert.equal(cov2.set[t2], 'strong');
+  assert.equal(cov2.set[t1], 'not_yet');
+  assert.ok(!cov2.marked.includes(t1));
+  const mt0 = await val('LC', `select my_topics()`);
+  assert.equal(mt0.find((x) => x.name === 'Number').taught, false, 'not yet wins over the lesson');
+  assert.equal(mt0.find((x) => x.name === 'Algebra').strength, 'strong');
+  await as('TC', `delete from taught_topics where learner_id = $1 and topic_id = $2`, [U.LC, t1]);
+  await as('TC', `update taught_topics set state = 'taught' where learner_id = $1 and topic_id = $2`, [U.LC, t2]);
+  assert.equal((await val('LC', `select my_topics()`)).find((x) => x.name === 'Number').taught, true);
   await fails(as('TC', `select prof_syllabus($1, 'x')`, [sub]), /Say which exam|switched on|unavailable/);
 });
 

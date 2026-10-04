@@ -229,12 +229,13 @@ try {
   const storageBefore = (await tc.storage.from('library').list(`${me}/files`)).data?.length || 0;
   await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Past papers' }).click();
-  await A.getByText('Your learners’ exams show here', { exact: true }).waitFor();
-  // The tutor says which exam the subject is for; Past papers then follows the learners
+  // The tutor says which exam the subject is for, right there; Past papers then follows the learners
+  await A.getByText('Which exam is each subject for?').waitFor();
+  await shot(A, 'pastpapers-set-exam');
+  await A.getByLabel('Exam for Mathematics').selectOption('cie:0607');
+  await A.locator('.pill.click', { hasText: '(Anaya)' }).waitFor();
+  await A.getByText('Which exam is each subject for?').waitFor({ state: 'detached' });
   await nav(A, 'Subjects').click();
-  await A.getByRole('button', { name: 'Edit Mathematics' }).click();
-  await A.getByRole('dialog', { name: 'Edit subject' }).getByLabel('Exam').selectOption('cie:0607');
-  await A.getByRole('dialog', { name: 'Edit subject' }).getByRole('button', { name: 'Save' }).click();
   await A.locator('.pill', { hasText: '(0607)' }).waitFor();
   await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Past papers' }).click();
@@ -323,9 +324,21 @@ try {
   await shot(A, 'syllabus-proposal');
   await A.getByRole('button', { name: 'Use these topics' }).click();
   await A.locator('.syllabus-topic', { hasText: 'Coordinate geometry' }).waitFor();
-  const geo = A.locator('table.coverage tr', { hasText: 'Geometry' }).filter({ hasNotText: 'Coordinate' }).locator('.cov-cell');
-  await geo.click();
-  await A.locator('table.coverage tr', { hasText: 'Geometry' }).filter({ hasNotText: 'Coordinate' }).locator('.cov-cell.taught').waitFor();
+  const geoRow = A.locator('table.coverage tr', { hasText: 'Geometry' }).filter({ hasNotText: 'Coordinate' });
+  await geoRow.locator('.cov-cell').click();
+  await A.getByRole('menu').waitFor();
+  await shot(A, 'syllabus-coverage-menu');
+  await A.getByRole('menuitem', { name: 'Getting there' }).click();
+  await geoRow.locator('.cov-cell.developing.mine').waitFor();
+  await geoRow.locator('.cov-cell').click();
+  await A.getByRole('menuitem', { name: 'Taught' }).click();
+  await geoRow.locator('.cov-cell.taught').waitFor();
+  await geoRow.locator('.cov-cell').click();
+  await A.getByRole('menuitem', { name: 'Let StudyBridge decide' }).click();
+  await geoRow.locator('.cov-cell:not(.taught)').waitFor();
+  await geoRow.locator('.cov-cell').click();
+  await A.getByRole('menuitem', { name: 'Taught' }).click();
+  await geoRow.locator('.cov-cell.taught').waitFor();
   await shot(A, 'syllabus-coverage');
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
@@ -576,6 +589,17 @@ try {
   await nav(ADM, 'Overview').click();
   await ADM.getByRole('heading', { name: 'System health' }).waitFor();
   await shot(ADM, 'admin-overview');
+  // Prof: spending, who used it, and the Claude credit counting down
+  await nav(ADM, 'Prof').click();
+  await ADM.getByRole('heading', { name: 'Claude credit' }).waitFor();
+  await ADM.getByRole('heading', { name: 'Who used it this month' }).waitFor();
+  await ADM.locator('table', { hasText: 'Aaryan Chouhan' }).waitFor();
+  await ADM.getByLabel('Credit on your Claude key now ($)').fill('25.40');
+  await ADM.getByRole('button', { name: 'Save', exact: true }).click();
+  await ADM.getByText(/You entered \$25\.40/).waitFor();
+  await shot(ADM, 'admin-prof');
+  await nav(ADM, 'Overview').click();
+  await ADM.locator('.stat', { hasText: 'Prof credit left' }).getByText('$25.40').waitFor();
   await nav(ADM, 'Tutors').click();
   await ADM.locator('.tutor-row a', { hasText: 'Aaryan Chouhan' }).click();
   await ADM.getByRole('heading', { name: 'Your notes' }).waitFor();

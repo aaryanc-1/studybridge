@@ -610,6 +610,21 @@ table.coverage td:first-child { white-space: normal; min-width: 180px; }
 .cov-cell.strong { background: #DFF2E6; color: #1B6B3A; border-color: #BFE3CB; }
 .cov-cell.developing { background: #FBF0D9; color: #7A5A12; border-color: #F0DDB0; }
 .cov-cell.weak { background: #FBE3DF; color: #9B2C1F; border-color: #F2C3BB; }
+.cov-cell.mine { position: relative; }
+.cov-cell.mine::after, .cov-mine { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cov-cell.mine::after { position: absolute; top: 3px; right: 4px; }
+.cov-mine { display: inline-block; background: var(--muted); }
+.cov-key { gap: 14px; color: var(--muted); }
+.cov-dot { display: inline-block; width: 12px; height: 12px; border-radius: 4px; border: 1px solid var(--line); background: var(--sunk); flex: none; }
+.cov-dot.taught { background: #E3EEF9; border-color: #9EBFE3; }
+.cov-dot.strong { background: #DFF2E6; border-color: #8FCDA4; }
+.cov-dot.developing { background: #FBF0D9; border-color: #E5C27A; }
+.cov-dot.weak { background: #FBE3DF; border-color: #E79A8D; }
+.cov-menu { position: fixed; z-index: 60; min-width: 190px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.cov-menu .tiny { padding: 4px 8px 6px; }
+.cov-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 8px; border: 0; border-radius: 7px; background: none; color: var(--ink); font: inherit; font-size: 14px; cursor: pointer; }
+.cov-option:hover, .cov-option:focus-visible { background: var(--sunk); }
+.cov-option.on { font-weight: 600; }
 
 /* Study */
 .study-goal .streak, .study-nudge .streak { display: flex; align-items: center; gap: 4px; font-family: var(--serif); font-size: 24px; font-weight: 700; color: var(--muted); }
@@ -649,3 +664,8 @@ a.study-nudge { display: flex; align-items: center; gap: 14px; text-decoration: 
 .subject-picks .pick { display: flex; gap: 6px; align-items: center; font-size: 13.5px; padding: 3px 0; cursor: pointer; }
 .subject-picks .pick.on { font-weight: 600; }
 table.papers-plan tr.quiet td { color: var(--muted); }
+/* admin → Prof: spend per day */
+.day-bars { display: flex; align-items: flex-end; gap: 3px; height: 110px; padding-top: 8px; border-bottom: 1px solid var(--line); }
+.day-bars span { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.day-bars i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: var(--claude, #C96442); opacity: .85; }
+.day-bars span:hover i { opacity: 1; }

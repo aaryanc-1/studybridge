@@ -8,6 +8,7 @@ import { bytes, ago } from '../../lib/format.js';
 import { FileSettings } from './Library.jsx';
 import { useLookups } from '../shared/lookups.jsx';
 import { SbPaperShelf } from '../shared/SbPapers.jsx';
+import { ExamSelect } from './Structure.jsx';
 
 const THIS_YEAR = new Date().getFullYear();
 const SESSION_MONTH = { m: 3, s: 5, w: 11, may: 5, nov: 11 };
@@ -145,9 +146,11 @@ export default function PastPapers() {
         )}
       </div>
 
+      <SetExams />
+
       {!files.data ? (
         <Loading />
-      ) : !syl ? (
+      ) : !syl && !learnerExams.length && lk.subjects.some((s) => !s.exam && lk.learnersOfSubject(s.id).length) ? null : !syl ? (
         <Empty title={learnerExams.length ? 'Choose a subject' : 'Your learners’ exams show here'}>
           {learnerExams.length ? (
             'Pick one of your learners’ exams above, or any other subject from the list.'
@@ -185,6 +188,63 @@ export default function PastPapers() {
         />
       )}
     </>
+  );
+}
+
+// Subjects your learners take that don't say which exam they're for yet: set it right here,
+// so their papers show up (instead of an empty page)
+function SetExams() {
+  const lk = useLookups();
+  const toast = useToast();
+  const [busy, setBusy] = useState(null);
+  const todo = lk.subjects.filter((s) => !s.exam && lk.learnersOfSubject(s.id).length);
+  if (!todo.length) return null;
+  const guess = (s) => {
+    const m = String(s.name).match(/\b(0\d{3})\b/);
+    return m && X.findSyllabus('cie', m[1]) ? `cie:${m[1]}` : '';
+  };
+  async function set(s, exam) {
+    if (!exam) return;
+    setBusy(s.id);
+    try {
+      await api.save('subjects', { id: s.id, exam });
+      lk.reload();
+      toast(`${s.name}: ${X.syllabusLabel(...exam.split(':'))}`);
+    } catch (e) {
+      toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <div className="card tint stack sm">
+      <div className="strong">Which exam is each subject for?</div>
+      <div className="small muted">Choose it and that exam’s past papers show here for your learners. (You can change it later in Subjects.)</div>
+      {todo.map((s) => (
+        <div key={s.id} className="row wrap" style={{ gap: 10 }}>
+          <span className="strong small" style={{ minWidth: 140 }}>
+            {s.name}{' '}
+            <span className="muted">
+              ({lk
+                .learnersOfSubject(s.id)
+                .map((id) => lk.learner(id)?.display_name?.split(' ')[0])
+                .filter(Boolean)
+                .join(', ')}
+              )
+            </span>
+          </span>
+          {guess(s) && (
+            <button className="btn sm primary" disabled={busy === s.id} onClick={() => set(s, guess(s))}>
+              {X.syllabusLabel(...guess(s).split(':'))}
+            </button>
+          )}
+          <div style={{ minWidth: 260 }}>
+            <ExamSelect value="" onChange={(v) => set(s, v)} label={`Exam for ${s.name}`} none={guess(s) ? 'Or another exam…' : 'Choose the exam…'} />
+          </div>
+          {busy === s.id && <div className="spinner sm" />}
+        </div>
+      ))}
+    </div>
   );
 }
 

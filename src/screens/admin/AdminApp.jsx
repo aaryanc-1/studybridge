@@ -7,7 +7,7 @@ import Shell from '../shared/Shell.jsx';
 import { LookupsProvider } from '../shared/lookups.jsx';
 import Settings from '../shared/Settings.jsx';
 import { TutorsPage, SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
-import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage } from './AdminPages.jsx';
+import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPage } from './AdminPages.jsx';
 import PapersAdmin from './PapersAdmin.jsx';
 import { useProfJobs } from '../tutor/Prof.jsx';
 
@@ -16,6 +16,7 @@ function notificationTarget(n) {
   if (n.kind === 'prof' && r.bank) return '/bank';
   if (n.kind === 'tutor_signup') return '/tutors';
   if (n.kind === 'prof_limit' && r.user_id) return `/tutors/${r.user_id}`;
+  if (n.kind === 'prof_credit') return '/prof';
   if (n.kind === 'problem') return '/problems';
   if (n.kind === 'feedback') return '/inbox';
   if (n.kind === 'prof' && r.paper_id) return '/papers';
@@ -36,6 +37,7 @@ export default function AdminApp() {
     { to: '/tutors', label: 'Tutors', icon: 'users', count: waiting },
     { to: '/inbox', label: 'Inbox', icon: 'message', count: o.feedback_open },
     { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
+    { to: '/prof', label: 'Prof', icon: 'cap', tone: 'claude' },
     { to: '/announcements', label: 'Announcements', icon: 'send' },
     { to: '/papers', label: 'StudyBridge papers', icon: 'clipboard' },
     { to: '/bank', label: 'StudyBridge questions', icon: 'cap', count: toReview, tone: 'claude' },
@@ -50,6 +52,7 @@ export default function AdminApp() {
   else if (a === 'inbox') page = <InboxPage />;
   else if (a === 'problems') page = <ProblemsPage />;
   else if (a === 'announcements') page = <AnnouncementsPage />;
+  else if (a === 'prof') page = <ProfPage />;
   else if (a === 'papers') page = <PapersAdmin />;
   else if (a === 'bank') page = <SharedBankPage />;
   else if (a === 'platform') page = <PlatformPage />;
