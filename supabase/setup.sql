@@ -504,7 +504,7 @@ create table if not exists public.prof_alerts (
 );
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
-  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report'));
+  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper'));
 end $$;
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
@@ -2430,6 +2430,84 @@ begin
     execute format('drop trigger if exists %I on public.%I', t || '_prof_guard', t);
     execute format('create trigger %I before insert or update or delete on public.%I for each row execute function public._prof_guard()', t || '_prof_guard', t);
   end loop;
+end $$;
+
+-- =====================================================================
+-- 1.4: syllabus (topics with their syllabus number and subtopics) and the coverage map
+-- =====================================================================
+alter table public.topics add column if not exists code text;
+alter table public.topics add column if not exists details text[] not null default '{}';
+
+-- Topics the tutor marks as taught for a learner (e.g. in a live lesson)
+create table if not exists public.taught_topics (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  topic_id uuid not null references public.topics (id) on delete cascade,
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  taught_on date not null default current_date,
+  primary key (learner_id, topic_id)
+);
+alter table public.taught_topics enable row level security;
+drop policy if exists taught_tutor on public.taught_topics;
+create policy taught_tutor on public.taught_topics for all
+  using (tutor_id = auth.uid() and public.is_my_learner(learner_id))
+  with check (tutor_id = auth.uid() and public.is_my_learner(learner_id)
+              and exists (select 1 from public.topics t where t.id = topic_id and t.tutor_id = auth.uid()));
+drop policy if exists taught_learner on public.taught_topics;
+create policy taught_learner on public.taught_topics for select using (learner_id = auth.uid());
+
+-- Ask Prof to set out a subject's syllabus as topics. The tutor checks it and chooses to use it.
+create or replace function public.prof_syllabus(p_subject uuid, p_label text, p_note text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+  s public.subjects;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  select * into s from public.subjects where id = p_subject and tutor_id = auth.uid();
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if length(trim(coalesce(p_label, ''))) < 3 then raise exception 'Say which exam or syllabus this subject follows.'; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'syllabus', format('Set out the syllabus for %s', left(trim(p_label), 150)),
+    jsonb_build_object('subject_id', s.id, 'subject', s.name, 'exam', s.exam, 'label', left(trim(p_label), 200), 'note', left(coalesce(p_note, ''), 1000)))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+-- What each learner has covered in a subject: taught (lessons, work they were given, or marked
+-- by the tutor) and how they did, per topic
+create or replace function public.coverage(p_subject uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare s public.subjects;
+begin
+  select * into s from public.subjects where id = p_subject;
+  if s.id is null or s.tutor_id is distinct from auth.uid() then raise exception 'Unknown subject.'; end if;
+  return jsonb_build_object(
+    'topics', coalesce((select jsonb_agg(jsonb_build_object('id', id, 'name', name, 'code', code, 'details', details) order by position, name)
+                          from public.topics where subject_id = p_subject), '[]'),
+    'learners', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', p.id, 'name', p.display_name,
+        'scores', coalesce((select jsonb_object_agg(x ->> 'topic_id', jsonb_build_object('answered', x -> 'answered', 'ratio', x -> 'ratio', 'strength', x -> 'strength'))
+                              from jsonb_array_elements(public._learner_topics(p.id, false, auth.uid())) x
+                             where x ->> 'subject_id' = p_subject::text), '{}'),
+        'marked', coalesce((select jsonb_agg(topic_id) from public.taught_topics tt where tt.learner_id = p.id
+                              and tt.topic_id in (select id from public.topics where subject_id = p_subject)), '[]'),
+        'taught', coalesce((select jsonb_agg(distinct tid) from (
+            select l.topic_id tid from public.lessons l
+             where l.subject_id = p_subject and l.topic_id is not null and l.visibility <> 'hidden'
+               and (l.learner_ids is null or cardinality(l.learner_ids) = 0 or p.id = any (l.learner_ids))
+            union
+            select a.topic_id from public.assignments a
+             where a.subject_id = p_subject and a.topic_id is not null and not a.draft and public._assignment_visible_to(a, p.id)
+            union
+            select q.topic_id from public.questions q join public.assignments a on a.id = q.assignment_id
+             where a.subject_id = p_subject and q.topic_id is not null and not a.draft and public._assignment_visible_to(a, p.id)
+          ) z where tid is not null), '[]')
+      ) order by p.display_name)
+      from public.profiles p join public.learner_subjects ls on ls.learner_id = p.id and ls.subject_id = p_subject
+      where p.role = 'learner' and p.tutor_id = auth.uid()), '[]'));
 end $$;
 
 -- =====================================================================

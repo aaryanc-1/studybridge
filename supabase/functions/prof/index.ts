@@ -780,6 +780,55 @@ Warm, honest and specific; plain words, no jargon; short. Use ONLY facts in the 
     });
   }
 
+  // ---------------- syllabus ----------------
+  const SYLLABUS_TOOL = {
+    name: 'save_syllabus',
+    description: 'The syllabus as topics, in the order the syllabus gives them. The tutor checks it before using it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        topics: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              code: { type: 'string', description: 'The board’s own number for the topic (e.g. "C2", "1", "SL 1.3"), if the syllabus numbers its topics' },
+              name: { type: 'string', description: 'Topic name as the syllabus words it' },
+              details: { type: 'array', items: { type: 'string' }, description: 'Its subtopics / what learners must know, as short phrases (3–12)' },
+            },
+            required: ['name'],
+          },
+        },
+        note: { type: 'string', description: 'One or two sentences for the tutor: which syllabus (and exam years) this follows, and anything to check against the official document' },
+      },
+      required: ['topics'],
+    },
+  };
+  async function stepSyllabus(job, cfg) {
+    const c = job.context || {};
+    await save(job, 'running', { p_progress: 'Setting out the syllabus…', p_input: 0 });
+    const res = await claude(cfg, {
+      max_tokens: 9000,
+      system: `You help tutors on StudyBridge set up a subject. Set out the official syllabus for ${c.label} as its main topics, in the syllabus's own order and numbering where it has them, each with its subtopics or learning objectives as short phrases.
+Rules: follow the official syllabus as closely as you know it; don't add content that isn't in it; separate higher-tier/HL/Extended-only content clearly in the subtopic text (e.g. "(Extended)", "(HL)"); 6–25 topics. In note, say which syllabus version/exam years it follows and remind the tutor to check it against the official document.`,
+      tools: [SYLLABUS_TOOL],
+      tool_choice: { type: 'tool', name: 'save_syllabus' },
+      messages: [{ role: 'user', content: `Subject in StudyBridge: ${c.subject || ''}. Exam / syllabus: ${c.label}.${c.note ? `\nThe tutor adds: ${c.note}` : ''}` }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_syllabus');
+    const topics = (call?.input?.topics || [])
+      .filter((t) => t && t.name)
+      .slice(0, 40)
+      .map((t) => ({ code: String(t.code || '').slice(0, 20) || null, name: String(t.name).slice(0, 160), details: (Array.isArray(t.details) ? t.details : []).map((d) => String(d).slice(0, 200)).slice(0, 20) }));
+    if (!topics.length) throw new Error('Prof couldn’t set out that syllabus. Try naming the exam and its code, e.g. “Cambridge IGCSE International Mathematics 0607”.');
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { syllabus: { subject_id: c.subject_id, topics, note: String(call.input.note || '').slice(0, 600) }, reply: `${topics.length} topics for ${c.label}` },
+      p_progress: 'Ready for you to check',
+      p_notify: { title: `Prof set out the syllabus for ${c.subject || c.label}`, body: `${topics.length} topics. Check them and choose “Use these topics”.`, ref: { syllabus: true, subject_id: c.subject_id } },
+    });
+  }
+
   // ---------------- marking ----------------
   const MARK_TOOL = {
     name: 'submit_marking',
@@ -892,6 +941,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       if (job.kind === 'mark') await stepMark(job, cfg);
       else if (job.kind === 'bank') await stepBank(job, cfg);
       else if (job.kind === 'report') await stepReport(job, cfg);
+      else if (job.kind === 'syllabus') await stepSyllabus(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

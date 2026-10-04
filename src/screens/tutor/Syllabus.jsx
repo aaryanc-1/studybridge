@@ -1,0 +1,486 @@
+// Library → Syllabus: a subject's topics (with the syllabus's own numbers and subtopics),
+// set up however the tutor likes (Prof, StudyBridge's list, the official document, or typed),
+// and a coverage map: what each learner has been taught and how they're doing, per topic.
+import { useEffect, useMemo, useState } from 'react';
+import Icon from '../../ui/Icon.jsx';
+import { Empty, Field, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { useQuery, invalidate } from '../../lib/data.js';
+import * as api from '../../lib/api.js';
+import * as X from '../../lib/exams.js';
+import { useLookups } from '../shared/lookups.jsx';
+
+const IB_CURRICULUM = 'https://www.ibo.org/programmes/diploma-programme/curriculum/';
+
+export function examLabel(exam) {
+  if (!exam) return '';
+  const [b, c] = exam.split(':');
+  const s = X.findSyllabus(b, c);
+  if (!s) return '';
+  return b === 'cie' ? `Cambridge IGCSE ${s.name} (${s.code})` : `IB Diploma ${s.name}`;
+}
+
+// Typed list → topics. "1 Number" / "C2 Algebra" give the syllabus number; lines starting
+// with "-", "•" or spaces are that topic's subtopics.
+export function parseTopicText(text) {
+  const out = [];
+  for (const raw of String(text || '').split('\n')) {
+    if (!raw.trim()) continue;
+    const sub = /^\s+|^[-•*]\s*/.test(raw);
+    const line = raw.trim().replace(/^[-•*]\s*/, '');
+    if (sub && out.length) {
+      out[out.length - 1].details.push(line);
+      continue;
+    }
+    const m = line.match(/^((?:[A-Z]{1,3}\s?)?\d+(?:\.\d+)*[a-z]?|[A-Z]\d*)[.):]?\s+(.+)$/);
+    out.push(m ? { code: m[1], name: m[2].trim(), details: [] } : { code: null, name: line, details: [] });
+  }
+  return out;
+}
+
+export default function Syllabus() {
+  const lk = useLookups();
+  const route = useRoute();
+  const [sid, setSid] = useState(route.query.get('subject') || null);
+  useEffect(() => {
+    if (sid && lk.subjects.some((s) => s.id === sid)) return;
+    const withExam = lk.subjects.find((s) => s.exam);
+    setSid((withExam || lk.subjects[0])?.id || null);
+  }, [lk.subjects.map((s) => s.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  const subject = lk.subjects.find((s) => s.id === sid);
+  if (!lk.subjects.length)
+    return (
+      <Empty title="Add a subject first">
+        Make your subjects in <a href="#/structure">Subjects</a>, then set up each one’s syllabus here.
+      </Empty>
+    );
+  const [board, code] = (subject?.exam || '').split(':');
+  const official = board === 'cie' ? X.officialPage(code) : board === 'ib' ? IB_CURRICULUM : null;
+  return (
+    <div className="stack">
+      <div className="row wrap">
+        <select className="select" style={{ width: 'auto' }} value={sid || ''} onChange={(e) => setSid(e.target.value)} aria-label="Subject">
+          {lk.subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+              {s.exam ? ` · ${X.syllabusLabel(...s.exam.split(':'))}` : ''}
+            </option>
+          ))}
+        </select>
+        {official && (
+          <a className="btn sm ghost" href={official} target="_blank" rel="noreferrer">
+            <Icon name="globe" size={16} /> {board === 'cie' ? 'Cambridge’s page (syllabus PDF)' : 'IB subject pages'}
+          </a>
+        )}
+        {subject && !subject.exam && (
+          <span className="small muted">
+            Tip: set this subject’s exam in <a href="#/structure">Subjects</a>.
+          </span>
+        )}
+      </div>
+      {subject && <SubjectSyllabus key={subject.id} subject={subject} />}
+    </div>
+  );
+}
+
+function SubjectSyllabus({ subject }) {
+  const lk = useLookups();
+  const topics = useMemo(() => [...lk.topicsOf(subject.id)].sort((a, b) => (a.position || 0) - (b.position || 0) || a.name.localeCompare(b.name)), [lk.topics, subject.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const jobs = useQuery('prof-jobs', api.profJobs);
+  const mine = (jobs.data || []).filter((j) => j.kind === 'syllabus' && j.context?.subject_id === subject.id);
+  const running = mine.find((j) => ['queued', 'running', 'waiting'].includes(j.status));
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('sb.syllabusSeen') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const proposal = mine.find((j) => j.status === 'done' && j.result?.syllabus && !dismissed.includes(j.id));
+  const failed = mine.find((j) => j.status === 'failed' && !dismissed.includes(j.id));
+  const dismiss = (id) => {
+    const next = [...dismissed, id].slice(-100);
+    setDismissed(next);
+    try {
+      localStorage.setItem('sb.syllabusSeen', JSON.stringify(next));
+    } catch {
+      /* fine */
+    }
+  };
+  return (
+    <>
+      {running && (
+        <div className="card row small">
+          <div className="spinner" /> Prof is setting out the syllabus for {subject.name}… You’ll get a notification.
+        </div>
+      )}
+      {failed && (
+        <div className="card warn small row between">
+          <span>Prof couldn’t do it: {failed.error}</span>
+          <button className="btn sm" onClick={() => dismiss(failed.id)}>
+            OK
+          </button>
+        </div>
+      )}
+      {proposal && <Proposal job={proposal} subject={subject} topics={topics} onDone={() => dismiss(proposal.id)} />}
+      {!topics.length && !running && !proposal ? <SetUp subject={subject} /> : <TopicList subject={subject} topics={topics} />}
+      {topics.length > 0 && <Coverage subject={subject} />}
+    </>
+  );
+}
+
+function Proposal({ job, subject, topics, onDone }) {
+  const toast = useToast();
+  const lk = useLookups();
+  const [busy, setBusy] = useState(false);
+  const p = job.result.syllabus;
+  const known = new Set(topics.map((t) => t.name.trim().toLowerCase()));
+  const fresh = p.topics.filter((t) => !known.has(t.name.trim().toLowerCase())).length;
+  return (
+    <div className="card claude-card">
+      <h3 className="row" style={{ margin: 0 }}>
+        <Icon name="cap" style={{ color: 'var(--claude)' }} /> Prof’s syllabus for {subject.name}: {p.topics.length} topics
+      </h3>
+      {p.note && <div className="small muted">{p.note}</div>}
+      <ol className="syllabus-list">
+        {p.topics.map((t, i) => (
+          <li key={i}>
+            <b>
+              {t.code ? `${t.code} ` : ''}
+              {t.name}
+            </b>
+            {t.details?.length > 0 && <div className="small muted">{t.details.join(' · ')}</div>}
+          </li>
+        ))}
+      </ol>
+      <div className="row wrap">
+        <button
+          className="btn primary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.applyTopics(subject.id, p.topics, topics);
+              lk.reload();
+              toast(topics.length ? `Added ${fresh} new topic${fresh === 1 ? '' : 's'}; matching ones updated` : `${p.topics.length} topics added`);
+              onDone();
+            } catch (e) {
+              toast({ title: 'Couldn’t add them', body: e.message, tone: 'bad' });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {topics.length ? `Use these (add ${fresh} new, keep yours)` : 'Use these topics'}
+        </button>
+        <button className="btn" onClick={onDone}>
+          Don’t use
+        </button>
+      </div>
+      <div className="tiny muted">You can rename, reorder or delete any topic afterwards.</div>
+    </div>
+  );
+}
+
+function SetUp({ subject }) {
+  const toast = useToast();
+  const lk = useLookups();
+  const [, code] = (subject.exam || '').split(':');
+  const builtIn = X.topicsFor(code);
+  const [label, setLabel] = useState(examLabel(subject.exam));
+  const [note, setNote] = useState('');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState('');
+  const usage = useQuery('prof-usage', api.profUsage).data;
+  async function add(list, what) {
+    setBusy(what);
+    try {
+      await api.applyTopics(subject.id, list, []);
+      lk.reload();
+      toast(`${list.length} topics added`);
+    } catch (e) {
+      toast({ title: 'Couldn’t add them', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy('');
+    }
+  }
+  return (
+    <div className="card">
+      <h2>Set up the syllabus for {subject.name}</h2>
+      <div className="small muted">Topics are used everywhere: the question bank, practice, reports, flashcards and the coverage map below. Choose whichever way suits you; you can change everything later.</div>
+      <div className="grid g2" style={{ gap: 14 }}>
+        <div className="setup-option">
+          <h3 className="row">
+            <Icon name="cap" style={{ color: 'var(--claude)' }} /> Ask Prof
+          </h3>
+          <div className="small muted">Prof sets out the official syllabus: topics in order, with their numbers and subtopics. You check it before it’s used.</div>
+          <Field label="Exam or syllabus">
+            <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Cambridge IGCSE International Mathematics 0607 (Extended)" />
+          </Field>
+          <Field label="Anything to add (optional)">
+            <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Extended tier only; 2025–2027 syllabus" />
+          </Field>
+          <div>
+            <button
+              className="btn claude"
+              disabled={!!busy || label.trim().length < 3 || (usage && !usage.ready)}
+              onClick={async () => {
+                setBusy('prof');
+                try {
+                  await api.profSyllabus(subject.id, label.trim(), note.trim());
+                  invalidate('prof-jobs');
+                  toast({ title: 'Prof is on it', body: 'You’ll get a notification when the topics are ready to check.' });
+                } catch (e) {
+                  toast({ title: 'Couldn’t ask Prof', body: e.message, tone: 'bad' });
+                } finally {
+                  setBusy('');
+                }
+              }}
+            >
+              <Icon name="cap" size={16} /> Set it up with Prof
+            </button>
+          </div>
+          {usage && !usage.ready && <div className="tiny muted">{usage.why_not}</div>}
+        </div>
+        <div className="setup-option">
+          <h3 className="row">
+            <Icon name="pen" /> Type or paste it
+          </h3>
+          <div className="small muted">One topic per line. Start a line with a number to keep the syllabus number (“1.2 Fractions”). Lines starting with “-” are that topic’s subtopics. Pasting from the syllabus PDF works.</div>
+          <textarea className="textarea" value={text} onChange={(e) => setText(e.target.value)} placeholder={'1 Number\n- Types of number\n- Fractions, decimals, percentages\n2 Algebra\n- Simplifying\n- Equations'} aria-label="Topics" />
+          <div>
+            <button className="btn" disabled={!!busy || !parseTopicText(text).length} onClick={() => add(parseTopicText(text), 'typed')}>
+              Add {parseTopicText(text).length || ''} topic{parseTopicText(text).length === 1 ? '' : 's'}
+            </button>
+          </div>
+        </div>
+      </div>
+      {builtIn.length > 0 && (
+        <div className="row wrap small">
+          <span>Or start from StudyBridge’s list for {code}:</span>
+          <span className="muted">{builtIn.join(', ')}</span>
+          <button className="btn sm" disabled={!!busy} onClick={() => add(builtIn.map((name) => ({ name, details: [] })), 'builtin')}>
+            Use this list
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopicList({ subject, topics }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [open, setOpen] = useState(null);
+  const [adding, setAdding] = useState('');
+  const [asking, setAsking] = useState(false);
+  async function move(i, d) {
+    const a = topics[i];
+    const b = topics[i + d];
+    if (!a || !b) return;
+    await api.save('topics', { id: a.id, position: i + d });
+    await api.save('topics', { id: b.id, position: i });
+    lk.reload();
+  }
+  return (
+    <div className="card">
+      <div className="row between wrap">
+        <h2 style={{ margin: 0 }}>
+          Topics <span className="muted small">({topics.length})</span>
+        </h2>
+        <button className="btn sm" onClick={() => setAsking((x) => !x)}>
+          <Icon name="cap" size={14} /> Ask Prof to check it against the syllabus
+        </button>
+      </div>
+      {asking && <AskAgain subject={subject} onDone={() => setAsking(false)} />}
+      <div className="syllabus-topics">
+        {topics.map((t, i) => (
+          <div key={t.id} className="syllabus-topic">
+            <div className="row" style={{ gap: 8 }}>
+              <span className="code">{t.code || ''}</span>
+              <button className="linkbtn grow" style={{ textAlign: 'left' }} onClick={() => setOpen(open === t.id ? null : t.id)} aria-expanded={open === t.id}>
+                <b>{t.name}</b>
+                {t.details?.length > 0 && <span className="small muted"> · {t.details.length} subtopic{t.details.length === 1 ? '' : 's'}</span>}
+              </button>
+              <button className="btn ghost icon sm" aria-label={`Move ${t.name} up`} disabled={i === 0} onClick={() => move(i, -1)}>
+                <Icon name="up" size={14} />
+              </button>
+              <button className="btn ghost icon sm" aria-label={`Move ${t.name} down`} disabled={i === topics.length - 1} onClick={() => move(i, 1)}>
+                <Icon name="down" size={14} />
+              </button>
+            </div>
+            {open === t.id && (
+              <TopicEdit
+                t={t}
+                onDelete={async () => {
+                  if (!(await confirm({ title: `Delete ${t.name}?`, body: 'Questions and work tagged with it keep existing but lose the tag.', ok: 'Delete', danger: true }))) return;
+                  await api.remove('topics', t.id);
+                  lk.reload();
+                  setOpen(null);
+                }}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+      <form
+        className="row"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const parsed = parseTopicText(adding);
+          if (!parsed.length) return;
+          try {
+            await api.applyTopics(subject.id, parsed, topics);
+            setAdding('');
+            lk.reload();
+          } catch (x) {
+            toast({ title: 'Couldn’t add it', body: x.message, tone: 'bad' });
+          }
+        }}
+      >
+        <input className="input" value={adding} onChange={(e) => setAdding(e.target.value)} placeholder="Add a topic, e.g. 11 Vectors" aria-label="New topic" />
+        <button className="btn">Add</button>
+      </form>
+    </div>
+  );
+}
+
+function TopicEdit({ t, onDelete }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const [name, setName] = useState(t.name);
+  const [code, setCode] = useState(t.code || '');
+  const [details, setDetails] = useState((t.details || []).join('\n'));
+  return (
+    <div className="stack sm" style={{ paddingLeft: 8 }}>
+      <div className="row wrap">
+        <input className="input" style={{ maxWidth: 90 }} value={code} onChange={(e) => setCode(e.target.value)} placeholder="No." aria-label="Syllabus number" />
+        <input className="input grow" value={name} onChange={(e) => setName(e.target.value)} aria-label="Topic name" />
+      </div>
+      <textarea className="textarea" value={details} onChange={(e) => setDetails(e.target.value)} placeholder="Subtopics, one per line" aria-label="Subtopics" />
+      <div className="row">
+        <button
+          className="btn sm primary"
+          onClick={async () => {
+            try {
+              await api.save('topics', { id: t.id, name: name.trim() || t.name, code: code.trim() || null, details: details.split('\n').map((x) => x.trim()).filter(Boolean) });
+              lk.reload();
+              toast('Saved');
+            } catch (e) {
+              toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+            }
+          }}
+        >
+          Save
+        </button>
+        <button className="btn sm danger" onClick={onDelete}>
+          <Icon name="trash" size={14} /> Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AskAgain({ subject, onDone }) {
+  const toast = useToast();
+  const [label, setLabel] = useState(examLabel(subject.exam));
+  return (
+    <div className="row wrap">
+      <input className="input grow" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Exam or syllabus, e.g. Cambridge IGCSE International Mathematics 0607" aria-label="Exam or syllabus" />
+      <button
+        className="btn claude sm"
+        disabled={label.trim().length < 3}
+        onClick={async () => {
+          try {
+            await api.profSyllabus(subject.id, label.trim(), 'The tutor already has topics; give the full official list so missing ones can be added.');
+            invalidate('prof-jobs');
+            toast({ title: 'Prof is on it', body: 'Your topics stay as they are; you choose what to add.' });
+            onDone();
+          } catch (e) {
+            toast({ title: 'Couldn’t ask Prof', body: e.message, tone: 'bad' });
+          }
+        }}
+      >
+        Ask Prof
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+const STRENGTH = { strong: 'Strong', developing: 'Getting there', weak: 'Needs work' };
+function Coverage({ subject }) {
+  const q = useQuery(`coverage:${subject.id}`, () => api.coverage(subject.id));
+  const toast = useToast();
+  const c = q.data;
+  if (!c) return null;
+  if (!c.learners.length)
+    return (
+      <div className="card small muted">
+        Coverage shows here once a learner takes {subject.name}.
+      </div>
+    );
+  return (
+    <div className="card">
+      <h2>Coverage</h2>
+      <div className="small muted">
+        What each learner has been taught and how they’re doing, topic by topic. Taught comes from lessons and work you’ve given them; click a cell to mark a topic as taught yourself (e.g. in a live lesson).
+      </div>
+      <div className="row wrap small" style={{ gap: 10 }}>
+        <span className="cov-cell strong sm">Strong</span>
+        <span className="cov-cell developing sm">Getting there</span>
+        <span className="cov-cell weak sm">Needs work</span>
+        <span className="cov-cell taught sm">Taught</span>
+        <span className="cov-cell sm">Not yet</span>
+      </div>
+      <div className="table-wrap">
+        <table className="table coverage">
+          <thead>
+            <tr>
+              <th>Topic</th>
+              {c.learners.map((l) => (
+                <th key={l.id}>{l.name.split(' ')[0]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {c.topics.map((t) => (
+              <tr key={t.id}>
+                <td>
+                  {t.code ? <span className="muted">{t.code} </span> : null}
+                  {t.name}
+                </td>
+                {c.learners.map((l) => {
+                  const sc = l.scores[t.id];
+                  const marked = l.marked.includes(t.id);
+                  const taught = marked || l.taught.includes(t.id);
+                  const state = sc && sc.strength !== 'none' ? sc.strength : taught ? 'taught' : '';
+                  return (
+                    <td key={l.id}>
+                      <button
+                        className={'cov-cell ' + state}
+                        title={sc ? `${Math.round(100 * sc.ratio)}% over ${sc.answered} answer${sc.answered === 1 ? '' : 's'}` : marked ? 'You marked this as taught (click to undo)' : taught ? 'Taught in a lesson or work' : 'Click to mark as taught'}
+                        onClick={async () => {
+                          if (!marked && taught) return;
+                          try {
+                            await api.setTaught(l.id, t.id, !marked);
+                            invalidate(`coverage:${subject.id}`);
+                          } catch (e) {
+                            toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+                          }
+                        }}
+                      >
+                        {sc && sc.strength !== 'none' ? `${Math.round(100 * sc.ratio)}%` : taught ? 'Taught' : '—'}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="tiny muted">{Object.values(STRENGTH).join(' · ')} are from their marked answers (last 10 per topic).</div>
+    </div>
+  );
+}

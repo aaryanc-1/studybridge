@@ -758,3 +758,31 @@ test('crash reports, the admin inbox, announcements, overview', async () => {
   const nt = (await val('A', `select admin_tutors()`)).find((t) => t.id === U.T9);
   assert.deepEqual(nt.signup, { subjects: 'IB Physics', country: 'Zambia', learners: '1–5' });
 });
+
+test('syllabus topics, taught marks and the coverage map', async () => {
+  U.TC = (await db.query(`insert into auth.users (email) values ('cov-tutor@x.com') returning id`)).rows[0].id;
+  U.LC = (await db.query(`insert into auth.users (email) values ('cov-learner@x.com') returning id`)).rows[0].id;
+  await as('TC', `select * from become_tutor('Cov')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.TC]);
+  const sub = await val('TC', `insert into subjects (name, exam) values ('Maths', 'cie:0607') returning id`);
+  const t1 = await val('TC', `insert into topics (subject_id, name, code, details, position) values ($1, 'Number', '1', '{Fractions,Percentages}', 0) returning id`, [sub]);
+  const t2 = await val('TC', `insert into topics (subject_id, name, code, position) values ($1, 'Algebra', '2', 1) returning id`, [sub]);
+  const t3 = await val('TC', `insert into topics (subject_id, name, code, position) values ($1, 'Geometry', '3', 2) returning id`, [sub]);
+  const code = await val('TC', `insert into invites (name, subject_ids) values ('Cov L', $1) returning code`, [[sub]]);
+  await as('LC', `select accept_invite($1, 'Cov Learner')`, [code]);
+  // A lesson on Number they can see = taught; Algebra marked taught by hand; Geometry nothing yet
+  await as('TC', `insert into lessons (title, subject_id, topic_id, visibility) values ('Fractions', $1, $2, 'visible')`, [sub, t1]);
+  await as('TC', `insert into taught_topics (learner_id, topic_id) values ($1, $2)`, [U.LC, t2]);
+  await fails(as('T', `insert into taught_topics (learner_id, topic_id, tutor_id) values ($1, $2, $3)`, [U.LC, t2, U.T]), /row-level security/);
+  const cov = await val('TC', `select coverage($1)`, [sub]);
+  assert.deepEqual(cov.topics.map((t) => t.code), ['1', '2', '3']);
+  assert.deepEqual(cov.topics[0].details, ['Fractions', 'Percentages']);
+  const l = cov.learners[0];
+  assert.equal(l.name, 'Cov Learner');
+  assert.ok(l.taught.includes(t1));
+  assert.ok(l.marked.includes(t2));
+  assert.ok(!l.taught.includes(t3) && !l.marked.includes(t3));
+  await fails(as('T', `select coverage($1)`, [sub]), /Unknown subject/);
+  assert.equal((await as('LC', `select * from taught_topics`)).length, 1, 'the learner can see what was marked for them');
+  await fails(as('TC', `select prof_syllabus($1, 'x')`, [sub]), /Say which exam|switched on|unavailable/);
+});

@@ -592,3 +592,21 @@ a.stat.click:hover { border-color: var(--accent); }
 .admin-stats .stat { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
 .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
 .facts b { color: var(--ink); font-weight: 600; }
+
+/* Syllabus & coverage */
+.claude-card { border-color: #EBCDBF; background: var(--claude-tint); }
+.setup-option { border: 1px solid var(--line-soft); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.setup-option h3 { margin: 0; }
+.syllabus-list { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.syllabus-topics { display: flex; flex-direction: column; }
+.syllabus-topic { border-top: 1px solid var(--line-soft); padding: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.syllabus-topic .code { width: 52px; flex-shrink: 0; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; max-width: 100%; }
+table.coverage td, table.coverage th { white-space: nowrap; }
+table.coverage td:first-child { white-space: normal; min-width: 180px; }
+.cov-cell { display: inline-flex; align-items: center; justify-content: center; min-width: 74px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--sunk); color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.cov-cell.sm { min-width: 0; cursor: default; }
+.cov-cell.taught { background: #E3EEF9; color: #1F4E79; border-color: #C7DBF0; }
+.cov-cell.strong { background: #DFF2E6; color: #1B6B3A; border-color: #BFE3CB; }
+.cov-cell.developing { background: #FBF0D9; color: #7A5A12; border-color: #F0DDB0; }
+.cov-cell.weak { background: #FBE3DF; color: #9B2C1F; border-color: #F2C3BB; }

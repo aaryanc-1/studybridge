@@ -316,3 +316,20 @@ test('Prof drafts a weekly parent report; the tutor sends it', async () => {
   const again = await T.rpc('prof_report', { p_report: rep.id });
   assert.match(again.error.message, /Report not found/);
 });
+
+test('Prof sets out a syllabus; nothing changes until the tutor uses it', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const subj = await q(T.from('subjects').insert({ name: 'Maths 0607', exam: 'cie:0607' }).select().single());
+  const job = await q(T.rpc('prof_syllabus', { p_subject: subj.id, p_label: 'Cambridge IGCSE International Mathematics (0607)' }));
+  await kick(T);
+  const j = await q(T.from('prof_jobs').select('status,result,error').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.equal(j.result.syllabus.topics.length, 5);
+  assert.equal(j.result.syllabus.topics[1].code, '2');
+  assert.equal((await q(T.from('topics').select('id').eq('subject_id', subj.id))).length, 0, 'drafts only: the tutor chooses to use it');
+  const other = client();
+  await q(other.auth.signUp({ email: 'stranger@x.com', password: 'secret123' }));
+  const bad = await other.rpc('prof_syllabus', { p_subject: subj.id, p_label: 'x y z' });
+  assert.ok(bad.error);
+});

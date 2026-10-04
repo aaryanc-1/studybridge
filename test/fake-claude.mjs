@@ -66,6 +66,16 @@ function reply(body) {
       ],
     };
   }
+  if (tools.includes('save_syllabus')) {
+    const topics = [
+      { code: '1', name: 'Number', details: ['Types of number', 'Fractions, decimals and percentages', 'Standard form'] },
+      { code: '2', name: 'Algebra', details: ['Expressions', 'Linear equations', 'Simultaneous equations (Extended)'] },
+      { code: '3', name: 'Functions', details: ['Notation', 'Graphs of functions'] },
+      { code: '4', name: 'Coordinate geometry', details: ['Gradient', 'Equation of a line'] },
+      { code: '5', name: 'Geometry', details: ['Angles', 'Similarity'] },
+    ];
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_syllabus', { topics, note: 'Follows the 2025–2027 syllabus. Check it against the official document.' })] };
+  }
   if (tools.includes('write_report')) {
     const d = JSON.parse(body.messages[0].content.slice(body.messages[0].content.indexOf('{')));
     return {

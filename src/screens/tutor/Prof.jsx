@@ -350,13 +350,18 @@ function Jobs() {
                             <Icon name="layers" size={14} /> Review {r.bank.count} bank question{r.bank.count === 1 ? '' : 's'}
                           </Link>
                         )}
+                        {r.syllabus && (
+                          <Link to={`/library/syllabus?subject=${r.syllabus.subject_id}`} className="btn sm">
+                            <Icon name="target" size={14} /> Check {r.syllabus.topics.length} topics
+                          </Link>
+                        )}
                         {j.attempt_id && (
                           <Link to={`/marking/${j.attempt_id}`} className="btn sm">
                             Open the submission
                           </Link>
                         )}
                       </div>
-                      {j.kind !== 'mark' && j.kind !== 'bank' && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
+                      {!['mark', 'bank', 'syllabus', 'report', 'paper'].includes(j.kind) && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
                     </>
                   )}
                   {(j.status === 'failed' || j.status === 'cancelled') && (

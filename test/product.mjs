@@ -313,6 +313,20 @@ try {
   await ibp.getByText(/IB paper, private to you/).waitFor();
   await ibp.getByRole('button', { name: 'Prof: practice paper in this style' }).waitFor();
   await ibp.getByRole('button', { name: 'Close' }).click();
+
+  step('Syllabus: Prof sets out 0607, the tutor uses it; coverage per learner');
+  await A.getByRole('button', { name: 'Syllabus' }).click();
+  await A.getByRole('heading', { name: 'Set up the syllabus for Mathematics' }).waitFor();
+  assert.match(await A.getByLabel('Exam or syllabus').inputValue(), /0607/);
+  await A.getByRole('button', { name: 'Set it up with Prof' }).click();
+  await A.getByRole('heading', { name: /Prof’s syllabus for Mathematics: 5 topics/ }).waitFor({ timeout: 60000 });
+  await shot(A, 'syllabus-proposal');
+  await A.getByRole('button', { name: 'Use these topics' }).click();
+  await A.locator('.syllabus-topic', { hasText: 'Coordinate geometry' }).waitFor();
+  const geo = A.locator('table.coverage tr', { hasText: 'Geometry' }).filter({ hasNotText: 'Coordinate' }).locator('.cov-cell');
+  await geo.click();
+  await A.locator('table.coverage tr', { hasText: 'Geometry' }).filter({ hasNotText: 'Coordinate' }).locator('.cov-cell.taught').waitFor();
+  await shot(A, 'syllabus-coverage');
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
   await A.getByRole('button', { name: 'Files' }).click();

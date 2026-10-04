@@ -474,6 +474,24 @@ export async function callProf(action = 'kick') {
 export const profJobs = () =>
   run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
 export const profUsage = () => run(sb().rpc('prof_usage'));
+
+// ---------------- syllabus & coverage ----------------
+export const profSyllabus = (subjectId, label, note = '') => run(sb().rpc('prof_syllabus', { p_subject: subjectId, p_label: label, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
+export const coverage = (subjectId) => run(sb().rpc('coverage', { p_subject: subjectId }));
+export async function setTaught(learnerId, topicId, on) {
+  if (on) return run(sb().from('taught_topics').upsert({ learner_id: learnerId, topic_id: topicId, tutor_id: uid() }, { onConflict: 'learner_id,topic_id' }));
+  return run(sb().from('taught_topics').delete().eq('learner_id', learnerId).eq('topic_id', topicId));
+}
+// Put a list of topics into a subject: adds the new ones, updates codes/details of ones with the same name
+export async function applyTopics(subjectId, list, existing = []) {
+  const byName = new Map(existing.map((t) => [t.name.trim().toLowerCase(), t]));
+  let pos = existing.reduce((m, t) => Math.max(m, t.position || 0), -1) + 1;
+  for (const t of list) {
+    const old = byName.get(t.name.trim().toLowerCase());
+    if (old) await run(sb().from('topics').update({ code: t.code || old.code || null, details: t.details?.length ? t.details : old.details || [] }).eq('id', old.id));
+    else await run(sb().from('topics').insert({ subject_id: subjectId, name: t.name.trim(), code: t.code || null, details: t.details || [], position: pos++ }));
+  }
+}
 export const profSettings = () => run(sb().from('prof_settings').select('*').eq('tutor_id', uid()).maybeSingle());
 export const saveProfSettings = (patch) =>
   run(sb().from('prof_settings').upsert({ tutor_id: uid(), ...patch, updated_at: new Date().toISOString() }, { onConflict: 'tutor_id' }));
