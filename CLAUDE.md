@@ -34,7 +34,8 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - Plain, friendly wording in the app; explain setup steps simply (he's not a database person).
 - Keep the master doc updated after each release. A full copy is in `docs/MASTER.md` (features, setup,
   costs and draft pricing, roadmap, known issues, changelog). If the Claude Docs version isn't reachable
-  from this account, make a new Claude Doc from `docs/MASTER.md` and keep both in step.
+  from this account, make a new Claude Doc from `docs/MASTER.md` and keep both in step. Done 5 Oct 2026:
+  the master is now the Claude Doc at https://claude.ai/code/artifact/3b8ca1b2-2874-4413-9c2a-d73cdb1eed8f
 
 ## Done so far
 1.0 core (assignments, marking, lessons, live video, offline, lockdown) · 1.1 service (tutor approval,
@@ -48,3 +49,13 @@ self-marking, calendar link, StudyBridge practice papers · coverage you can set
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge
 grade boundaries) · parent accounts (read-only) · data-saver mode · then selling basics: email from his
 domain, Google sign-in, terms/privacy, data export/delete, payments (after pricing), landing page.
+
+Decided 5 Oct 2026, before building 1.6:
+- Build 1.6 in parts, each its own auto-update; update the master doc after each part.
+- Recurring lessons keep the tutor's clock time when clocks change (Aaryan is in New York, his sister in Lusaka,
+  which has no daylight saving): US clocks go back on 1 Nov 2026, so 10:00 New York moves from 16:00 to 17:00 Lusaka.
+- Mock exam grade boundaries are chosen per mock: the tutor types them, or Prof reads the tutor's own
+  grade-threshold PDF and the tutor approves. Boundaries stay private to that tutor; the grade itself is plain
+  maths, never AI.
+- The repo `aaryanc-1/studybridge` is publicly readable (it was thought to be private). Raise it with Aaryan
+  before selling; private repos get limited Actions minutes and the Mac builds use them fastest.
