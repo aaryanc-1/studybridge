@@ -32,7 +32,9 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - When he says "discuss", discuss before building. The landing page is built only when he says "build".
 - Commit as `git -c user.name="Aaryan Chouhan" -c user.email="aaryanchouhan1@gmail.com" commit`.
 - Plain, friendly wording in the app; explain setup steps simply (he's not a database person).
-- Keep the StudyBridge master doc (Claude Docs) changelog updated after each release.
+- Keep the master doc updated after each release. A full copy is in `docs/MASTER.md` (features, setup,
+  costs and draft pricing, roadmap, known issues, changelog). If the Claude Docs version isn't reachable
+  from this account, make a new Claude Doc from `docs/MASTER.md` and keep both in step.
 
 ## Done so far
 1.0 core (assignments, marking, lessons, live video, offline, lockdown) · 1.1 service (tutor approval,
