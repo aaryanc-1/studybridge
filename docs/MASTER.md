@@ -90,7 +90,7 @@ The app holds no secrets: Supabase's security rules decide who sees what, the Cl
 
 ## Setup and running it
 
-The apps, the update page, the phone version and Prof are running; two GitHub secrets are still missing, so database and Prof updates are done by hand.
+The apps, the update page, the phone version and Prof are running; every push to GitHub now updates the database and the Prof server by itself (since 5 Oct 2026).
 
 | Service or setting | What it's for | Status |
 | --- | --- | --- |
@@ -98,15 +98,15 @@ The apps, the update page, the phone version and Prof are running; two GitHub se
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.31 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.35 |
 | Secret `RELEASES_TOKEN` | Lets the build publish to the public repo | Added |
 | Variables `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Built into the apps so nobody types a server address | Added |
-| Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Missing |
-| Secret `SUPABASE_ACCESS_TOKEN` | Deploys Prof's code automatically | Missing |
+| Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Added 5 Oct 2026; works |
+| Secret `SUPABASE_ACCESS_TOKEN` | Deploys Prof's code automatically | Added 5 Oct 2026; works |
 | Secret `BACKUP_PASSWORD` | Encrypts nightly backups | Missing |
 | ntfy app on phone | Push alerts (new tutor sign-ups, notes) | Set up |
 
-**While the two secrets are missing, after an update that changes the server:**
+**If an automatic server update ever fails (GitHub → Actions → the run → server), do it by hand:**
 
 1. Supabase → SQL Editor → paste the latest `supabase/setup.sql` → Run.
 2. Supabase → Edge Functions → `prof` → replace the code with the latest `supabase/functions/prof/index.ts` → Deploy (JWT verification stays off).
@@ -199,9 +199,8 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 ## Known issues and open questions
 
-- **Every release that changes the server needs the server update** (1.2 onwards): re-run the new `setup.sql` in Supabase and paste the new Prof code, or the newer features won't work. This stays manual until `SUPABASE_DB_URL` and `SUPABASE_ACCESS_TOKEN` are added; no nightly backups yet either.
+- **Server updates are automatic since 5 Oct 2026:** every push runs `setup.sql` and deploys the Prof code (first run on release 1.1.35, both steps passed). Nightly backups still need the `BACKUP_PASSWORD` secret.
 - **The code repo is publicly readable:** it was listed as private, but anyone can read the code on GitHub. Nothing secret is in it by design. Decide before selling; check GitHub Actions minutes first, as private repos get a limited allowance and Mac builds use it fastest.
-- **1.6 part 1 needs the server update:** until the new `setup.sql` is run in Supabase, weekly lessons, reminders (pg\_cron job `studybridge-lessons`) and learners' phone alerts don't work, and the Weekly lessons list stays empty. One-off lessons work as before. The Prof book-picker fix is in the app already.
 - **Opening Cambridge's papers from the desktop app is untested on a real computer:** Cambridge's site sits behind Cloudflare. If it blocks the app, the page shows a link to Cambridge's own page instead.
 - **The IB doesn't publish free past papers;** IB subjects fill only with copies the tutor imports.
 - **Weekly reports are refreshed by the server every hour or so** (needs pg\_cron, already set up); sending is still one tap on WhatsApp until a domain and email service exist.
@@ -216,6 +215,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 | Date | Change |
 | --- | --- |
+| 5 Oct 2026 | Database and Prof server now update themselves on every push (SUPABASE_DB_URL and SUPABASE_ACCESS_TOKEN added); first automatic run on 1.1.35 put 1.6 part 1's weekly lessons, reminders and phone alerts live |
 | 5 Oct 2026 | 1.6 part 1: weekly lessons that keep the tutor's clock time, each learner's time shown (10:00 New York moves from 16:00 to 17:00 Lusaka on 1 Nov); skip one week and put it back, move one, change from a lesson on, stop; reminders a day and 15 minutes before to tutor and learners; learners' own ntfy phone alerts; learners told when a one-off lesson is cancelled or a lesson moves; skipped lessons left out of calendars and reports. Also: Prof's book picker no longer says "Choose a PDF" with a book showing |
 | 5 Oct 2026 | Master doc moved to this Claude Doc (backup copy in the repo at `docs/MASTER.md`); `CLAUDE.md` hand-off notes added to the repo |
 | 4 Oct 2026 | 1.5 (app 1.1.30): new StudyBridge logo everywhere (app, installer, tray, phone icons, sign-in); clearer 7-step getting-started checklist on tutor Home; sign-in page restyled; learner streak consistent |
