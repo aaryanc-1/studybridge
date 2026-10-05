@@ -1,8 +1,8 @@
 # StudyBridge master document
 
-Oct 2, 2026 · @Aaryan Chouhan
+Oct 5, 2026 · @Aaryan Chouhan
 
-StudyBridge is a desktop and phone app where tutors set, mark and track work for their own learners, with Prof, a tutor-only AI assistant, drafting work for the tutor to approve. This doc is kept up to date as StudyBridge changes.
+StudyBridge is a desktop and phone app where tutors set, mark and track work for their own learners, with Prof, a tutor-only AI assistant, drafting work for the tutor to approve. This doc is the master copy and is kept up to date as StudyBridge changes; a backup copy lives in the repo at `docs/MASTER.md`.
 
 ## At a glance
 
@@ -13,15 +13,17 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 | Who uses it | Tutors (sign up, approved by the StudyBridge admin) and their learners (join only by the tutor's invite) |
 | Where | Desktop app for Windows and Mac (main), the same app in a phone browser (add to home screen) |
 | First real user | Aaryan tutoring his sister (Cambridge IGCSE International Maths 0607, Lusaka) from NYC |
-| Admin | Aaryan is the StudyBridge admin: approves tutors, manages accounts and access, never sees content |
+| Admin | Aaryan is the StudyBridge admin, on a separate admin account: approves tutors, manages accounts and access, never sees content |
 | Business model | Monthly subscription per tutor (prices not final), no commission; StudyBridge pays the AI and video costs |
-| Version | 1.1.x, live since 1 Oct 2026; updates install themselves |
+| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 1 out 5 Oct 2026 |
 
 **Rules StudyBridge lives by**
 
 - Learners never use AI. Prof works for the tutor only.
-- Nothing Prof makes reaches a learner until the tutor approves it; the database enforces this.
+- Nothing Prof makes reaches a learner until the tutor approves it (the admin, for shared StudyBridge content); the database enforces this.
 - The admin manages accounts but can never read anyone's work, files, marks or messages; every admin action is logged and visible to the tutor.
+- Tutors never see Prof money or usage; only the admin does.
+- StudyBridge never hosts or shares exam-board papers: official papers stay private to the tutor who imports them, and only original papers are shared.
 - It stays an installed app, and nobody ever reinstalls: updates arrive by themselves.
 - Each tutor only sees their own learners; each learner only sees their own work.
 
@@ -42,57 +44,61 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 
 **The pitch:** one app, one login, everything from the lesson to the marked exam, for about half the price of the stack it replaces.
 
-**Where the claim is still thin:** products sold as "all-in-one" for tutors (TutorBird, Teach 'n Go, Wise) mean the business side. StudyBridge has none of that yet. A tutor would still need separate tools for:
+**Where the claim is still thin:** products sold as "all-in-one" for tutors (TutorBird, Teach 'n Go, Wise) mean the business side. StudyBridge has little of that yet. A tutor would still need separate tools for:
 
-- scheduling and a lesson calendar
+- scheduling and lesson reminders (recurring lessons with reminders come in 1.6; a calendar link already exists)
 - invoices and taking payments
-- a parent view of progress
+- a parent view of progress (weekly parent reports exist; parent accounts come in 1.6)
 - recording lessons
 
 Until those exist, say "all-in-one for teaching", not "all-in-one tutoring business". Prices from the Tutoring apps price comparison, 1 Oct 2026.
 
 ## Features today
 
-Everything below is built, tested and live.
+Everything below is built, tested and live as of 1.5.
 
 | Area | Features |
 | --- | --- |
-| Structure | Programmes, subjects (with colours) and topics, all named by the tutor; learners put on a programme and chosen subjects |
+| Structure | Programmes, subjects (with colours) and topics, all named by the tutor; each subject can say which exam it's for; learners put on a programme and chosen subjects |
 | Learners and invites | Invite codes (`SB1-…`) that always create a learner account; learner accounts list, password reset, delete account, remove from my learners |
-| Library | Any file (PDFs open in the app, including scanned books); each item hidden, visible or visible from a date, for a subject or chosen learners. Past papers: every IGCSE and IB subject by year, session and paper with gaps shown; Cambridge's own papers open from its website (desktop); import a whole folder (filed from names or cover pages, paired with mark schemes, duplicates skipped, kept on the computer until shared); your own links; find a paper by typing it. Free openly licensed textbooks. Question bank: your questions plus StudyBridge's shared exam-style questions |
+| Library | Any file (PDFs open in the app, including scanned books); each item hidden, visible or visible from a date, for a subject or chosen learners; your own links; free openly licensed textbooks (OpenStax, Siyavula); a syllabus per subject (Prof sets it out or the tutor writes it) |
+| Past papers | Every IGCSE and IB subject by year, session and paper with gaps shown; your learners' exams first, and a subject's exam can be set right there; Cambridge's own papers open from its website (desktop); import a whole folder (filed from names or cover pages, paired with mark schemes, duplicates skipped, kept on the computer until shared) with a review to fix what a file was read as; IB filed by level and paper, your papers private; find a paper by typing it; StudyBridge practice papers (original papers in each exam's format, checked twice, approved by the admin) to copy into a test |
+| Question bank | Your questions plus StudyBridge's shared exam-style questions, by subject, topic and difficulty |
 | Lessons | Written lessons with maths, images and attached files; draft or post |
 | Assignments | Homework, quiz, test, exam; save draft, post or schedule; "Goes to" names; per-assignment time limit, attempts, release of marks, show answers, notes allowed; add questions from the bank or save them to it; practice sets for a learner (any number of tries, marked instantly) |
 | Question types | Multiple choice, number, maths with working line by line, written answer, photo of work, drawing |
 | Working out | Maths keyboard (MathLive); automatic step checker flags lines that don't follow; whiteboard for working; draw on a photo |
 | Exams | Lockdown (screen locked in the desktop app, leaving is reported instantly); exam camera the tutor watches live |
 | Marking | Auto-marking for multiple choice and numbers; tick or cross each line of working; draw on photos; feedback, mistake labels, redo requests, release control |
-| Progress | Strengths per topic, time studied per day and subject, weekly and monthly summaries, missed deadlines, mistakes; weekly parent reports (learner switches them on; sent on WhatsApp or email after the tutor approves) |
+| Progress | Strengths per topic, time studied per day and subject, weekly and monthly summaries, missed deadlines, mistakes; coverage map per learner (the tutor sets each cell: Strong, Getting there, Needs work, Taught, Not yet); weekly parent reports (learner switches them on; kept up to date by the server; the tutor can read any report any time; sent on WhatsApp or email after the tutor approves) |
+| Study (learners) | Flashcards with spaced repetition (the tutor's, Prof's after approval, the learner's own, mistake cards); daily quiz; worked example then you try; timed drills; formula sheets; daily goal and streak; self-marked work (one attempt; the mark scheme shows only when nothing can change) |
+| Calendar | A private calendar link with lessons and due dates for Google, Apple or Outlook calendar |
 | Messages | Notes from learners on any question, messages both ways, instant desktop notifications, phone push via ntfy |
-| Live lessons | Video, screen sharing, shared whiteboard (LiveKit, shared keys from StudyBridge) |
+| Live lessons | Video, screen sharing, shared whiteboard (LiveKit, shared keys from StudyBridge); one-off or weekly lessons at the tutor's clock time, each learner's own time shown; skip one week, move one, change from a lesson on, or stop; reminders a day and 15 minutes before, in the app and on learners' phones through ntfy |
 | Learner experience | Friendly theme, streaks, week dots, Up next, score ring, confetti; works offline and hands in when back online |
-| Prof (AI, tutor only) | Ask in plain words for homework, quizzes, tests, exams or lessons; use pages or a whole book from the library (Prof asks for the pages it needs); reply to Prof under its answer; auto-mark hand-ins; weekly work aimed at weak topics; style notes; monthly allowance per tutor; turn your copy of a past paper into a test; original practice papers in a past paper's style; bank questions with an automatic second check; weekly parent reports; notes on book pages it has read so re-reading is cheap |
-| Admin (StudyBridge) | Approve, decline, pause, switch back on, reset passwords, delete; plans and Prof allowances; Claude key (write-only), model; shared live video; log of every action; shared StudyBridge question bank (ask Prof, review, approve for every tutor) |
-| Accounts | Anyone signs up as a tutor and waits for approval; paused tutors can't sign in; tutors see changes the admin made to their account |
-| Updates | Desktop app downloads new versions and offers Restart now; rolls back a version that fails to start; Windows installs shell updates quietly, Mac downloads the new .dmg |
+| Prof (AI, tutor only) | Ask in plain words for homework, quizzes, tests, exams or lessons; use pages or a whole book from the library (Prof asks for the pages it needs); reply to Prof under its answer; auto-mark hand-ins; weekly work aimed at weak topics; style notes; turn your copy of a past paper into a test; original practice papers in a past paper's style; bank questions and flashcards with an automatic second check; syllabuses; weekly parent reports; notes on book pages it has read so re-reading is cheap; a monthly allowance per tutor that only the admin sees |
+| Admin (StudyBridge) | Its own account; Overview, tutor pages, Inbox, Problems, Announcements; approve, decline, pause, switch back on, reset passwords, delete; plans and Prof allowances with alerts at 80% and 100%; Admin → Prof page (Claude credit countdown, daily spend, who used Prof and for what); crash reports; minimum app version; Claude key (write-only), model; shared live video; log of every action; shared question bank and StudyBridge practice papers (ask Prof, review, approve for every tutor) |
+| Accounts | One sign-in page for tutors, learners and the admin (the account decides which); anyone signs up as a tutor, answers a few sign-up questions and waits for approval; paused tutors can't sign in; tutors see changes the admin made to their account; a 7-step getting-started checklist on tutor Home |
+| Updates | Desktop app downloads new versions and offers Restart now; rolls back a version that fails to start; Windows installs shell updates quietly, Mac downloads the new .dmg; the phone version is published automatically with every release |
 | Claude Desktop | Optional connector so a tutor's own Claude can read StudyBridge and draft work into Prof's queue |
 
 ## How it's built
 
 &#91;embedded content: StudyBridge architecture · app, Supabase and the services around it\]
 
-The app holds no secrets: Supabase's security rules decide who sees what, the Claude key lives where only the Prof server reads it, and the database wakes Prof when there's work. Code: `aaryanc-1/studybridge` (React + Electron, `supabase/setup.sql`, `supabase/functions/prof`); every push runs the tests and publishes a release.
+The app holds no secrets: Supabase's security rules decide who sees what, the Claude key lives where only the Prof server reads it, and the database wakes Prof when there's work. Code: `aaryanc-1/studybridge` (React 19 + Vite + Electron, `supabase/setup.sql`, `supabase/functions/prof`). Every push runs the tests (`npm test`, `npm run product`, `npm run walkthrough`) and publishes the desktop release and the phone version. Hand-off notes for Claude live in `CLAUDE.md` in the repo.
 
 ## Setup and running it
 
-The apps, the update page and Prof are running; two GitHub secrets are still missing, so database and Prof updates are done by hand.
+The apps, the update page, the phone version and Prof are running; two GitHub secrets are still missing, so database and Prof updates are done by hand.
 
 | Service or setting | What it's for | Status |
 | --- | --- | --- |
 | Supabase project | Database, sign-in, file storage, Prof server (Edge Function `prof`) | Running |
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
-| GitHub repo `studybridge` (private) | Code; every push tests, builds and publishes | Running |
-| GitHub repo `studybridge-releases` (public) | Download page and the updates apps check | Running, first release 1.1.9 |
+| GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.31 |
 | Secret `RELEASES_TOKEN` | Lets the build publish to the public repo | Added |
 | Variables `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Built into the apps so nobody types a server address | Added |
 | Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Missing |
@@ -106,7 +112,7 @@ The apps, the update page and Prof are running; two GitHub secrets are still mis
 2. Supabase → Edge Functions → `prof` → replace the code with the latest `supabase/functions/prof/index.ts` → Deploy (JWT verification stays off).
 3. Restart StudyBridge when the new-version bar appears.
 
-**Links to give people:** tutors and learners download from `github.com/aaryanc-1/studybridge-releases/releases/latest`. On a Mac, the first open needs System Settings → Privacy & Security → Open Anyway. The phone version is `StudyBridge-web.zip` dragged onto Netlify Drop (not automatic yet).
+**Links to give people:** tutors and learners download from `github.com/aaryanc-1/studybridge-releases/releases/latest`. On a Mac, the first open needs System Settings → Privacy & Security → Open Anyway. The phone version is at `aaryanc-1.github.io/studybridge-releases/app/` (add it to the home screen); it updates itself with every release.
 
 ## Costs and pricing
 
@@ -135,6 +141,18 @@ A tutor costs StudyBridge roughly $2–12 a month in AI plus a dollar or two of 
 
 Open questions: ask 3–5 tutors what they would pay; mobile money for Zambia (Flutterwave or DPO Pay), UPI for India (Razorpay); see the competitor comparison doc for how these compare.
 
+## 1.6 plan
+
+1.6 adds recurring lessons, mock exams, parent accounts and a data saver, then the basics needed to sell. Each part ships as its own auto-update, built and tested by Claude and pushed to the repo.
+
+| Part | What it does | Decided | Status |
+| --- | --- | --- | --- |
+| 1. Recurring lessons + reminders | Weekly lessons for one or more learners, shown in both time zones (e.g. "Tue 16:00 Lusaka · 10:00 New York"); skip or move one lesson; in the calendar link; reminders a day and 15 minutes before, in the app, on the desktop and by ntfy (the learner can opt in too) | Lessons keep the tutor's New York time when clocks change, so the learner's time moves (16:00 becomes 17:00 in Lusaka after US clocks go back on 1 Nov 2026) | Shipped |
+| 2. Mock exam + predicted grade | A timed, locked-down exam of one or more papers; marks add up to a total and a grade comes from grade boundaries by plain maths, no AI; the learner sees it when marks are released | Boundaries per mock: typed by the tutor, or read by Prof from the tutor's own threshold PDF and approved; the tutor picks each time. Boundaries stay private to the tutor | Planned |
+| 3. Parent accounts | A parent invite code tied to one learner, who sees which parents are linked; parents see approved reports, upcoming lessons and due dates, released marks, topic strengths and the exam countdown; never messages, working, photos, the exam camera or AI | Read-only | Planned |
+| 4. Data-saver mode | A switch per device, suggested on slow connections: smaller photo uploads, PDFs a page at a time, images on tap, low-video or audio-only live lessons |  | Planned |
+| 5. Selling basics | Email from the domain, Google sign-in, terms and privacy (under-18s with a parent's OK; needs a lawyer's check), data export and delete, payments, landing page | Payments after pricing; landing page only when Aaryan says "build". Needs Aaryan first: buy the domain, a Google sign-in client, a Stripe account, prices | Planned |
+
 ## Update 1.2: library, question bank and parent reports
 
 Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server update (new setup.sql and Prof code) before it all works.
@@ -153,47 +171,53 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 ## Roadmap
 
-Nothing is being built right now; the first three are the suggested next builds (say "new" to bring this list up in chat).
+1.6 is next (see 1.6 plan); say "new" to bring this list up in chat.
 
-| Idea | Why it matters | Status |
-| --- | --- | --- |
-| Weekly parent reports | Prof writes each learner's week for the parent; tutor approves; email or WhatsApp. Parents pay the bills | Shipped |
-| Past papers in one click + question bank | Upload a past paper and mark scheme, Prof splits it into questions; every question saved by topic and difficulty | Shipped |
-| Practice mode for learners | Tutor-approved extra questions on weak topics, marked instantly, no AI for learners | Shipped |
-| Prof cost savings | Notes from pages Prof already read, more questions per round: about half the cost | Shipped |
-| Scheduling | Weekly recurring lessons, reminders, both time zones, Google Calendar | Idea |
-| Payments and billing | Stripe subscriptions and free trial; mobile money for Zambia; UPI for India; tutors invoicing and taking payments from learners. Comes once pricing is set, after your own market research | Idea |
-| Email and a domain | Forgot-password emails, welcome emails, parent reports | Idea |
-| Lesson recording + Prof notes | Recording with notes for the learner afterwards (Bramble gives this free) | Idea |
-| Syllabus coverage map | Prof sets up topics from a syllabus (e.g. IGCSE 0607, ECZ); map of taught, practised, mastered | Idea |
-| Mistake-review flashcards | Old mistakes come back days later until right | Idea |
-| Exam camera alerts | Flag no face or a second face on the existing exam camera | Idea |
-| Landing page and website | Pricing, download link, sign-up | Idea |
-| Crash reports | Hear about errors before tutors report them | Idea |
-| Phone version auto-deploy | Netlify connected to GitHub so the phone app updates itself | Idea |
-| Native phone apps | App Store ($99/yr) and Google Play ($25 once) | Idea |
-| Mac signing | Apple Developer account so Macs open and update without warnings | Idea |
+| Idea | Why it matters | Release | Status |
+| --- | --- | --- | --- |
+| Scheduling | Weekly recurring lessons, reminders, both time zones, calendar | 1.6 part 1 | Shipped |
+| Mock exam mode + predicted grade | The learner sees where they stand before the real exam | 1.6 | Planned |
+| Parent accounts | Parents pay the bills; a read-only view of their child's progress | 1.6 | Planned |
+| Data-saver mode | Learners on phone data use less of it | 1.6 | Planned |
+| Email and a domain | Forgot-password emails, welcome emails, parent reports | 1.6 | Planned |
+| Google sign-in | Sign in without another password | 1.6 | Planned |
+| Terms, privacy, data export and delete | Needed before charging; learners may be under 18 | 1.6 | Planned |
+| Payments and billing | Stripe subscriptions and free trial; mobile money for Zambia; UPI for India; tutors invoicing and taking payments from learners. Comes once pricing is set, after your own market research | 1.6, after pricing | Planned |
+| Landing page and website | Pricing, download link, sign-up | 1.6, when Aaryan says "build" | Planned |
+| Lesson recording + Prof notes | Recording with notes for the learner afterwards (Bramble gives this free) |  | Idea |
+| Exam camera alerts | Flag no face or a second face on the existing exam camera |  | Idea |
+| Native phone apps | App Store ($99/yr) and Google Play ($25 once) |  | Idea |
+| Mac signing | Apple Developer account so Macs open and update without warnings |  | Idea |
+| Syllabus coverage map | Prof sets up topics from a syllabus (e.g. IGCSE 0607, ECZ); map of taught, practised, mastered | 1.4 | Shipped |
+| Mistake-review flashcards | Old mistakes come back days later until right | 1.4 | Shipped |
+| Crash reports | Hear about errors before tutors report them | 1.4 | Shipped |
+| Phone version auto-deploy | The phone app updates itself with every release (GitHub Pages) | 1.4 | Shipped |
+| Weekly parent reports | Prof writes each learner's week for the parent; tutor approves; email or WhatsApp. Parents pay the bills | 1.2 | Shipped |
+| Past papers in one click + question bank | Upload a past paper and mark scheme, Prof splits it into questions; every question saved by topic and difficulty | 1.2 | Shipped |
+| Practice mode for learners | Tutor-approved extra questions on weak topics, marked instantly, no AI for learners | 1.2 | Shipped |
+| Prof cost savings | Notes from pages Prof already read, more questions per round: about half the cost | 1.2 | Shipped |
 
 ## Known issues and open questions
 
-- **1.2 needs the server update:** re-run the new `setup.sql` in Supabase and paste the new Prof code, or past papers, the question bank, practice and reports won't work.
+- **Every release that changes the server needs the server update** (1.2 onwards): re-run the new `setup.sql` in Supabase and paste the new Prof code, or the newer features won't work. This stays manual until `SUPABASE_DB_URL` and `SUPABASE_ACCESS_TOKEN` are added; no nightly backups yet either.
+- **The code repo is publicly readable:** it was listed as private, but anyone can read the code on GitHub. Nothing secret is in it by design. Decide before selling; check GitHub Actions minutes first, as private repos get a limited allowance and Mac builds use it fastest.
+- **1.6 part 1 needs the server update:** until the new `setup.sql` is run in Supabase, weekly lessons, reminders (pg\_cron job `studybridge-lessons`) and learners' phone alerts don't work, and the Weekly lessons list stays empty. One-off lessons work as before. The Prof book-picker fix is in the app already.
 - **Opening Cambridge's papers from the desktop app is untested on a real computer:** Cambridge's site sits behind Cloudflare. If it blocks the app, the page shows a link to Cambridge's own page instead.
 - **The IB doesn't publish free past papers;** IB subjects fill only with copies the tutor imports.
 - **Weekly reports are refreshed by the server every hour or so** (needs pg\_cron, already set up); sending is still one tap on WhatsApp until a domain and email service exist.
-
-* Live video showed "invalid API key" on 1 Oct; new LiveKit keys were pasted into Admin and Settings. Confirm a live lesson works.
-* Database and Prof updates are manual until `SUPABASE_DB_URL` and `SUPABASE_ACCESS_TOKEN` are added; no nightly backups yet either.
-* Forgot-password emails don't reach anyone (no email service yet); tutors reset learners' passwords, the admin resets tutors'.
-* Prof reading a whole book needs StudyBridge open on the tutor's laptop; if it's closed, Prof waits.
-* Macs show a security warning on first open and can't take silent shell updates (no Apple Developer account).
-* The phone version doesn't update itself yet (Netlify Drop by hand).
-* Pricing not decided; talk to 3–5 tutors first.
-* Terms and privacy policy needed before charging; learners may be under 18, so terms should allow under-18s with a parent's OK.
+- Live video showed "invalid API key" on 1 Oct; new LiveKit keys were pasted into Admin and Settings. Confirm a live lesson works.
+- Forgot-password emails don't reach anyone (no email service yet); tutors reset learners' passwords, the admin resets tutors'.
+- Prof reading a whole book needs StudyBridge open on the tutor's laptop; if it's closed, Prof waits.
+- Macs show a security warning on first open and can't take silent shell updates (no Apple Developer account).
+- Pricing not decided; talk to 3–5 tutors first.
+- Terms and privacy policy needed before charging; learners may be under 18, so terms should allow under-18s with a parent's OK.
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
+| 5 Oct 2026 | 1.6 part 1: weekly lessons that keep the tutor's clock time, each learner's time shown (10:00 New York moves from 16:00 to 17:00 Lusaka on 1 Nov); skip one week and put it back, move one, change from a lesson on, stop; reminders a day and 15 minutes before to tutor and learners; learners' own ntfy phone alerts; learners told when a one-off lesson is cancelled or a lesson moves; skipped lessons left out of calendars and reports. Also: Prof's book picker no longer says "Choose a PDF" with a book showing |
+| 5 Oct 2026 | Master doc moved to this Claude Doc (backup copy in the repo at `docs/MASTER.md`); `CLAUDE.md` hand-off notes added to the repo |
 | 4 Oct 2026 | 1.5 (app 1.1.30): new StudyBridge logo everywhere (app, installer, tray, phone icons, sign-in); clearer 7-step getting-started checklist on tutor Home; sign-in page restyled; learner streak consistent |
 | 4 Oct 2026 | Coverage cells set by the tutor (Strong / Getting there / Needs work / Taught / Not yet); set a subject's exam right in Past papers; Admin → Prof page with Claude credit countdown, daily spend, who used Prof and for what |
 | 4 Oct 2026 | 1.4 review fixes: calendar links in a private table; self-marked work has one attempt and shows the mark scheme only when nothing can change; tutors can't see Prof allowances anywhere; flashcard time counted once; own practice doesn't count as taught; learners see only their subjects; failed practice papers show with Try again; calendar feed folding fixed; signed-out crash reports limited per address |
