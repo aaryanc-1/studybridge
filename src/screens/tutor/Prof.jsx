@@ -244,7 +244,9 @@ function pagesText(ps) {
 }
 
 function PagePicker({ files, onClose, onAdd }) {
-  const [file, setFile] = useState(files[0]?.id || '');
+  const [picked, setFile] = useState('');
+  // the library can finish loading after this opens: fall back to the first file shown
+  const file = files.some((f) => f.id === picked) ? picked : files[0]?.id || '';
   const [pages, setPages] = useState('');
   const [err, setErr] = useState('');
   return (
