@@ -44,6 +44,9 @@ reports · 1.3 separate admin account, exams per subject, IB filing · 1.4 crash
 syllabus + coverage map, Study (flashcards, daily quiz, drills, formula sheets, goal/streak),
 self-marking, calendar link, StudyBridge practice papers · coverage you can set, Admin → Prof page
 (credit countdown) · 1.5 (app 1.1.30) new logo, getting-started checklist, polish.
+1.6 part 1: weekly lessons (`lesson_series` → `sessions` with series_id/series_date, made 8 weeks ahead and topped
+up hourly by pg_cron `studybridge-lessons`), skip / move / change-from-here / stop, reminders a day and 15 minutes
+before (`_lesson_reminders`), both time zones shown, learners' own ntfy phone alerts (`phone_alerts`).
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge

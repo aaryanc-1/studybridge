@@ -378,7 +378,25 @@ export const markNotificationsRead = (ids) =>
   ids.length ? run(sb().from('notifications').update({ read_at: new Date().toISOString() }).in('id', ids)) : null;
 
 // ---------------- sessions / live ----------------
-export const listSessions = () => run(sb().from('sessions').select('*').order('starts_at'));
+// Skipped lessons are left out everywhere except the tutor's Live page (sessions:all)
+export const listSessions = () => run(sb().from('sessions').select('*').order('starts_at')).then((rows) => (rows || []).filter((s) => !s.cancelled));
+export const listAllSessions = () => run(sb().from('sessions').select('*').order('starts_at'));
+// Weekly lessons (empty until the 1.6 server update is in)
+export const listSeries = () => run(sb().from('lesson_series').select('*').order('created_at')).catch((e) => (e.offline ? Promise.reject(e) : []));
+const seriesArgs = (s) => ({
+  p_title: s.title,
+  p_first: s.starts_at,
+  p_duration: Number(s.duration_min) || 60,
+  p_learner_ids: s.learner_ids,
+  p_timezone: timezone(),
+  p_until: s.until || null,
+  p_notes: s.notes_md || null,
+});
+export const createSeries = (s) => run(sb().rpc('create_lesson_series', seriesArgs(s)));
+export const changeSeries = (id, s, from = null) => run(sb().rpc('change_lesson_series', { p_series: id, ...seriesArgs(s), p_from: from }));
+export const endSeries = (id) => run(sb().rpc('end_lesson_series', { p_series: id }));
+export const skipLesson = (id, skip = true) => run(sb().rpc('skip_lesson', { p_session: id, p_skip: skip }));
+export const myPhoneAlerts = (enabled = null) => run(sb().rpc('my_phone_alerts', { p_enabled: enabled }));
 export const livePass = (room) => run(sb().rpc('live_pass', { p_room: room }));
 export const liveStatus = () => run(sb().rpc('live_status'));
 export const setLiveKeys = (url, key, secret) => run(sb().rpc('set_live_keys', { p_url: url, p_key: key, p_secret: secret }));

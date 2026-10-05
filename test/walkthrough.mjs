@@ -359,6 +359,48 @@ try {
   await T.getByText('Dividing first works').first().waitFor();
   await shot(T, 'tutor-messages');
 
+  step('Weekly lesson: the tutor sets it in New York time, the learner sees it in Lusaka time');
+  {
+    const d = new Date(Date.now() + 21 * 864e5);
+    while (d.getUTCDay() !== 2) d.setUTCDate(d.getUTCDate() + 1); // a Tuesday 3+ weeks ahead
+    await nav(T, 'Live').click();
+    await T.getByRole('button', { name: 'Schedule' }).click();
+    await T.getByLabel('Title').fill('Weekly maths');
+    await T.getByLabel('Starts (your time)').fill(d.toISOString().slice(0, 10) + 'T10:00');
+    await T.getByLabel('Repeat').selectOption('week');
+    await T.getByLabel('First lesson (your time)').waitFor();
+    const hint = await T.getByText(/^Anaya: /).textContent();
+    const theirs = hint.match(/^Anaya: \w+ (.+) in Lusaka$/)?.[1];
+    assert.ok(theirs, 'the form shows the learner’s own time: ' + hint);
+    await shot(T, 'tutor-weekly-lesson-form');
+    await T.getByRole('button', { name: 'Save' }).click();
+    await T.getByText('Weekly lesson set').waitFor();
+    await T.getByRole('heading', { name: 'Weekly lessons' }).waitFor();
+    await T.getByText(new RegExp('Every Tue 10:00 AM your time · Anaya Tue ' + theirs.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' Lusaka')).waitFor();
+    assert.ok((await T.locator('.pill', { hasText: 'Weekly' }).count()) >= 4, 'lessons planned up to 8 weeks ahead');
+    await shot(T, 'tutor-weekly-lessons', true);
+    // the learner is told once, in her own time, and sees the lessons in Lusaka time
+    await L.reload();
+    await nav(L, 'Live').click();
+    await L.getByText('Weekly maths').first().waitFor();
+    assert.ok((await L.locator('.item', { hasText: 'Weekly maths' }).first().textContent()).includes(theirs));
+    await L.evaluate(() => (location.hash = '#/notifications'));
+    await shot(L, 'learner-weekly-lesson');
+    // skip one week; the learner no longer sees it, the tutor can put it back
+    await T.locator('.card', { hasText: 'Upcoming' }).getByRole('button', { name: 'Cancel session' }).nth(1).click();
+    await T.getByRole('button', { name: 'Skip just this one' }).click();
+    await T.getByText('Skipped. Your learners have been told.').waitFor();
+    await T.getByRole('button', { name: 'Put back' }).waitFor();
+    await L.reload();
+    await L.getByText('Weekly maths').first().waitFor();
+    // her phone reminders switch
+    await L.evaluate(() => (location.hash = '#/settings'));
+    await L.getByText('Reminders on your phone').waitFor();
+    await L.getByText(/^studybridge-[0-9a-f]{18}$/).waitFor();
+    await shot(L, 'learner-phone-reminders');
+    await L.evaluate(() => (location.hash = '#/'));
+  }
+
   step('Admin: tutor sets a new password for the learner, who signs in with it');
   await nav(T, 'Learners').click();
   await T.locator('.content').getByText('Anaya').first().click();

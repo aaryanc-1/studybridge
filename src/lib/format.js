@@ -25,6 +25,19 @@ export const day = (d) => (d ? dayFmt.format(new Date(d)) : '');
 export const time = (d) => (d ? timeFmt.format(new Date(d)) : '');
 export const when = (d) => (d ? fullFmt.format(new Date(d)) : '');
 
+// A moment on someone else's clock, e.g. "Tue 16:00" in Africa/Lusaka
+export function timeIn(d, tz, { weekday = true } = {}) {
+  if (!d) return '';
+  try {
+    return new Intl.DateTimeFormat(undefined, { ...(weekday ? { weekday: 'short' } : {}), hour: 'numeric', minute: '2-digit', timeZone: tz || undefined }).format(new Date(d));
+  } catch {
+    return '';
+  }
+}
+// "Africa/Lusaka" → "Lusaka"
+export const placeOf = (tz) => String(tz || '').split('/').pop().replace(/_/g, ' ');
+export const myTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 export function ago(d) {
   if (!d) return '';
   const s = (Date.now() - new Date(d).getTime()) / 1000;

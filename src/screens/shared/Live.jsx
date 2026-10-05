@@ -6,7 +6,7 @@ import Whiteboard from '../../ui/Whiteboard.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { desktop } from '../../lib/config.js';
-import { ago, fromLocalInput, toLocalInput, when, kindLabel, clock } from '../../lib/format.js';
+import { ago, day, fromLocalInput, toLocalInput, when, time, timeIn, placeOf, myTimezone, kindLabel, clock } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
 
 // ---------- LiveKit connection ----------
@@ -84,7 +84,12 @@ export default function Live({ sessionId }) {
   const isTutor = app.me.role === 'tutor';
   const lk = useLookups();
   const confirm = useConfirm();
-  const sessions = useQuery('sessions', api.listSessions);
+  const toast = useToast();
+  // the tutor also sees skipped weekly lessons (to put them back); learners never do
+  const sessions = useQuery(isTutor ? 'sessions:all' : 'sessions', isTutor ? api.listAllSessions : api.listSessions);
+  const seriesList = useQuery('sessions:series', api.listSeries).data || [];
+  const [stopping, setStopping] = useState(null);
+  const [showAll, setShowAll] = useState(false);
   const status = useQuery('live-status', api.liveStatus);
   const attempts = useQuery(isTutor ? 'attempts' : null, api.listAttempts).data || [];
   const assignments = useQuery('assignments', api.listAssignments).data || [];
@@ -99,6 +104,20 @@ export default function Live({ sessionId }) {
 
   const now = Date.now();
   const list = sessions.data || [];
+  const myTz = myTimezone();
+  const todayStr = toLocalInput(new Date().toISOString()).slice(0, 10);
+  const activeSeries = seriesList.filter((x) => !x.ends_on || x.ends_on >= todayStr);
+  // "Sis Tue 16:00 Lusaka" for learners whose clock differs from mine
+  const learnerTimes = (s) =>
+    s.learner_ids
+      .map((id) => {
+        const l = lk.learner(id);
+        if (!l) return null;
+        const theirs = timeIn(s.starts_at, l.timezone);
+        return l.timezone && theirs && theirs !== timeIn(s.starts_at, myTz) ? `${l.display_name} ${theirs} ${placeOf(l.timezone)}` : l.display_name;
+      })
+      .filter(Boolean)
+      .join(', ');
   const upcoming = list.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > now);
   const past = list.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 <= now).reverse().slice(0, 10);
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
@@ -112,7 +131,7 @@ export default function Live({ sessionId }) {
       actions={
         isTutor && (
           <>
-            <button className="btn" onClick={() => setEditing({ title: '', starts_at: new Date(Math.ceil(now / 900000) * 900000).toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id) })}>
+            <button className="btn" onClick={() => setEditing({ title: '', starts_at: new Date(Math.ceil(now / 900000) * 900000).toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id), repeat: false })}>
               <Icon name="calendar" size={18} /> Schedule
             </button>
             <button
@@ -167,25 +186,76 @@ export default function Live({ sessionId }) {
           </div>
         </div>
       )}
+      {isTutor && activeSeries.length > 0 && (
+        <div className="card">
+          <h2>Weekly lessons</h2>
+          <div className="list">
+            {activeSeries.map((x) => {
+              const next = list.find((s) => s.series_id === x.id && !s.cancelled && new Date(s.starts_at).getTime() > now);
+              return (
+                <div key={x.id} className="item">
+                  <Icon name="calendar" style={{ color: 'var(--accent)' }} />
+                  <span className="grow">
+                    <span className="name">{x.title}</span>
+                    <span className="meta">
+                      {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${learnerTimes(next)}` : 'No lessons coming up'}
+                      {x.ends_on && ` · last one ${day(x.ends_on + 'T12:00')}`}
+                    </span>
+                  </span>
+                  {next && (
+                    <button className="btn sm ghost" aria-label="Change weekly lesson" onClick={() => setEditing({ ...next, scope: 'all', until: x.ends_on || '' })}>
+                      <Icon name="pen" size={16} />
+                    </button>
+                  )}
+                  <button className="btn sm ghost" aria-label="Stop weekly lesson" onClick={() => setStopping({ ...(next || {}), series_id: x.id, whole: true })}>
+                    <Icon name="trash" size={16} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="card">
         <h2>Upcoming</h2>
         {upcoming.length === 0 ? (
-          <div className="muted small">No sessions scheduled.</div>
+          <div className="muted small">No lessons scheduled.</div>
         ) : (
           <div className="list">
-            {upcoming.map((s) => {
+            {(showAll ? upcoming : upcoming.slice(0, 8)).map((s) => {
               const live = new Date(s.starts_at).getTime() - 15 * 60000 < now;
               return (
-                <div key={s.id} className="item">
-                  <Icon name="video" style={{ color: 'var(--accent)' }} />
+                <div key={s.id} className="item" style={s.cancelled ? { opacity: 0.6 } : undefined}>
+                  <Icon name="video" style={{ color: s.cancelled ? 'var(--muted)' : 'var(--accent)' }} />
                   <span className="grow">
-                    <span className="name">{s.title}</span>
+                    <span className="name row" style={{ gap: 6 }}>
+                      {s.title}
+                      {s.series_id && <span className="pill accent">Weekly</span>}
+                      {s.cancelled && <span className="pill">Skipped</span>}
+                    </span>
                     <span className="meta">
-                      {when(s.starts_at)} · {s.duration_min} min
-                      {isTutor && ` · ${s.learner_ids.map((id) => lk.learner(id)?.display_name).filter(Boolean).join(', ')}`}
+                      {when(s.starts_at)}
+                      {isTutor && ' your time'} · {s.duration_min} min
+                      {isTutor && ` · ${learnerTimes(s)}`}
                     </span>
                   </span>
-                  {isTutor && (
+                  {isTutor && s.cancelled && (
+                    <button
+                      className="btn sm"
+                      onClick={async () => {
+                        try {
+                          await api.skipLesson(s.id, false);
+                          toast('Back on. Your learners have been told.');
+                        } catch (x) {
+                          toast({ title: 'Couldn’t put it back', body: x.message, tone: 'bad' });
+                        }
+                        invalidate('sessions');
+                      }}
+                    >
+                      Put back
+                    </button>
+                  )}
+                  {isTutor && !s.cancelled && (
                     <>
                       <button className="btn sm ghost" onClick={() => setEditing(s)} aria-label="Edit session">
                         <Icon name="pen" size={16} />
@@ -194,7 +264,8 @@ export default function Live({ sessionId }) {
                         className="btn sm ghost"
                         aria-label="Cancel session"
                         onClick={async () => {
-                          if (!(await confirm({ title: 'Cancel this session?', ok: 'Cancel session', cancel: 'Keep', danger: true }))) return;
+                          if (s.series_id) return setStopping(s);
+                          if (!(await confirm({ title: 'Cancel this lesson?', body: 'Your learners get a message saying it’s cancelled.', ok: 'Cancel lesson', cancel: 'Keep', danger: true }))) return;
                           await api.remove('sessions', s.id);
                           invalidate('sessions');
                         }}
@@ -203,12 +274,21 @@ export default function Live({ sessionId }) {
                       </button>
                     </>
                   )}
-                  <button className={'btn sm ' + (live ? 'primary' : '')} disabled={!configured} onClick={() => go(`/live/${s.id}`)}>
-                    {live ? 'Join now' : 'Open'}
-                  </button>
+                  {!s.cancelled && (
+                    <button className={'btn sm ' + (live ? 'primary' : '')} disabled={!configured} onClick={() => go(`/live/${s.id}`)}>
+                      {live ? 'Join now' : 'Open'}
+                    </button>
+                  )}
                 </div>
               );
             })}
+          </div>
+        )}
+        {!showAll && upcoming.length > 8 && (
+          <div>
+            <button className="btn sm ghost" onClick={() => setShowAll(true)}>
+              Show all {upcoming.length}
+            </button>
           </div>
         )}
       </div>
@@ -229,21 +309,98 @@ export default function Live({ sessionId }) {
           </div>
         </div>
       )}
-      {editing && <SessionForm initial={editing} onClose={() => setEditing(null)} />}
+      {editing && <SessionForm initial={editing} series={seriesList.find((x) => x.id === editing.series_id)} onClose={() => setEditing(null)} />}
+      {stopping && (
+        <Modal
+          title="This is a weekly lesson"
+          onClose={() => setStopping(null)}
+          foot={
+            <button className="btn" onClick={() => setStopping(null)}>
+              Keep it
+            </button>
+          }
+        >
+          <div className="stack">
+            {stopping.starts_at && <div className="small muted">Next: {when(stopping.starts_at)} your time</div>}
+            {stopping.id && !stopping.whole && (
+              <button
+                className="btn"
+                onClick={async () => {
+                  try {
+                    await api.skipLesson(stopping.id);
+                    toast('Skipped. Your learners have been told.');
+                  } catch (x) {
+                    toast({ title: 'Couldn’t skip it', body: x.message, tone: 'bad' });
+                  }
+                  invalidate('sessions');
+                  setStopping(null);
+                }}
+              >
+                Skip just this one
+              </button>
+            )}
+            <button
+              className="btn danger"
+              onClick={async () => {
+                try {
+                  await api.endSeries(stopping.series_id);
+                  toast('Weekly lesson stopped. Your learners have been told.');
+                } catch (x) {
+                  toast({ title: 'Couldn’t stop it', body: x.message, tone: 'bad' });
+                }
+                invalidate('sessions');
+                setStopping(null);
+              }}
+            >
+              Stop the weekly lesson
+            </button>
+            <div className="small muted">Past lessons stay in reports either way.</div>
+          </div>
+        </Modal>
+      )}
     </Page>
   );
 }
 
-function SessionForm({ initial, onClose }) {
+// Does a learner's clock time for this lesson move over the next half year (one country changes its clocks, the other doesn't)?
+function movesWithClocks(startIso, tz) {
+  const base = new Date(startIso);
+  const t0 = timeIn(base, tz, { weekday: false });
+  for (let w = 4; w <= 26; w += 2) {
+    const d = new Date(base);
+    d.setDate(d.getDate() + 7 * w); // same clock time for me, w weeks later
+    if (timeIn(d, tz, { weekday: false }) !== t0) return true;
+  }
+  return false;
+}
+
+function SessionForm({ initial, series, onClose }) {
   const lk = useLookups();
-  const [s, setS] = useState(initial);
+  const toast = useToast();
+  const [s, setS] = useState({ repeat: false, ...initial, until: initial.until || series?.ends_on || '' });
+  const [scope, setScope] = useState(initial.scope || 'one'); // a weekly lesson: just this one, or this and every week after
   const [err, setErr] = useState('');
+  const isNew = !s.id;
+  const weekly = !!s.series_id;
+  const allWeeks = (isNew && s.repeat) || (weekly && scope === 'all');
+  const myTz = myTimezone();
+  const chosen = lk.learners.filter((l) => s.learner_ids.includes(l.id) && l.timezone && timeIn(s.starts_at, l.timezone) !== timeIn(s.starts_at, myTz));
+  const moving = allWeeks ? chosen.filter((l) => movesWithClocks(s.starts_at, l.timezone)) : [];
   async function submit(e) {
     e.preventDefault();
-    if (!s.title.trim()) return setErr('Give the session a title.');
+    if (!s.title.trim()) return setErr('Give the lesson a title.');
     if (!s.learner_ids.length) return setErr('Choose at least one learner.');
+    const row = { title: s.title.trim(), starts_at: s.starts_at, duration_min: Number(s.duration_min) || 60, learner_ids: s.learner_ids, notes_md: s.notes_md || null, until: allWeeks ? s.until || null : null };
     try {
-      await api.save('sessions', { ...(s.id ? { id: s.id } : {}), title: s.title.trim(), starts_at: s.starts_at, duration_min: Number(s.duration_min) || 60, learner_ids: s.learner_ids, notes_md: s.notes_md || null });
+      if (isNew && s.repeat) {
+        await api.createSeries(row);
+        toast('Weekly lesson set. Your learners have been told.');
+      } else if (weekly && scope === 'all') {
+        await api.changeSeries(s.series_id, row, initial.starts_at);
+        toast('Changed from this lesson on. Your learners have been told.');
+      } else {
+        await api.save('sessions', { ...(s.id ? { id: s.id } : {}), title: row.title, starts_at: row.starts_at, duration_min: row.duration_min, learner_ids: row.learner_ids, notes_md: row.notes_md });
+      }
       invalidate('sessions');
       onClose();
     } catch (x) {
@@ -251,26 +408,56 @@ function SessionForm({ initial, onClose }) {
     }
   }
   return (
-    <Modal title={s.id ? 'Edit session' : 'Schedule a live session'} onClose={onClose}>
+    <Modal title={isNew ? 'Schedule a lesson' : weekly ? 'Change a weekly lesson' : 'Edit lesson'} onClose={onClose}>
       <form className="stack" onSubmit={submit}>
+        {weekly && (
+          <div className="row wrap" role="radiogroup" aria-label="Which lessons">
+            <label className="check">
+              <input type="radio" name="scope" checked={scope === 'one'} onChange={() => setScope('one')} />
+              <span className="t">Just this lesson</span>
+            </label>
+            <label className="check">
+              <input type="radio" name="scope" checked={scope === 'all'} onChange={() => setScope('all')} />
+              <span className="t">This and every week after</span>
+            </label>
+          </div>
+        )}
         <Field label="Title">
           <input className="input" autoFocus value={s.title} onChange={(e) => setS({ ...s, title: e.target.value })} placeholder="e.g. Simultaneous equations" />
         </Field>
         <div className="grid g2" style={{ gap: 10 }}>
-          <Field label="Starts (your time)">
+          <Field label={allWeeks ? 'First lesson (your time)' : 'Starts (your time)'} hint={chosen.length ? chosen.map((l) => `${l.display_name}: ${timeIn(s.starts_at, l.timezone)} in ${placeOf(l.timezone)}`).join(' · ') : undefined}>
             <input className="input" type="datetime-local" value={toLocalInput(s.starts_at)} onChange={(e) => setS({ ...s, starts_at: fromLocalInput(e.target.value) })} />
           </Field>
           <Field label="Length (minutes)">
             <input className="input" type="number" min="10" step="5" value={s.duration_min} onChange={(e) => setS({ ...s, duration_min: e.target.value })} />
           </Field>
         </div>
-        <Field label="Learners" hint="They get a notification with the time in their own time zone.">
+        {isNew && (
+          <Field label="Repeat">
+            <select className="select" value={s.repeat ? 'week' : 'once'} onChange={(e) => setS({ ...s, repeat: e.target.value === 'week' })}>
+              <option value="once">Just this once</option>
+              <option value="week">Every week</option>
+            </select>
+          </Field>
+        )}
+        {allWeeks && (
+          <Field label="Last lesson (optional)" hint="Leave empty to keep it going. Lessons are planned 8 weeks ahead and keep coming.">
+            <input className="input" type="date" value={s.until || ''} onChange={(e) => setS({ ...s, until: e.target.value })} />
+          </Field>
+        )}
+        {moving.length > 0 && (
+          <div className="small muted">
+            It stays at {time(s.starts_at)} your time every week. {moving.map((l) => l.display_name).join(' and ')}’s time moves by an hour when the clocks change.
+          </div>
+        )}
+        <Field label="Learners" hint="They get a message with the time in their own time zone, and reminders a day and 15 minutes before.">
           <div className="stack sm">
             {lk.learners.map((l) => (
               <label key={l.id} className="check">
                 <input type="checkbox" checked={s.learner_ids.includes(l.id)} onChange={(e) => setS({ ...s, learner_ids: e.target.checked ? [...s.learner_ids, l.id] : s.learner_ids.filter((x) => x !== l.id) })} />
                 <span className="t">{l.display_name}</span>
-                <span className="s">{l.timezone}</span>
+                <span className="s">{placeOf(l.timezone)}</span>
               </label>
             ))}
           </div>

@@ -33,6 +33,7 @@ export default function Settings() {
       {isTutor && <AccountHistory />}
       {isLearner && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
+      {isLearner && <LearnerPhoneAlerts />}
       <Device />
       <About />
     </Page>
@@ -619,6 +620,57 @@ function LearnerNotifications() {
           </button>
         </div>
       )}
+    </Section>
+  );
+}
+
+// Lesson reminders (and other alerts) on a learner's phone through the free ntfy app
+function LearnerPhoneAlerts() {
+  const toast = useToast();
+  const q = useQuery('phone-alerts', () => api.myPhoneAlerts());
+  const d = q.data;
+  if (!d) return null;
+  return (
+    <Section id="phone-alerts" icon="bell" title="Reminders on your phone" sub="Lesson reminders and other StudyBridge alerts as phone notifications, even when the app is closed.">
+      <ol className="steps-guide">
+        <li>
+          <div>
+            Install the free <b>ntfy</b> app (
+            <a href="https://apps.apple.com/app/ntfy/id1625396347" target="_blank" rel="noreferrer">
+              iPhone
+            </a>{' '}
+            ·{' '}
+            <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noreferrer">
+              Android
+            </a>
+            ).
+          </div>
+        </li>
+        <li>
+          <div className="stack sm">
+            <div>Tap + and subscribe to this topic (keep it private, like a password):</div>
+            <div className="row">
+              <span className="code-box" style={{ flex: 1 }}>{d.topic}</span>
+              <button className="btn sm" onClick={() => (copyText(d.topic), toast('Topic copied'))}>
+                <Icon name="copy" size={14} /> Copy
+              </button>
+            </div>
+          </div>
+        </li>
+      </ol>
+      <Toggle
+        checked={d.enabled}
+        onChange={async (v) => {
+          q.mutate({ ...d, enabled: v });
+          try {
+            await api.myPhoneAlerts(v);
+          } catch (e) {
+            q.mutate(d);
+            toast({ title: 'Couldn’t change that', body: e.message, tone: 'bad' });
+          }
+        }}
+        title="Send reminders to my phone"
+      />
     </Section>
   );
 }

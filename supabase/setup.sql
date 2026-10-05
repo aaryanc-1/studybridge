@@ -784,6 +784,9 @@ declare
 begin
   insert into public.notifications (user_id, kind, title, body, ref) values (p_user, p_kind, p_title, p_body, coalesce(p_ref, '{}'));
   select ntfy_topic, notify_phone into v_topic, v_phone from public.tutor_settings where tutor_id = p_user;
+  if v_topic is null and to_regclass('public.phone_alerts') is not null then
+    select ntfy_topic, enabled into v_topic, v_phone from public.phone_alerts where user_id = p_user;
+  end if;
   if v_topic is not null and v_phone and exists (select 1 from pg_extension where extname = 'pg_net') then
     begin
       execute 'select net.http_post(url := $1, body := $2)'
@@ -1564,6 +1567,7 @@ create or replace function public.on_session_created() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare l uuid;
 begin
+  if new.series_id is not null then return new; end if;
   foreach l in array new.learner_ids loop
     perform public.notify_user(l, 'session', 'Live session: ' || new.title,
       'Starts ' || to_char(new.starts_at at time zone coalesce((select timezone from public.profiles where id = l), 'UTC'),
@@ -2028,7 +2032,7 @@ begin
     'learner', (select display_name from public.profiles where id = p_learner),
     'tutor', (select display_name from public.profiles where id = v_tutor),
     'parent', r.parent_name,
-    'lessons', (select count(*) from public.sessions s where s.tutor_id = v_tutor and p_learner = any(s.learner_ids)
+    'lessons', (select count(*) from public.sessions s where s.tutor_id = v_tutor and p_learner = any(s.learner_ids) and not s.cancelled
                  and s.starts_at >= p_from and s.starts_at < least(p_to, now())),
     'seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and tutor_id = v_tutor
                           and created_at >= p_from and created_at < p_to), 0),
@@ -3010,7 +3014,7 @@ begin
       select jsonb_build_object('uid', 's-' || s.id, 'title', s.title, 'start', s.starts_at, 'end', s.starts_at + make_interval(mins => s.duration_min),
                                 'description', 'Live lesson on StudyBridge. Open the app to join.') e
         from public.sessions s
-       where s.starts_at > now() - interval '60 days' and s.starts_at < now() + interval '400 days'
+       where s.starts_at > now() - interval '60 days' and s.starts_at < now() + interval '400 days' and not s.cancelled
          and ((p.role = 'tutor' and s.tutor_id = p.id) or (p.role = 'learner' and p.id = any (s.learner_ids)))
       union all
       select jsonb_build_object('uid', 'a-' || a.id, 'title', 'Due: ' || a.title, 'start', a.due_at, 'end', a.due_at + interval '15 minutes',
@@ -3584,6 +3588,303 @@ begin
     from public.profiles p left join auth.users u on u.id = p.id where p.id = p_user and p.role = 'tutor');
 end $$;
 
+-- =====================================================================
+-- 1.6 part 1: weekly lessons and reminders. A weekly lesson keeps the tutor's own clock time
+-- (in the time zone the tutor set it in); each learner sees it in their own time zone, so when
+-- one country changes its clocks, the other country's time moves by an hour. Lessons are made
+-- 8 weeks ahead and topped up every hour. Reminders go out a day and 15 minutes before.
+-- =====================================================================
+create table if not exists public.lesson_series (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  title text not null,
+  learner_ids uuid[] not null default '{}',
+  weekday int not null check (weekday between 0 and 6),
+  start_time time not null,
+  timezone text not null,
+  duration_min int not null default 60,
+  starts_on date not null,
+  ends_on date,
+  notes_md text,
+  created_at timestamptz not null default now()
+);
+alter table public.lesson_series enable row level security;
+revoke all on public.lesson_series from public, anon, authenticated;
+grant select on public.lesson_series to authenticated;
+drop policy if exists series_tutor on public.lesson_series;
+create policy series_tutor on public.lesson_series for select using (tutor_id = auth.uid());
+drop policy if exists series_learner on public.lesson_series;
+create policy series_learner on public.lesson_series for select using (auth.uid() = any (learner_ids));
+
+alter table public.sessions add column if not exists series_id uuid references public.lesson_series (id) on delete cascade;
+alter table public.sessions add column if not exists series_date date;
+alter table public.sessions add column if not exists cancelled boolean not null default false;
+alter table public.sessions add column if not exists reminded_day timestamptz;
+alter table public.sessions add column if not exists reminded_soon timestamptz;
+create unique index if not exists sessions_series_date on public.sessions (series_id, series_date) where series_id is not null;
+
+-- Phone alerts (ntfy) for learners who switch them on; tutors keep theirs in tutor_settings
+create table if not exists public.phone_alerts (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  ntfy_topic text not null default ('studybridge-' || encode(extensions.gen_random_bytes(9), 'hex')),
+  enabled boolean not null default false
+);
+alter table public.phone_alerts enable row level security;
+revoke all on public.phone_alerts from public, anon, authenticated;
+
+create or replace function public.my_phone_alerts(p_enabled boolean default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v public.phone_alerts;
+begin
+  if public.my_role() is distinct from 'learner' then raise exception 'Learners only (tutors set phone alerts in their own settings).'; end if;
+  insert into public.phone_alerts (user_id) values (auth.uid()) on conflict (user_id) do nothing;
+  if p_enabled is not null then update public.phone_alerts set enabled = p_enabled where user_id = auth.uid(); end if;
+  select * into v from public.phone_alerts where user_id = auth.uid();
+  return jsonb_build_object('topic', v.ntfy_topic, 'enabled', v.enabled);
+end $$;
+
+-- A user's own time zone (UTC if it isn't a real one)
+create or replace function public._tz_of(p_user uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select p.timezone from public.profiles p join pg_timezone_names z on z.name = p.timezone where p.id = p_user), 'UTC')
+$$;
+
+-- The moment a weekly lesson starts on a given day, at the tutor's clock time in the tutor's time zone
+create or replace function public._series_start(p_day date, p_time time, p_tz text) returns timestamptz
+language sql stable as $$ select (p_day + p_time) at time zone p_tz $$;
+
+-- Make the lessons of one weekly series (or all of them) up to p_weeks ahead. Skipped or moved ones stay as they are.
+create or replace function public._fill_series(p_series uuid default null, p_weeks int default 8) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r public.lesson_series;
+  d date;
+  v_to date;
+  v_at timestamptz;
+  n int := 0;
+begin
+  for r in select s.* from public.lesson_series s
+            where (p_series is null or s.id = p_series) and public._tutor_active(s.tutor_id)
+              and (s.ends_on is null or s.ends_on >= (now() at time zone s.timezone)::date - 1) loop
+    d := greatest(r.starts_on, (now() at time zone r.timezone)::date - 1);
+    d := d + ((r.weekday - extract(dow from d)::int + 7) % 7);
+    v_to := (now() at time zone r.timezone)::date + p_weeks * 7;
+    if r.ends_on is not null then v_to := least(v_to, r.ends_on); end if;
+    while d <= v_to loop
+      v_at := public._series_start(d, r.start_time, r.timezone);
+      if v_at > now() then
+        insert into public.sessions (tutor_id, title, starts_at, duration_min, learner_ids, notes_md, series_id, series_date)
+        values (r.tutor_id, r.title, v_at, r.duration_min, r.learner_ids, r.notes_md, r.id, d)
+        on conflict (series_id, series_date) where series_id is not null do nothing;
+        if found then n := n + 1; end if;
+      end if;
+      d := d + 7;
+    end loop;
+  end loop;
+  return n;
+end $$;
+
+-- Tell the learners of a weekly lesson when it is, in their own time
+create or replace function public._series_notify(p_series uuid, p_title text) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  r public.lesson_series;
+  v_next timestamptz;
+  v_tz text;
+  l uuid;
+begin
+  select * into r from public.lesson_series where id = p_series;
+  select min(starts_at) into v_next from public.sessions where series_id = p_series and not cancelled and starts_at > now();
+
+  foreach l in array r.learner_ids loop
+    v_tz := public._tz_of(l);
+    perform public.notify_user(l, 'session', p_title || r.title,
+      case when v_next is null then 'No lessons are planned for it right now.'
+      else 'Every ' || trim(to_char(v_next at time zone v_tz, 'Day')) || ' at ' || to_char(v_next at time zone v_tz, 'HH24:MI')
+        || ' your time, starting ' || to_char(v_next at time zone v_tz, 'Dy DD Mon') || '.'
+        || case when exists (select 1 from generate_series(4, 26, 2) w
+                              where to_char(public._series_start((v_next at time zone r.timezone)::date + w * 7, r.start_time, r.timezone) at time zone v_tz, 'HH24:MI')
+                                 <> to_char(v_next at time zone v_tz, 'HH24:MI'))
+                then ' Your time moves by an hour when the clocks change.' else '' end
+      end,
+      jsonb_build_object('series_id', p_series));
+  end loop;
+end $$;
+
+-- Checks shared by create and change: returns the tutor's own clock time for the first lesson
+create or replace function public._series_check(p_title text, p_first timestamptz, p_learner_ids uuid[], p_timezone text, p_until date)
+returns timestamp language plpgsql stable security definer set search_path = public as $$
+declare l uuid; v_tz text; v_local timestamp;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  if nullif(trim(coalesce(p_title, '')), '') is null then raise exception 'Give the lesson a title.'; end if;
+  if p_first is null then raise exception 'Choose when the first lesson is.'; end if;
+  if coalesce(array_length(p_learner_ids, 1), 0) = 0 then raise exception 'Choose at least one learner.'; end if;
+  foreach l in array p_learner_ids loop
+    if not public.is_my_learner(l) then raise exception 'Not your learner.'; end if;
+  end loop;
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  v_local := date_trunc('minute', p_first at time zone v_tz);
+  if p_until is not null and p_until < v_local::date then raise exception 'The last date is before the first lesson.'; end if;
+  return v_local;
+end $$;
+
+create or replace function public.create_lesson_series(p_title text, p_first timestamptz, p_duration int, p_learner_ids uuid[],
+  p_timezone text, p_until date default null, p_notes text default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v_local timestamp; v_tz text; v_id uuid;
+begin
+  v_local := public._series_check(p_title, p_first, p_learner_ids, p_timezone, p_until);
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  insert into public.lesson_series (tutor_id, title, learner_ids, weekday, start_time, timezone, duration_min, starts_on, ends_on, notes_md)
+  values (auth.uid(), trim(p_title), p_learner_ids, extract(dow from v_local)::int, v_local::time, v_tz,
+          greatest(10, least(coalesce(p_duration, 60), 480)), v_local::date, p_until, nullif(trim(coalesce(p_notes, '')), ''))
+  returning id into v_id;
+  perform public._fill_series(v_id);
+  perform public._series_notify(v_id, 'Weekly lesson: ');
+  return v_id;
+end $$;
+
+-- Change a weekly lesson from now on (time, day, length, learners, title). Past lessons stay as they were.
+-- Lessons before p_from (default: now) stay as they are.
+create or replace function public.change_lesson_series(p_series uuid, p_title text, p_first timestamptz, p_duration int, p_learner_ids uuid[],
+  p_timezone text, p_until date default null, p_notes text default null, p_from timestamptz default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_local timestamp; v_tz text; v_old uuid[]; l uuid;
+begin
+  select learner_ids into v_old from public.lesson_series where id = p_series and tutor_id = auth.uid();
+  if not found then raise exception 'Not your lesson.'; end if;
+  v_local := public._series_check(p_title, p_first, p_learner_ids, p_timezone, p_until);
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  update public.lesson_series set title = trim(p_title), learner_ids = p_learner_ids, weekday = extract(dow from v_local)::int,
+    start_time = v_local::time, timezone = v_tz, duration_min = greatest(10, least(coalesce(p_duration, 60), 480)),
+    starts_on = v_local::date, ends_on = p_until, notes_md = nullif(trim(coalesce(p_notes, '')), '')
+   where id = p_series;
+  delete from public.sessions where series_id = p_series and starts_at > now() and starts_at >= coalesce(p_from, now());
+  perform public._fill_series(p_series);
+  perform public._series_notify(p_series, 'Weekly lesson changed: ');
+  foreach l in array v_old loop
+    if not l = any (p_learner_ids) then
+      perform public.notify_user(l, 'session', 'Weekly lesson stopped: ' || trim(p_title), 'This weekly lesson no longer includes you.', '{}');
+    end if;
+  end loop;
+end $$;
+
+create or replace function public.end_lesson_series(p_series uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare r public.lesson_series; l uuid;
+begin
+  update public.lesson_series set ends_on = (now() at time zone timezone)::date - 1
+   where id = p_series and tutor_id = auth.uid() returning * into r;
+  if not found then raise exception 'Not your lesson.'; end if;
+  delete from public.sessions where series_id = p_series and starts_at > now();
+  foreach l in array r.learner_ids loop
+    perform public.notify_user(l, 'session', 'Weekly lesson stopped: ' || r.title, 'There are no more lessons planned for it.', '{}');
+  end loop;
+end $$;
+
+-- Skip one lesson (or put it back)
+create or replace function public.skip_lesson(p_session uuid, p_skip boolean default true)
+returns void language plpgsql security definer set search_path = public as $$
+declare s public.sessions; l uuid;
+begin
+  update public.sessions set cancelled = coalesce(p_skip, true)
+   where id = p_session and tutor_id = auth.uid() and starts_at > now() returning * into s;
+  if not found then raise exception 'Not your lesson, or it has already started.'; end if;
+  foreach l in array s.learner_ids loop
+    perform public.notify_user(l, 'session', case when s.cancelled then 'Lesson skipped: ' else 'Lesson back on: ' end || s.title,
+      case when s.cancelled then 'No lesson on ' else 'On ' end || to_char(s.starts_at at time zone public._tz_of(l), 'Dy DD Mon, HH24:MI') || ' your time.',
+      jsonb_build_object('session_id', s.id));
+  end loop;
+end $$;
+
+-- Moving one lesson tells its learners and resets its reminders; cancelling a one-off lesson tells them too
+create or replace function public.on_session_changed() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare l uuid;
+begin
+  if new.starts_at is distinct from old.starts_at then
+    new.reminded_day := null;
+    new.reminded_soon := null;
+    if new.starts_at > now() and not new.cancelled then
+      foreach l in array new.learner_ids loop
+        perform public.notify_user(l, 'session', 'Lesson moved: ' || new.title,
+          'Now ' || to_char(new.starts_at at time zone public._tz_of(l), 'Dy DD Mon, HH24:MI') || ' your time.', jsonb_build_object('session_id', new.id));
+      end loop;
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists sessions_changed on public.sessions;
+create trigger sessions_changed before update on public.sessions for each row execute function public.on_session_changed();
+
+create or replace function public.on_session_deleted() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare l uuid;
+begin
+  if old.series_id is null and not old.cancelled and old.starts_at > now() then
+    foreach l in array old.learner_ids loop
+      perform public.notify_user(l, 'session', 'Lesson cancelled: ' || old.title,
+        'It was ' || to_char(old.starts_at at time zone public._tz_of(l), 'Dy DD Mon, HH24:MI') || ' your time.', '{}');
+    end loop;
+  end if;
+  return old;
+end $$;
+drop trigger if exists sessions_deleted on public.sessions;
+create trigger sessions_deleted after delete on public.sessions for each row execute function public.on_session_deleted();
+
+-- Reminders: a day before (if the lesson was planned before then) and 15 minutes before. Each goes out once.
+create or replace function public._lesson_reminders() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  s public.sessions;
+  l uuid;
+  v_soon boolean;
+  v_others text;
+  n int := 0;
+begin
+  for s in select x.* from public.sessions x
+            where not x.cancelled and public._tutor_active(x.tutor_id)
+              and ((x.reminded_soon is null and x.starts_at > now() and x.starts_at <= now() + interval '15 minutes'
+                    and x.created_at < x.starts_at - interval '15 minutes')
+                or (x.reminded_day is null and x.starts_at > now() + interval '1 hour' and x.starts_at <= now() + interval '24 hours'
+                    and x.created_at < x.starts_at - interval '23 hours'))
+            order by x.starts_at
+            for update skip locked loop
+    v_soon := s.starts_at <= now() + interval '15 minutes';
+    foreach l in array s.learner_ids loop
+      perform public.notify_user(l, 'session',
+        case when v_soon then 'Lesson in 15 minutes: ' else 'Lesson coming up: ' end || s.title,
+        case when v_soon then 'Starts at ' || to_char(s.starts_at at time zone public._tz_of(l), 'HH24:MI') || ' your time. Open Live in StudyBridge to join.'
+        else 'Starts ' || to_char(s.starts_at at time zone public._tz_of(l), 'Dy DD Mon, HH24:MI') || ' your time.' end,
+        jsonb_build_object('session_id', s.id));
+    end loop;
+    -- the tutor sees their own time and each learner's
+    select string_agg(p.display_name || ' ' || to_char(s.starts_at at time zone public._tz_of(p.id), 'Dy HH24:MI'), ', ' order by p.display_name)
+      into v_others from public.profiles p where p.id = any (s.learner_ids);
+    perform public.notify_user(s.tutor_id, 'session',
+      case when v_soon then 'Lesson in 15 minutes: ' else 'Lesson coming up: ' end || s.title,
+      'Starts ' || to_char(s.starts_at at time zone public._tz_of(s.tutor_id), 'Dy DD Mon, HH24:MI') || ' your time'
+        || coalesce(' · ' || v_others, '') || '.',
+      jsonb_build_object('session_id', s.id));
+    if v_soon then
+      update public.sessions set reminded_soon = now(), reminded_day = coalesce(reminded_day, now()) where id = s.id;
+    else
+      update public.sessions set reminded_day = now() where id = s.id;
+    end if;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- Runs every 5 minutes: reminders, and once an hour, the next weeks' lessons
+create or replace function public._lesson_tick() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if extract(minute from now()) < 5 then perform public._fill_series(); end if;
+  perform public._lesson_reminders();
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -3609,6 +3910,12 @@ revoke execute on function public._make_admin(text, uuid) from public, anon, aut
 revoke execute on function public._prof_alert(uuid) from public, anon, authenticated;
 revoke execute on function public.calendar_feed(text) from public, anon, authenticated;
 revoke execute on function public.make_admin(text) from public, anon, authenticated, service_role;
+revoke execute on function public._fill_series(uuid, int) from public, anon, authenticated;
+revoke execute on function public._series_notify(uuid, text) from public, anon, authenticated;
+revoke execute on function public._series_check(text, timestamptz, uuid[], text, date) from public, anon, authenticated;
+revoke execute on function public._lesson_reminders() from public, anon, authenticated;
+revoke execute on function public._lesson_tick() from public, anon, authenticated;
+revoke execute on function public._tz_of(uuid) from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;
@@ -3675,6 +3982,7 @@ do $$
 begin
   create extension if not exists pg_cron;
   perform cron.schedule('studybridge-prof', '* * * * *', 'select public.prof_tick()');
+  perform cron.schedule('studybridge-lessons', '*/5 * * * *', 'select public._lesson_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

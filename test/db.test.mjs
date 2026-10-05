@@ -1040,3 +1040,114 @@ test('StudyBridge papers: only approved ones reach tutors; only the admin writes
   await db.query(`update prof_jobs set status = 'cancelled' where id = $1`, [wj]);
   assert.equal((await db.query(`select status from sb_papers where id = $1`, [wp])).rows[0].status, 'failed');
 });
+
+test('weekly lessons keep the tutor’s clock; each learner gets their own time; reminders go once; skip, move, change, stop', async () => {
+  // a fresh tutor in New York and his sister in Lusaka
+  U.TW = (await db.query(`insert into auth.users (email) values ('weekly-tutor@x.com') returning id`)).rows[0].id;
+  U.LW = (await db.query(`insert into auth.users (email) values ('weekly-sis@x.com') returning id`)).rows[0].id;
+  await as('TW', `select * from become_tutor('Aaryan W', 'America/New_York')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.TW]);
+  const wcode = await val('TW', `insert into invites (name) values ('Sis') returning code`);
+  await as('LW', `select accept_invite($1, 'Sis', 'Africa/Lusaka')`, [wcode]);
+
+  // 10:00 New York on a Tuesday is 16:00 in Lusaka in October, and 17:00 after US clocks go back on 1 Nov 2026
+  const at = (day, tz) => val('TW', `select to_char(_series_start($1, '10:00', 'America/New_York') at time zone $2, 'HH24:MI')`, [day, tz]);
+  assert.equal(await at('2026-10-27', 'America/New_York'), '10:00');
+  assert.equal(await at('2026-11-03', 'America/New_York'), '10:00');
+  assert.equal(await at('2026-10-27', 'Africa/Lusaka'), '16:00');
+  assert.equal(await at('2026-11-03', 'Africa/Lusaka'), '17:00');
+
+  await fails(as('LW', `select create_lesson_series('x', now() + interval '2 days', 60, $1, 'Africa/Lusaka')`, [[U.LW]]), /Tutors only/);
+  await fails(as('TW', `select create_lesson_series('x', now() + interval '2 days', 60, $1, 'America/New_York')`, [[U.LC]]), /Not your learner/);
+  await fails(as('TW', `select create_lesson_series(' ', now() + interval '2 days', 60, $1, 'America/New_York')`, [[U.LW]]), /title/);
+  await fails(as('TW', `select create_lesson_series('x', now() + interval '2 days', 60, '{}', 'America/New_York')`), /at least one learner/);
+
+  const sid = await val('TW', `select create_lesson_series('Weekly algebra', date_trunc('minute', now()) + interval '2 days', 60, $1, 'America/New_York')`, [[U.LW]]);
+  const mine = await as('TW', `select * from sessions where series_id = $1 order by starts_at`, [sid]);
+  assert.ok(mine.length >= 8 && mine.length <= 10, `about 8 weeks of lessons (${mine.length})`);
+  assert.ok(mine.every((s) => new Date(s.starts_at) > new Date()), 'only future lessons');
+  // every lesson is at 10:xx in New York, whatever the date
+  const ny = await as('TW', `select distinct to_char(starts_at at time zone 'America/New_York', 'Dy HH24:MI') t from sessions where series_id = $1`, [sid]);
+  assert.equal(ny.length, 1, 'same weekday and clock time in New York every week');
+  assert.equal((await as('LW', `select * from sessions where series_id = $1`, [sid])).length, mine.length, 'the learner sees them');
+  assert.equal((await as('LC', `select * from sessions where series_id = $1`, [sid])).length, 0);
+  assert.equal((await as('LW', `select * from lesson_series where id = $1`, [sid])).length, 1);
+  assert.equal((await as('LC', `select * from lesson_series where id = $1`, [sid])).length, 0);
+  await fails(as('LW', `insert into lesson_series (title, weekday, start_time, timezone, starts_on) values ('x', 1, '10:00', 'UTC', current_date)`), /permission denied/);
+  // one notification for the series, none per lesson
+  const ln = (t) => as('LW', `select * from notifications where title like $1 order by created_at`, [t]);
+  const made = await ln('Weekly lesson: Weekly algebra');
+  assert.equal(made.length, 1);
+  assert.match(made[0].body, /^Every \w+ at \d\d:\d\d your time, starting /);
+  assert.equal((await ln('Live session: Weekly algebra')).length, 0);
+  // topping up never makes doubles; learners can't run it
+  assert.equal((await db.query(`select _fill_series() n`)).rows[0].n, 0);
+  await fails(as('LW', `select _fill_series()`), /permission denied/);
+  await fails(as('TW', `select _lesson_reminders()`), /permission denied/);
+
+  // reminders: a day before, then 15 minutes before; each once
+  const first = mine[0].id;
+  await db.query(`update sessions set starts_at = now() + interval '20 hours', created_at = now() - interval '3 days' where id = $1`, [first]);
+  assert.equal((await ln('Lesson moved: Weekly algebra')).length, 1, 'moving a lesson tells the learner');
+  assert.ok((await db.query(`select _lesson_reminders() n`)).rows[0].n >= 1);
+  assert.equal((await db.query(`select _lesson_reminders() n`)).rows[0].n, 0, 'nothing twice');
+  const soonish = await ln('Lesson coming up: Weekly algebra');
+  assert.equal(soonish.length, 1);
+  assert.match(soonish[0].body, /your time\.$/);
+  await db.query(`update sessions set starts_at = now() + interval '10 minutes' where id = $1`, [first]);
+  await db.query(`select _lesson_reminders()`);
+  await db.query(`select _lesson_reminders()`);
+  assert.equal((await ln('Lesson in 15 minutes: Weekly algebra')).length, 1);
+  const tut = await as('TW', `select body from notifications where title = 'Lesson in 15 minutes: Weekly algebra'`);
+  assert.equal(tut.length, 1);
+  assert.match(tut[0].body, /your time · Sis \w+ \d\d:\d\d\.$/, 'the tutor sees the learner’s time too');
+  // a lesson made just now gets no day-before reminder
+  await as('TW', `insert into sessions (title, starts_at, learner_ids) values ('Quick extra', now() + interval '5 hours', $1)`, [[U.LW]]);
+  await db.query(`select _lesson_reminders()`);
+  assert.equal((await ln('Lesson coming up: Quick extra')).length, 0);
+
+  // skip one week (and put it back); learners can't
+  const third = mine[2].id;
+  await as('LW', `update sessions set cancelled = true where id = $1`, [third]);
+  assert.equal((await one('TW', `select cancelled from sessions where id = $1`, [third])).cancelled, false);
+  await as('TW', `select skip_lesson($1)`, [third]);
+  assert.equal((await one('LW', `select cancelled from sessions where id = $1`, [third])).cancelled, true);
+  assert.equal((await ln('Lesson skipped: Weekly algebra')).length, 1);
+  await as('TW', `select skip_lesson($1, false)`, [third]);
+  assert.equal((await ln('Lesson back on: Weekly algebra')).length, 1);
+  await as('TW', `select skip_lesson($1)`, [third]);
+  await fails(as('LW', `select skip_lesson($1)`, [third]), /Not your lesson/);
+
+  // change from the 5th lesson on: the first four stay, the rest move
+  const keep = (await as('TW', `select id, starts_at from sessions where series_id = $1 and starts_at > now() order by starts_at`, [sid]));
+  await as('TW', `select change_lesson_series($1, 'Weekly algebra', $2::timestamptz + interval '1 hour', 60, $3, 'America/New_York', null, null, $2)`, [sid, keep[4].starts_at, [U.LW]]);
+  const kept = await as('TW', `select id from sessions where series_id = $1 and starts_at > now() order by starts_at limit 4`, [sid]);
+  assert.deepEqual(kept.map((r) => r.id), keep.slice(0, 4).map((r) => r.id), 'lessons before the change stay');
+  assert.equal((await as('TW', `select count(*)::int n from sessions where series_id = $1 and starts_at = $2::timestamptz + interval '1 hour'`, [sid, keep[4].starts_at]))[0].n, 1);
+  // change it from now on: new time and length, old future lessons replaced
+  await as('TW', `select change_lesson_series($1, 'Weekly algebra', date_trunc('minute', now()) + interval '3 days 2 hours', 45, $2, 'America/New_York')`, [sid, [U.LW]]);
+  const after = await as('TW', `select * from sessions where series_id = $1 and starts_at > now()`, [sid]);
+  assert.ok(after.length >= 8 && after.every((s) => s.duration_min === 45 && !s.cancelled));
+  assert.equal((await ln('Weekly lesson changed: Weekly algebra')).length, 2, 'one message per change');
+  await fails(as('TC', `select change_lesson_series($1, 'x', now(), 45, $2, 'UTC')`, [sid, [U.LW]]), /Not your lesson/);
+
+  // stop it: no more lessons, and topping up doesn't bring them back
+  await as('TW', `select end_lesson_series($1)`, [sid]);
+  assert.equal((await as('TW', `select * from sessions where series_id = $1 and starts_at > now()`, [sid])).length, 0);
+  assert.equal((await ln('Weekly lesson stopped: Weekly algebra')).length, 1);
+  await db.query(`select _fill_series()`);
+  assert.equal((await as('TW', `select * from sessions where series_id = $1 and starts_at > now()`, [sid])).length, 0);
+
+  // cancelling a one-off lesson tells the learner
+  const once = await val('TW', `insert into sessions (title, starts_at, learner_ids) values ('One-off', now() + interval '2 days', $1) returning id`, [[U.LW]]);
+  await as('TW', `delete from sessions where id = $1`, [once]);
+  assert.equal((await ln('Lesson cancelled: One-off')).length, 1);
+
+  // learners can switch on phone alerts for themselves
+  const pa = await val('LW', `select my_phone_alerts()`);
+  assert.match(pa.topic, /^studybridge-[0-9a-f]{18}$/);
+  assert.equal(pa.enabled, false);
+  assert.equal((await val('LW', `select my_phone_alerts(true)`)).enabled, true);
+  await fails(as('TW', `select my_phone_alerts()`), /Learners only/);
+  await fails(as('LW', `select * from phone_alerts`), /permission denied/);
+});
