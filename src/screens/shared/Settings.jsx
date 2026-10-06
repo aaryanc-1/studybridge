@@ -10,7 +10,7 @@ import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone } from '../../lib/config.js';
 import { useUpdateStatus } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
-import { reportText } from '../../lib/reports.js';
+import ReportCard from './ReportCard.jsx';
 
 export default function Settings() {
   const app = useApp();
@@ -31,6 +31,7 @@ export default function Settings() {
       {isTutor && <ClaudeConnector />}
       {isTutor && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
+      {isLearner && <LinkedParents />}
       {isLearner && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <LearnerPhoneAlerts />}
@@ -77,7 +78,7 @@ function Account() {
         <Avatar person={{ ...app.me, display_name: name, avatar_color: color }} size="lg" />
         <div>
           <div className="strong">{app.me.email}</div>
-          <div className="muted small">{{ tutor: 'Tutor', learner: 'Learner', admin: 'StudyBridge admin' }[app.me.role]}</div>
+          <div className="muted small">{{ tutor: 'Tutor', learner: 'Learner', admin: 'StudyBridge admin', parent: 'Parent (read-only)' }[app.me.role]}</div>
         </div>
       </div>
       <div className="grid g2" style={{ gap: 12 }}>
@@ -545,6 +546,45 @@ function AccountHistory() {
   );
 }
 
+// Parent accounts that can see this learner's progress (read-only); the learner can take any of them off
+function LinkedParents() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('my-parents', () => api.learnerParents());
+  const list = q.data?.parents || [];
+  if (!list.length) return null;
+  return (
+    <Section id="parents" icon="users" title="Parents who can see your progress" sub="They see your weekly reports, lessons, due dates and marks once they’re given back. Never your messages, your working or anything you write.">
+      <div className="list">
+        {list.map((p) => (
+          <div key={p.id} className="item">
+            <Icon name="user" style={{ color: 'var(--accent)' }} />
+            <span className="grow">
+              <span className="name">{p.name}</span>
+              <span className="meta">Since {new Date(p.since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+            </span>
+            <button
+              className="btn sm ghost"
+              onClick={async () => {
+                if (!(await confirm({ title: `Remove ${p.name}?`, body: 'They stop seeing your progress straight away. Your tutor can give them a new parent invite later.', ok: 'Remove', danger: true }))) return;
+                try {
+                  await api.removeParent(p.id);
+                  invalidate('my-parents');
+                  toast(`${p.name} removed`);
+                } catch (e) {
+                  toast({ title: 'Couldn’t remove them', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 // The learner decides whether a parent gets a weekly report, and who
 function ParentReportsSetting() {
   const toast = useToast();
@@ -593,11 +633,9 @@ function ParentReportsSetting() {
       {(sent.data || []).length > 0 && (
         <details>
           <summary className="small strong">Reports sent so far ({sent.data.length})</summary>
-          <div className="stack sm" style={{ marginTop: 8 }}>
+          <div className="stack" style={{ marginTop: 8 }}>
             {sent.data.map((r) => (
-              <pre key={r.id} className="report-preview">
-                {reportText(r)}
-              </pre>
+              <ReportCard key={r.id} report={r} compact />
             ))}
           </div>
         </details>

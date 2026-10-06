@@ -81,7 +81,7 @@ export function decodeInvite(text) {
     return null;
   }
   const code = t.replace(/\s+/g, '').toUpperCase();
-  if (/^[0-9A-F]{10}$/.test(code)) return { code };
+  if (/^P?[0-9A-F]{10}$/.test(code)) return { code };
   return null;
 }
 

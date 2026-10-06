@@ -1251,3 +1251,71 @@ test('mock exams: papers add up, the grade comes from the tutor’s own boundari
   assert.equal((await db.query(`select _grade_for($1, 200, 10, 100) g`, [stored.grades])).rows[0].g.grade, 'U');
   await fails(as('TW', `select _grade_for($1, 200, 10, 100)`, [stored.grades]), /permission denied/);
 });
+
+test('parent accounts: a code from the tutor, read-only, only what was given back; the learner sees and removes them', async () => {
+  U.PW = (await db.query(`insert into auth.users (email) values ('mum@x.com') returning id`)).rows[0].id;
+  U.PX = (await db.query(`insert into auth.users (email) values ('stranger-parent@x.com') returning id`)).rows[0].id;
+  await fails(as('T', `select create_parent_invite($1, 'Mum')`, [U.LW]), /Not your learner/);
+  await fails(as('LW', `select create_parent_invite($1, 'Mum')`, [U.LW]), /Not your learner/);
+  const inv = await one('TW', `select * from create_parent_invite($1, 'Mum')`, [U.LW]);
+  assert.match(inv.code, /^P[0-9A-F]{10}$/);
+  await fails(as('LW', `select accept_parent_invite($1, 'Me')`, [inv.code]), /already a learner account/);
+  await fails(as('PW', `select accept_parent_invite('PNOPE', 'Mum')`), /not valid/);
+  const me = await one('PW', `select * from accept_parent_invite($1, 'Mum', 'Africa/Lusaka')`, [inv.code]);
+  assert.equal(me.role, 'parent');
+  assert.equal(me.tutor_id, null, 'a parent never gets a tutor, so no tutor tables open up');
+  await fails(as('PX', `select accept_parent_invite($1, 'Not mum')`, [inv.code]), /already been used/);
+  assert.equal((await as('TW', `select * from notifications where kind = 'parent_joined'`)).length, 1);
+  assert.equal((await as('LW', `select * from notifications where kind = 'parent_joined'`)).length, 1, 'the learner is told');
+
+  // nothing straight from the tables
+  for (const t of ['assignments', 'attempts', 'responses', 'comments', 'sessions', 'subjects', 'files', 'lessons', 'mocks', 'grade_boundaries', 'parent_reports', 'learner_reports', 'parent_links', 'parent_invites', 'prof_jobs']) {
+    const rows = await as('PW', `select * from ${t}`).catch(() => []);
+    assert.equal(rows.length, 0, `a parent reads nothing from ${t}`);
+  }
+  assert.deepEqual((await as('PW', `select id from profiles`)).map((r) => r.id), [U.PW], 'only their own profile');
+
+  const kids = await val('PW', `select parent_children()`);
+  assert.deepEqual(kids.map((k) => k.name), ['Sis']);
+  await fails(as('PX', `select parent_view($1)`, [U.LW]), /can’t see/);
+  await fails(as('PW', `select parent_view($1)`, [U.L2]), /can’t see/);
+  await as('TW', `insert into sessions (title, starts_at, learner_ids) values ('Parent-visible lesson', now() + interval '2 days', $1)`, [[U.LW]]);
+  let v = await val('PW', `select parent_view($1)`, [U.LW]);
+  assert.equal(v.learner.name, 'Sis');
+  assert.ok(v.lessons.some((s) => s.title === 'Parent-visible lesson'));
+  assert.ok(v.marks.some((m) => m.title === 'Paper 2' && Number(m.score) === 60), 'marks that were given back');
+  assert.equal(v.mocks[0].title, 'October mock');
+  assert.equal(v.mocks[0].grade, 'B');
+  assert.equal(v.reports.length, 0, 'no reports until the tutor approves one');
+  assert.doesNotMatch(JSON.stringify(v), /"grades"|"answer"|"steps"|"feedback_md"|"body"|lockdown/, 'no boundaries, answers, working, messages or exam camera');
+
+  // the tutor approves a report: it's in the parent's account, and they're told
+  const rid = await val('TW', `insert into parent_reports (learner_id, week_start, data) values ($1, current_date - 7, report_numbers($1, now() - interval '14 days', now() - interval '7 days')) returning id`, [U.LW]);
+  await as('TW', `update parent_reports set comment = 'A good week.', status = 'sent', sent_via = 'app', sent_at = now() where id = $1`, [rid]);
+  assert.equal((await as('PW', `select * from notifications where kind = 'report'`)).length, 1);
+  v = await val('PW', `select parent_view($1)`, [U.LW]);
+  assert.equal(v.reports.length, 1);
+  assert.equal(v.reports[0].comment, 'A good week.');
+
+  // the learner sees who's linked (no emails), the tutor sees emails and unused codes; others see nothing
+  const extra = await one('TW', `select * from create_parent_invite($1, 'Dad')`, [U.LW]);
+  const forLearner = await val('LW', `select learner_parents()`);
+  assert.deepEqual(forLearner.parents.map((p) => p.name), ['Mum']);
+  assert.equal(forLearner.parents[0].email, null);
+  assert.equal(forLearner.invites, null);
+  const forTutor = await val('TW', `select learner_parents($1)`, [U.LW]);
+  assert.equal(forTutor.parents[0].email, 'mum@x.com');
+  assert.deepEqual(forTutor.invites.map((i) => i.name), ['Dad']);
+  await fails(as('T', `select learner_parents($1)`, [U.LW]), /Not your learner/);
+  assert.equal((await val('TW', `select my_parent_counts()`))[U.LW], 1);
+  assert.deepEqual(await val('T', `select my_parent_counts()`), {});
+  await as('TW', `select revoke_parent_invite($1)`, [extra.id]);
+  await fails(as('PX', `select accept_parent_invite($1)`, [extra.code]), /not valid/);
+
+  // the learner takes Mum off: she sees nothing any more
+  await fails(as('L2', `select remove_parent($1)`, [forLearner.parents[0].id]), /Not found/);
+  await as('LW', `select remove_parent($1)`, [forLearner.parents[0].id]);
+  await fails(as('PW', `select parent_view($1)`, [U.LW]), /can’t see/);
+  assert.equal((await val('PW', `select parent_children()`)).length, 0);
+  assert.equal((await as('PW', `select * from notifications where kind = 'parent_removed'`)).length, 1);
+});

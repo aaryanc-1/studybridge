@@ -53,6 +53,12 @@ session (`grade_boundaries`, tutor-only; `_grade_for` scales them to the mock's 
 `boundaries`, tutor saves what they check), syllabus shown in order with subtopics and "Set up the whole syllabus"
 merging (`applyTopics(..., { reorder: true })`), Library tabs renamed "My files" and "Lesson notes", Prof page shows
 the latest 5 requests + History (`/prof/history`).
+1.6 part 3: parent accounts (role 'parent', never a tutor_id, so no tutor/learner tables open; `parent_links`,
+`parent_invites` with codes 'P'+10 hex, `accept_parent_invite`, `parent_children`, `parent_view` hand out only approved
+reports, upcoming lessons/due dates, released marks, topics, released mock grades, exam countdown; learner and tutor
+see/remove links via `learner_parents`/`remove_parent`). Weekly report is now a template (`ReportCard.jsx`, prints
+as PDF) filled from `_report_numbers`; the tutor writes only a comment (Prof can suggest one) and approves; approving
+needs a linked parent or the learner's WhatsApp/email switch. Parent app: `src/screens/parent/ParentApp.jsx`.
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge

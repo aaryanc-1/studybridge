@@ -47,6 +47,16 @@ export default function Welcome() {
               </span>
               <Icon name="right" />
             </button>
+            <button className="choice" onClick={() => (setRole('parent'), setStep('invite'))}>
+              <span className="ic">
+                <Icon name="users" size={24} />
+              </span>
+              <span className="grow">
+                <div className="t">I’m a parent</div>
+                <div className="s">Follow your child’s progress with the parent invite their tutor sent you.</div>
+              </span>
+              <Icon name="right" />
+            </button>
             {app.server && (
               <button className="linkbtn" style={{ alignSelf: 'center', marginTop: 6 }} onClick={() => setStep('signin')}>
                 I already have an account: sign in
@@ -55,7 +65,7 @@ export default function Welcome() {
           </div>
         )}
         {step === 'server' && <ServerSetup onBack={() => setStep('start')} onDone={() => setStep('account')} />}
-        {step === 'invite' && <InviteStep onBack={() => setStep('start')} onDone={() => setStep('account')} />}
+        {step === 'invite' && <InviteStep parent={role === 'parent'} onBack={() => setStep('start')} onDone={() => setStep('account')} />}
         {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : 'invite')} />}
         {step === 'signin' && (
           <SignIn
@@ -174,7 +184,7 @@ function ServerSetup({ onBack, onDone }) {
   );
 }
 
-function InviteStep({ onBack, onDone }) {
+function InviteStep({ parent = false, onBack, onDone }) {
   const app = useApp();
   const [text, setText] = useState('');
   const [err, setErr] = useState('');
@@ -191,8 +201,9 @@ function InviteStep({ onBack, onDone }) {
 
   return (
     <form className="card" onSubmit={next}>
-      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Join your tutor</h2>
-      <Field label="Your invite" hint="Paste the whole invite your tutor sent you. It starts with SB1-">
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{parent ? 'Follow your child’s progress' : 'Join your tutor'}</h2>
+      {parent && <div className="note small">A parent account is read-only: you see your child’s weekly reports, lessons, due dates and marks once they’re given back. Never their messages or working.</div>}
+      <Field label={parent ? 'Your parent invite' : 'Your invite'} hint={`Paste the whole invite ${parent ? 'your child’s tutor' : 'your tutor'} sent you. It starts with SB1-`}>
         <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-eyJ1Ijoi…" spellCheck={false} />
       </Field>
       {err && <div className="error">{err}</div>}
@@ -229,7 +240,7 @@ function Account({ role, onBack }) {
         await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0], mode === 'new' ? about : null);
       } else {
         const inv = decodeInvite(sessionStorage.getItem('sb.pendingInvite'));
-        if (inv) await api.acceptInvite(inv.code, name.trim());
+        if (inv) await api.joinWithCode(inv.code, name.trim());
         sessionStorage.removeItem('sb.pendingInvite');
       }
       localStorage.setItem('sb.seen', '1');
@@ -254,7 +265,7 @@ function Account({ role, onBack }) {
         </button>
       </div>
       {mode === 'new' && (
-        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : 'Your tutor sees this name.'}>
+        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : role === 'parent' ? 'Your child and their tutor see this name.' : 'Your tutor sees this name.'}>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" autoFocus />
         </Field>
       )}

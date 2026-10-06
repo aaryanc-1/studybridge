@@ -239,6 +239,19 @@ export async function saveQuestionsToBank(qs, { subject_id = null, topicName = (
   return run(sb().from('bank_questions').insert(rows).select());
 }
 
+// ---------------- parent accounts (read-only) ----------------
+// Parent codes are 'P' + 10 letters/numbers; learner codes are 10. One "join with a code" for both.
+export const isParentCode = (code) => /^P[0-9A-F]{10}$/i.test(String(code || '').trim());
+export const acceptParentInvite = (code, name) => run(sb().rpc('accept_parent_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
+export const joinWithCode = (code, name) => (isParentCode(code) ? acceptParentInvite(code, name) : acceptInvite(code, name));
+export const createParentInvite = (learnerId, name) => run(sb().rpc('create_parent_invite', { p_learner: learnerId, p_name: name || null }));
+export const revokeParentInvite = (id) => run(sb().rpc('revoke_parent_invite', { p_invite: id }));
+export const learnerParents = (learnerId = null) => run(sb().rpc('learner_parents', { p_learner: learnerId }));
+export const removeParent = (linkId) => run(sb().rpc('remove_parent', { p_link: linkId }));
+export const myParentCounts = () => run(sb().rpc('my_parent_counts')).catch((e) => (e.offline ? Promise.reject(e) : {}));
+export const parentChildren = () => run(sb().rpc('parent_children'));
+export const parentView = (learnerId) => run(sb().rpc('parent_view', { p_learner: learnerId }));
+
 // ---------------- weekly parent reports ----------------
 export const listLearnerReports = () => run(sb().from('learner_reports').select('*'));
 export const listParentReports = () => run(sb().from('parent_reports').select('*').order('week_start', { ascending: false }).limit(500));

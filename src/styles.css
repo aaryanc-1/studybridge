@@ -694,3 +694,52 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .mock-grade { min-width: 56px; height: 56px; padding: 0 10px; border-radius: 14px; background: var(--accent-tint); color: var(--accent-ink); display: inline-flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 800; flex-shrink: 0; }
 .mock-grade.sm { min-width: 40px; height: 40px; font-size: 18px; border-radius: 10px; }
 .mock-result { border-color: var(--accent-tint); }
+
+/* Weekly report (1.6): one template for the tutor, the parent and the learner; prints as a page */
+.report-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding-bottom: 14px; max-width: 760px; }
+.report-card > section, .report-card > .rc-two, .report-card > .rc-stats { padding: 0 22px; }
+.rc-head { background: var(--accent); color: #fff; padding: 20px 22px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.rc-eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.85; }
+.rc-name { font-family: var(--serif); font-size: 28px; margin: 2px 0; color: #fff; }
+.rc-sub { font-size: 14px; opacity: 0.9; }
+.rc-countdown { background: rgba(255, 255, 255, 0.16); border-radius: 12px; padding: 8px 14px; text-align: center; min-width: 96px; }
+.rc-countdown .n { font-size: 28px; font-weight: 800; line-height: 1.1; }
+.rc-countdown .l { font-size: 12px; opacity: 0.9; }
+.rc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.rc-stat { background: var(--sunk); border-radius: 12px; padding: 12px; color: var(--muted); }
+.rc-stat .n { color: var(--ink); font-size: 22px; font-weight: 800; margin-top: 4px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.rc-stat .l { font-size: 12px; }
+.rc-trend { font-size: 12px; font-weight: 700; }
+.rc-trend.up { color: var(--good-ink); } .rc-trend.down { color: var(--red-ink); }
+.rc-comment { margin: 0 22px; padding: 14px 16px !important; background: var(--accent-tint); border-left: 4px solid var(--accent); border-radius: 10px; }
+.rc-comment p { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.5; }
+.rc-label { font-size: 12px; font-weight: 700; color: var(--accent-ink); text-transform: uppercase; letter-spacing: 0.05em; }
+.rc-h { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
+.rc-table { width: 100%; border-collapse: collapse; }
+.rc-table td { padding: 8px 0; border-top: 1px solid var(--line-soft); vertical-align: middle; }
+.rc-table td + td { padding-left: 10px; }
+.rc-score { text-align: right; font-weight: 700; white-space: nowrap; }
+.rc-strong { font-weight: 600; }
+.rc-muted { color: var(--muted); font-size: 13px; }
+.rc-text { margin: 0; white-space: pre-wrap; }
+.rc-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.rc-two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.rc-topic { margin-bottom: 10px; }
+.rc-bar { height: 6px; background: var(--sunk); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.rc-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.rc-bar i.good { background: var(--good); } .rc-bar i.warn { background: #D99A1E; } .rc-bar i.bad { background: var(--red); }
+.rc-foot { display: flex; justify-content: space-between; padding: 10px 22px 0; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--muted); }
+.report-card.compact { gap: 12px; }
+@media (max-width: 640px) {
+  .rc-stats { grid-template-columns: repeat(2, 1fr); }
+  .rc-two { grid-template-columns: 1fr; }
+  .rc-head { flex-direction: column; }
+}
+@media print {
+  body.print-report * { visibility: hidden; }
+  body.print-report .report-card, body.print-report .report-card * { visibility: visible; }
+  body.print-report .report-card { position: absolute; left: 0; top: 0; width: 100%; max-width: none; border: 0; }
+  body.print-report .rc-head, body.print-report .rc-comment, body.print-report .rc-stat, body.print-report .rc-bar i { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+.report-review { align-items: start; }
+.parent-exam { gap: 14px; }

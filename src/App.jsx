@@ -10,6 +10,7 @@ import FinishSetup, { WaitingForApproval } from './screens/FinishSetup.jsx';
 import TutorApp from './screens/tutor/TutorApp.jsx';
 import LearnerApp from './screens/learner/LearnerApp.jsx';
 import AdminApp from './screens/admin/AdminApp.jsx';
+import ParentApp from './screens/parent/ParentApp.jsx';
 import { installErrorReporting } from './lib/errors.js';
 
 installErrorReporting();
@@ -51,7 +52,7 @@ export default function App() {
       const pending = sessionStorage.getItem('sb.pendingInvite');
       if (p && !p.role && pending) {
         const inv = decodeInvite(pending);
-        p = await api.acceptInvite(inv.code, sessionStorage.getItem('sb.pendingName') || p.display_name);
+        p = await api.joinWithCode(inv.code, sessionStorage.getItem('sb.pendingName') || p.display_name);
       }
       sessionStorage.removeItem('sb.pendingInvite');
       sessionStorage.removeItem('sb.pendingName');
@@ -158,6 +159,7 @@ export default function App() {
   else if (profile.role === 'admin') body = <AdminApp />;
   else if (profile.role === 'tutor' && profile.status !== 'active') body = <WaitingForApproval />;
   else if (profile.role === 'tutor') body = <TutorApp />;
+  else if (profile.role === 'parent') body = <ParentApp />;
   else body = <LearnerApp />;
 
   return (

@@ -4,7 +4,8 @@ import { Avatar, Empty, Field, Loading, Modal, Page, copyText, useToast } from '
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { weekRange, ago } from '../../lib/format.js';
-import { reportText, waLink, mailLink, workLine } from '../../lib/reports.js';
+import { reportText, waLink, mailLink } from '../../lib/reports.js';
+import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { useLookups } from '../shared/lookups.jsx';
 
 const weekLabel = (w) => {
@@ -25,17 +26,19 @@ export default function ParentReports() {
   const lk = useLookups();
   const settings = useQuery('learner-reports', api.listLearnerReports);
   const reports = useQuery('parent-reports', api.listParentReports);
+  const parents = useQuery('parent-counts', api.myParentCounts).data || {};
   const [open, setOpen] = useState(null); // { learnerId, reportId? }
   const [exam, setExam] = useState(null);
   if (!settings.data || !reports.data) return <Page title="Parent reports"><Loading /></Page>;
   const byLearner = Object.fromEntries(settings.data.map((r) => [r.learner_id, r]));
   const monday = thisMonday();
   // a finished week's report, for a learner who has reports on, waiting to be sent
-  const ready = reports.data.filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && byLearner[r.learner_id]?.enabled);
+  const goes = (id) => !!byLearner[id]?.enabled || parents[id] > 0;
+  const ready = reports.data.filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && goes(r.learner_id));
   const sent = reports.data.filter((r) => r.status === 'sent');
 
   return (
-    <Page title="Parent reports" subtitle="Every learner’s report stays up to date: this week so far is refreshed every day, and when a week ends it’s ready to send. Learners choose whether a parent gets it (in their Settings); you check every report before it goes.">
+    <Page title="Parent reports" subtitle="StudyBridge fills in every learner’s report from their week: lessons, work, marks, topics, mock grade and exam countdown. Add a comment if you like, and approve it: nothing reaches a parent until you do. It goes to parent accounts, and by WhatsApp or email when the learner switched that on.">
       {ready.length > 0 && (
         <div className="card claude">
           <h2>Ready for you to check and send</h2>
@@ -48,10 +51,10 @@ export default function ParentReports() {
                   <span className="grow">
                     <span className="name">{r.data?.learner || l?.display_name}</span>
                     <span className="meta">
-                      {weekLabel(r.week_start)} · to {byLearner[r.learner_id]?.parent_name || 'their parent'} {r.summary ? '· words written' : '· add a comment'}
+                      {weekLabel(r.week_start)} · {r.comment ? 'comment written' : 'add a comment if you like'}
                     </span>
                   </span>
-                  <span className="btn sm primary">Check & send</span>
+                  <span className="btn sm primary">Check & approve</span>
                 </button>
               );
             })}
@@ -75,16 +78,19 @@ export default function ParentReports() {
                     <span className="small muted">
                       {' '}
                       ·{' '}
-                      {s?.enabled
-                        ? `sending to ${s.parent_name || 'their parent'} (${[s.parent_phone && 'WhatsApp', s.parent_email && 'email'].filter(Boolean).join(' and ')})`
-                        : 'not sent to a parent yet (they switch it on in their Settings)'}
+                      {[
+                        parents[l.id] > 0 ? `${parents[l.id]} parent account${parents[l.id] === 1 ? '' : 's'}` : null,
+                        s?.enabled ? `${s.parent_name || 'a parent'} by ${[s.parent_phone && 'WhatsApp', s.parent_email && 'email'].filter(Boolean).join(' and ')}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || 'no parent yet (invite one from their Parents tab)'}
                       {s?.exam_date ? ` · ${s.exam_name || 'Exam'} on ${new Date(String(s.exam_date).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}
                     </span>
                   </span>
                   <button className="btn sm ghost" onClick={() => setExam({ l, s })}>
                     <Icon name="calendar" size={16} /> Exam date
                   </button>
-                  {!s?.enabled && <AskButton learner={l} />}
+                  {!goes(l.id) && <AskButton learner={l} />}
                   <button className="btn sm primary" onClick={() => setOpen({ learnerId: l.id })}>
                     <Icon name="eye" size={16} /> View report
                   </button>
@@ -97,7 +103,7 @@ export default function ParentReports() {
 
       {sent.length > 0 && (
         <div className="card">
-          <h2>Sent</h2>
+          <h2>Approved</h2>
           <div className="list">
             {sent.slice(0, 40).map((r) => (
               <button key={r.id} className="item" onClick={() => setOpen({ learnerId: r.learner_id, reportId: r.id })}>
@@ -107,7 +113,8 @@ export default function ParentReports() {
                     {r.data?.learner} · {weekLabel(r.week_start)}
                   </span>
                   <span className="meta">
-                    Sent {ago(r.sent_at)} by {r.sent_via === 'whatsapp' ? 'WhatsApp' : r.sent_via === 'email' ? 'email' : 'copy and paste'}
+                    Approved {ago(r.sent_at)} · {r.sent_via === 'whatsapp' ? 'WhatsApp' : r.sent_via === 'email' ? 'email' : r.sent_via === 'app' ? 'parent account' : 'copy and paste'}
+                    {parents[r.learner_id] > 0 && r.sent_via !== 'app' ? ' and parent account' : ''}
                   </span>
                 </span>
               </button>
@@ -115,7 +122,7 @@ export default function ParentReports() {
           </div>
         </div>
       )}
-      {open && <ReportViewer {...open} contact={byLearner[open.learnerId]} reports={reports.data} onClose={() => setOpen(null)} />}
+      {open && <ReportViewer {...open} contact={byLearner[open.learnerId]} parents={parents[open.learnerId] || 0} reports={reports.data} onClose={() => setOpen(null)} />}
       {exam && <ExamModal {...exam} onClose={() => setExam(null)} />}
     </Page>
   );
@@ -149,7 +156,7 @@ function AskButton({ learner }) {
 }
 
 // One learner's reports, week by week. This week is refreshed when you open it, so it's as of now.
-function ReportViewer({ learnerId, reportId, contact, reports, onClose }) {
+function ReportViewer({ learnerId, reportId, contact, parents, reports, onClose }) {
   const toast = useToast();
   const lk = useLookups();
   const l = lk.learner(learnerId);
@@ -189,11 +196,11 @@ function ReportViewer({ learnerId, reportId, contact, reports, onClose }) {
         {weeks.map((w) => (
           <button key={w} className={'pill click' + (w === shown ? ' accent' : '')} onClick={() => pick(w)}>
             {w === monday ? 'This week so far' : weekLabel(w)}
-            {mine.find((x) => String(x.week_start).slice(0, 10) === w)?.status === 'sent' ? ' · sent' : ''}
+            {mine.find((x) => String(x.week_start).slice(0, 10) === w)?.status === 'sent' ? ' · approved' : ''}
           </button>
         ))}
       </div>
-      {loading || !current ? <Loading label="Working out the week…" /> : <ReportBody key={current.id + current.updated_at} report={current} contact={contact} thisWeek={shown === monday} onSent={onClose} />}
+      {loading || !current ? <Loading label="Working out the week…" /> : <ReportBody key={current.id + current.updated_at} report={current} contact={contact} parents={parents} thisWeek={shown === monday} onSent={onClose} />}
     </Modal>
   );
 }
@@ -238,7 +245,7 @@ function ExamModal({ l, s, onClose }) {
   );
 }
 
-function ReportBody({ report, contact, thisWeek, onSent }) {
+function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
   const onClose = onSent;
   const toast = useToast();
   const [r, setR] = useState(report);
@@ -247,39 +254,46 @@ function ReportBody({ report, contact, thisWeek, onSent }) {
   const usage = useQuery('prof-usage', api.profUsage).data;
   const sent = r.status === 'sent';
   const set = (p) => setR((x) => ({ ...x, ...p }));
-  const text = reportText(r);
   const d = r.data || {};
+  const text = reportText({ ...r, summary: null });
 
-  // Prof writing it: pick up the words when they arrive
+  // Prof only suggests a comment; the report itself is filled in by StudyBridge
   const fresh = useQuery('parent-reports', api.listParentReports, { poll: asked ? 3000 : 0 });
   const wrote = useRef(false);
   useEffect(() => {
     const now = (fresh.data || []).find((x) => x.id === r.id);
-    if (asked && now?.prof && now.summary && !wrote.current) {
+    if (asked && now?.prof && now.comment && !wrote.current) {
       wrote.current = true;
       setAsked(false);
-      set({ summary: now.summary, comment: now.comment, next_week: now.next_week, prof: true });
-      toast('Prof wrote the report. Check it over.');
+      set({ comment: now.comment });
+      toast('Prof suggested a comment. Change anything you like.');
     }
   }, [fresh.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function saveWords() {
-    await api.saveReport(r.id, { summary: r.summary || null, comment: r.comment || null, next_week: r.next_week || null });
+    await api.saveReport(r.id, { summary: null, comment: r.comment || null, next_week: r.next_week || null });
     invalidate('parent-reports');
   }
-  async function send(via) {
+  // Approving puts it in the parent's account (if they have one); WhatsApp, email or copy send it on as well
+  async function approve(via) {
     setBusy(true);
     try {
       await saveWords();
       if (via === 'whatsapp') window.open(waLink(contact?.parent_phone, text), '_blank');
       else if (via === 'email') window.open(mailLink(contact?.parent_email, `Weekly report: ${d.learner}`, text), '_blank');
-      else await copyText(text);
+      else if (via === 'copy') await copyText(text);
       await api.markReportSent(r.id, via);
       invalidate('parent-reports');
-      toast({ title: via === 'copy' ? 'Copied, and marked as sent' : 'Marked as sent', body: via === 'whatsapp' ? 'WhatsApp opened with the report written. Press send there.' : via === 'email' ? 'Your email app opened with the report written. Press send there.' : 'Paste it wherever you like.' });
+      const inApp = parents > 0 ? `It’s in ${parents === 1 ? 'the parent’s account' : 'the parents’ accounts'}. ` : '';
+      toast({
+        title: 'Approved',
+        body:
+          inApp +
+          (via === 'whatsapp' ? 'WhatsApp opened with the report written. Press send there.' : via === 'email' ? 'Your email app opened with the report written. Press send there.' : via === 'copy' ? 'Copied: paste it wherever you like.' : ''),
+      });
       onClose();
     } catch (e) {
-      toast({ title: 'Couldn’t send', body: e.message, tone: 'bad' });
+      toast({ title: 'Couldn’t approve it', body: e.message, tone: 'bad' });
       setBusy(false);
     }
   }
@@ -294,82 +308,80 @@ function ReportBody({ report, contact, thisWeek, onSent }) {
     }
   }
 
-  const canSend = !!contact?.enabled;
+  const byMessage = !!contact?.enabled;
+  const canSend = byMessage || parents > 0;
   return (
     <div className="stack">
       {!canSend && !sent && (
         <div className="note small">
-          {d.learner} hasn’t switched on sending this to a parent, so you can read it and write the words, but not send it yet. They switch it on in their Settings.
+          {d.learner} has no parent linked yet, so you can read it and write your comment, but not approve it. Invite a parent from {d.learner}’s Parents tab, or {d.learner} can switch on WhatsApp or email reports in their Settings.
         </div>
       )}
-      {thisWeek && !sent && <div className="tiny muted">This week so far, as of now. It updates every day; the finished report is ready to send after the week ends.</div>}
-      <div className="split side-r">
+      {thisWeek && !sent && <div className="tiny muted">This week so far, as of now. It fills itself in every day; the finished report is ready to approve after the week ends.</div>}
+      <div className="split side-r report-review">
+        <ReportCard report={r} draft={!sent} />
         <div className="stack">
-          {!sent && (
-            <div className="row wrap between">
+          {sent ? (
+            <>
+              <div className="small muted">Approved {ago(r.sent_at)}.</div>
+              <div>
+                <button className="btn" onClick={printReport}>
+                  <Icon name="download" size={16} /> Print or save as PDF
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
               <div className="small muted">
-                {canSend ? (
-                  <>
-                    To {contact?.parent_name || 'their parent'}
-                    {contact?.parent_phone ? ` · WhatsApp ${contact.parent_phone}` : ''}
-                    {contact?.parent_email ? ` · ${contact.parent_email}` : ''}
-                  </>
-                ) : (
-                  'Not being sent to a parent'
+                StudyBridge filled in everything from {d.learner || 'the learner'}’s week. The only words you write are your comment and, if you like, next week’s plan.
+              </div>
+              <Field label="Your comment to the parent (optional)">
+                <textarea className="textarea" value={r.comment || ''} onChange={(e) => set({ comment: e.target.value })} placeholder="What went well, and what to work on." />
+              </Field>
+              {usage?.ready && (
+                <div>
+                  <button className="btn sm claude" disabled={asked} onClick={askProf}>
+                    <Icon name="cap" size={14} /> {asked ? 'Prof is thinking…' : 'Prof, suggest a comment'}
+                  </button>
+                </div>
+              )}
+              <Field label="Next week (optional)" hint="Leave it empty and the report lists what’s due next week.">
+                <textarea className="textarea" style={{ minHeight: 70 }} value={r.next_week || ''} onChange={(e) => set({ next_week: e.target.value })} placeholder="What’s coming and what to practise at home." />
+              </Field>
+              <div className="small muted">
+                {[parents > 0 && `${parents} parent account${parents === 1 ? '' : 's'}`, byMessage && contact.parent_phone && `WhatsApp ${contact.parent_phone}`, byMessage && contact.parent_email && contact.parent_email]
+                  .filter(Boolean)
+                  .join(' · ') || 'No parent yet'}
+              </div>
+              <div className="row wrap">
+                <button className="btn" onClick={async () => (await saveWords(), toast('Saved'))}>
+                  Save
+                </button>
+                {parents > 0 && (
+                  <button className="btn primary" disabled={busy} onClick={() => approve('app')}>
+                    <Icon name="check" size={18} /> Approve
+                  </button>
+                )}
+                {byMessage && contact?.parent_phone && (
+                  <button className={'btn' + (parents > 0 ? '' : ' primary')} disabled={busy} onClick={() => approve('whatsapp')}>
+                    <Icon name="send" size={18} /> {parents > 0 ? 'Approve + WhatsApp' : 'Approve and send on WhatsApp'}
+                  </button>
+                )}
+                {byMessage && contact?.parent_email && (
+                  <button className="btn" disabled={busy} onClick={() => approve('email')}>
+                    {parents > 0 ? 'Approve + email' : 'Approve and email'}
+                  </button>
+                )}
+                {byMessage && (
+                  <button className="btn ghost" disabled={busy} onClick={() => approve('copy')}>
+                    <Icon name="copy" size={16} /> Approve + copy
+                  </button>
                 )}
               </div>
-              {usage?.ready && (
-                <button className="btn sm claude" disabled={asked} onClick={askProf}>
-                  <Icon name="cap" size={16} /> {asked ? 'Prof is writing…' : r.summary ? 'Ask Prof to rewrite' : 'Ask Prof to write it'}
-                </button>
-              )}
-            </div>
-          )}
-          <Field label="One-line summary">
-            <input className="input" disabled={sent} value={r.summary || ''} onChange={(e) => set({ summary: e.target.value })} placeholder={`e.g. A strong week: all work in on time and algebra is improving.`} />
-          </Field>
-          <Field label="Your comment to the parent">
-            <textarea className="textarea" disabled={sent} value={r.comment || ''} onChange={(e) => set({ comment: e.target.value })} placeholder="What went well, what to work on." />
-          </Field>
-          <Field label="Next week">
-            <textarea className="textarea" style={{ minHeight: 70 }} disabled={sent} value={r.next_week || ''} onChange={(e) => set({ next_week: e.target.value })} placeholder="What’s coming and what to practise at home." />
-          </Field>
-          <div className="small muted">
-            From the week: {d.lessons || 0} lesson{d.lessons === 1 ? '' : 's'} · work {(d.work || []).length ? workLine(d.work) : 'none due'}
-            {d.avg_pct != null ? ` · ${d.avg_pct}% average` : ''}
-          </div>
-        </div>
-        <div className="stack sm">
-          <div className="tiny muted strong upper">{canSend ? 'What they’ll receive' : 'The report'}</div>
-          <pre className="report-preview">{text}</pre>
-        </div>
-      </div>
-      {sent ? (
-        <div className="small muted">Sent {ago(r.sent_at)}.</div>
-      ) : (
-        <div className="row wrap end">
-          <button className="btn" onClick={async () => (await saveWords(), toast('Saved'))}>
-            Save
-          </button>
-          {canSend && (
-            <>
-              <button className="btn" disabled={busy} onClick={() => send('copy')}>
-                <Icon name="copy" size={18} /> Copy
-              </button>
-              {contact?.parent_email && (
-                <button className="btn" disabled={busy} onClick={() => send('email')}>
-                  Email
-                </button>
-              )}
-              {contact?.parent_phone && (
-                <button className="btn primary" disabled={busy} onClick={() => send('whatsapp')}>
-                  <Icon name="send" size={18} /> Send on WhatsApp
-                </button>
-              )}
             </>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -378,7 +390,8 @@ function ReportBody({ report, contact, thisWeek, onSent }) {
 export function useWeeklyReports() {
   const settings = useQuery('learner-reports', api.listLearnerReports);
   const reports = useQuery('parent-reports', api.listParentReports, { poll: 15 * 60000 });
+  const parents = useQuery('parent-counts', api.myParentCounts).data || {};
   const monday = thisMonday();
-  const enabled = new Set((settings.data || []).filter((x) => x.enabled).map((x) => x.learner_id));
+  const enabled = new Set([...(settings.data || []).filter((x) => x.enabled).map((x) => x.learner_id), ...Object.keys(parents).filter((k) => parents[k] > 0)]);
   return (reports.data || []).filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && enabled.has(r.learner_id)).length;
 }

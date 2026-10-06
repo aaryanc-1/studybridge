@@ -115,7 +115,7 @@ insert into public.platform_secrets (id) values (1) on conflict do nothing;
 -- The StudyBridge admin is its own account (role 'admin'), never a tutor account.
 do $$ begin
   alter table public.profiles drop constraint if exists profiles_role_check;
-  alter table public.profiles add constraint profiles_role_check check (role in ('tutor', 'learner', 'admin'));
+  alter table public.profiles add constraint profiles_role_check check (role in ('tutor', 'learner', 'admin', 'parent'));
 end $$;
 
 create or replace function public.is_platform_admin() returns boolean
@@ -935,6 +935,9 @@ begin
   if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
   delete from public.learner_subjects where learner_id = p_learner;
   delete from public.learner_reports where learner_id = p_learner; -- the parent's contact goes with the learner
+  if to_regclass('public.parent_links') is not null then
+    execute 'delete from public.parent_links where learner_id = $1' using p_learner; -- and parents lose access
+  end if;
   update public.profiles set tutor_id = null, role = null, programme_id = null where id = p_learner;
 end $$;
 
@@ -2086,7 +2089,8 @@ declare
   r public.parent_reports;
 begin
   for l in select p.id as learner_id, p.tutor_id, p.display_name, t.timezone,
-                  coalesce(ps.auto_reports, false) as auto, coalesce(lr.enabled, false) as enabled
+                  coalesce(ps.auto_reports, false) as auto,
+                  coalesce(lr.enabled, false) or exists (select 1 from public.parent_links pl where pl.learner_id = p.id and pl.tutor_id = p.tutor_id) as enabled
              from public.profiles p
              join public.profiles t on t.id = p.tutor_id and t.role = 'tutor' and t.status = 'active'
              left join public.prof_settings ps on ps.tutor_id = p.tutor_id
@@ -4182,6 +4186,229 @@ begin
   return jsonb_build_object('id', v_id);
 end $$;
 
+-- =====================================================================
+-- 1.6 part 3: parent accounts (read-only). A parent joins with a code the tutor makes for one learner.
+-- Parents never get a tutor (tutor_id stays empty), so none of the tutor's or learners' tables are open to
+-- them; everything they see comes through parent_children() and parent_view(), which hand out only: weekly
+-- reports the tutor approved, upcoming lessons and due dates, marks that were given back, topic strengths,
+-- mock grades that were given back, and the exam countdown. Never messages, working, photos, the exam
+-- camera or anything from Prof. The learner sees which parents are linked and can remove them.
+-- =====================================================================
+create table if not exists public.parent_links (
+  id uuid primary key default gen_random_uuid(),
+  parent_id uuid not null references public.profiles (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (parent_id, learner_id)
+);
+create index if not exists idx_parent_links_learner on public.parent_links (learner_id);
+alter table public.parent_links enable row level security;
+revoke all on public.parent_links from public, anon, authenticated;
+
+create table if not exists public.parent_invites (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  -- 'P' + 10 hex: can't be mistaken for a learner's invite code
+  code text not null unique default ('P' || upper(encode(extensions.gen_random_bytes(5), 'hex'))),
+  name text not null default '',
+  revoked boolean not null default false,
+  accepted_by uuid references public.profiles (id) on delete set null,
+  accepted_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table public.parent_invites enable row level security;
+revoke all on public.parent_invites from public, anon, authenticated;
+
+-- The tutor makes a parent code for one of their learners
+create or replace function public.create_parent_invite(p_learner uuid, p_name text default null)
+returns public.parent_invites language plpgsql security definer set search_path = public as $$
+declare v public.parent_invites;
+begin
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  if not public._tutor_active() then raise exception 'Your account needs to be approved first.'; end if;
+  if (select count(*) from public.parent_invites where learner_id = p_learner and accepted_by is null and not revoked) >= 5 then
+    raise exception 'There are already 5 unused parent codes for this learner. Cancel one first.';
+  end if;
+  insert into public.parent_invites (tutor_id, learner_id, name) values (auth.uid(), p_learner, left(trim(coalesce(p_name, '')), 80))
+  returning * into v;
+  return v;
+end $$;
+
+create or replace function public.revoke_parent_invite(p_invite uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.parent_invites set revoked = true where id = p_invite and tutor_id = auth.uid() and accepted_by is null;
+  if not found then raise exception 'Not found.'; end if;
+end $$;
+
+-- A parent joins with the code (a new account, or a parent account adding another child)
+create or replace function public.accept_parent_invite(p_code text, p_name text default null, p_timezone text default 'UTC')
+returns public.profiles language plpgsql security definer set search_path = public as $$
+declare
+  inv public.parent_invites;
+  v public.profiles;
+  l public.profiles;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select * into inv from public.parent_invites where code = upper(trim(p_code)) and not revoked for update;
+  if inv.id is null then raise exception 'That parent code is not valid.'; end if;
+  if inv.accepted_by is not null and inv.accepted_by <> auth.uid() then raise exception 'That parent code has already been used.'; end if;
+  select * into v from public.profiles where id = auth.uid();
+  if v.role is not null and v.role <> 'parent' then raise exception 'This account is already a % account. Use a different email for the parent account.', v.role; end if;
+  select * into l from public.profiles where id = inv.learner_id and role = 'learner' and tutor_id = inv.tutor_id;
+  if l.id is null or not public._tutor_active(inv.tutor_id) then raise exception 'This code can’t be used right now. Ask the tutor.'; end if;
+  update public.profiles
+     set role = 'parent', tutor_id = null, programme_id = null,
+         display_name = coalesce(nullif(trim(p_name), ''), nullif(display_name, ''), nullif(inv.name, ''), 'Parent'),
+         timezone = coalesce(p_timezone, timezone)
+   where id = auth.uid() returning * into v;
+  insert into public.parent_links (parent_id, learner_id, tutor_id) values (auth.uid(), inv.learner_id, inv.tutor_id)
+  on conflict (parent_id, learner_id) do update set tutor_id = excluded.tutor_id;
+  update public.parent_invites set accepted_by = auth.uid(), accepted_at = now() where id = inv.id;
+  perform public.notify_user(inv.tutor_id, 'parent_joined', v.display_name || ' can now follow ' || l.display_name || '’s progress',
+    'They joined as a parent. They see approved reports, lessons, due dates and marks you’ve given back.', jsonb_build_object('learner_id', l.id));
+  perform public.notify_user(l.id, 'parent_joined', v.display_name || ' can now see your progress',
+    'They see your weekly reports, lessons, due dates and marks once they’re given back. Never your messages or working. You can remove them in Settings.', '{}');
+  return v;
+end $$;
+
+-- Who can see a learner's progress: for the learner themselves, or their tutor (with codes not used yet)
+create or replace function public.learner_parents(p_learner uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  v_tutor boolean := public.is_my_learner(v_l);
+begin
+  if not v_tutor and not (v_l = auth.uid() and public.my_role() = 'learner') then raise exception 'Not your learner.'; end if;
+  return jsonb_build_object(
+    'parents', coalesce((select jsonb_agg(jsonb_build_object('id', pl.id, 'name', p.display_name, 'since', pl.created_at,
+                                                             'email', case when v_tutor then p.email end) order by pl.created_at)
+                           from public.parent_links pl join public.profiles p on p.id = pl.parent_id
+                          where pl.learner_id = v_l and pl.tutor_id = (select tutor_id from public.profiles where id = v_l)), '[]'),
+    'invites', case when v_tutor then coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'code', i.code, 'name', i.name, 'created_at', i.created_at) order by i.created_at)
+                                                  from public.parent_invites i where i.learner_id = v_l and i.tutor_id = auth.uid()
+                                                   and i.accepted_by is null and not i.revoked), '[]') end);
+end $$;
+
+-- The learner or the tutor takes a parent off
+create or replace function public.remove_parent(p_link uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare pl public.parent_links;
+begin
+  delete from public.parent_links where id = p_link and (learner_id = auth.uid() or tutor_id = auth.uid()) returning * into pl;
+  if pl.id is null then raise exception 'Not found.'; end if;
+  perform public.notify_user(pl.parent_id, 'parent_removed', 'You no longer see ' || (select display_name from public.profiles where id = pl.learner_id) || '’s progress',
+    'Ask their tutor for a new parent code if this is a mistake.', '{}');
+end $$;
+
+-- A parent's links that still count (the learner is still with that tutor)
+create or replace function public._parent_link(p_learner uuid) returns public.parent_links
+language sql stable security definer set search_path = public as $$
+  select pl.* from public.parent_links pl join public.profiles l on l.id = pl.learner_id
+   where pl.parent_id = auth.uid() and pl.learner_id = p_learner and l.role = 'learner' and l.tutor_id = pl.tutor_id
+     and public.my_role() = 'parent'
+$$;
+
+-- The parent's children, with a line each
+create or replace function public.parent_children() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id, 'name', l.display_name, 'tutor', t.display_name, 'timezone', l.timezone,
+      'next_lesson', (select min(s.starts_at) from public.sessions s where s.tutor_id = pl.tutor_id and l.id = any (s.learner_ids)
+                       and not s.cancelled and s.starts_at > now()),
+      'reports', (select count(*) from public.parent_reports r where r.learner_id = l.id and r.tutor_id = pl.tutor_id and r.status = 'sent'),
+      'latest_report', (select max(r.week_start) from public.parent_reports r where r.learner_id = l.id and r.tutor_id = pl.tutor_id and r.status = 'sent'))
+      order by l.display_name), '[]')
+    from public.parent_links pl
+    join public.profiles l on l.id = pl.learner_id and l.role = 'learner' and l.tutor_id = pl.tutor_id
+    join public.profiles t on t.id = pl.tutor_id
+   where pl.parent_id = auth.uid() and public.my_role() = 'parent'
+$$;
+
+-- Everything a parent sees about one child. Read-only, and only what the learner already sees as given back.
+create or replace function public.parent_view(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  pl public.parent_links;
+  l public.profiles;
+  r public.learner_reports;
+begin
+  pl := public._parent_link(p_learner);
+  if pl.id is null then raise exception 'You can’t see this learner’s progress.'; end if;
+  select * into l from public.profiles where id = p_learner;
+  select * into r from public.learner_reports where learner_id = p_learner and tutor_id = pl.tutor_id;
+  return jsonb_build_object(
+    'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'timezone', l.timezone),
+    'tutor', (select display_name from public.profiles where id = pl.tutor_id),
+    'exam', case when r.exam_date is not null and r.exam_date >= current_date
+                 then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - current_date) end,
+    'lessons', coalesce((select jsonb_agg(jsonb_build_object('title', s.title, 'starts_at', s.starts_at, 'duration_min', s.duration_min, 'weekly', s.series_id is not null) order by s.starts_at)
+                           from (select * from public.sessions s where s.tutor_id = pl.tutor_id and p_learner = any (s.learner_ids) and not s.cancelled
+                                   and s.starts_at > now() - interval '1 hour' and s.starts_at < now() + interval '21 days' order by s.starts_at limit 12) s), '[]'),
+    'due', coalesce((select jsonb_agg(x order by x ->> 'due_at') from (
+        select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at,
+                 'handed_in', exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner and t.submitted_at is not null)) as x
+          from public.assignments a
+         where a.tutor_id = pl.tutor_id and not a.practice and a.source <> 'self' and public._assignment_visible_to(a, p_learner)
+           and a.due_at > now() - interval '7 days' and a.due_at < now() + interval '21 days'
+         order by a.due_at limit 20) z), '[]'),
+    'marks', coalesce((select jsonb_agg(x order by x ->> 'at' desc) from (
+        select jsonb_build_object('title', a.title, 'kind', a.kind, 'score', t.score, 'max', t.max_score,
+                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > a.due_at) as x
+          from public.attempts t join public.assignments a on a.id = t.assignment_id
+         where t.learner_id = p_learner and t.tutor_id = pl.tutor_id and not a.practice and public._is_released(t) and t.score is not null
+         order by coalesce(t.released_at, t.submitted_at) desc limit 15) z), '[]'),
+    'topics', public._learner_topics(p_learner, true, pl.tutor_id),
+    'mocks', coalesce((select jsonb_agg(z.r order by z.r ->> 'last_at') from (
+        select jsonb_build_object('id', m.id, 'title', m.title) || (public._mock_result(m.id, p_learner, true) - 'papers') as r
+          from public.mocks m where m.tutor_id = pl.tutor_id) z
+       where (z.r ->> 'released')::boolean and z.r ->> 'pct' is not null), '[]'),
+    'reports', coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'week_start', x.week_start, 'data', x.data, 'comment', x.comment,
+                                                             'next_week', x.next_week, 'sent_at', x.sent_at) order by x.week_start desc)
+                           from (select * from public.parent_reports x where x.learner_id = p_learner and x.tutor_id = pl.tutor_id and x.status = 'sent'
+                                  order by x.week_start desc limit 26) x), '[]'));
+end $$;
+
+-- A report the tutor approved is in the parent's account straight away: tell them
+create or replace function public.on_report_sent() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare p uuid;
+begin
+  if new.status = 'sent' and old.status is distinct from 'sent' then
+    for p in select parent_id from public.parent_links where learner_id = new.learner_id and tutor_id = new.tutor_id loop
+      perform public.notify_user(p, 'report', 'Weekly report: ' || coalesce(new.data ->> 'learner', ''),
+        'From ' || coalesce(new.data ->> 'tutor', 'the tutor') || '. Open StudyBridge to read it.', jsonb_build_object('learner_id', new.learner_id, 'report_id', new.id));
+    end loop;
+  end if;
+  return new;
+end $$;
+drop trigger if exists parent_reports_sent on public.parent_reports;
+create trigger parent_reports_sent after update of status on public.parent_reports for each row execute function public.on_report_sent();
+
+-- How many parent accounts each of my learners has (for the Reports page)
+create or replace function public.my_parent_counts() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_object_agg(learner_id, n), '{}') from (
+    select pl.learner_id, count(*) n from public.parent_links pl join public.profiles l on l.id = pl.learner_id and l.tutor_id = pl.tutor_id
+     where pl.tutor_id = auth.uid() group by pl.learner_id) z
+$$;
+
+-- Does one of my learners have a parent account linked? (for the rule below; the links table itself stays closed)
+create or replace function public._has_parent(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.parent_links where learner_id = p_learner and tutor_id = auth.uid())
+$$;
+-- A tutor can approve a report when the learner switched on sending, or a parent is linked
+drop policy if exists parent_reports_tutor on public.parent_reports;
+create policy parent_reports_tutor on public.parent_reports for all
+  using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and public.is_my_learner(learner_id)
+              and (status = 'draft'
+                   or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.tutor_id = auth.uid() and r.enabled)
+                   or public._has_parent(learner_id)));
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -4217,6 +4444,7 @@ revoke execute on function public._in_audience(public.assignments, uuid) from pu
 revoke execute on function public._mock_boundary(uuid) from public, anon, authenticated;
 revoke execute on function public._grade_for(jsonb, numeric, numeric, numeric) from public, anon, authenticated;
 revoke execute on function public._mock_result(uuid, uuid, boolean) from public, anon, authenticated;
+revoke execute on function public._parent_link(uuid) from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

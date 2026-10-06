@@ -74,10 +74,11 @@ export default function FinishSetup() {
                 e.preventDefault();
                 const inv = decodeInvite(text);
                 if (!inv) return setErr('Paste the whole invite your tutor sent.');
-                act(() => api.acceptInvite(inv.code, name));
+                act(() => api.joinWithCode(inv.code, name));
               }}
             >
-              <h2>I’m a learner</h2>
+              <h2>I have an invite</h2>
+              <p className="muted small">From your tutor (for a learner), or from your child’s tutor (for a parent).</p>
               <Field label="Invite">
                 <textarea className="textarea code" value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-…" />
               </Field>

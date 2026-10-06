@@ -182,6 +182,145 @@ function InviteForm({ onClose, onCreated }) {
   );
 }
 
+// Parent accounts for one learner: read-only access to approved reports, lessons, due dates, marks given back
+function ParentsPanel({ learner }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery(`parents:${learner.id}`, () => api.learnerParents(learner.id));
+  const [name, setName] = useState('');
+  const [shown, setShown] = useState(null);
+  const first = learner.display_name.split(' ')[0];
+  const d = q.data;
+  const reload = () => invalidate(`parents:${learner.id}`, 'parent-counts');
+  return (
+    <div className="split even">
+      <div className="card">
+        <h2>Parents who can see {first}’s progress</h2>
+        <div className="small muted">
+          Read-only. They see weekly reports you approve, upcoming lessons and due dates, marks once you give them back, topic strengths, mock grades and the exam countdown. Never messages, working, photos, the exam camera or anything from Prof. {first} sees who’s linked and can remove them.
+        </div>
+        {!d ? (
+          q.error ? <div className="error">{q.error.message}</div> : <Empty>Loading…</Empty>
+        ) : d.parents.length === 0 ? (
+          <div className="note small">No parents linked yet.</div>
+        ) : (
+          <div className="list">
+            {d.parents.map((p) => (
+              <div key={p.id} className="item">
+                <Icon name="user" style={{ color: 'var(--accent)' }} />
+                <span className="grow">
+                  <span className="name">{p.name}</span>
+                  <span className="meta">
+                    {p.email} · since {when(p.since)}
+                  </span>
+                </span>
+                <button
+                  className="btn sm ghost"
+                  onClick={async () => {
+                    if (!(await confirm({ title: `Remove ${p.name}?`, body: `They stop seeing ${first}’s progress straight away.`, ok: 'Remove', danger: true }))) return;
+                    try {
+                      await api.removeParent(p.id);
+                      reload();
+                    } catch (e) {
+                      toast({ title: 'Couldn’t remove them', body: e.message, tone: 'bad' });
+                    }
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <h2>Invite a parent</h2>
+        <form
+          className="row wrap"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            try {
+              const inv = await api.createParentInvite(learner.id, name.trim());
+              setName('');
+              reload();
+              setShown(inv);
+            } catch (x) {
+              toast({ title: 'Couldn’t make the invite', body: x.message, tone: 'bad' });
+            }
+          }}
+        >
+          <input className="input grow" value={name} onChange={(e) => setName(e.target.value)} placeholder="Their name, e.g. Mum" aria-label="Parent’s name" />
+          <button className="btn primary">
+            <Icon name="plus" size={16} /> Make an invite
+          </button>
+        </form>
+        <div className="tiny muted">Each invite works once, for one parent. They make their own account with it.</div>
+        {d?.invites?.length > 0 && (
+          <div className="list">
+            {d.invites.map((i) => (
+              <div key={i.id} className="item">
+                <Icon name="send" style={{ color: 'var(--muted)' }} />
+                <span className="grow">
+                  <span className="name">{i.name || 'Parent'}</span>
+                  <span className="meta">Not used yet · made {ago(i.created_at)}</span>
+                </span>
+                <button className="btn sm" onClick={() => setShown(i)}>
+                  Show
+                </button>
+                <button
+                  className="btn sm ghost"
+                  onClick={async () => {
+                    await api.revokeParentInvite(i.id);
+                    reload();
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {shown && <ParentInviteShow invite={shown} learner={learner} onClose={() => setShown(null)} />}
+    </div>
+  );
+}
+
+function ParentInviteShow({ invite, learner, onClose }) {
+  const app = useApp();
+  const toast = useToast();
+  const token = encodeInvite({ url: app.server.url, key: app.server.key, code: invite.code });
+  const first = learner.display_name.split(' ')[0];
+  const message = `Hi ${invite.name || 'there'}! You can now follow ${first}’s progress on StudyBridge: weekly reports, lessons, due dates and marks.
+
+1. Open StudyBridge (on a phone: https://aaryanc-1.github.io/studybridge-releases/app/ , or the app if you have it).
+2. Choose “I’m a parent” and paste this invite:
+
+${token}
+
+Best wishes,
+${app.me.display_name}`;
+  return (
+    <Modal
+      title={`Parent invite for ${first}`}
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={() => (copyText(token), toast('Invite copied'))}>
+            <Icon name="copy" size={16} /> Copy invite only
+          </button>
+          <button className="btn primary" onClick={() => (copyText(message), toast({ title: 'Message copied', body: 'Paste it into WhatsApp, email or a text.' }))}>
+            <Icon name="copy" size={16} /> Copy message
+          </button>
+        </>
+      }
+    >
+      <div className="small muted">Send this to {invite.name || 'the parent'}. It works once.</div>
+      <pre className="report-preview">{message}</pre>
+    </Modal>
+  );
+}
+
 function InviteShow({ invite, onClose }) {
   const app = useApp();
   const toast = useToast();
@@ -272,9 +411,12 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'progress', label: 'Progress & summaries' },
           { value: 'work', label: `Work (${attempts.length})` },
           { value: 'study', label: 'Study' },
+          { value: 'parents', label: 'Parents' },
         ]}
       />
-      {tab === 'study' ? (
+      {tab === 'parents' ? (
+        <ParentsPanel learner={l} />
+      ) : tab === 'study' ? (
         <StudyForTutor learnerId={id} />
       ) : tab === 'work' ? (
         <div className="card pad0">
