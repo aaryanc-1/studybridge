@@ -524,7 +524,8 @@ try {
   await C.getByText('Parents who can see your progress').waitFor();
   await C.locator('#set-parents').getByText('Dad').waitFor();
   await A.reload();
-  await A.getByText(/1 parent account/).first().waitFor();
+  await nav(A, 'Reports').click();
+  await A.locator('.report-row', { hasText: 'Anaya' }).getByText(/1 parent account/).waitFor();
   await P.close();
   await C.close();
 
