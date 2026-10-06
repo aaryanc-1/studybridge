@@ -119,6 +119,8 @@ function useAnnouncer(target) {
       showSystemNotification(n, open);
     }
     if (fresh.some((n) => ['submitted', 'note', 'marked', 'message'].includes(n.kind))) invalidate('attempts', 'comments', 'myattempts');
+    // a parent joined or was removed; a report was approved (parent accounts)
+    if (fresh.some((n) => ['parent_joined', 'parent_removed', 'report'].includes(n.kind))) invalidate('my-parents', 'parents', 'parent-counts', 'parent-children', 'parent-view');
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
 }

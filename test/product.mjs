@@ -520,6 +520,7 @@ try {
   assert.equal(await nav(P, 'Prof').count(), 0);
   await shot(P, 'parent-home', true);
   await C.goto(web.url + '#/settings');
+  await C.reload();
   await C.getByText('Parents who can see your progress').waitFor();
   await C.locator('#set-parents').getByText('Dad').waitFor();
   await A.reload();
