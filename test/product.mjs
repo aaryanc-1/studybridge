@@ -233,6 +233,9 @@ try {
   await A.getByText('Which exam is each subject for?').waitFor();
   await shot(A, 'pastpapers-set-exam');
   await A.getByLabel('Exam for Mathematics').selectOption('cie:0607');
+  // choosing in the list doesn't save on its own (a stray key press used to); Save does
+  await A.getByText('Which exam is each subject for?').waitFor();
+  await A.locator('.card.tint').getByRole('button', { name: 'Save' }).click();
   await A.locator('.pill.click', { hasText: '(Anaya)' }).waitFor();
   await A.getByText('Which exam is each subject for?').waitFor({ state: 'detached' });
   await nav(A, 'Subjects').click();

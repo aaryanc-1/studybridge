@@ -200,6 +200,7 @@ function SetExams() {
   const lk = useLookups();
   const toast = useToast();
   const [busy, setBusy] = useState(null);
+  const [picked, setPicked] = useState({}); // chosen in the list, saved only with the button
   const todo = lk.subjects.filter((s) => !s.exam && lk.learnersOfSubject(s.id).length);
   if (!todo.length) return null;
   const guess = (s) => {
@@ -242,8 +243,13 @@ function SetExams() {
             </button>
           )}
           <div style={{ minWidth: 260 }}>
-            <ExamSelect value="" onChange={(v) => set(s, v)} label={`Exam for ${s.name}`} none={guess(s) ? 'Or another exam…' : 'Choose the exam…'} />
+            <ExamSelect value={picked[s.id] || ''} onChange={(v) => setPicked({ ...picked, [s.id]: v })} label={`Exam for ${s.name}`} none={guess(s) ? 'Or another exam…' : 'Choose the exam…'} />
           </div>
+          {picked[s.id] && (
+            <button className="btn sm primary" disabled={busy === s.id} onClick={() => set(s, picked[s.id])}>
+              Save
+            </button>
+          )}
           {busy === s.id && <div className="spinner sm" />}
         </div>
       ))}

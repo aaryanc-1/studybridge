@@ -8,6 +8,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
 import { useLookups } from '../shared/lookups.jsx';
+import { ExamSelect } from './Structure.jsx';
 
 const IB_CURRICULUM = 'https://www.ibo.org/programmes/diploma-programme/curriculum/';
 
@@ -71,13 +72,58 @@ export default function Syllabus() {
             <Icon name="globe" size={16} /> {board === 'cie' ? 'Cambridge’s page (syllabus PDF)' : 'IB subject pages'}
           </a>
         )}
-        {subject && !subject.exam && (
-          <span className="small muted">
-            Tip: set this subject’s exam in <a href="#/structure">Subjects</a>.
-          </span>
-        )}
       </div>
-      {subject && <SubjectSyllabus key={subject.id} subject={subject} />}
+      {subject && <SubjectExam key={subject.id} subject={subject} />}
+      {subject && <SubjectSyllabus key={`${subject.id}:${subject.exam || ''}`} subject={subject} />}
+    </div>
+  );
+}
+
+// Which exam the subject is for, changeable right here (it decides the past papers, Prof's syllabus and mock grades)
+function SubjectExam({ subject }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(subject.exam || '');
+  const [busy, setBusy] = useState(false);
+  if (!editing)
+    return (
+      <div className="row wrap small">
+        <span className="muted">Exam:</span>
+        <span className="strong">{subject.exam ? examLabel(subject.exam) || subject.exam : 'not set'}</span>
+        <button className="btn sm ghost" onClick={() => (setValue(subject.exam || ''), setEditing(true))}>
+          <Icon name="pen" size={14} /> {subject.exam ? 'Change' : 'Set the exam'}
+        </button>
+      </div>
+    );
+  return (
+    <div className="row wrap small">
+      <span className="muted">Exam for {subject.name}:</span>
+      <div style={{ minWidth: 280 }}>
+        <ExamSelect value={value} onChange={setValue} label={`Exam for ${subject.name}`} />
+      </div>
+      <button
+        className="btn sm primary"
+        disabled={busy || value === (subject.exam || '')}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await api.save('subjects', { id: subject.id, exam: value || null });
+            lk.reload();
+            toast(value ? `${subject.name}: ${examLabel(value)}` : `${subject.name}: no exam`);
+            setEditing(false);
+          } catch (e) {
+            toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        Save
+      </button>
+      <button className="btn sm" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
     </div>
   );
 }
