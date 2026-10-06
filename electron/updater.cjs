@@ -16,11 +16,14 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
-// Which desktop shell this is: a fingerprint of the shell's own code. A bundle
-// only runs on the exact shell it was built with.
+// Which desktop shell this is: a fingerprint of the shell's own code and its icon. A bundle only runs on
+// the exact shell it was built with, and a new logo reinstalls the shell (the icon lives in the installed app).
 function shellId() {
   const h = crypto.createHash('sha256');
   for (const f of ['main.cjs', 'preload.cjs', 'updater.cjs']) h.update(fs.readFileSync(path.join(__dirname, f), 'utf8').replace(/\r\n/g, '\n'));
+  try {
+    h.update(fs.readFileSync(app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(__dirname, '..', 'build', 'icon.png')));
+  } catch {}
   return h.digest('hex').slice(0, 16);
 }
 

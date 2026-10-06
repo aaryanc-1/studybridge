@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as api from '../lib/api.js';
+import { dataSaver } from '../lib/device.js';
 import Icon from './Icon.jsx';
 
 // Object URL for a stored file (cached on this device for offline use)
@@ -25,7 +26,21 @@ export function useBlob(bucket, path) {
   return state;
 }
 
-export function StoredImage({ bucket = 'library', path, alt = '', className, style, onClick }) {
+export function StoredImage(props) {
+  const { bucket = 'library', path, className, style } = props;
+  const [go, setGo] = useState(() => !dataSaver());
+  useEffect(() => {
+    if (!go && path) api.isSavedOffline(bucket, path).then((y) => y && setGo(true));
+  }, [go, bucket, path]);
+  if (!go)
+    return (
+      <button type="button" className={'tap-image ' + (className || '')} style={style} onClick={() => setGo(true)}>
+        <Icon name="image" size={18} /> Tap to load the picture
+      </button>
+    );
+  return <LoadedImage {...props} />;
+}
+function LoadedImage({ bucket = 'library', path, alt = '', className, style, onClick }) {
   const { url, error } = useBlob(bucket, path);
   if (error) return <div className="note small">{error.message}</div>;
   if (!url) return <div className={className} style={{ ...style, minHeight: 60, background: 'var(--sunk)', borderRadius: 10 }} />;

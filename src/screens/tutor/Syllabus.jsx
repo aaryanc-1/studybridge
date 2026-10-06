@@ -1,7 +1,7 @@
 // Library → Syllabus: a subject's topics (with the syllabus's own numbers and subtopics),
 // set up however the tutor likes (Prof, StudyBridge's list, the official document, or typed),
 // and a coverage map: what each learner has been taught and how they're doing, per topic.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
@@ -9,6 +9,7 @@ import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { ExamSelect } from './Structure.jsx';
+import TeachingPlan from './Plan.jsx';
 
 const IB_CURRICULUM = 'https://www.ibo.org/programmes/diploma-programme/curriculum/';
 
@@ -169,6 +170,7 @@ function SubjectSyllabus({ subject }) {
       )}
       {proposal && <Proposal job={proposal} subject={subject} topics={topics} onDone={() => dismiss(proposal.id)} />}
       {!topics.length && !running && !proposal ? <SetUp subject={subject} /> : <TopicList subject={subject} topics={topics} />}
+      {topics.length > 0 && <TeachingPlan subject={subject} topics={topics} />}
       {topics.length > 0 && <Coverage subject={subject} />}
     </>
   );
@@ -227,6 +229,61 @@ function Proposal({ job, subject, topics, onDone }) {
   );
 }
 
+// The tutor's own syllabus PDF: Prof reads it and sets out every topic, in order, with its subtopics
+function FromPdf({ subject, label, ready, whyNot, onDone }) {
+  const toast = useToast();
+  const files = useQuery('files', api.listFiles).data || [];
+  const pdfs = files.filter((f) => !f.exam_board && ((f.mime || '').includes('pdf') || /\.pdf$/i.test(f.name)));
+  const [pick, setPick] = useState('');
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const input = useRef(null);
+  async function go() {
+    setBusy(true);
+    try {
+      const f = pdfs.find((x) => x.id === pick);
+      const blob = file || (f ? await api.getBlob('library', f.storage_path) : null);
+      if (!blob) throw new Error('Choose the syllabus PDF first.');
+      await api.profSyllabusFromPdf(subject.id, blob, file?.name || f?.name || 'syllabus.pdf', label);
+      invalidate('prof-jobs');
+      toast({ title: 'Prof is reading the syllabus', body: 'You’ll get a notification when the topics are ready to check.' });
+      onDone?.();
+    } catch (e) {
+      toast({ title: 'Couldn’t send it to Prof', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="setup-option setup-pdf">
+      <h3 className="row">
+        <Icon name="pdf" style={{ color: 'var(--claude)' }} /> Upload the syllabus PDF
+      </h3>
+      <div className="small muted">Prof reads the official syllabus document and sets out every topic in its order, with the syllabus numbers and subtopics. You check it before it’s used.</div>
+      <div className="row wrap">
+        <button type="button" className="btn" onClick={() => input.current?.click()}>
+          <Icon name="upload" size={16} /> {file ? file.name : 'Choose the PDF'}
+        </button>
+        <input ref={input} type="file" accept="application/pdf,.pdf" hidden onChange={(e) => (setFile(e.target.files?.[0] || null), setPick(''))} />
+        {pdfs.length > 0 && (
+          <select className="select" style={{ width: 'auto', maxWidth: 320 }} value={file ? '' : pick} onChange={(e) => (setPick(e.target.value), setFile(null))} aria-label="Or one from My files">
+            <option value="">Or one from My files…</option>
+            {pdfs.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <button className="btn claude" disabled={busy || (!file && !pick) || !ready} onClick={go}>
+          <Icon name="cap" size={16} /> {busy ? 'Reading…' : 'Prof, set it out'}
+        </button>
+      </div>
+      {!ready && whyNot && <div className="tiny muted">{whyNot}</div>}
+    </div>
+  );
+}
+
 function SetUp({ subject, topics = [], onDone }) {
   const toast = useToast();
   const lk = useLookups();
@@ -258,6 +315,7 @@ function SetUp({ subject, topics = [], onDone }) {
           ? 'The topics you already have stay, with their questions, flashcards and coverage. Matching topics get the syllabus numbers and subtopics, new ones are added, and everything is put in syllabus order. Anything that isn’t in the syllabus goes at the end.'
           : 'Topics are used everywhere: the question bank, practice, reports, flashcards and the coverage map below. Choose whichever way suits you; you can change everything later.'}
       </div>
+      <FromPdf subject={subject} label={label} ready={usage?.ready !== false} whyNot={usage?.why_not} onDone={onDone} />
       <div className="grid g2" style={{ gap: 14 }}>
         <div className="setup-option">
           <h3 className="row">

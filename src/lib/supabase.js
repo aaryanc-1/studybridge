@@ -39,7 +39,7 @@ export function friendly(err) {
   if (/User is banned|user_banned/i.test(m)) return 'This account is paused. Contact StudyBridge if you think this is a mistake.';
   if (/Invalid login credentials/i.test(m)) return 'That email and password don’t match. Check them and try again.';
   if (/already registered|already exists/i.test(m)) return 'There’s already an account with that email. Sign in instead.';
-  if (/Email not confirmed/i.test(m)) return 'This account still needs its email confirmed. Your tutor can turn off “Confirm email” in Supabase, or open the link in your inbox.';
+  if (/Email not confirmed/i.test(m)) return 'This account still needs its email confirmed: open the link we emailed you, then sign in again.';
   if (/Password should be at least/i.test(m)) return 'Use a password of at least 6 characters.';
   if (/row-level security|permission denied/i.test(m)) return 'You don’t have access to do that.';
   if (/JWT expired|invalid JWT/i.test(m)) return 'Your sign-in expired. Sign in again.';

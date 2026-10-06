@@ -35,8 +35,9 @@ export default function Attempt({ id }) {
   const [done, setDone] = useState(null);
   const [panel, setPanel] = useState(null); // file id
   const [noteFor, setNoteFor] = useState(null);
-  const [leaving, setLeaving] = useState(false);
   const [warning, setWarning] = useState('');
+  const [strike, setStrike] = useState(null); // { warningsLeft } after a try to leave a locked-down exam
+  const lastStrike = useRef(0);
   const [cam, setCam] = useState({ state: 'off' });
   const camRoom = useRef(null);
   const selfVideo = useRef(null);
@@ -64,19 +65,58 @@ export default function Attempt({ id }) {
 
   const locked = !!a?.lockdown && !!desktop && t?.status === 'in_progress' && !done;
 
-  // Lockdown: fill the screen until handed in; report attempts to leave
+  // Lockdown: fill the screen until handed in. Every try to leave is a strike: the first ones bring a warning,
+  // and after the tutor's number of warnings the server hands the exam in.
+  const handedInFor = useCallback(
+    async (why) => {
+      camRoom.current?.disconnect();
+      if (desktop) await desktop.lockdown.exit();
+      invalidate('myattempts', 'attempt');
+      setStrike(null);
+      setDone({ auto: true, why });
+    },
+    [], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   useEffect(() => {
     if (!locked) return;
     desktop.lockdown.enter(id);
-    const off = desktop.lockdown.onEvent(({ event }) => {
-      api.logLockdown(id, event);
-      setWarning(`${event}. Your tutor has been told. Stay in StudyBridge until you hand in.`);
+    const off = desktop.lockdown.onEvent(async ({ event }) => {
+      // one strike per few seconds (leaving the window can fire several events at once)
+      if (Date.now() - lastStrike.current < 4000) return api.logLockdown(id, event);
+      lastStrike.current = Date.now();
+      try {
+        const r = await api.lockdownStrike(id, event);
+        if (r.handed_in) return handedInFor('left');
+        setStrike({ warningsLeft: r.warnings_left ?? 0, event });
+      } catch {
+        // offline: the tutor is told when it sends; the warning still shows
+        api.logLockdown(id, event);
+        setStrike({ warningsLeft: 0, event });
+      }
     });
     return () => {
       off();
       desktop.lockdown.exit();
     };
-  }, [locked, id]);
+  }, [locked, id, handedInFor]);
+
+  // The tutor can end it, and the server hands it in when time runs out: notice either within seconds
+  useEffect(() => {
+    if (!t || t.status !== 'in_progress' || done || !aid) return;
+    const iv = setInterval(async () => {
+      try {
+        const mine = await api.myAttempts(aid);
+        const now = (mine || []).find((x) => x.id === id);
+        if (!now) {
+          if (desktop) await desktop.lockdown.exit();
+          setDone({ cancelled: true });
+        } else if (now.status !== 'in_progress') handedInFor(null);
+      } catch {
+        /* offline: keep going */
+      }
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [t?.status, done, aid, id, handedInFor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Camera (and screen) for the tutor to watch
   useEffect(() => {
@@ -221,12 +261,14 @@ export default function Attempt({ id }) {
       />
     );
   }
+  if (done?.cancelled)
+    return <CenterMessage title="Your tutor stopped this" body="Nothing was handed in. You can start it again when your tutor says so." action={<button className="btn primary" onClick={() => go('/work')}>Back to my work</button>} />;
   if (done)
     return (
       <CenterMessage
         icon="trophy"
-        medal
-        title={done.auto ? 'Time’s up. Handed in.' : 'Handed in. Well done!'}
+        medal={!done.why}
+        title={done.why === 'left' ? 'Handed in: you tried to leave the exam' : done.auto ? 'Handed in' : 'Handed in. Well done!'}
         body={done.queued ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.' : 'Your tutor has been told. You’ll get a notification when it’s marked.'}
         action={
           <button className="btn primary big" onClick={() => go(done.queued ? '/work' : `/results/${id}`)}>
@@ -248,7 +290,7 @@ export default function Attempt({ id }) {
       {locked && (
         <div className="banner lock">
           <Icon name="lock" size={18} />
-          <span className="grow">Locked until you hand in. Leaving this window is reported to your tutor.</span>
+          <span className="grow">Locked until you hand in. Trying to leave is reported to your tutor{a.leave_warnings > 0 ? `, and after ${a.leave_warnings} warning${a.leave_warnings === 1 ? '' : 's'} it hands your work in` : ' and hands your work in'}.</span>
         </div>
       )}
       {!online && (
@@ -366,13 +408,6 @@ export default function Attempt({ id }) {
                 Hand in
               </button>
             </div>
-            {locked && (
-              <div style={{ textAlign: 'center', paddingBottom: 30 }}>
-                <button className="linkbtn small danger" onClick={() => setLeaving(true)}>
-                  I need to leave without handing in
-                </button>
-              </div>
-            )}
           </div>
           {panel && (
             <div className="side-doc stack sm">
@@ -415,31 +450,23 @@ export default function Attempt({ id }) {
           <div>{unanswered ? `You haven’t answered ${unanswered} question${unanswered > 1 ? 's' : ''}. ` : ''}You can’t change your answers after handing in.</div>
         </Modal>
       )}
-      {leaving && (
-        <Modal
-          title="Leave without handing in?"
-          onClose={() => setLeaving(false)}
-          foot={
-            <>
-              <button className="btn primary" onClick={() => setLeaving(false)}>
-                Stay
-              </button>
-              <button
-                className="btn danger"
-                onClick={async () => {
-                  await api.logLockdown(id, 'Left the exam without handing in');
-                  await outbox.flush();
-                  if (desktop) await desktop.lockdown.exit();
-                  go(`/work/${a.id}`);
-                }}
-              >
-                Leave and tell my tutor
-              </button>
-            </>
-          }
-        >
-          <div>Only do this if something has gone wrong. Your answers so far are saved, your tutor is told straight away, and the timer keeps running.</div>
-        </Modal>
+      {strike && (
+        <div className="lock-warning" role="alertdialog" aria-labelledby="strike-title">
+          <div className="card" style={{ maxWidth: 520, textAlign: 'center', alignItems: 'center', padding: 32 }}>
+            <Icon name="alert" size={44} style={{ color: 'var(--red)' }} />
+            <h1 id="strike-title" style={{ fontFamily: 'var(--serif)', fontSize: 26 }}>
+              You can’t leave this {kindLabel[a.kind]?.toLowerCase() || 'exam'}
+            </h1>
+            <div>
+              {strike.warningsLeft > 0
+                ? `Your tutor has been told. After ${strike.warningsLeft} more warning${strike.warningsLeft === 1 ? '' : 's'}, trying to leave hands your work in.`
+                : 'Your tutor has been told. If you try to leave again, your work is handed in straight away.'}
+            </div>
+            <button className="btn primary big" onClick={() => setStrike(null)}>
+              Back to my work
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

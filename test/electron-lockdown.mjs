@@ -131,6 +131,11 @@ try {
   console.log('• Leaving and closing reported to the tutor');
   await win.screenshot({ path: join(SHOTS, 'desktop-locked-test.png') });
 
+  // the first try to leave brought a warning (one is allowed); dismiss it and carry on
+  await win.getByRole('button', { name: 'Back to my work' }).click();
+  const strikes = (await tutor.from('attempts').select('strikes').eq('assignment_id', a.id)).data[0].strikes;
+  assert.equal(strikes, 1, 'one warning so far: ' + strikes);
+  console.log('• First try to leave: a warning');
   await win.locator('label.opt').nth(1).click();
   await win.getByText('All saved').waitFor();
   await win.getByRole('button', { name: 'Hand in' }).first().click();

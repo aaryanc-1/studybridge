@@ -343,6 +343,21 @@ try {
   await A.getByRole('menuitem', { name: 'Taught' }).click();
   await geoRow.locator('.cov-cell.taught').waitFor();
   await shot(A, 'syllabus-coverage');
+  // a teaching plan from the syllabus, spread evenly by StudyBridge (no AI)
+  await A.getByRole('heading', { name: 'Teaching plan' }).waitFor();
+  await A.getByRole('button', { name: 'Spread the topics evenly' }).click();
+  await A.getByRole('button', { name: 'Use this plan' }).click();
+  await A.getByText('Teaching plan saved').waitFor();
+  assert.ok((await A.locator('.plan-item').count()) >= 5, 'weeks planned');
+  await A.locator('.plan-item.now').first().waitFor();
+  await shot(A, 'teaching-plan', true);
+  // dark theme for this device
+  await A.goto(web.url + '#/settings');
+  await A.getByRole('group', { name: 'Appearance' }).getByRole('button', { name: 'Dark' }).click();
+  assert.equal(await A.evaluate(() => document.documentElement.dataset.theme), 'dark');
+  await shot(A, 'settings-dark');
+  await A.getByRole('group', { name: 'Appearance' }).getByRole('button', { name: 'Light' }).click();
+  await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
   await A.getByRole('button', { name: 'My files' }).click();

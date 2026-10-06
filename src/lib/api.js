@@ -17,7 +17,7 @@ const safeName = (n) => String(n || 'file').replace(/[^\w.\- ]+/g, '').replace(/
 export async function signUp(email, password, name) {
   const d = await run(sb().auth.signUp({ email: email.trim(), password, options: { data: { name } } }));
   if (!d.session) {
-    throw new Error('Account created, but Supabase wants the email confirmed first. Turn off “Confirm email” in Supabase → Authentication → Sign In / Providers → Email, then sign in.');
+    throw new Error('Nearly there: we’ve emailed you a link to confirm your address. Open it, then come back here and choose “I already have one” to sign in. Your invite is kept.');
   }
   return d;
 }
@@ -305,6 +305,8 @@ export async function getBlob(bucket, path, { fresh = false } = {}) {
   await store.blobs.set(key, data);
   return data;
 }
+// A short-lived link to a stored file (data saver reads PDFs from it a page at a time)
+export const signedUrl = (bucket, path) => run(sb().storage.from(bucket).createSignedUrl(path, 3600)).then((d) => d?.signedUrl);
 export async function isSavedOffline(bucket, path) {
   return !!(await store.blobs.get(`${bucket}/${path}`));
 }
@@ -405,6 +407,10 @@ export async function submitAttempt(attemptId) {
 }
 export const logTime = (kind, ref, seconds) =>
   sendOrQueue({ kind: 'rpc', fn: 'log_time', args: { p_kind: kind, p_ref: ref, p_seconds: Math.round(seconds) } }).catch(() => {});
+// A try to leave a locked-down exam: the server counts it, and hands the exam in after the tutor's warnings
+export const lockdownStrike = (attemptId, event) => run(sb().rpc('lockdown_strike', { p_attempt: attemptId, p_event: event }));
+// The tutor ends an exam early: 'hand_in' now, or 'cancel' so it can be started again
+export const endAttempt = (attemptId, mode) => run(sb().rpc('end_attempt', { p_attempt: attemptId, p_mode: mode }));
 export const logLockdown = (attemptId, event) =>
   sendOrQueue({ kind: 'rpc', fn: 'log_lockdown_event', args: { p_attempt: attemptId, p_event: event } }).catch(() => {});
 
@@ -606,6 +612,37 @@ export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks
 
 // ---------------- syllabus & coverage ----------------
 export const profSyllabus = (subjectId, label, note = '') => run(sb().rpc('prof_syllabus', { p_subject: subjectId, p_label: label, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
+// Prof reads the tutor's own syllabus PDF: its text (or, for a scanned one, pictures of its pages)
+export async function profSyllabusFromPdf(subjectId, blob, name, label = '', note = '') {
+  const { pdfAllText, renderPdfPages } = await import('../ui/PdfViewer.jsx');
+  const { text } = await pdfAllText(blob);
+  let source;
+  if (text.replace(/\[page \d+\]|\s/g, '').length > 800) {
+    const path = `${uid()}/prof/${uuid()}.txt`;
+    await run(sb().storage.from('library').upload(path, new Blob([text], { type: 'text/plain' }), { contentType: 'text/plain' }));
+    source = { text_path: path, name };
+  } else {
+    // no text in it (a scan): pictures of its first pages
+    const r = await renderPdfPages(blob, Array.from({ length: 16 }, (_, i) => i + 1), { maxSide: 1500, quality: 0.8 });
+    const pages = [];
+    for (const p of r.pages) {
+      const path = `${uid()}/prof/${uuid()}.jpg`;
+      await run(sb().storage.from('library').upload(path, await p.blob.arrayBuffer(), { contentType: 'image/jpeg' }));
+      pages.push({ path, label: `page ${p.page}` });
+    }
+    if (!pages.length) throw new Error('Couldn’t open that PDF.');
+    source = { pages, name };
+  }
+  const r = await run(sb().rpc('prof_syllabus', { p_subject: subjectId, p_label: label || '', p_note: note || null, p_source: source }));
+  callProf().catch(() => {});
+  return r;
+}
+// Teaching plans: one per subject, by week, month or chapter
+export const getPlan = (subjectId) => run(sb().from('teaching_plans').select('*').eq('subject_id', subjectId).maybeSingle());
+export const savePlan = (row) => run(sb().from('teaching_plans').upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: 'subject_id' }).select().maybeSingle());
+export const deletePlan = (subjectId) => run(sb().from('teaching_plans').delete().eq('subject_id', subjectId));
+export const profPlan = (subjectId, kind, start, end, lessons = null, note = '') =>
+  run(sb().rpc('prof_plan', { p_subject: subjectId, p_kind: kind, p_start: start, p_end: end, p_lessons: lessons, p_note: note || null })).then((r) => (callProf().catch(() => {}), r));
 export const coverage = (subjectId) => run(sb().rpc('coverage', { p_subject: subjectId }));
 // The tutor's own call on a topic for a learner: 'taught' | 'not_yet' | 'weak' | 'developing' | 'strong',
 // or null to go back to what lessons, work and marked answers say

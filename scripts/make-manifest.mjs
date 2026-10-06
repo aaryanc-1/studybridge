@@ -13,6 +13,7 @@ if (!version || !dir) throw new Error('Usage: node scripts/make-manifest.mjs <ve
 export function shellId() {
   const h = createHash('sha256');
   for (const f of ['main.cjs', 'preload.cjs', 'updater.cjs']) h.update(readFileSync(join(ROOT, 'electron', f), 'utf8').replace(/\r\n/g, '\n'));
+  h.update(readFileSync(join(ROOT, 'build', 'icon.png')));
   return h.digest('hex').slice(0, 16);
 }
 const files = readdirSync(dir);

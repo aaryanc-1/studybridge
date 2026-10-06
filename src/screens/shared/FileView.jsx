@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Link, Loading, Page, Empty } from '../../ui/kit.jsx';
@@ -8,6 +8,7 @@ import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { desktop } from '../../lib/config.js';
 import { bytes } from '../../lib/format.js';
+import { dataSaver } from '../../lib/device.js';
 
 // Any uploaded file: PDFs and images open inside StudyBridge; anything else can be saved
 export default function FileView({ id }) {
@@ -44,8 +45,25 @@ function LinkBody({ file }) {
 }
 
 function StoredBody({ file, tutor }) {
-  const { blob, url, error } = useBlob('library', file.storage_path);
   useReadingTime(tutor ? null : file.id);
+  // Data saver: a PDF that isn't on this device yet loads page by page from the server instead of whole
+  const [light, setLight] = useState(null);
+  useEffect(() => {
+    const pdf = (file.mime || '').includes('pdf') || /\.pdf$/i.test(file.name);
+    if (!pdf || !dataSaver() || file.cloud === false || String(file.storage_path).startsWith('local/')) return setLight(false);
+    api.isSavedOffline('library', file.storage_path).then(async (saved) => {
+      if (saved) return setLight(false);
+      const u = await api.signedUrl('library', file.storage_path).catch(() => null);
+      setLight(u ? { url: u } : false);
+    });
+  }, [file.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (light === null) return <Loading label="Opening…" />;
+  if (light) return <PdfViewer source={light} size={file.size} title={file.name} toolbar={<span className="pill">Data saver: pages load as you read</span>} />;
+  return <StoredWhole file={file} />;
+}
+
+function StoredWhole({ file }) {
+  const { blob, url, error } = useBlob('library', file.storage_path);
   if (error) return <div className="error">{error.message}</div>;
   if (!blob) return <Loading label="Opening…" />;
   const save = (

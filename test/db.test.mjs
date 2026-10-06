@@ -1319,3 +1319,72 @@ test('parent accounts: a code from the tutor, read-only, only what was given bac
   assert.equal((await val('PW', `select parent_children()`)).length, 0);
   assert.equal((await as('PW', `select * from notifications where kind = 'parent_removed'`)).length, 1);
 });
+
+test('locked-down exams: a warning, then trying to leave again hands it in; time-up hands in on the server; only the tutor ends one early', async () => {
+  const exam = async (title, extra = {}) => {
+    const a = await val('TW', `insert into assignments (kind, title, learner_ids, visibility, lockdown, time_limit_min, leave_warnings)
+      values ('test', $1, $2, 'visible', true, $3, $4) returning id`, [title, [U.LW], extra.minutes ?? 30, extra.warnings ?? 1]);
+    const q = await val('TW', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', 'x?', 2) returning id`, [a]);
+    await as('TW', `insert into question_keys (question_id, answer) values ($1, '{"value":"4","tolerance":"0"}')`, [q]);
+    const t = await one('LW', `select * from start_attempt($1, 'desktop')`, [a]);
+    await as('LW', `select save_response($1, $2, '{"value":"4"}')`, [t.id, q]);
+    return { a, t };
+  };
+  // one warning, then the second try hands it in with her answers
+  const e1 = await exam('Locked test');
+  let r = await val('LW', `select lockdown_strike($1, 'Left the StudyBridge window')`, [e1.t.id]);
+  assert.deepEqual(r, { handed_in: false, warnings_left: 0 });
+  r = await val('LW', `select lockdown_strike($1, 'Tried to close StudyBridge during the exam')`, [e1.t.id]);
+  assert.equal(r.handed_in, true);
+  let att = (await db.query(`select * from attempts where id = $1`, [e1.t.id])).rows[0];
+  assert.notEqual(att.status, 'in_progress');
+  assert.equal(Number(att.score), 2, 'her saved answer was marked');
+  assert.match(att.auto_reason, /tried to leave the exam 2 times/);
+  assert.equal((await as('LW', `select * from notifications where kind = 'auto_submitted'`)).length, 1);
+  assert.match((await as('TW', `select title from notifications where kind = 'submitted' order by created_at desc limit 1`))[0].title, /handed in automatically/);
+  await fails(as('L2', `select lockdown_strike($1, 'x')`, [e1.t.id]), /not found/);
+  // no warnings: the first try hands it in
+  const e0 = await exam('Strict test', { warnings: 0 });
+  assert.equal((await val('LW', `select lockdown_strike($1, 'Tried a shortcut to leave the exam')`, [e0.t.id])).handed_in, true);
+
+  // time runs out with the app closed: the server hands it in
+  const e2 = await exam('Timed test', { minutes: 5 });
+  await db.query(`update attempts set started_at = now() - interval '20 minutes' where id = $1`, [e2.t.id]);
+  assert.ok((await db.query(`select _auto_hand_in() n`)).rows[0].n >= 1);
+  att = (await db.query(`select * from attempts where id = $1`, [e2.t.id])).rows[0];
+  assert.notEqual(att.status, 'in_progress');
+  assert.equal(att.auto_reason, 'time ran out');
+  await fails(as('LW', `select _auto_hand_in()`), /permission denied/);
+  await fails(as('LW', `select _hand_in($1, 'x')`, [e2.t.id]), /permission denied/);
+  // opening it again after the time is up hands it in instead of reopening it
+  const e3 = await exam('Timed test 2', { minutes: 5 });
+  await db.query(`update attempts set started_at = now() - interval '20 minutes' where id = $1`, [e3.t.id]);
+  const again = await one('LW', `select * from start_attempt($1, 'desktop')`, [e3.a]);
+  assert.equal(again.id, e3.t.id);
+  assert.notEqual(again.status, 'in_progress');
+
+  // only the tutor lets a learner out early: cancel (start again later) or hand in now
+  const e4 = await exam('Emergency test');
+  await fails(as('T', `select end_attempt($1, 'cancel')`, [e4.t.id]), /Not found/);
+  await fails(as('LW', `select end_attempt($1, 'cancel')`, [e4.t.id]), /Not found/);
+  await as('TW', `select end_attempt($1, 'cancel')`, [e4.t.id]);
+  assert.equal((await db.query(`select count(*)::int n from attempts where id = $1`, [e4.t.id])).rows[0].n, 0);
+  assert.equal((await as('LW', `select * from notifications where kind = 'attempt_cancelled'`)).length, 1);
+  const back = await one('LW', `select * from start_attempt($1, 'desktop')`, [e4.a]);
+  await as('TW', `select end_attempt($1, 'hand_in')`, [back.id]);
+  att = (await db.query(`select * from attempts where id = $1`, [back.id])).rows[0];
+  assert.equal(att.auto_reason, 'your tutor ended it');
+  await fails(as('TW', `select end_attempt($1, 'hand_in')`, [back.id]), /already been handed in/);
+});
+
+test('teaching plans: the tutor’s own, per subject; learners and other tutors see nothing', async () => {
+  const subj = await val('TW', `insert into subjects (name) values ('Maths plan') returning id`);
+  await as('TW', `insert into topics (subject_id, name, position) values ($1, 'Number', 0), ($1, 'Algebra', 1)`, [subj]);
+  const items = [{ label: 'Week 1', starts_on: '2026-10-05', ends_on: '2026-10-11', topics: ['Number'] }, { label: 'Week 2', starts_on: '2026-10-12', ends_on: '2026-10-18', topics: ['Algebra'] }];
+  await as('TW', `insert into teaching_plans (subject_id, kind, starts_on, ends_on, items) values ($1, 'week', '2026-10-05', '2026-10-18', $2)`, [subj, JSON.stringify(items)]);
+  assert.equal((await as('TW', `select * from teaching_plans where subject_id = $1`, [subj]))[0].items.length, 2);
+  await fails(as('TW', `insert into teaching_plans (subject_id) values ($1)`, [subj]), /duplicate key|unique/);
+  assert.equal((await as('LW', `select * from teaching_plans`)).length, 0);
+  assert.equal((await as('T', `select * from teaching_plans`)).length, 0);
+  await fails(as('T', `insert into teaching_plans (subject_id) values ($1)`, [subj]), /row-level security/);
+});

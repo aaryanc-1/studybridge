@@ -8,6 +8,8 @@ import * as outbox from '../../lib/outbox.js';
 import { ago } from '../../lib/format.js';
 import { desktop } from '../../lib/config.js';
 import { startLiveUpdates } from '../../lib/live-updates.js';
+import { addAccount, canSwitch, otherAccounts, switchTo } from '../../lib/accounts.js';
+import { dataSaver, setDataSaver, slowConnection } from '../../lib/device.js';
 
 export function isActive(route, item) {
   if (item.to === '/') return route.path === '/' || route.path === '';
@@ -54,6 +56,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
           </span>
           <Icon name="settings" size={18} />
         </button>
+        <AccountSwitcher />
       </aside>
       <div className="main">
         <div className="topbar">
@@ -78,6 +81,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
         )}
         {banner}
         {app.me.role !== 'admin' && <Announcements />}
+        <SlowConnectionTip />
         <UpdateBanner />
         <div className="content">
           <ErrorBoundary key={route.path}>{children}</ErrorBoundary>
@@ -96,6 +100,71 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   );
 }
 
+
+// A slow connection (or the phone's own data saver): offer StudyBridge's data saver, once
+function SlowConnectionTip() {
+  const [show, setShow] = useState(() => {
+    try {
+      return slowConnection() && !dataSaver() && localStorage.getItem('sb.datasaver.asked') !== '1';
+    } catch {
+      return false;
+    }
+  });
+  if (!show) return null;
+  const done = (on) => {
+    if (on) setDataSaver(true);
+    try {
+      localStorage.setItem('sb.datasaver.asked', '1');
+    } catch {}
+    setShow(false);
+  };
+  return (
+    <div className="banner" role="status">
+      <Icon name="wifiOff" size={18} />
+      <span className="grow">Your connection looks slow. Turn on data saver? Photos get smaller, PDFs load a page at a time and live lessons use less video.</span>
+      <button className="btn sm primary" onClick={() => done(true)}>
+        Turn on
+      </button>
+      <button className="btn sm ghost" onClick={() => done(false)}>
+        No thanks
+      </button>
+    </div>
+  );
+}
+
+// One click to another account signed in on this device (only where the admin account is one of them)
+const ROLE_NAME = { admin: 'Admin', tutor: 'Tutor', learner: 'Learner', parent: 'Parent' };
+export function AccountSwitcher({ full = false }) {
+  const app = useApp();
+  const [open, setOpen] = useState(full);
+  if (!canSwitch()) return null;
+  const others = otherAccounts(app.me.id);
+  return (
+    <div className={'switcher' + (full ? ' full' : '')}>
+      {!full && (
+        <button className="linkbtn small" onClick={() => setOpen((x) => !x)} aria-expanded={open}>
+          <Icon name="users" size={14} /> Switch account
+        </button>
+      )}
+      {open && (
+        <div className="stack sm">
+          {others.map((a) => (
+            <button key={a.id} className="switch-to" onClick={() => switchTo(app.me.id, a.id)}>
+              <span className="grow">
+                <span className="strong">{a.name || a.email}</span>
+                <span className="tiny muted"> · {ROLE_NAME[a.role] || a.role}</span>
+              </span>
+              <Icon name="right" size={14} />
+            </button>
+          ))}
+          <button className="linkbtn small" onClick={() => addAccount(app.me.id)}>
+            <Icon name="plus" size={14} /> Add another account
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Pops up new notifications (in-app toast, plus a system notification when the app isn't in front)
 function useAnnouncer(target) {
@@ -118,7 +187,7 @@ function useAnnouncer(target) {
       if (document.hasFocus()) toast({ title: n.title, body: n.body, onClick: open, ms: 7000 });
       showSystemNotification(n, open);
     }
-    if (fresh.some((n) => ['submitted', 'note', 'marked', 'message'].includes(n.kind))) invalidate('attempts', 'comments', 'myattempts');
+    if (fresh.some((n) => ['submitted', 'note', 'marked', 'message', 'auto_submitted', 'attempt_cancelled'].includes(n.kind))) invalidate('attempts', 'comments', 'myattempts');
     // a parent joined or was removed; a report was approved (parent accounts)
     if (fresh.some((n) => ['parent_joined', 'parent_removed', 'report'].includes(n.kind))) invalidate('my-parents', 'parents', 'parent-counts', 'parent-children', 'parent-view');
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps

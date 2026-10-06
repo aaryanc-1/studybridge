@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
+import { addSaved } from '../lib/device.js';
 
 let pdfjsP = null;
 function pdfjs() {
@@ -108,6 +109,36 @@ export async function pdfFirstText(blob, pages = 1) {
   }
 }
 
+// All the words in a PDF (a syllabus document), page by page, up to maxPages
+export async function pdfAllText(blob, maxPages = 120) {
+  const lib = await pdfjs();
+  const task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+  try {
+    const doc = await task.promise;
+    const parts = [];
+    for (let n = 1; n <= Math.min(maxPages, doc.numPages); n++) {
+      const tc = await (await doc.getPage(n)).getTextContent();
+      // keep line breaks: a new line wherever the text moves down the page
+      let last = null;
+      let line = '';
+      const lines = [];
+      for (const it of tc.items) {
+        const y = Math.round(it.transform?.[5] ?? 0);
+        if (last != null && Math.abs(y - last) > 2) (lines.push(line.trim()), (line = ''));
+        line += it.str + (it.hasEOL ? ' ' : '');
+        last = y;
+      }
+      lines.push(line.trim());
+      parts.push(`[page ${n}]\n` + lines.filter(Boolean).join('\n'));
+    }
+    return { text: parts.join('\n\n'), pages: doc.numPages };
+  } finally {
+    try {
+      await task.destroy();
+    } catch {}
+  }
+}
+
 // "12-15, 20" -> [12, 13, 14, 15, 20]
 export function parsePages(text, max = 20) {
   const out = [];
@@ -121,7 +152,7 @@ export function parsePages(text, max = 20) {
   return out;
 }
 
-export default function PdfViewer({ blob, title, toolbar }) {
+export default function PdfViewer({ blob, source = null, size = 0, title, toolbar }) {
   const [doc, setDoc] = useState(null);
   const [err, setErr] = useState('');
   const [zoom, setZoom] = useState(1);
@@ -131,10 +162,15 @@ export default function PdfViewer({ blob, title, toolbar }) {
   useEffect(() => {
     let alive = true;
     let task = null;
+    let fetched = 0;
     (async () => {
       try {
         const lib = await pdfjs();
-        task = lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+        // from a link (data saver): only the parts of the file each page needs are downloaded
+        task = source
+          ? lib.getDocument({ url: source.url, disableAutoFetch: true, disableStream: true, rangeChunkSize: 65536, ...pdfAssets() })
+          : lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...pdfAssets() });
+        if (source) task.onProgress = ({ loaded }) => (fetched = Math.max(fetched, loaded || 0));
         const d = await task.promise;
         if (alive) setDoc(d);
       } catch (e) {
@@ -143,11 +179,12 @@ export default function PdfViewer({ blob, title, toolbar }) {
     })();
     return () => {
       alive = false;
+      if (source && size && fetched) addSaved(size - fetched);
       try {
         task?.destroy?.();
       } catch {}
     };
-  }, [blob]);
+  }, [blob, source?.url]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track which page is in view
   useEffect(() => {
@@ -210,19 +247,21 @@ export default function PdfViewer({ blob, title, toolbar }) {
       <div className="pages" ref={wrap}>
         {err && <div className="error">{err}</div>}
         {!doc && !err && <div className="spinner" />}
-        {doc && Array.from({ length: doc.numPages }, (_, i) => <PdfPage key={i} doc={doc} n={i + 1} zoom={zoom} root={wrap} />)}
+        {doc && Array.from({ length: doc.numPages }, (_, i) => <PdfPage key={i} doc={doc} n={i + 1} zoom={zoom} root={wrap} lazy={!!source} />)}
       </div>
     </div>
   );
 }
 
-function PdfPage({ doc, n, zoom, root }) {
+function PdfPage({ doc, n, zoom, root, lazy = false }) {
   const box = useRef(null);
   const canvas = useRef(null);
   const [visible, setVisible] = useState(n <= 2);
   const [size, setSize] = useState({ w: 612, h: 792 });
 
   useEffect(() => {
+    // page by page (data saver): a page's size is only fetched when it's about to show
+    if (lazy && !visible) return;
     let alive = true;
     doc.getPage(n).then((p) => {
       const v = p.getViewport({ scale: 1 });
@@ -231,7 +270,7 @@ function PdfPage({ doc, n, zoom, root }) {
     return () => {
       alive = false;
     };
-  }, [doc, n]);
+  }, [doc, n, lazy, visible]);
 
   useEffect(() => {
     const el = box.current;

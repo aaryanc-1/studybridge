@@ -8,13 +8,32 @@ import * as api from '../../lib/api.js';
 import { desktop } from '../../lib/config.js';
 import { ago, day, fromLocalInput, toLocalInput, when, time, timeIn, placeOf, myTimezone, kindLabel, clock } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
+import { dataSaver, liveMode } from '../../lib/device.js';
 
 // ---------- LiveKit connection ----------
 export async function joinRoom(roomName, { publish = true, camera = true, mic = true, screen = false } = {}) {
-  const { Room, RoomEvent } = await import('livekit-client');
+  const { Room, RoomEvent, VideoPresets, VideoQuality, Track } = await import('livekit-client');
   const pass = await api.livePass(roomName);
   if (publish && desktop) await desktop.askMedia();
-  const room = new Room({ adaptiveStream: true, dynacast: true });
+  // Data saver (live lessons only; exam cameras stay as they are): small video, or no cameras at all
+  const saver = dataSaver() && !roomName.startsWith('attempt-') ? liveMode() : null;
+  if (saver === 'audio') camera = false;
+  const room = new Room({
+    adaptiveStream: true,
+    dynacast: true,
+    ...(saver
+      ? {
+          videoCaptureDefaults: { resolution: VideoPresets.h180.resolution },
+          publishDefaults: { simulcast: false, videoEncoding: { maxBitrate: 120_000, maxFramerate: 12 }, screenShareEncoding: { maxBitrate: 350_000, maxFramerate: 5 } },
+        }
+      : {}),
+  });
+  if (saver)
+    room.on(RoomEvent.TrackSubscribed, (_track, pub) => {
+      if (pub.kind !== 'video') return;
+      if (saver === 'audio' && pub.source === Track.Source.Camera) pub.setSubscribed(false);
+      else pub.setVideoQuality?.(VideoQuality.LOW);
+    });
   await room.connect(pass.url, pass.token);
   if (publish) {
     try {
@@ -590,6 +609,8 @@ function LiveRoom({ session, onLeave }) {
 // ---------- tutor watches an exam camera ----------
 export function Watch({ attemptId }) {
   const lk = useLookups();
+  const confirm = useConfirm();
+  const toast = useToast();
   const detail = useQuery(`attempt:${attemptId}`, () => api.attemptDetail(attemptId), { poll: 10000 });
   const aid = detail.data?.attempt.assignment_id;
   const a = useQuery(aid ? `assignment:${aid}` : null, () => api.getAssignment(aid)).data;
@@ -639,10 +660,55 @@ export function Watch({ attemptId }) {
           <button className="btn primary" onClick={() => go(`/marking/${attemptId}`)}>
             Mark it
           </button>
+        ) : t ? (
+          // Only the tutor can let a learner out of a locked-down exam early
+          <>
+            <button
+              className="btn"
+              onClick={async () => {
+                if (!(await confirm({ title: 'Hand it in now?', body: `${learner?.display_name || 'They'} stop${learner ? 's' : ''} straight away and what they’ve answered is handed in for marking.`, ok: 'Hand in now' }))) return;
+                try {
+                  await api.endAttempt(attemptId, 'hand_in');
+                  invalidate(`attempt:${attemptId}`, 'attempts');
+                  toast('Handed in');
+                } catch (e) {
+                  toast({ title: 'Couldn’t hand it in', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Hand in now
+            </button>
+            <button
+              className="btn danger"
+              onClick={async () => {
+                if (!(await confirm({ title: 'Let them leave?', body: 'Nothing is handed in and this attempt is removed, so they can start the exam again later. Use this for an emergency or if something went wrong.', ok: 'Let them leave', danger: true }))) return;
+                try {
+                  await api.endAttempt(attemptId, 'cancel');
+                  invalidate('attempts');
+                  toast('They can leave now');
+                  go('/live');
+                } catch (e) {
+                  toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Let them leave
+            </button>
+          </>
         ) : null
       }
     >
-      {t && t.status !== 'in_progress' && <div className="okmsg">Submitted {ago(t.submitted_at)}. The camera has stopped.</div>}
+      {t && t.status !== 'in_progress' && (
+        <div className="okmsg">
+          Submitted {ago(t.submitted_at)}
+          {t.auto_reason ? ` (handed in automatically: ${t.auto_reason})` : ''}. The camera has stopped.
+        </div>
+      )}
+      {t && t.status === 'in_progress' && a?.lockdown && (
+        <div className="small muted">
+          Tries to leave so far: {t.strikes || 0}. {a.leave_warnings > 0 ? `After ${a.leave_warnings} warning${a.leave_warnings === 1 ? '' : 's'}, the next try hands it in.` : 'The first try hands it in.'}
+        </div>
+      )}
       {err && <div className="error">{err}</div>}
       <div className="watch-grid">
         <div className="stack sm">

@@ -7,6 +7,7 @@ import WorkBoard from '../../ui/WorkBoard.jsx';
 import { WorkThumb, Lightbox } from '../../ui/media.jsx';
 import { items, multi } from '../../lib/questions.js';
 import { compressImage } from '../../lib/image.js';
+import { addSaved, dataSaver } from '../../lib/device.js';
 import * as api from '../../lib/api.js';
 
 // One answer box for any question type
@@ -165,7 +166,8 @@ function Photos({ value, onChange, attemptId, q, disabled, optional, label }) {
     try {
       const added = [];
       for (const b of blobs) {
-        const small = await compressImage(b);
+        const small = dataSaver() ? await compressImage(b, 1280, 0.72) : await compressImage(b);
+        if (dataSaver()) addSaved(b.size - small.size);
         added.push(await api.saveWorkImage(attemptId, q.id, small, b.name || 'photo.jpg'));
       }
       onChange({ ...value, files: [...files, ...added] });

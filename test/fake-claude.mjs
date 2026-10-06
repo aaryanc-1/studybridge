@@ -118,6 +118,27 @@ function reply(body) {
       ],
     };
   }
+  if (tools.includes('save_teaching_plan')) {
+    const text = body.messages[0].content;
+    const names = [...text.matchAll(/^- (?:\S+ )?([^:\n]+?)(?::|$)/gm)].map((m) => m[1].trim());
+    const start = new Date((body.system.match(/from (\d{4}-\d{2}-\d{2})/) || [])[1] + 'T00:00:00Z');
+    const items = names.map((n, i) => {
+      const a = new Date(start.getTime() + i * 7 * 864e5);
+      const b = new Date(a.getTime() + 6 * 864e5);
+      return { label: `Week ${i + 1}`, starts_on: a.toISOString().slice(0, 10), ends_on: b.toISOString().slice(0, 10), topics: [n], focus: `Teach ${n}` };
+    });
+    items.push({ label: 'Revision', starts_on: items.at(-1).ends_on, ends_on: items.at(-1).ends_on, topics: ['Not a real topic'], focus: 'Past papers' });
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_teaching_plan', { items, note: 'Bigger topics get two weeks.' })] };
+  }
+  if (tools.includes('save_syllabus') && Array.isArray(body.messages[0].content) && /<syllabus>/.test(body.messages[0].content[0].text)) {
+    const doc = body.messages[0].content[0].text;
+    assert.match(doc, /C1 Number/, 'the syllabus text reaches Prof');
+    const topics = [
+      { code: 'C1', name: 'Number', details: ['C1.1 Types of number', 'C1.2 Sets'] },
+      { code: 'C2', name: 'Algebra', details: ['C2.1 Expressions'] },
+    ];
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_syllabus', { topics, note: 'From the 2025–2027 syllabus document.' })] };
+  }
   if (tools.includes('save_syllabus')) {
     const topics = [
       { code: '1', name: 'Number', details: ['Types of number', 'Fractions, decimals and percentages', 'Standard form'] },

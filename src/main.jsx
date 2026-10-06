@@ -3,6 +3,9 @@ import 'mathlive/fonts.css';
 import 'mathlive/static.css';
 import './styles.css';
 import App from './App.jsx';
+import { applyTheme } from './lib/device.js';
+
+applyTheme();
 
 createRoot(document.getElementById('root')).render(<App />);
 

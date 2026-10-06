@@ -121,6 +121,7 @@ export default function AssignmentEditor({ id }) {
           visible_from: visibility === 'scheduled' ? a.visible_from : null,
           learner_ids: a.learner_ids?.length ? a.learner_ids : null,
           lockdown: !!a.lockdown,
+          leave_warnings: Math.max(0, Math.min(5, Number(a.leave_warnings ?? 1))),
           camera: !!a.camera,
           time_limit_min: a.time_limit_min ? Number(a.time_limit_min) : null,
           max_attempts: Math.max(1, Number(a.max_attempts) || 1),
@@ -414,7 +415,17 @@ export default function AssignmentEditor({ id }) {
                 </select>
               </Field>
             </div>
-            <Toggle checked={a.lockdown} onChange={(v) => setField({ lockdown: v })} icon="lock" title="Lockdown" sub="Their screen stays on StudyBridge until they submit. Needs the desktop app." />
+            <Toggle checked={a.lockdown} onChange={(v) => setField({ lockdown: v })} icon="lock" title="Lockdown" sub="Their screen stays on StudyBridge until they hand in: there’s no way out. Needs the desktop app." />
+            {a.lockdown && (
+              <Field label="If they try to leave" hint="Switching window, closing StudyBridge or a blocked shortcut. You’re told each time, and you can end it early from the exam camera page.">
+                <select className="select" value={a.leave_warnings ?? 1} onChange={(e) => setField({ leave_warnings: Number(e.target.value) })}>
+                  <option value={0}>Hand it in straight away</option>
+                  <option value={1}>Warn once, then hand it in</option>
+                  <option value={2}>Warn twice, then hand it in</option>
+                  <option value={3}>Warn three times, then hand it in</option>
+                </select>
+              </Field>
+            )}
             <Toggle checked={a.camera} onChange={(v) => setField({ camera: v })} icon="camera" title="Camera on" sub="You can watch their camera and screen live while they work." />
             <div className="grid g2" style={{ gap: 10 }}>
               <Field label="Time limit (minutes)">

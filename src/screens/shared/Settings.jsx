@@ -8,9 +8,11 @@ import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
 import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone } from '../../lib/config.js';
-import { useUpdateStatus } from './Shell.jsx';
+import { useUpdateStatus, AccountSwitcher } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
 import ReportCard from './ReportCard.jsx';
+import { bytes } from '../../lib/format.js';
+import { setTheme, useTheme, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
 
 export default function Settings() {
   const app = useApp();
@@ -135,6 +137,7 @@ function Account() {
           <Icon name="logout" size={18} /> Sign out
         </button>
       </form>
+      <AccountSwitcher full />
     </Section>
   );
 }
@@ -713,6 +716,59 @@ function LearnerPhoneAlerts() {
   );
 }
 
+function Appearance() {
+  const theme = useTheme();
+  return (
+    <div className="stack sm">
+      <div className="small strong">Appearance</div>
+      <div className="seg" role="group" aria-label="Appearance">
+        {[
+          ['light', 'Light'],
+          ['dark', 'Dark'],
+          ['auto', 'Same as this device'],
+        ].map(([v, l]) => (
+          <button key={v} type="button" aria-pressed={theme === v} onClick={() => setTheme(v)}>
+            {l}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// For learners on phone data: smaller photos, PDFs a page at a time, pictures on tap, lighter live lessons
+function DataSaver() {
+  const on = useDataSaver();
+  const live = useLiveMode();
+  const saved = useSavedBytes();
+  return (
+    <div className="stack sm">
+      <Toggle
+        checked={on}
+        onChange={setDataSaver}
+        icon="wifiOff"
+        title="Data saver"
+        sub="Uses less mobile data on this device: photos of your work are made smaller, PDFs load a page at a time, pictures load when you tap them, and live lessons use less video."
+      />
+      {on && (
+        <div className="stack sm" style={{ paddingLeft: 8 }}>
+          <div className="small strong">In live lessons</div>
+          <div className="seg" role="group" aria-label="Live lessons on data saver">
+            <button type="button" aria-pressed={live === 'low'} onClick={() => setLiveMode('low')}>
+              Low-quality video
+            </button>
+            <button type="button" aria-pressed={live === 'audio'} onClick={() => setLiveMode('audio')}>
+              Audio only
+            </button>
+          </div>
+          <div className="tiny muted">{live === 'audio' ? 'No cameras, so it uses the least data. The whiteboard and shared screens still show.' : 'Smaller, smoother video that uses much less data.'}</div>
+        </div>
+      )}
+      {saved > 0 && <div className="small muted">Data saver has saved about {bytes(saved)} on this device so far.</div>}
+    </div>
+  );
+}
+
 function Device() {
   const app = useApp();
   const toast = useToast();
@@ -724,6 +780,8 @@ function Device() {
   }, []);
   return (
     <Section id="device" icon="download" title="This device">
+      <Appearance />
+      <DataSaver />
       {desktop && app.me.role === 'tutor' && (
         <Toggle
           checked={bg}

@@ -360,6 +360,40 @@ test('Prof reads a grade-threshold PDF; nothing is saved until the tutor checks 
   assert.equal(saved.grades.length, 4);
 });
 
+test('Prof reads the tutor’s syllabus PDF, then plans the course week by week; nothing changes until the tutor uses it', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const me = (await T.auth.getUser()).data.user.id;
+  const subj = await q(T.from('subjects').insert({ name: 'Maths from PDF' }).select().single());
+  const text = `${me}/prof/syllabus.txt`;
+  await q(T.storage.from('library').upload(text, new TextEncoder().encode('Subject content\nC1 Number\nC1.1 Types of number\nC2 Algebra'), { contentType: 'text/plain' }));
+  const bad = await T.rpc('prof_syllabus', { p_subject: subj.id, p_label: '', p_source: { text_path: 'someone/prof/x.txt' } });
+  assert.match(bad.error.message, /Unknown file/);
+  const job = await q(T.rpc('prof_syllabus', { p_subject: subj.id, p_label: '', p_source: { text_path: text, name: '0607 syllabus.pdf' } }));
+  await kick(T);
+  let j = await q(T.from('prof_jobs').select('status,result,error').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.deepEqual(j.result.syllabus.topics.map((t) => t.code), ['C1', 'C2']);
+  assert.equal((await T.storage.from('library').download(text)).data, null, 'the document text is tidied away');
+  assert.equal((await q(T.from('topics').select('id').eq('subject_id', subj.id))).length, 0, 'nothing until the tutor uses it');
+
+  // a plan needs topics first
+  const none = await T.rpc('prof_plan', { p_subject: subj.id, p_kind: 'week', p_start: '2026-10-05', p_end: '2026-12-20' });
+  assert.match(none.error.message, /syllabus first/);
+  await q(T.from('topics').insert([{ subject_id: subj.id, name: 'Number', position: 0 }, { subject_id: subj.id, name: 'Algebra', position: 1 }]));
+  const wrong = await T.rpc('prof_plan', { p_subject: subj.id, p_kind: 'week', p_start: '2026-12-20', p_end: '2026-10-05' });
+  assert.match(wrong.error.message, /end date after/);
+  const pj = await q(T.rpc('prof_plan', { p_subject: subj.id, p_kind: 'week', p_start: '2026-10-05', p_end: '2026-12-20', p_lessons: 2 }));
+  await kick(T);
+  j = await q(T.from('prof_jobs').select('status,result,error').eq('id', pj.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  const plan = j.result.plan;
+  assert.equal(plan.kind, 'week');
+  assert.deepEqual(plan.items.slice(0, 2).map((x) => x.topics), [['Number'], ['Algebra']]);
+  assert.deepEqual(plan.items.at(-1).topics, [], 'topics that aren’t in the syllabus are dropped');
+  assert.equal((await q(T.from('teaching_plans').select('id').eq('subject_id', subj.id))).length, 0, 'saved only when the tutor uses it');
+});
+
 test('Prof writes flashcards for the tutor to pick from; learners get nothing until then', async () => {
   const T = client();
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));

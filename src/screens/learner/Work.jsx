@@ -121,6 +121,11 @@ export function WorkDetail({ id }) {
       const t = await api.startAttempt(a.id);
       await store.del(`submitted:${t.id}`);
       invalidate('myattempts');
+      // time ran out while it was closed: the server handed it in
+      if (t.status !== 'in_progress') {
+        toast({ title: 'Your time ran out', body: 'It was handed in with your answers.' });
+        return go(`/results/${t.id}`);
+      }
       go(`/attempt/${t.id}`);
     } catch (e) {
       toast({ title: 'Couldn’t start', body: e.message, tone: 'bad' });

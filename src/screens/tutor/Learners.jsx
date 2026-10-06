@@ -291,12 +291,19 @@ function ParentInviteShow({ invite, learner, onClose }) {
   const toast = useToast();
   const token = encodeInvite({ url: app.server.url, key: app.server.key, code: invite.code });
   const first = learner.display_name.split(' ')[0];
+  const phone = 'https://aaryanc-1.github.io/studybridge-releases/app/';
   const message = `Hi ${invite.name || 'there'}! You can now follow ${first}’s progress on StudyBridge: weekly reports, lessons, due dates and marks.
 
-1. Open StudyBridge (on a phone: https://aaryanc-1.github.io/studybridge-releases/app/ , or the app if you have it).
-2. Choose “I’m a parent” and paste this invite:
+1. On your phone, open ${phone}
+2. Choose “I’m a parent”, paste this invite and make your account:
 
 ${token}
+
+3. Put StudyBridge on your home screen so it opens like an app:
+• iPhone (Safari): tap the Share button, then “Add to Home Screen”.
+• Android (Chrome): tap the ⋮ menu, then “Add to Home screen” or “Install app”.
+
+On a computer, the same link works, or use the StudyBridge app.
 
 Best wishes,
 ${app.me.display_name}`;

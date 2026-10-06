@@ -59,6 +59,15 @@ reports, upcoming lessons/due dates, released marks, topics, released mock grade
 see/remove links via `learner_parents`/`remove_parent`). Weekly report is now a template (`ReportCard.jsx`, prints
 as PDF) filled from `_report_numbers`; the tutor writes only a comment (Prof can suggest one) and approves; approving
 needs a linked parent or the learner's WhatsApp/email switch. Parent app: `src/screens/parent/ParentApp.jsx`.
+1.6 part 4 + fixes: data saver per device (`src/lib/device.js`: smaller photos, PDFs by range requests page by page,
+pictures on tap, low/audio-only live video; never for exam cameras), light/dark/auto appearance (`data-theme` on <html>,
+dark tokens at the end of styles.css). Lockdown has no Leave button: each try to leave is a strike (`lockdown_strike`,
+`assignments.leave_warnings`, default 1 warning), then `_hand_in`; forced exits reopen the exam and count; `_auto_hand_in`
+(pg_cron every minute) hands in timed-out attempts; tutor ends early with `end_attempt` (hand in / cancel). Account
+switcher (`src/lib/accounts.js`) only on a device where the admin account signed in. The installed shell's fingerprint
+includes build/icon.png, so a new logo reinstalls the shell. Syllabus from the tutor's PDF (text, or pictures if scanned)
+via `prof_syllabus(..., p_source)`; teaching plans (`teaching_plans`, one per subject; `src/lib/plan.js` spreads evenly,
+`prof_plan` asks Prof). Supabase: "Confirm email" is off and Site URL is the phone web app (Aaryan, 6 Oct 2026).
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge

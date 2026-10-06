@@ -11,6 +11,7 @@ import TutorApp from './screens/tutor/TutorApp.jsx';
 import LearnerApp from './screens/learner/LearnerApp.jsx';
 import AdminApp from './screens/admin/AdminApp.jsx';
 import ParentApp from './screens/parent/ParentApp.jsx';
+import { rememberAccount, forgetAccount } from './lib/accounts.js';
 import { installErrorReporting } from './lib/errors.js';
 
 installErrorReporting();
@@ -60,6 +61,7 @@ export default function App() {
       if (p?.role === 'tutor') p = { ...p, admin_to_move: !!(await api.adminToMove().catch(() => cached?.admin_to_move)) };
       if (p?.role === 'admin') p = { ...p, is_admin: true };
       if (p) await store.set(`profile:${u.id}`, p);
+      rememberAccount(p);
       api.setMe(p);
       if (p?.role) api.markSeen().catch(() => {});
       setBootError(null);
@@ -124,6 +126,7 @@ export default function App() {
         if (user) await loadProfile(user);
       },
       async signOut() {
+        if (user) forgetAccount(user.id);
         await api.signOut();
         setScope(null);
         setUser(null);

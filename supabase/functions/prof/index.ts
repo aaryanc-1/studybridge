@@ -806,26 +806,45 @@ Warm, honest and specific; plain words, no jargon; short. Use ONLY facts in the 
   };
   async function stepSyllabus(job, cfg) {
     const c = job.context || {};
-    await save(job, 'running', { p_progress: 'Setting out the syllabus…', p_input: 0 });
+    const src = c.source || null;
+    await save(job, 'running', { p_progress: src ? 'Reading the syllabus document…' : 'Setting out the syllabus…', p_input: 0 });
+    // the tutor's own syllabus document: its text, or pictures of a scanned one
+    let doc = '';
+    const pages = src?.pages || [];
+    if (src?.text_path) {
+      const f = await download('library', src.text_path);
+      doc = f ? new TextDecoder().decode(f.bytes).slice(0, 180000) : '';
+    }
+    const ask = `Subject in StudyBridge: ${c.subject || ''}.${c.label ? ` Exam / syllabus: ${c.label}.` : ''}${c.note ? `\nThe tutor adds: ${c.note}` : ''}`;
+    const content = src
+      ? [
+          { type: 'text', text: `${ask}\n\nThe tutor's own copy of the official syllabus document${src.name ? ` (“${src.name}”)` : ''} follows${doc ? ' as text' : ` as ${pages.length} page picture${pages.length === 1 ? '' : 's'}`}. Set out the subject content from it.${doc ? `\n\n<syllabus>\n${doc}\n</syllabus>` : ''}` },
+          ...pages.map((pg) => ({ type: 'sb_image', bucket: 'library', path: pg.path })),
+        ]
+      : ask;
     const res = await claude(cfg, {
-      max_tokens: 9000,
-      system: `You help tutors on StudyBridge set up a subject. Set out the official syllabus for ${c.label} as its main topics, in the syllabus's own order and numbering where it has them, each with its subtopics or learning objectives as short phrases.
+      max_tokens: 12000,
+      system: src
+        ? `You help tutors on StudyBridge set up a subject from the official syllabus document they uploaded. Set out its subject content as the main topics, in the document's own order and numbering, each with its subtopics or learning objectives as short phrases (keep the document's sub-numbers, e.g. "2.3 Simultaneous equations").
+Rules: use only what the document says; leave out assessment details, command words and admin pages; mark higher-tier/HL/Extended-only content in the subtopic text (e.g. "(Extended)"); up to 40 topics. In note, say which syllabus and exam years the document is for, and anything you couldn't read.`
+        : `You help tutors on StudyBridge set up a subject. Set out the official syllabus for ${c.label} as its main topics, in the syllabus's own order and numbering where it has them, each with its subtopics or learning objectives as short phrases.
 Rules: follow the official syllabus as closely as you know it; don't add content that isn't in it; separate higher-tier/HL/Extended-only content clearly in the subtopic text (e.g. "(Extended)", "(HL)"); 6–25 topics. In note, say which syllabus version/exam years it follows and remind the tutor to check it against the official document.`,
       tools: [SYLLABUS_TOOL],
       tool_choice: { type: 'tool', name: 'save_syllabus' },
-      messages: [{ role: 'user', content: `Subject in StudyBridge: ${c.subject || ''}. Exam / syllabus: ${c.label}.${c.note ? `\nThe tutor adds: ${c.note}` : ''}` }],
+      messages: [{ role: 'user', content: src ? await expandBlocks(content) : content }],
     });
+    if (src) await removeFiles('library', [...(src.text_path ? [src.text_path] : []), ...pages.map((pg) => pg.path)]);
     const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_syllabus');
     const topics = (call?.input?.topics || [])
       .filter((t) => t && t.name)
       .slice(0, 40)
-      .map((t) => ({ code: String(t.code || '').slice(0, 20) || null, name: String(t.name).slice(0, 160), details: (Array.isArray(t.details) ? t.details : []).map((d) => String(d).slice(0, 200)).slice(0, 20) }));
-    if (!topics.length) throw new Error('Prof couldn’t set out that syllabus. Try naming the exam and its code, e.g. “Cambridge IGCSE International Mathematics 0607”.');
+      .map((t) => ({ code: String(t.code || '').slice(0, 20) || null, name: String(t.name).slice(0, 160), details: (Array.isArray(t.details) ? t.details : []).map((d) => String(d).slice(0, 200)).slice(0, 30) }));
+    if (!topics.length) throw new Error(src ? 'Prof couldn’t find the subject content in that document. Check it’s the syllabus PDF, or name the exam instead.' : 'Prof couldn’t set out that syllabus. Try naming the exam and its code, e.g. “Cambridge IGCSE International Mathematics 0607”.');
     await save(job, 'done', {
       ...usageArgs(cfg, res.usage),
-      p_result: { syllabus: { subject_id: c.subject_id, topics, note: String(call.input.note || '').slice(0, 600) }, reply: `${topics.length} topics for ${c.label}` },
+      p_result: { syllabus: { subject_id: c.subject_id, topics, note: String(call.input.note || '').slice(0, 600) }, reply: `${topics.length} topics${c.label ? ` for ${c.label}` : src?.name ? ` from ${src.name}` : ''}` },
       p_progress: 'Ready for you to check',
-      p_notify: { title: `Prof set out the syllabus for ${c.subject || c.label}`, body: `${topics.length} topics. Check them and choose “Use these topics”.`, ref: { syllabus: true, subject_id: c.subject_id } },
+      p_notify: { title: `Prof set out the syllabus for ${c.subject || c.label}`, body: `${topics.length} topics. Check them and choose “Use these”.`, ref: { syllabus: true, subject_id: c.subject_id } },
     });
   }
 
@@ -902,6 +921,68 @@ Rules: follow the official syllabus as closely as you know it; don't add content
       p_result: { boundaries: { exam: c.exam, label: c.label || '', session, options, note: String(call.input.note || '').slice(0, 600) }, reply: `${options.length} set${options.length === 1 ? '' : 's'} of grade thresholds${session ? ` for ${session}` : ''}` },
       p_progress: 'Ready for you to check',
       p_notify: { title: `Prof read the grade thresholds${session ? ` for ${session}` : ''}`, body: 'Check the numbers against the document, then save the ones you want.', ref: { boundaries: true, exam: c.exam } },
+    });
+  }
+
+  // ---------------- teaching plans ----------------
+  const TEACHING_PLAN_TOOL = {
+    name: 'save_teaching_plan',
+    description: 'The teaching plan: one entry per period (week, month or chapter), in teaching order. The tutor checks and edits it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: 'e.g. "Week 3", "October", "Chapter 2: Algebra", "Revision"' },
+              starts_on: { type: 'string', description: 'YYYY-MM-DD' },
+              ends_on: { type: 'string', description: 'YYYY-MM-DD' },
+              topics: { type: 'array', items: { type: 'string' }, description: 'Topic names exactly as in the list given (empty for revision or holiday periods)' },
+              focus: { type: 'string', description: 'What to teach in this period, one short sentence (subtopics, skills)' },
+              notes: { type: 'string', description: 'Optional: homework, a quiz, a mock, past-paper practice' },
+            },
+            required: ['label', 'starts_on', 'ends_on', 'topics'],
+          },
+        },
+        note: { type: 'string', description: 'One or two sentences for the tutor about how the time was shared out' },
+      },
+      required: ['items'],
+    },
+  };
+  async function stepPlan(job, cfg) {
+    const c = job.context || {};
+    await save(job, 'running', { p_progress: 'Planning…', p_input: 0 });
+    const style = (await rest(`prof_settings?tutor_id=eq.${job.tutor_id}&select=style_md`))[0]?.style_md || '';
+    const names = (c.topics || []).map((t) => t.name);
+    const per = c.kind === 'week' ? 'one entry per week (Monday to Sunday)' : c.kind === 'month' ? 'one entry per calendar month' : 'one entry per topic or chapter, each with its own dates';
+    const res = await claude(cfg, {
+      max_tokens: 12000,
+      system: `You help a tutor on StudyBridge plan a course. Make a teaching plan from ${c.start} to ${c.end}, ${per}, covering every topic in the syllabus list in a sensible teaching order (the syllabus order unless a different order clearly helps). Give bigger topics (more subtopics) more time and lighter ones less. If the end date is an exam, leave the last part for revision and past papers.${c.lessons_per_week ? ` There are ${c.lessons_per_week} lesson(s) a week.` : ''} Use topic names exactly as given. Keep each focus to one short sentence.${style ? `\nThe tutor's own instructions:\n${style}` : ''}`,
+      tools: [TEACHING_PLAN_TOOL],
+      tool_choice: { type: 'tool', name: 'save_teaching_plan' },
+      messages: [{ role: 'user', content: `Subject: ${c.subject}${c.exam ? ` (${c.exam})` : ''}.${c.note ? `\nThe tutor adds: ${c.note}` : ''}\nSyllabus topics in order:\n${(c.topics || []).map((t) => `- ${t.code ? t.code + ' ' : ''}${t.name}${t.details?.length ? `: ${t.details.slice(0, 12).join('; ')}` : ''}`).join('\n')}` }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_teaching_plan');
+    const ymd = (x) => (/^\d{4}-\d{2}-\d{2}$/.test(String(x || '')) ? String(x) : null);
+    const items = (call?.input?.items || [])
+      .filter((x) => x && x.label && ymd(x.starts_on) && ymd(x.ends_on))
+      .slice(0, 120)
+      .map((x) => ({
+        label: String(x.label).slice(0, 80),
+        starts_on: ymd(x.starts_on),
+        ends_on: ymd(x.ends_on),
+        topics: (Array.isArray(x.topics) ? x.topics : []).map((t) => String(t)).filter((t) => names.includes(t)).slice(0, 12),
+        focus: String(x.focus || '').slice(0, 300),
+        notes: String(x.notes || '').slice(0, 300),
+      }));
+    if (!items.length) throw new Error('Prof couldn’t make a plan. Try different dates, or spread the topics evenly instead.');
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { plan: { subject_id: c.subject_id, kind: c.kind, starts_on: c.start, ends_on: c.end, lessons_per_week: c.lessons_per_week || null, items, note: String(call.input.note || '').slice(0, 600) }, reply: `A ${c.kind === 'week' ? 'week-by-week' : c.kind === 'month' ? 'month-by-month' : 'chapter-by-chapter'} plan for ${c.subject}: ${items.length} parts` },
+      p_progress: 'Ready for you to check',
+      p_notify: { title: `Prof planned ${c.subject}`, body: `${items.length} parts. Check it and choose “Use this plan”.`, ref: { syllabus: true, subject_id: c.subject_id, plan: true } },
     });
   }
 
@@ -1297,6 +1378,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       else if (job.kind === 'cards') await stepCards(job, cfg);
       else if (job.kind === 'paper') await stepPaper(job, cfg);
       else if (job.kind === 'boundaries') await stepBoundaries(job, cfg);
+      else if (job.kind === 'plan') await stepPlan(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;
@@ -1305,7 +1387,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       } else {
         console.error('Prof job failed', job.id, e);
         await save(job, 'failed', { p_error: String(e.message || e).slice(0, 500), p_input: 0 });
-        await removeFiles('library', [...(job.context?.pages || []).map((p) => p.path), ...(job.state?.uploaded || [])]);
+        await removeFiles('library', [...(job.context?.pages || []).map((p) => p.path), ...(job.context?.source?.pages || []).map((p) => p.path), ...(job.context?.source?.text_path ? [job.context.source.text_path] : []), ...(job.state?.uploaded || [])]);
       }
     }
     return true;

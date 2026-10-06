@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { useApp } from '../../App.jsx';
+import { desktop } from '../../lib/config.js';
 import { useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -15,11 +17,12 @@ import Live from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import Study from './Study.jsx';
-import { ErrorBoundary, Page } from '../../ui/kit.jsx';
+import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
-  if (n.kind === 'marked' && r.attempt_id) return `/results/${r.attempt_id}`;
+  if ((n.kind === 'marked' || n.kind === 'auto_submitted') && r.attempt_id) return `/results/${r.attempt_id}`;
+  if (n.kind === 'attempt_cancelled') return '/work';
   if (n.kind === 'cards') return '/study';
   if (n.kind === 'message') return '/messages';
   if (n.kind === 'session') return '/live';
@@ -28,12 +31,34 @@ function notificationTarget(n) {
   return '/';
 }
 
+function useBackIntoLockedExam(inside) {
+  useEffect(() => {
+    if (!desktop || inside) return;
+    let alive = true;
+    (async () => {
+      try {
+        const [mine, list] = await Promise.all([api.myAttempts(), api.listAssignments()]);
+        const locked = (mine || []).find((t) => t.status === 'in_progress' && (list || []).find((x) => x.id === t.assignment_id)?.lockdown);
+        if (!alive || !locked) return;
+        const r = await api.lockdownStrike(locked.id, 'Closed StudyBridge during the exam and came back');
+        go(r.handed_in ? `/results/${locked.id}` : `/attempt/${locked.id}`);
+      } catch {
+        /* offline: nothing to do */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 export default function LearnerApp() {
   const app = useApp();
   const route = useRoute();
   const comments = useQuery('comments', api.listComments);
   const unread = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
   const [a, b] = route.parts;
+  useBackIntoLockedExam(a === 'attempt');
 
   // Doing work takes over the whole window (and may be locked down)
   if (a === 'attempt' && b)

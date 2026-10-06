@@ -265,6 +265,12 @@ create table if not exists public.assignments (
   updated_at timestamptz not null default now()
 );
 
+-- warnings a locked-down test or exam gives before trying to leave hands it in (1.6)
+alter table public.assignments add column if not exists leave_warnings int not null default 1;
+do $$ begin
+  alter table public.assignments add constraint assignments_leave_warnings_check check (leave_warnings between 0 and 5);
+exception when duplicate_object then null; end $$;
+
 create table if not exists public.questions (
   id uuid primary key default gen_random_uuid(),
   assignment_id uuid not null references public.assignments (id) on delete cascade,
@@ -306,6 +312,10 @@ create table if not exists public.attempts (
   feedback_md text,
   unique (assignment_id, learner_id, number)
 );
+
+-- 1.6: locked-down tests and exams hand themselves in after too many tries to leave; why it was handed in
+alter table public.attempts add column if not exists strikes int not null default 0;
+alter table public.attempts add column if not exists auto_reason text;
 
 create table if not exists public.responses (
   id uuid primary key default gen_random_uuid(),
@@ -518,7 +528,7 @@ create table if not exists public.prof_alerts (
 );
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
-  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards', 'boundaries'));
+  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards', 'boundaries', 'plan'));
 end $$;
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
@@ -1010,6 +1020,8 @@ begin
   if cur.id is not null then
     if cur.status = 'returned' then
       update public.attempts set status = 'in_progress' where id = cur.id returning * into cur;
+    elsif public._attempt_timed_out(cur) then
+      cur := public._hand_in(cur.id, 'time ran out');
     end if;
     return cur;
   end if;
@@ -1085,7 +1097,9 @@ begin
   return null; -- short / steps / upload / drawing are marked by the tutor
 end $$;
 
-create or replace function public.submit_attempt(p_attempt uuid)
+-- Hands an attempt in: marks what can be marked automatically and tells the tutor. p_why says why it was
+-- handed in for the learner (time ran out, tried to leave a locked-down exam, ended by the tutor).
+create or replace function public._hand_in(p_attempt uuid, p_why text default null)
 returns public.attempts language plpgsql security definer set search_path = public as $$
 declare
   t public.attempts;
@@ -1097,7 +1111,7 @@ declare
   v_name text;
   v_redo boolean;
 begin
-  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid() for update;
+  select * into t from public.attempts where id = p_attempt for update;
   if t.id is null then raise exception 'Attempt not found.'; end if;
   if t.status <> 'in_progress' then raise exception 'Already submitted.'; end if;
   select * into a from public.assignments where id = t.assignment_id;
@@ -1109,7 +1123,7 @@ begin
              left join public.question_keys k on k.question_id = qs.id
             where qs.assignment_id = t.assignment_id loop
     insert into public.responses (attempt_id, question_id, learner_id, tutor_id)
-    values (t.id, q.id, auth.uid(), t.tutor_id) on conflict do nothing;
+    values (t.id, q.id, t.learner_id, t.tutor_id) on conflict do nothing;
     select public._auto_mark(q.type, r.answer, q.key, q.marks) into v_auto
       from public.responses r where r.attempt_id = t.id and r.question_id = q.id;
     if v_auto is null then
@@ -1129,17 +1143,34 @@ begin
          submitted_at = now(),
          score = case when v_all_auto then v_total else null end,
          released = released or a.release_mode = 'on_submit',
-         released_at = case when a.release_mode = 'on_submit' then now() else released_at end
+         released_at = case when a.release_mode = 'on_submit' then now() else released_at end,
+         auto_reason = p_why
    where id = t.id returning * into t;
 
-  select display_name into v_name from public.profiles where id = auth.uid();
+  select display_name into v_name from public.profiles where id = t.learner_id;
+  if p_why is not null then
+    perform public.notify_user(t.learner_id, 'auto_submitted', 'Your ' || lower(coalesce(a.title, 'work')) || ' was handed in',
+      'Handed in automatically: ' || p_why || '. Your answers were kept.', jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id));
+  end if;
   -- practice is marked instantly and shows in progress; the tutor isn't pinged each time
   if a.practice and v_all_auto then return t; end if;
   perform public.notify_user(t.tutor_id, 'submitted',
-    coalesce(v_name, 'Your learner') || case when v_redo then ' resubmitted ' else ' submitted ' end || a.title,
-    case when v_all_auto then 'Marked automatically: ' || v_total || ' / ' || coalesce(t.max_score, 0) else 'Ready for you to mark.' end,
-    jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id, 'learner_id', auth.uid()));
+    coalesce(v_name, 'Your learner') || case when v_redo then ' resubmitted ' else ' submitted ' end || a.title
+      || case when p_why is not null then ' (handed in automatically)' else '' end,
+    case when p_why is not null then 'Handed in automatically: ' || p_why || '. ' else '' end
+      || case when v_all_auto then 'Marked automatically: ' || v_total || ' / ' || coalesce(t.max_score, 0) else 'Ready for you to mark.' end,
+    jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id, 'learner_id', t.learner_id));
   return t;
+end $$;
+
+create or replace function public.submit_attempt(p_attempt uuid)
+returns public.attempts language plpgsql security definer set search_path = public as $$
+declare t public.attempts;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  if t.status <> 'in_progress' then raise exception 'Already submitted.'; end if;
+  return public._hand_in(p_attempt, null);
 end $$;
 
 -- Tutor finishes marking: totals the marks, optionally releases them.
@@ -1222,7 +1253,8 @@ begin
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
       'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end,
-      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at, 'self_mark_open', public._self_mark_open(t, a)),
+      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at, 'self_mark_open', public._self_mark_open(t, a),
+      'strikes', t.strikes, 'auto_reason', t.auto_reason),
     'responses', coalesce((select jsonb_agg(jsonb_build_object(
         'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
         'marks', case when rel or is_tutor then r.marks end,
@@ -2516,21 +2548,34 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- Ask Prof to set out a subject's syllabus as topics. The tutor checks it and chooses to use it.
-create or replace function public.prof_syllabus(p_subject uuid, p_label text, p_note text default null)
+drop function if exists public.prof_syllabus(uuid, text, text);
+create or replace function public.prof_syllabus(p_subject uuid, p_label text, p_note text default null, p_source jsonb default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_err text;
   v_id uuid;
   s public.subjects;
+  p jsonb;
 begin
   v_err := public._prof_ready(auth.uid());
   if v_err is not null then raise exception '%', v_err; end if;
   select * into s from public.subjects where id = p_subject and tutor_id = auth.uid();
   if s.id is null then raise exception 'Unknown subject.'; end if;
-  if length(trim(coalesce(p_label, ''))) < 3 then raise exception 'Say which exam or syllabus this subject follows.'; end if;
+  if length(trim(coalesce(p_label, ''))) < 3 and p_source is null then raise exception 'Say which exam or syllabus this subject follows.'; end if;
+  -- the syllabus document: its text, or pictures of its pages, in the tutor's own folder
+  if p_source is not null then
+    if coalesce(p_source ->> 'text_path', auth.uid()::text || '/prof/') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown file.'; end if;
+    for p in select * from jsonb_array_elements(coalesce(p_source -> 'pages', '[]')) loop
+      if coalesce(p ->> 'path', '') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown page.'; end if;
+    end loop;
+    if jsonb_array_length(coalesce(p_source -> 'pages', '[]')) > 16 then raise exception 'Up to 16 pages at a time.'; end if;
+  end if;
   insert into public.prof_jobs (tutor_id, kind, prompt, context)
-  values (auth.uid(), 'syllabus', format('Set out the syllabus for %s', left(trim(p_label), 150)),
-    jsonb_build_object('subject_id', s.id, 'subject', s.name, 'exam', s.exam, 'label', left(trim(p_label), 200), 'note', left(coalesce(p_note, ''), 1000)))
+  values (auth.uid(), 'syllabus',
+    case when p_source is not null then format('Set out the syllabus from %s', left(coalesce(nullif(trim(p_source ->> 'name'), ''), 'the syllabus document'), 150))
+         else format('Set out the syllabus for %s', left(trim(p_label), 150)) end,
+    jsonb_build_object('subject_id', s.id, 'subject', s.name, 'exam', s.exam, 'label', left(trim(coalesce(p_label, '')), 200),
+                       'note', left(coalesce(p_note, ''), 1000), 'source', p_source))
   returning id into v_id;
   perform public._prof_kick();
   return jsonb_build_object('id', v_id);
@@ -4409,6 +4454,124 @@ create policy parent_reports_tutor on public.parent_reports for all
                    or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.tutor_id = auth.uid() and r.enabled)
                    or public._has_parent(learner_id)));
 
+
+-- =====================================================================
+-- 1.6: exams that really lock. A locked-down test or exam has no way out but handing in: each try to leave
+-- (switching window, a blocked shortcut, closing StudyBridge, coming back after forcing it shut) is a
+-- strike; after the tutor's number of warnings the next one hands it in. Time running out hands it in on
+-- the server, even with the app closed. Only the tutor can let a learner out early.
+-- =====================================================================
+create or replace function public.lockdown_strike(p_attempt uuid, p_event text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid() for update;
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  if t.status <> 'in_progress' then return jsonb_build_object('handed_in', true); end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  perform public.log_lockdown_event(p_attempt, p_event);
+  if not a.lockdown then return jsonb_build_object('handed_in', false); end if;
+  update public.attempts set strikes = strikes + 1 where id = t.id returning * into t;
+  if t.strikes > a.leave_warnings then
+    perform public._hand_in(t.id, 'tried to leave the exam ' || t.strikes || ' time' || case when t.strikes = 1 then '' else 's' end);
+    return jsonb_build_object('handed_in', true);
+  end if;
+  return jsonb_build_object('handed_in', false, 'warnings_left', a.leave_warnings - t.strikes);
+end $$;
+
+-- The tutor ends an exam early: hand it in now, or cancel the attempt so it can be started again later
+create or replace function public.end_attempt(p_attempt uuid, p_mode text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  v_title text;
+begin
+  select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
+  if t.id is null then raise exception 'Not found.'; end if;
+  if t.status <> 'in_progress' then raise exception 'It’s already been handed in.'; end if;
+  if p_mode = 'hand_in' then
+    perform public._hand_in(t.id, 'your tutor ended it');
+  elsif p_mode = 'cancel' then
+    select title into v_title from public.assignments where id = t.assignment_id;
+    delete from public.attempts where id = t.id;
+    perform public.notify_user(t.learner_id, 'attempt_cancelled', 'Your tutor stopped ' || coalesce(v_title, 'the exam'),
+      'Nothing was handed in. You can start it again when your tutor says so.', jsonb_build_object('assignment_id', t.assignment_id));
+  else
+    raise exception 'Choose hand in or cancel.';
+  end if;
+end $$;
+
+-- Every minute: hand in anything whose time ran out (the learner may have closed the app)
+create or replace function public._auto_hand_in() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in select x.id from public.attempts x
+            where x.status = 'in_progress' and public._attempt_timed_out(x)
+            for update skip locked loop
+    perform public._hand_in(r.id, 'time ran out');
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- =====================================================================
+-- 1.6: teaching plans. From the subject's syllabus, a plan by week, by month or by chapter: which topics
+-- when. Spread evenly by StudyBridge, or worked out by Prof (bigger topics get more time, revision before
+-- the exam); the tutor checks and edits it. One plan per subject.
+-- =====================================================================
+create table if not exists public.teaching_plans (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  subject_id uuid not null unique references public.subjects (id) on delete cascade,
+  kind text not null default 'week' check (kind in ('week', 'month', 'chapter')),
+  starts_on date,
+  ends_on date,
+  lessons_per_week int,
+  items jsonb not null default '[]',   -- [{ label, starts_on, ends_on, topics: [names], focus, notes }]
+  note text,
+  source text not null default 'tutor' check (source in ('tutor', 'prof')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.teaching_plans enable row level security;
+revoke all on public.teaching_plans from public, anon, authenticated;
+grant select, insert, update, delete on public.teaching_plans to authenticated;
+drop policy if exists plans_tutor on public.teaching_plans;
+create policy plans_tutor on public.teaching_plans for all using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and exists (select 1 from public.subjects s where s.id = subject_id and s.tutor_id = auth.uid()));
+
+create or replace function public.prof_plan(p_subject uuid, p_kind text, p_start date, p_end date, p_lessons int default null, p_note text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+  s public.subjects;
+  v_topics jsonb;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  select * into s from public.subjects where id = p_subject and tutor_id = auth.uid();
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if p_kind not in ('week', 'month', 'chapter') then raise exception 'Choose week by week, month by month or chapter by chapter.'; end if;
+  if p_start is null or p_end is null or p_end <= p_start then raise exception 'Choose a start date and an end date after it.'; end if;
+  if p_end > p_start + 800 then raise exception 'Plans can cover up to about two years.'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object('code', code, 'name', name, 'details', details) order by position, name), '[]') into v_topics
+    from public.topics where subject_id = s.id;
+  if jsonb_array_length(v_topics) = 0 then raise exception 'Set out the syllabus first: the plan is made from its topics.'; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'plan', format('Plan %s %s', s.name, case p_kind when 'week' then 'week by week' when 'month' then 'month by month' else 'chapter by chapter' end),
+          jsonb_build_object('subject_id', s.id, 'subject', s.name, 'exam', s.exam, 'kind', p_kind, 'start', p_start, 'end', p_end,
+                             'lessons_per_week', p_lessons, 'note', left(coalesce(p_note, ''), 1000), 'topics', v_topics))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -4445,6 +4608,8 @@ revoke execute on function public._mock_boundary(uuid) from public, anon, authen
 revoke execute on function public._grade_for(jsonb, numeric, numeric, numeric) from public, anon, authenticated;
 revoke execute on function public._mock_result(uuid, uuid, boolean) from public, anon, authenticated;
 revoke execute on function public._parent_link(uuid) from public, anon, authenticated;
+revoke execute on function public._hand_in(uuid, text) from public, anon, authenticated;
+revoke execute on function public._auto_hand_in() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;
@@ -4512,6 +4677,7 @@ begin
   create extension if not exists pg_cron;
   perform cron.schedule('studybridge-prof', '* * * * *', 'select public.prof_tick()');
   perform cron.schedule('studybridge-lessons', '*/5 * * * *', 'select public._lesson_tick()');
+  perform cron.schedule('studybridge-handin', '* * * * *', 'select public._auto_hand_in()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;
