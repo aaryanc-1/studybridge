@@ -98,7 +98,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.38 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.40 |
 | Secret `RELEASES_TOKEN` | Lets the build publish to the public repo | Added |
 | Variables `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Built into the apps so nobody types a server address | Added |
 | Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Added 5 Oct 2026; works |
@@ -215,6 +215,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 | Date | Change |
 | --- | --- |
+| 6 Oct 2026 | Fix (app 1.1.40): a stray key press in Past papers could set the wrong exam for a subject (it saved as soon as the list changed); it now saves only with Save. The Syllabus page shows each subject's exam with a Change button |
 | 5 Oct 2026 | 1.6 part 2 (app 1.1.38): mock exams, one or more papers adding up to a total and a Mock grade from the tutor's own grade boundaries per exam and session (typed in, or read by Prof from a grade-threshold PDF); learners see their grade on Progress, the paper's results and the weekly report once every paper is given back. Syllabus shown in order with numbered subtopics, editable in place, and Set up the whole syllabus merges with existing topics. Library tabs renamed My files and Lesson notes. Prof shows the latest 5 requests plus a searchable History |
 | 5 Oct 2026 | Database and Prof server now update themselves on every push (SUPABASE_DB_URL and SUPABASE_ACCESS_TOKEN added); first automatic run on 1.1.35 put 1.6 part 1's weekly lessons, reminders and phone alerts live |
 | 5 Oct 2026 | 1.6 part 1: weekly lessons that keep the tutor's clock time, each learner's time shown (10:00 New York moves from 16:00 to 17:00 Lusaka on 1 Nov); skip one week and put it back, move one, change from a lesson on, stop; reminders a day and 15 minutes before to tutor and learners; learners' own ntfy phone alerts; learners told when a one-off lesson is cancelled or a lesson moves; skipped lessons left out of calendars and reports. Also: Prof's book picker no longer says "Choose a PDF" with a book showing |
