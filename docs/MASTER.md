@@ -15,7 +15,7 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 | First real user | Aaryan tutoring his sister (Cambridge IGCSE International Maths 0607, Lusaka) from NYC |
 | Admin | Aaryan is the StudyBridge admin, on a separate admin account: approves tutors, manages accounts and access, never sees content |
 | Business model | Monthly subscription per tutor (prices not final), no commission; StudyBridge pays the AI and video costs |
-| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 1 out 5 Oct 2026 |
+| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 2 out 5 Oct 2026 (app 1.1.38) |
 
 **Rules StudyBridge lives by**
 
@@ -61,22 +61,22 @@ Everything below is built, tested and live as of 1.5.
 | --- | --- |
 | Structure | Programmes, subjects (with colours) and topics, all named by the tutor; each subject can say which exam it's for; learners put on a programme and chosen subjects |
 | Learners and invites | Invite codes (`SB1-…`) that always create a learner account; learner accounts list, password reset, delete account, remove from my learners |
-| Library | Any file (PDFs open in the app, including scanned books); each item hidden, visible or visible from a date, for a subject or chosen learners; your own links; free openly licensed textbooks (OpenStax, Siyavula); a syllabus per subject (Prof sets it out or the tutor writes it) |
+| Library | Any file (PDFs open in the app, including scanned books); each item hidden, visible or visible from a date, for a subject or chosen learners; your own links; free openly licensed textbooks (OpenStax, Siyavula); a syllabus per subject in order: numbered topics with subtopics, edited in place (Prof sets it out, or the tutor pastes or types it, and it merges with topics already there); tabs are called My files and Lesson notes |
 | Past papers | Every IGCSE and IB subject by year, session and paper with gaps shown; your learners' exams first, and a subject's exam can be set right there; Cambridge's own papers open from its website (desktop); import a whole folder (filed from names or cover pages, paired with mark schemes, duplicates skipped, kept on the computer until shared) with a review to fix what a file was read as; IB filed by level and paper, your papers private; find a paper by typing it; StudyBridge practice papers (original papers in each exam's format, checked twice, approved by the admin) to copy into a test |
 | Question bank | Your questions plus StudyBridge's shared exam-style questions, by subject, topic and difficulty |
-| Lessons | Written lessons with maths, images and attached files; draft or post |
+| Lesson notes | Written lesson notes with maths, images and attached files; draft or post |
 | Assignments | Homework, quiz, test, exam; save draft, post or schedule; "Goes to" names; per-assignment time limit, attempts, release of marks, show answers, notes allowed; add questions from the bank or save them to it; practice sets for a learner (any number of tries, marked instantly) |
 | Question types | Multiple choice, number, maths with working line by line, written answer, photo of work, drawing |
 | Working out | Maths keyboard (MathLive); automatic step checker flags lines that don't follow; whiteboard for working; draw on a photo |
-| Exams | Lockdown (screen locked in the desktop app, leaving is reported instantly); exam camera the tutor watches live |
+| Exams | Lockdown (screen locked in the desktop app, leaving is reported instantly); exam camera the tutor watches live; mock exams: one or more papers add up to one total and a grade from the tutor's own grade boundaries for the exam and session (typed in, or read by Prof from a grade-threshold PDF and checked), scaled when the mock's total differs; learners see only their grade and how many marks short of the next one, once every paper is given back |
 | Marking | Auto-marking for multiple choice and numbers; tick or cross each line of working; draw on photos; feedback, mistake labels, redo requests, release control |
-| Progress | Strengths per topic, time studied per day and subject, weekly and monthly summaries, missed deadlines, mistakes; coverage map per learner (the tutor sets each cell: Strong, Getting there, Needs work, Taught, Not yet); weekly parent reports (learner switches them on; kept up to date by the server; the tutor can read any report any time; sent on WhatsApp or email after the tutor approves) |
+| Progress | Strengths per topic, time studied per day and subject, weekly and monthly summaries, missed deadlines, mistakes; coverage map per learner (the tutor sets each cell: Strong, Getting there, Needs work, Taught, Not yet); mock exam grades over time; weekly parent reports (learner switches them on; kept up to date by the server; the tutor can read any report any time; sent on WhatsApp or email after the tutor approves) |
 | Study (learners) | Flashcards with spaced repetition (the tutor's, Prof's after approval, the learner's own, mistake cards); daily quiz; worked example then you try; timed drills; formula sheets; daily goal and streak; self-marked work (one attempt; the mark scheme shows only when nothing can change) |
 | Calendar | A private calendar link with lessons and due dates for Google, Apple or Outlook calendar |
 | Messages | Notes from learners on any question, messages both ways, instant desktop notifications, phone push via ntfy |
 | Live lessons | Video, screen sharing, shared whiteboard (LiveKit, shared keys from StudyBridge); one-off or weekly lessons at the tutor's clock time, each learner's own time shown; skip one week, move one, change from a lesson on, or stop; reminders a day and 15 minutes before, in the app and on learners' phones through ntfy |
 | Learner experience | Friendly theme, streaks, week dots, Up next, score ring, confetti; works offline and hands in when back online |
-| Prof (AI, tutor only) | Ask in plain words for homework, quizzes, tests, exams or lessons; use pages or a whole book from the library (Prof asks for the pages it needs); reply to Prof under its answer; auto-mark hand-ins; weekly work aimed at weak topics; style notes; turn your copy of a past paper into a test; original practice papers in a past paper's style; bank questions and flashcards with an automatic second check; syllabuses; weekly parent reports; notes on book pages it has read so re-reading is cheap; a monthly allowance per tutor that only the admin sees |
+| Prof (AI, tutor only) | Ask in plain words for homework, quizzes, tests, exams or lessons; use pages or a whole book from the library (Prof asks for the pages it needs); reply to Prof under its answer; auto-mark hand-ins; weekly work aimed at weak topics; style notes; turn your copy of a past paper into a test; original practice papers in a past paper's style; bank questions and flashcards with an automatic second check; syllabuses; weekly parent reports; notes on book pages it has read so re-reading is cheap; reads grade-threshold PDFs for mock exams; the Prof page shows the latest 5 requests with a searchable History; a monthly allowance per tutor that only the admin sees |
 | Admin (StudyBridge) | Its own account; Overview, tutor pages, Inbox, Problems, Announcements; approve, decline, pause, switch back on, reset passwords, delete; plans and Prof allowances with alerts at 80% and 100%; Admin → Prof page (Claude credit countdown, daily spend, who used Prof and for what); crash reports; minimum app version; Claude key (write-only), model; shared live video; log of every action; shared question bank and StudyBridge practice papers (ask Prof, review, approve for every tutor) |
 | Accounts | One sign-in page for tutors, learners and the admin (the account decides which); anyone signs up as a tutor, answers a few sign-up questions and waits for approval; paused tutors can't sign in; tutors see changes the admin made to their account; a 7-step getting-started checklist on tutor Home |
 | Updates | Desktop app downloads new versions and offers Restart now; rolls back a version that fails to start; Windows installs shell updates quietly, Mac downloads the new .dmg; the phone version is published automatically with every release |
@@ -98,7 +98,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.35 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.38 |
 | Secret `RELEASES_TOKEN` | Lets the build publish to the public repo | Added |
 | Variables `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Built into the apps so nobody types a server address | Added |
 | Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Added 5 Oct 2026; works |
@@ -148,7 +148,7 @@ Open questions: ask 3–5 tutors what they would pay; mobile money for Zambia (F
 | Part | What it does | Decided | Status |
 | --- | --- | --- | --- |
 | 1. Recurring lessons + reminders | Weekly lessons for one or more learners, shown in both time zones (e.g. "Tue 16:00 Lusaka · 10:00 New York"); skip or move one lesson; in the calendar link; reminders a day and 15 minutes before, in the app, on the desktop and by ntfy (the learner can opt in too) | Lessons keep the tutor's New York time when clocks change, so the learner's time moves (16:00 becomes 17:00 in Lusaka after US clocks go back on 1 Nov 2026) | Shipped |
-| 2. Mock exam + predicted grade | A timed, locked-down exam of one or more papers; marks add up to a total and a grade comes from grade boundaries by plain maths, no AI; the learner sees it when marks are released | Boundaries per mock: typed by the tutor, or read by Prof from the tutor's own threshold PDF and approved; the tutor picks each time. Boundaries stay private to the tutor | Planned |
+| 2. Mock exam + predicted grade | A timed, locked-down exam of one or more papers; marks add up to a total and a grade comes from grade boundaries by plain maths, no AI; the learner sees it when marks are released | Boundaries per exam and session (changed from per mock on 5 Oct 2026): typed by the tutor, or read by Prof from the tutor's own threshold PDF and checked; every mock uses the newest unless pinned to a session. Called Mock grade, not predicted. Boundaries stay private to the tutor | Shipped |
 | 3. Parent accounts | A parent invite code tied to one learner, who sees which parents are linked; parents see approved reports, upcoming lessons and due dates, released marks, topic strengths and the exam countdown; never messages, working, photos, the exam camera or AI | Read-only | Planned |
 | 4. Data-saver mode | A switch per device, suggested on slow connections: smaller photo uploads, PDFs a page at a time, images on tap, low-video or audio-only live lessons |  | Planned |
 | 5. Selling basics | Email from the domain, Google sign-in, terms and privacy (under-18s with a parent's OK; needs a lawyer's check), data export and delete, payments, landing page | Payments after pricing; landing page only when Aaryan says "build". Needs Aaryan first: buy the domain, a Google sign-in client, a Stripe account, prices | Planned |
@@ -171,12 +171,12 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 ## Roadmap
 
-1.6 is next (see 1.6 plan); say "new" to bring this list up in chat.
+1.6 ships in parts (see 1.6 plan); say "new" to bring this list up in chat.
 
 | Idea | Why it matters | Release | Status |
 | --- | --- | --- | --- |
 | Scheduling | Weekly recurring lessons, reminders, both time zones, calendar | 1.6 part 1 | Shipped |
-| Mock exam mode + predicted grade | The learner sees where they stand before the real exam | 1.6 | Planned |
+| Mock exam mode + predicted grade | The learner sees where they stand before the real exam | 1.6 part 2 | Shipped |
 | Parent accounts | Parents pay the bills; a read-only view of their child's progress | 1.6 | Planned |
 | Data-saver mode | Learners on phone data use less of it | 1.6 | Planned |
 | Email and a domain | Forgot-password emails, welcome emails, parent reports | 1.6 | Planned |
@@ -184,7 +184,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Terms, privacy, data export and delete | Needed before charging; learners may be under 18 | 1.6 | Planned |
 | Payments and billing | Stripe subscriptions and free trial; mobile money for Zambia; UPI for India; tutors invoicing and taking payments from learners. Comes once pricing is set, after your own market research | 1.6, after pricing | Planned |
 | Landing page and website | Pricing, download link, sign-up | 1.6, when Aaryan says "build" | Planned |
-| Lesson recording + Prof notes | Recording with notes for the learner afterwards (Bramble gives this free) |  | Idea |
+| Lesson recording + Prof notes | Recording with notes for the learner afterwards (Bramble gives this free). On hold since 5 Oct 2026: needs paid speech-to-text (about $0.35 per lesson hour) and LiveKit recording |  | Idea |
 | Exam camera alerts | Flag no face or a second face on the existing exam camera |  | Idea |
 | Native phone apps | App Store ($99/yr) and Google Play ($25 once) |  | Idea |
 | Mac signing | Apple Developer account so Macs open and update without warnings |  | Idea |
@@ -215,6 +215,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 | Date | Change |
 | --- | --- |
+| 5 Oct 2026 | 1.6 part 2 (app 1.1.38): mock exams, one or more papers adding up to a total and a Mock grade from the tutor's own grade boundaries per exam and session (typed in, or read by Prof from a grade-threshold PDF); learners see their grade on Progress, the paper's results and the weekly report once every paper is given back. Syllabus shown in order with numbered subtopics, editable in place, and Set up the whole syllabus merges with existing topics. Library tabs renamed My files and Lesson notes. Prof shows the latest 5 requests plus a searchable History |
 | 5 Oct 2026 | Database and Prof server now update themselves on every push (SUPABASE_DB_URL and SUPABASE_ACCESS_TOKEN added); first automatic run on 1.1.35 put 1.6 part 1's weekly lessons, reminders and phone alerts live |
 | 5 Oct 2026 | 1.6 part 1: weekly lessons that keep the tutor's clock time, each learner's time shown (10:00 New York moves from 16:00 to 17:00 Lusaka on 1 Nov); skip one week and put it back, move one, change from a lesson on, stop; reminders a day and 15 minutes before to tutor and learners; learners' own ntfy phone alerts; learners told when a one-off lesson is cancelled or a lesson moves; skipped lessons left out of calendars and reports. Also: Prof's book picker no longer says "Choose a PDF" with a book showing |
 | 5 Oct 2026 | Master doc moved to this Claude Doc (backup copy in the repo at `docs/MASTER.md`); `CLAUDE.md` hand-off notes added to the repo |
