@@ -352,6 +352,13 @@ try {
   await T.getByText('Strengths by topic').waitFor();
   await shot(T, 'tutor-learner-progress', true);
 
+  step('Messages');
+  await T.getByRole('button', { name: 'Message' }).click();
+  await T.getByPlaceholder('Write a message…').fill('Yes! Dividing first works too because 3x means 3 times x.');
+  await T.keyboard.press('Enter');
+  await T.getByText('Dividing first works').first().waitFor();
+  await shot(T, 'tutor-messages');
+
   step('Mock exam: a paper adds up to a grade from the tutor’s own boundaries; the learner sees only her grade');
   await nav(T, 'Assignments').click();
   await T.getByRole('button', { name: 'New assignment' }).first().click();
@@ -380,13 +387,6 @@ try {
   await L.getByText('October mock').waitFor();
   assert.equal(await L.getByText('June 2025').count(), 0, 'the learner never sees the boundaries');
   await shot(L, 'learner-mock-grade');
-
-  step('Messages');
-  await T.getByRole('button', { name: 'Message' }).click();
-  await T.getByPlaceholder('Write a message…').fill('Yes! Dividing first works too because 3x means 3 times x.');
-  await T.keyboard.press('Enter');
-  await T.getByText('Dividing first works').first().waitFor();
-  await shot(T, 'tutor-messages');
 
   step('Weekly lesson: the tutor sets it in New York time, the learner sees it in Lusaka time');
   {
