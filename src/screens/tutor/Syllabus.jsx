@@ -133,8 +133,8 @@ function Proposal({ job, subject, topics, onDone }) {
   const lk = useLookups();
   const [busy, setBusy] = useState(false);
   const p = job.result.syllabus;
-  const known = new Set(topics.map((t) => t.name.trim().toLowerCase()));
-  const fresh = p.topics.filter((t) => !known.has(t.name.trim().toLowerCase())).length;
+  const known = new Set(topics.map((t) => api.topicKey(t.name)));
+  const fresh = p.topics.filter((t) => !known.has(api.topicKey(t.name))).length;
   return (
     <div className="card claude-card">
       <h3 className="row" style={{ margin: 0 }}>
@@ -159,9 +159,9 @@ function Proposal({ job, subject, topics, onDone }) {
           onClick={async () => {
             setBusy(true);
             try {
-              await api.applyTopics(subject.id, p.topics, topics);
+              await api.applyTopics(subject.id, p.topics, topics, { reorder: true });
               lk.reload();
-              toast(topics.length ? `Added ${fresh} new topic${fresh === 1 ? '' : 's'}; matching ones updated` : `${p.topics.length} topics added`);
+              toast(topics.length ? `Added ${fresh} new topic${fresh === 1 ? '' : 's'}; yours kept and put in syllabus order` : `${p.topics.length} topics added`);
               onDone();
             } catch (e) {
               toast({ title: 'Couldn’t add them', body: e.message, tone: 'bad' });
@@ -170,7 +170,7 @@ function Proposal({ job, subject, topics, onDone }) {
             }
           }}
         >
-          {topics.length ? `Use these (add ${fresh} new, keep yours)` : 'Use these topics'}
+          {topics.length ? `Use these (add ${fresh} new, keep yours, in syllabus order)` : 'Use these topics'}
         </button>
         <button className="btn" onClick={onDone}>
           Don’t use
@@ -181,7 +181,7 @@ function Proposal({ job, subject, topics, onDone }) {
   );
 }
 
-function SetUp({ subject }) {
+function SetUp({ subject, topics = [], onDone }) {
   const toast = useToast();
   const lk = useLookups();
   const [, code] = (subject.exam || '').split(':');
@@ -194,9 +194,10 @@ function SetUp({ subject }) {
   async function add(list, what) {
     setBusy(what);
     try {
-      await api.applyTopics(subject.id, list, []);
+      await api.applyTopics(subject.id, list, topics, { reorder: topics.length > 0 });
       lk.reload();
-      toast(`${list.length} topics added`);
+      toast(topics.length ? 'Syllabus set out: your topics are kept and put in syllabus order' : `${list.length} topics added`);
+      onDone?.();
     } catch (e) {
       toast({ title: 'Couldn’t add them', body: e.message, tone: 'bad' });
     } finally {
@@ -204,9 +205,13 @@ function SetUp({ subject }) {
     }
   }
   return (
-    <div className="card">
-      <h2>Set up the syllabus for {subject.name}</h2>
-      <div className="small muted">Topics are used everywhere: the question bank, practice, reports, flashcards and the coverage map below. Choose whichever way suits you; you can change everything later.</div>
+    <div className={topics.length ? 'stack syllabus-setup' : 'card'}>
+      <h2>{topics.length ? `Set up the whole syllabus for ${subject.name}` : `Set up the syllabus for ${subject.name}`}</h2>
+      <div className="small muted">
+        {topics.length
+          ? 'The topics you already have stay, with their questions, flashcards and coverage. Matching topics get the syllabus numbers and subtopics, new ones are added, and everything is put in syllabus order. Anything that isn’t in the syllabus goes at the end.'
+          : 'Topics are used everywhere: the question bank, practice, reports, flashcards and the coverage map below. Choose whichever way suits you; you can change everything later.'}
+      </div>
       <div className="grid g2" style={{ gap: 14 }}>
         <div className="setup-option">
           <h3 className="row">
@@ -226,9 +231,10 @@ function SetUp({ subject }) {
               onClick={async () => {
                 setBusy('prof');
                 try {
-                  await api.profSyllabus(subject.id, label.trim(), note.trim());
+                  await api.profSyllabus(subject.id, label.trim(), [note.trim(), topics.length ? 'The tutor already has some topics; give the full official list in order so they can be merged.' : ''].filter(Boolean).join(' '));
                   invalidate('prof-jobs');
                   toast({ title: 'Prof is on it', body: 'You’ll get a notification when the topics are ready to check.' });
+                  onDone?.();
                 } catch (e) {
                   toast({ title: 'Couldn’t ask Prof', body: e.message, tone: 'bad' });
                 } finally {
@@ -267,13 +273,18 @@ function SetUp({ subject }) {
   );
 }
 
+// The syllabus in order: numbered topics with their subtopics underneath ("2" → "2.1", "2.2" …)
+const subNumber = (t, i, d) => (t.code && !/^\s*[A-Z]{0,3}\s?\d/.test(d) ? `${t.code}.${i + 1}` : '');
+
 function TopicList({ subject, topics }) {
   const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
-  const [open, setOpen] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [closed, setClosed] = useState(() => new Set());
   const [adding, setAdding] = useState('');
-  const [asking, setAsking] = useState(false);
+  const [setup, setSetup] = useState(false);
+  const withSubs = topics.filter((t) => t.details?.length);
   async function move(i, d) {
     const a = topics[i];
     const b = topics[i + d];
@@ -282,47 +293,90 @@ function TopicList({ subject, topics }) {
     await api.save('topics', { id: b.id, position: i });
     lk.reload();
   }
+  const toggle = (id) =>
+    setClosed((c) => {
+      const next = new Set(c);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <div className="card">
       <div className="row between wrap">
         <h2 style={{ margin: 0 }}>
-          Topics <span className="muted small">({topics.length})</span>
+          Syllabus <span className="muted small">({topics.length} topic{topics.length === 1 ? '' : 's'})</span>
         </h2>
-        <button className="btn sm" onClick={() => setAsking((x) => !x)}>
-          <Icon name="cap" size={14} /> Ask Prof to check it against the syllabus
-        </button>
+        <div className="row wrap">
+          {withSubs.length > 0 && (
+            <button className="btn sm ghost" onClick={() => setClosed(closed.size ? new Set() : new Set(withSubs.map((t) => t.id)))}>
+              {closed.size ? 'Open all' : 'Close all'}
+            </button>
+          )}
+          <button className="btn sm" onClick={() => setSetup((x) => !x)} aria-expanded={setup}>
+            <Icon name="target" size={14} /> Set up the whole syllabus
+          </button>
+        </div>
       </div>
-      {asking && <AskAgain subject={subject} onDone={() => setAsking(false)} />}
-      <div className="syllabus-topics">
-        {topics.map((t, i) => (
-          <div key={t.id} className="syllabus-topic">
-            <div className="row" style={{ gap: 8 }}>
-              <span className="code">{t.code || ''}</span>
-              <button className="linkbtn grow" style={{ textAlign: 'left' }} onClick={() => setOpen(open === t.id ? null : t.id)} aria-expanded={open === t.id}>
-                <b>{t.name}</b>
-                {t.details?.length > 0 && <span className="small muted"> · {t.details.length} subtopic{t.details.length === 1 ? '' : 's'}</span>}
-              </button>
-              <button className="btn ghost icon sm" aria-label={`Move ${t.name} up`} disabled={i === 0} onClick={() => move(i, -1)}>
-                <Icon name="up" size={14} />
-              </button>
-              <button className="btn ghost icon sm" aria-label={`Move ${t.name} down`} disabled={i === topics.length - 1} onClick={() => move(i, 1)}>
-                <Icon name="down" size={14} />
-              </button>
-            </div>
-            {open === t.id && (
-              <TopicEdit
-                t={t}
-                onDelete={async () => {
-                  if (!(await confirm({ title: `Delete ${t.name}?`, body: 'Questions and work tagged with it keep existing but lose the tag.', ok: 'Delete', danger: true }))) return;
-                  await api.remove('topics', t.id);
-                  lk.reload();
-                  setOpen(null);
-                }}
-              />
-            )}
-          </div>
-        ))}
-      </div>
+      {setup && <SetUp subject={subject} topics={topics} onDone={() => setSetup(false)} />}
+      <ol className="syllabus-topics" aria-label={`${subject.name} syllabus`}>
+        {topics.map((t, i) => {
+          const open = !closed.has(t.id);
+          const subs = t.details || [];
+          return (
+            <li key={t.id} className="syllabus-topic">
+              <div className="row" style={{ gap: 8 }}>
+                <span className="code">{t.code || i + 1}</span>
+                {subs.length > 0 ? (
+                  <button className="linkbtn grow syllabus-name" onClick={() => toggle(t.id)} aria-expanded={open}>
+                    <Icon name={open ? 'down' : 'right'} size={14} /> <b>{t.name}</b>
+                    {!open && (
+                      <span className="small muted">
+                        {' '}
+                        · {subs.length} subtopic{subs.length === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </button>
+                ) : (
+                  <span className="grow syllabus-name">
+                    <b>{t.name}</b>
+                  </span>
+                )}
+                <button className="btn ghost icon sm" aria-label={`Edit ${t.name}`} onClick={() => setEditing(editing === t.id ? null : t.id)}>
+                  <Icon name="pen" size={14} />
+                </button>
+                <button className="btn ghost icon sm" aria-label={`Move ${t.name} up`} disabled={i === 0} onClick={() => move(i, -1)}>
+                  <Icon name="up" size={14} />
+                </button>
+                <button className="btn ghost icon sm" aria-label={`Move ${t.name} down`} disabled={i === topics.length - 1} onClick={() => move(i, 1)}>
+                  <Icon name="down" size={14} />
+                </button>
+              </div>
+              {open && subs.length > 0 && editing !== t.id && (
+                <ul className="syllabus-subs">
+                  {subs.map((d, j) => (
+                    <li key={j}>
+                      <span className="code">{subNumber(t, j, d) || '•'}</span>
+                      <span>{d}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {editing === t.id && (
+                <TopicEdit
+                  t={t}
+                  onClose={() => setEditing(null)}
+                  onDelete={async () => {
+                    if (!(await confirm({ title: `Delete ${t.name}?`, body: 'Questions and work tagged with it keep existing but lose the tag.', ok: 'Delete', danger: true }))) return;
+                    await api.remove('topics', t.id);
+                    lk.reload();
+                    setEditing(null);
+                  }}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
       <form
         className="row"
         onSubmit={async (e) => {
@@ -345,27 +399,52 @@ function TopicList({ subject, topics }) {
   );
 }
 
-function TopicEdit({ t, onDelete }) {
+function TopicEdit({ t, onDelete, onClose }) {
   const lk = useLookups();
   const toast = useToast();
   const [name, setName] = useState(t.name);
   const [code, setCode] = useState(t.code || '');
-  const [details, setDetails] = useState((t.details || []).join('\n'));
+  const [subs, setSubs] = useState(() => [...(t.details || [])]);
+  const set = (i, v) => setSubs(subs.map((x, j) => (j === i ? v : x)));
+  const swap = (i) => setSubs(subs.map((x, j) => (j === i ? subs[i + 1] : j === i + 1 ? subs[i] : x)));
   return (
-    <div className="stack sm" style={{ paddingLeft: 8 }}>
+    <div className="stack sm syllabus-edit">
       <div className="row wrap">
         <input className="input" style={{ maxWidth: 90 }} value={code} onChange={(e) => setCode(e.target.value)} placeholder="No." aria-label="Syllabus number" />
         <input className="input grow" value={name} onChange={(e) => setName(e.target.value)} aria-label="Topic name" />
       </div>
-      <textarea className="textarea" value={details} onChange={(e) => setDetails(e.target.value)} placeholder="Subtopics, one per line" aria-label="Subtopics" />
+      <div className="small strong">Subtopics</div>
+      {subs.map((d, i) => (
+        <div key={i} className="row" style={{ gap: 6 }}>
+          <span className="muted small" style={{ width: 44, flexShrink: 0 }}>
+            {subNumber({ code }, i, d) || '•'}
+          </span>
+          <input className="input grow" value={d} onChange={(e) => set(i, e.target.value)} aria-label={`Subtopic ${i + 1}`} />
+          <button type="button" className="btn ghost icon sm" aria-label="Move subtopic up" disabled={i === 0} onClick={() => swap(i - 1)}>
+            <Icon name="up" size={14} />
+          </button>
+          <button type="button" className="btn ghost icon sm" aria-label="Move subtopic down" disabled={i === subs.length - 1} onClick={() => swap(i)}>
+            <Icon name="down" size={14} />
+          </button>
+          <button type="button" className="btn ghost icon sm" aria-label="Remove subtopic" onClick={() => setSubs(subs.filter((_, j) => j !== i))}>
+            <Icon name="x" size={14} />
+          </button>
+        </div>
+      ))}
+      <div>
+        <button type="button" className="btn sm ghost" onClick={() => setSubs([...subs, ''])}>
+          <Icon name="plus" size={14} /> Add a subtopic
+        </button>
+      </div>
       <div className="row">
         <button
           className="btn sm primary"
           onClick={async () => {
             try {
-              await api.save('topics', { id: t.id, name: name.trim() || t.name, code: code.trim() || null, details: details.split('\n').map((x) => x.trim()).filter(Boolean) });
+              await api.save('topics', { id: t.id, name: name.trim() || t.name, code: code.trim() || null, details: subs.map((x) => x.trim()).filter(Boolean) });
               lk.reload();
               toast('Saved');
+              onClose();
             } catch (e) {
               toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
             }
@@ -373,36 +452,14 @@ function TopicEdit({ t, onDelete }) {
         >
           Save
         </button>
+        <button className="btn sm" onClick={onClose}>
+          Cancel
+        </button>
+        <span className="grow" />
         <button className="btn sm danger" onClick={onDelete}>
-          <Icon name="trash" size={14} /> Delete
+          <Icon name="trash" size={14} /> Delete topic
         </button>
       </div>
-    </div>
-  );
-}
-
-function AskAgain({ subject, onDone }) {
-  const toast = useToast();
-  const [label, setLabel] = useState(examLabel(subject.exam));
-  return (
-    <div className="row wrap">
-      <input className="input grow" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Exam or syllabus, e.g. Cambridge IGCSE International Mathematics 0607" aria-label="Exam or syllabus" />
-      <button
-        className="btn claude sm"
-        disabled={label.trim().length < 3}
-        onClick={async () => {
-          try {
-            await api.profSyllabus(subject.id, label.trim(), 'The tutor already has topics; give the full official list so missing ones can be added.');
-            invalidate('prof-jobs');
-            toast({ title: 'Prof is on it', body: 'Your topics stay as they are; you choose what to add.' });
-            onDone();
-          } catch (e) {
-            toast({ title: 'Couldn’t ask Prof', body: e.message, tone: 'bad' });
-          }
-        }}
-      >
-        Ask Prof
-      </button>
     </div>
   );
 }

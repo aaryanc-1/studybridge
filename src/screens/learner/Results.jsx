@@ -8,6 +8,7 @@ import * as api from '../../lib/api.js';
 import { dur, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { Thread } from '../shared/Messages.jsx';
+import { MockResultCard } from '../shared/MockHistory.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -53,6 +54,7 @@ export default function Results({ id }) {
       title={a.title}
       subtitle={`${t.number > 1 ? `Attempt ${t.number} · ` : ''}${t.submitted_at ? `Handed in ${when(t.submitted_at)}` : 'Not handed in yet'} · ${dur(t.time_spent_sec)} spent`}
     >
+      <MockResultCard assignmentId={a.id} />
       {t.status === 'returned' ? (
         <div className="card warn">
           <div className="row between wrap">

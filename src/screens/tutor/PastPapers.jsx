@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Loading, Modal, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Loading, Modal, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
@@ -9,6 +9,7 @@ import { FileSettings } from './Library.jsx';
 import { useLookups } from '../shared/lookups.jsx';
 import { SbPaperShelf } from '../shared/SbPapers.jsx';
 import { ExamSelect } from './Structure.jsx';
+import { GradeBoundaries } from './Mocks.jsx';
 
 const THIS_YEAR = new Date().getFullYear();
 const SESSION_MONTH = { m: 3, s: 5, w: 11, may: 5, nov: 11 };
@@ -26,7 +27,8 @@ export default function PastPapers() {
   const settings = useQuery('tutor_settings', api.getSettings);
   const lk = useLookups();
   const pinned = settings.data?.exam_subjects || [];
-  const [key, setKey] = useState(null); // 'cie:0607', 'ib:math-aa'
+  const route = useRoute();
+  const [key, setKey] = useState(() => route.query.get('exam') || null); // 'cie:0607', 'ib:math-aa'
   const [importing, setImporting] = useState(false);
   const [panel, setPanel] = useState(null);
   const [find, setFind] = useState('');
@@ -169,6 +171,7 @@ export default function PastPapers() {
         <>
           <SbPaperShelf board="ib" code={code} />
           <IbSyllabus syl={syl} mine={mine.filter((f) => f.exam_board === 'ib' && f.exam_code === code)} onOpen={setPanel} />
+          <BoundariesCard exam={key} />
         </>
       )}
 
@@ -419,6 +422,21 @@ function CieSyllabus({ code, mine, onOpen }) {
           </table>
         </div>
       )}
+      <BoundariesCard exam={`cie:${code}`} sources={(off.items || []).filter((x) => x.exam_kind === 'gt').map((x) => ({ url: x.url, name: x.name }))} />
+    </div>
+  );
+}
+
+// Grade boundaries for the exam, used by mock exams (private to the tutor)
+function BoundariesCard({ exam, sources = [] }) {
+  const [board, code] = exam.split(':');
+  return (
+    <div className="card" id="grade-boundaries">
+      <div className="card-head">
+        <h2>Grade boundaries</h2>
+        <span className="small muted">Used by your mock exams to work out grades. Only you see them.</span>
+      </div>
+      <GradeBoundaries exam={exam} label={`${X.BOARDS[board]?.short || ''} ${X.syllabusLabel(board, code)}`.trim()} sources={sources} />
     </div>
   );
 }

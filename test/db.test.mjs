@@ -1151,3 +1151,103 @@ test('weekly lessons keep the tutor’s clock; each learner gets their own time;
   await fails(as('TW', `select my_phone_alerts()`), /Learners only/);
   await fails(as('LW', `select * from phone_alerts`), /permission denied/);
 });
+
+test('mock exams: papers add up, the grade comes from the tutor’s own boundaries; learners never see boundaries', async () => {
+  // boundaries for an exam, set once per session; kept highest first
+  const b1 = await val('TW', `insert into grade_boundaries (exam, session, option_label, max_mark, grades)
+    values ('cie:0607', 'June 2025', 'Extended', 200, '[{"grade":"C","min":70},{"grade":"A*","min":160},{"grade":"B","min":100},{"grade":"A","min":130}]') returning id`);
+  const stored = await one('TW', `select grades from grade_boundaries where id = $1`, [b1]);
+  assert.deepEqual(stored.grades.map((g) => g.grade), ['A*', 'A', 'B', 'C']);
+  await fails(as('TW', `insert into grade_boundaries (exam, max_mark, grades) values ('cie:0607', 200, '[{"grade":"A","min":250}]')`), /isn’t between 0 and 200/);
+  await fails(as('TW', `insert into grade_boundaries (exam, max_mark, grades) values ('cie:0607', 200, '[{"grade":"A","min":150},{"grade":"a","min":120}]')`), /there twice/);
+  await fails(as('TW', `insert into grade_boundaries (exam, max_mark, grades) values ('cie:0607', 200, '[]')`), /at least one grade/);
+  await fails(as('LW', `insert into grade_boundaries (exam, max_mark, grades) values ('cie:0607', 200, '[{"grade":"A","min":1}]')`), /row-level security/);
+  assert.equal((await as('LW', `select * from grade_boundaries`)).length, 0, 'learners never read boundaries');
+  assert.equal((await as('T', `select * from grade_boundaries`)).length, 0, 'private to the tutor');
+
+  // a mock of two papers, 60 + 40 marks
+  const mock = await val('TW', `insert into mocks (title, exam) values ('October mock', 'cie:0607') returning id`);
+  await fails(as('TW', `insert into mocks (title) values ('  ')`), /title/);
+  const paper = async (title, marks, answer, pos) => {
+    const a = await val('TW', `insert into assignments (kind, title, learner_ids, visibility, mock_id, mock_position) values ('test', $1, $2, 'visible', $3, $4) returning id`, [title, [U.LW], mock, pos]);
+    const q = await val('TW', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', 'x?', $2) returning id`, [a, marks]);
+    await as('TW', `insert into question_keys (question_id, answer) values ($1, $2)`, [q, { value: answer, tolerance: '0' }]);
+    return { a, q };
+  };
+  const p1 = await paper('Paper 2', 60, '7', 1);
+  const p2 = await paper('Paper 4', 40, '3', 2);
+  const theirMock = await val('T', `insert into mocks (title) values ('Their mock') returning id`);
+  await fails(as('TW', `update assignments set mock_id = $1 where id = $2`, [theirMock, p1.a]), /Not your mock exam/);
+  await fails(as('LW', `select _mock_result($1, $2)`, [mock, U.LW]), /permission denied/);
+  assert.equal((await as('LW', `select * from mocks`)).length, 0);
+
+  let r = (await val('TW', `select mock_results($1)`, [mock])).learners;
+  assert.deepEqual(r.map((x) => x.name), ['Sis'], 'only learners the papers are for');
+  assert.equal(r[0].complete, false);
+  assert.equal(r[0].grade, null);
+
+  // she sits both: paper 2 right (60), paper 4 wrong (0); marks not given back yet
+  const sit = async (p, ans) => {
+    const t = await one('LW', `select * from start_attempt($1)`, [p.a]);
+    await as('LW', `select save_response($1, $2, $3)`, [t.id, p.q, { value: ans }]);
+    await as('LW', `select submit_attempt($1)`, [t.id]);
+    await as('TW', `select finish_marking($1, false)`, [t.id]);
+    return t.id;
+  };
+  const t1 = await sit(p1, '7');
+  const t2 = await sit(p2, '5');
+  r = (await val('TW', `select mock_results($1)`, [mock])).learners[0];
+  assert.equal(r.complete, true);
+  assert.equal(Number(r.total), 60);
+  assert.equal(Number(r.max), 100);
+  assert.equal(Number(r.pct), 60);
+  // out of 100 instead of 200: A 65, B 50 → a B, 5 marks short of an A
+  assert.equal(r.grade, 'B');
+  assert.equal(r.next, 'A');
+  assert.equal(Number(r.short_by), 5);
+  assert.deepEqual(r.papers.map((p) => p.title), ['Paper 2', 'Paper 4']);
+
+  let mine = await val('LW', `select my_mocks()`);
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].released, false);
+  assert.equal(mine[0].grade, null, 'no grade until every paper is given back');
+  assert.equal(mine[0].total, null);
+  assert.ok(mine[0].papers.every((p) => p.score === null));
+  assert.doesNotMatch(JSON.stringify(mine), /grades|160|boundar/i, 'no boundaries in what the learner gets');
+  await as('TW', `select finish_marking($1, true)`, [t1]);
+  mine = await val('LW', `select my_mocks()`);
+  assert.equal(Number(mine[0].papers[0].score), 60);
+  assert.equal(mine[0].grade, null);
+  await as('TW', `select finish_marking($1, true)`, [t2]);
+  mine = await val('LW', `select my_mocks()`);
+  assert.equal(mine[0].released, true);
+  assert.equal(mine[0].grade, 'B');
+  assert.equal(Number(mine[0].pct), 60);
+  assert.equal(Number(mine[0].short_by), 5);
+  assert.equal('has_boundaries' in mine[0], false);
+
+  // grades over time, for her and her tutor only
+  assert.equal((await val('LW', `select mock_history()`))[0].grade, 'B');
+  assert.equal((await val('TW', `select mock_history($1)`, [U.LW]))[0].grade, 'B');
+  await fails(as('T', `select mock_history($1)`, [U.LW]), /Not your learner/);
+  await fails(as('L2', `select mock_history($1)`, [U.LW]), /Not your learner/);
+  // and in the weekly report
+  const rep = await val('TW', `select report_numbers($1, now() - interval '7 days', now() + interval '1 day')`, [U.LW]);
+  assert.equal(rep.mock.grade, 'B');
+  assert.equal(rep.mock.title, 'October mock');
+
+  // newer boundaries for the exam become the default; a mock can be pinned to a session
+  const b2 = await val('TW', `insert into grade_boundaries (exam, session, max_mark, grades) values ('cie:0607', 'June 2024', 200, '[{"grade":"A","min":140},{"grade":"B","min":125},{"grade":"C","min":110}]') returning id`);
+  r = (await val('TW', `select mock_results($1)`, [mock]));
+  assert.equal(r.boundary.id, b2);
+  assert.equal(r.learners[0].grade, 'C');
+  assert.equal(Number(r.learners[0].short_by), 3);
+  await as('TW', `update mocks set boundary_id = $1 where id = $2`, [b1, mock]);
+  assert.equal((await val('TW', `select mock_results($1)`, [mock])).learners[0].grade, 'B');
+  await fails(as('T', `select mock_results($1)`, [mock]), /Not your mock exam/);
+  const other = await val('T', `insert into grade_boundaries (exam, max_mark, grades) values ('x', 10, '[{"grade":"A","min":5}]') returning id`);
+  await fails(as('TW', `update mocks set boundary_id = $1 where id = $2`, [other, mock]), /Unknown grade boundaries/);
+  // below the lowest grade is a U
+  assert.equal((await db.query(`select _grade_for($1, 200, 10, 100) g`, [stored.grades])).rows[0].g.grade, 'U');
+  await fails(as('TW', `select _grade_for($1, 200, 10, 100)`, [stored.grades]), /permission denied/);
+});

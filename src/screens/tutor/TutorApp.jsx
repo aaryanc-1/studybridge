@@ -10,9 +10,10 @@ import Structure from './Structure.jsx';
 import Library, { LessonEditor } from './Library.jsx';
 import Assignments from './Assignments.jsx';
 import AssignmentEditor from './AssignmentEditor.jsx';
+import MockPage from './Mocks.jsx';
 import Marking, { MarkAttempt } from './Marking.jsx';
 import { useDraftCounts } from './ClaudeInbox.jsx';
-import Prof, { useProfJobs } from './Prof.jsx';
+import Prof, { useProfJobs, ProfHistory } from './Prof.jsx';
 import { MoveAdmin } from './MoveAdmin.jsx';
 import Messages from '../shared/Messages.jsx';
 import Live, { Watch } from '../shared/Live.jsx';
@@ -29,6 +30,7 @@ function notificationTarget(n) {
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
   if (n.kind === 'prof' && r.bank) return '/library/bank';
   if (n.kind === 'prof' && r.report_id) return '/reports';
+  if (n.kind === 'prof' && r.boundaries) return `/library/papers?exam=${encodeURIComponent(r.exam || '')}`;
   if (n.kind === 'prof' && r.syllabus) return `/library/syllabus?subject=${r.subject_id}`;
   if (n.kind === 'prof' && r.cards) return `/library/cards?subject=${r.subject_id}`;
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
@@ -51,7 +53,7 @@ export default function TutorApp() {
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
     { to: '/learners', label: 'Learners', icon: 'users' },
-    { to: '/assignments', label: 'Assignments', icon: 'clipboard' },
+    { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
     { to: '/library', label: 'Library', icon: 'book', also: ['/file', '/lesson'] },
     { to: '/messages', label: 'Messages', icon: 'message', count: unreadNotes },
@@ -75,8 +77,10 @@ export default function TutorApp() {
   else if (a === 'official' && b) page = <OfficialView url={decodeURIComponent(b)} />;
   else if (a === 'assignments' && b) page = <AssignmentEditor id={b} />;
   else if (a === 'assignments') page = <Assignments />;
+  else if (a === 'mocks' && b) page = <MockPage id={b} />;
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;
   else if (a === 'marking') page = <Marking />;
+  else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;
   else if (a === 'admin' && app.me.admin_to_move) page = <MoveAdmin />;
   else if (a === 'reports') page = <ParentReports />;

@@ -47,6 +47,12 @@ self-marking, calendar link, StudyBridge practice papers · coverage you can set
 1.6 part 1: weekly lessons (`lesson_series` → `sessions` with series_id/series_date, made 8 weeks ahead and topped
 up hourly by pg_cron `studybridge-lessons`), skip / move / change-from-here / stop, reminders a day and 15 minutes
 before (`_lesson_reminders`), both time zones shown, learners' own ntfy phone alerts (`phone_alerts`).
+1.6 part 2: mock exams (`mocks`; papers are assignments with `mock_id`/`mock_position`), grade boundaries per exam and
+session (`grade_boundaries`, tutor-only; `_grade_for` scales them to the mock's total; `mock_results`, `my_mocks`,
+`mock_history`; latest released mock grade in `_report_numbers`), Prof reads a grade-threshold PDF (job kind
+`boundaries`, tutor saves what they check), syllabus shown in order with subtopics and "Set up the whole syllabus"
+merging (`applyTopics(..., { reorder: true })`), Library tabs renamed "My files" and "Lesson notes", Prof page shows
+the latest 5 requests + History (`/prof/history`).
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge
@@ -57,8 +63,13 @@ Decided 5 Oct 2026, before building 1.6:
 - Build 1.6 in parts, each its own auto-update; update the master doc after each part.
 - Recurring lessons keep the tutor's clock time when clocks change (Aaryan is in New York, his sister in Lusaka,
   which has no daylight saving): US clocks go back on 1 Nov 2026, so 10:00 New York moves from 16:00 to 17:00 Lusaka.
-- Mock exam grade boundaries are chosen per mock: the tutor types them, or Prof reads the tutor's own
-  grade-threshold PDF and the tutor approves. Boundaries stay private to that tutor; the grade itself is plain
-  maths, never AI.
+- Mock exam grade boundaries are set once per exam and session (changed 5 Oct 2026 from "per mock"): every mock for
+  that exam uses the newest, and a mock can be pinned to another session. The tutor types them, or Prof reads the
+  tutor's own grade-threshold PDF and the tutor checks them. Boundaries stay private to that tutor; learners see
+  only their grade ("Mock grade", not "predicted") and how many marks short of the next one. Plain maths, never AI.
+- Weekly parent reports always wait for the tutor's approval before going to a parent.
+- Lesson recording + Prof notes: on hold (paid services: speech-to-text and LiveKit recording).
+- Website/landing page: Aaryan said "build" (5 Oct 2026); host on GitHub Pages until he gives a domain; pricing is
+  Claude's call from the competitor comparison; interactive and modern.
 - The repo `aaryanc-1/studybridge` is publicly readable (it was thought to be private). Raise it with Aaryan
   before selling; private repos get limited Actions minutes and the Mac builds use them fastest.

@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Field, Link, Markdown, Modal, Page, Toggle, go, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Link, Loading, Markdown, Modal, Page, Toggle, go, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, kindLabel } from '../../lib/format.js';
+import { ago, day, kindLabel } from '../../lib/format.js';
 import { compressImage } from '../../lib/image.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { DraftsWaiting } from './ClaudeInbox.jsx';
+import { boundaryJobLink } from './Mocks.jsx';
 
 const busy = (j) => j.status === 'queued' || j.status === 'running' || j.status === 'waiting';
 const sending = new Set(); // page requests this app is answering
@@ -65,7 +66,7 @@ export default function Prof() {
           Prof
         </span>
       }
-      subtitle="Your teaching assistant. Ask for homework, quizzes, tests, exams or lessons, and switch on marking. Everything Prof makes waits here until you approve it. Learners never use Prof."
+      subtitle="Your teaching assistant. Ask for homework, quizzes, tests, exams or lesson notes, and switch on marking. Everything Prof makes waits here until you approve it. Learners never use Prof."
     >
       {u && !u.ready && <div className="card warn small">{u.why_not}</div>}
       <AskProf ready={u?.ready !== false} />
@@ -301,25 +302,43 @@ function PagePicker({ files, onClose, onAdd }) {
 
 function Jobs() {
   const q = useProfJobs();
-  const toast = useToast();
-  const lk = useLookups();
   const jobs = q.data || [];
   if (!jobs.length) return null;
+  // the latest 5, plus anything still going; everything else is in History
+  const shown = jobs.filter((j, i) => i < 5 || busy(j));
   return (
     <div className="card">
-      <h2>Recent requests</h2>
+      <div className="card-head">
+        <h2>Recent requests</h2>
+        <Link to="/prof/history" className="btn sm ghost">
+          <Icon name="clock" size={14} /> History
+        </Link>
+      </div>
       <div className="stack">
-        {jobs.slice(0, 15).map((j) => {
-          const r = j.result || {};
-          const prev = j.context?.reply_to ? jobs.find((x) => x.id === j.context.reply_to) : null;
-          return (
-            <div key={j.id} className={'prof-job ' + j.status}>
+        {shown.map((j) => (
+          <JobCard key={j.id} j={j} jobs={jobs} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const JOB_ICON = { mark: 'checkCircle', auto: 'calendar', boundaries: 'trophy', syllabus: 'target', cards: 'flame', bank: 'layers', report: 'send', paper: 'clipboard' };
+const jobTitle = (j) => (j.kind === 'mark' ? 'Marking a submission' : j.kind === 'auto' ? 'Weekly work: ' + j.prompt.replace(/^Make next week’s \w+ for /, '').split(':')[0] : j.prompt);
+
+function JobCard({ j, jobs = [] }) {
+  const toast = useToast();
+  const lk = useLookups();
+  const r = j.result || {};
+  const prev = j.context?.reply_to ? jobs.find((x) => x.id === j.context.reply_to) : null;
+  return (
+            <div className={'prof-job ' + j.status}>
               <div className="row top">
-                <Icon name={j.kind === 'mark' ? 'checkCircle' : j.kind === 'auto' ? 'calendar' : 'spark'} size={18} style={{ color: 'var(--claude)', marginTop: 2 }} />
+                <Icon name={JOB_ICON[j.kind] || 'spark'} size={18} style={{ color: 'var(--claude)', marginTop: 2 }} />
                 <div className="grow stack sm">
                   <div className="row wrap between" style={{ gap: 8 }}>
                     <span className="strong ellipsis" style={{ maxWidth: 560 }}>
-                      {j.kind === 'mark' ? 'Marking a submission' : j.kind === 'auto' ? 'Weekly work: ' + j.prompt.replace(/^Make next week’s \w+ for /, '').split(':')[0] : j.prompt}
+                      {jobTitle(j)}
                     </span>
                     <span className="small muted">{ago(j.created_at)}</span>
                   </div>
@@ -362,13 +381,18 @@ function Jobs() {
                             <Icon name="target" size={14} /> Check {r.syllabus.topics.length} topics
                           </Link>
                         )}
+                        {r.boundaries && (
+                          <Link to={boundaryJobLink(r)} className="btn sm">
+                            <Icon name="trophy" size={14} /> Check {r.boundaries.options.length} set{r.boundaries.options.length === 1 ? '' : 's'} of grade boundaries
+                          </Link>
+                        )}
                         {j.attempt_id && (
                           <Link to={`/marking/${j.attempt_id}`} className="btn sm">
                             Open the submission
                           </Link>
                         )}
                       </div>
-                      {!['mark', 'bank', 'syllabus', 'report', 'paper'].includes(j.kind) && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
+                      {!['mark', 'bank', 'syllabus', 'report', 'paper', 'boundaries'].includes(j.kind) && <ReplyBox job={j} asked={!(r.assignments || []).length && !(r.lessons || []).length} />}
                     </>
                   )}
                   {(j.status === 'failed' || j.status === 'cancelled') && (
@@ -397,10 +421,108 @@ function Jobs() {
                 </div>
               </div>
             </div>
-          );
-        })}
+  );
+}
+
+// Every request ever made to Prof: search, filter by kind, older ones open when clicked
+const HISTORY_KINDS = [
+  { value: 'all', label: 'All', kinds: null },
+  { value: 'ask', label: 'Requests', kinds: ['ask'] },
+  { value: 'mark', label: 'Marking', kinds: ['mark'] },
+  { value: 'auto', label: 'Weekly work', kinds: ['auto'] },
+  { value: 'report', label: 'Reports', kinds: ['report'] },
+  { value: 'library', label: 'Syllabus & cards', kinds: ['syllabus', 'cards', 'bank'] },
+  { value: 'papers', label: 'Papers & boundaries', kinds: ['paper', 'boundaries'] },
+];
+const STATUS = { queued: 'Waiting', running: 'Working', waiting: 'Working', done: 'Done', failed: 'Didn’t work', cancelled: 'Cancelled' };
+
+export function ProfHistory() {
+  const toast = useToast();
+  const [filter, setFilter] = useState('all');
+  const [text, setText] = useState('');
+  const [rows, setRows] = useState(null);
+  const [more, setMore] = useState(false);
+  const [open, setOpen] = useState(null);
+  const seq = useRef(0);
+  const kinds = HISTORY_KINDS.find((k) => k.value === filter)?.kinds;
+  async function load(reset) {
+    const mine = ++seq.current;
+    try {
+      const before = reset ? null : rows?.[rows.length - 1]?.created_at;
+      const page = await api.profHistory({ kinds, text, before, limit: 30 });
+      if (mine !== seq.current) return;
+      setRows(reset ? page : [...(rows || []), ...page]);
+      setMore(page.length === 30);
+    } catch (e) {
+      toast({ title: 'Couldn’t load the history', body: e.message, tone: 'bad' });
+    }
+  }
+  useEffect(() => {
+    const t = setTimeout(() => load(true), text ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [filter, text]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Page
+      eyebrow={
+        <Link to="/prof" className="row" style={{ gap: 4 }}>
+          <Icon name="left" size={14} /> Prof
+        </Link>
+      }
+      title="Prof history"
+      subtitle="Everything you’ve asked Prof for, newest first. Click one to see what Prof made."
+    >
+      <div className="row wrap between">
+        <div className="chips" role="group" aria-label="Kind">
+          {HISTORY_KINDS.map((k) => (
+            <button key={k.value} className="chip" aria-pressed={filter === k.value} onClick={() => setFilter(k.value)}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+        <input className="input" style={{ maxWidth: 280 }} value={text} onChange={(e) => setText(e.target.value)} placeholder="Search your requests" aria-label="Search your requests" />
       </div>
-    </div>
+      {!rows ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>{text || filter !== 'all' ? 'Nothing matches.' : 'You haven’t asked Prof for anything yet.'}</Empty>
+      ) : (
+        <div className="card pad0">
+          <div className="list">
+            {rows.map((j) =>
+              open === j.id ? (
+                <div key={j.id} className="item history-open">
+                  <div className="grow stack sm">
+                    <div>
+                      <button className="linkbtn small" onClick={() => setOpen(null)}>
+                        Close
+                      </button>
+                    </div>
+                    <JobCard j={j} jobs={rows} />
+                  </div>
+                </div>
+              ) : (
+                <button key={j.id} className="item click history-row" onClick={() => setOpen(j.id)} aria-expanded={false}>
+                  <Icon name={JOB_ICON[j.kind] || 'spark'} size={18} style={{ color: 'var(--claude)' }} />
+                  <span className="grow">
+                    <span className="name ellipsis">{jobTitle(j)}</span>
+                    <span className="meta">{day(j.created_at)} · {ago(j.created_at)}</span>
+                  </span>
+                  <span className={'pill ' + (j.status === 'done' ? 'good' : j.status === 'failed' ? 'bad' : '')}>{STATUS[j.status] || j.status}</span>
+                  <Icon name="right" size={16} />
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+      {more && (
+        <div>
+          <button className="btn" onClick={() => load(false)}>
+            Show older
+          </button>
+        </div>
+      )}
+    </Page>
   );
 }
 

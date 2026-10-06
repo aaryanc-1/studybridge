@@ -14,11 +14,11 @@ export default function Library({ tab = 'files' }) {
   return (
     <Page
       title="Library"
-      subtitle="Textbooks, past papers, worksheets and lessons. Everything starts hidden; you choose when learners see it."
+      subtitle="Textbooks, past papers, worksheets and lesson notes. Everything starts hidden; you choose when learners see it."
       actions={
         tab === 'lessons' ? (
           <button className="btn primary" onClick={() => go('/lesson/new')}>
-            <Icon name="plus" size={18} /> New lesson
+            <Icon name="plus" size={18} /> New lesson notes
           </button>
         ) : null
       }
@@ -27,13 +27,13 @@ export default function Library({ tab = 'files' }) {
         value={tab}
         onChange={(t) => go(`/library/${t}`, { replace: true })}
         options={[
-          { value: 'files', label: 'Files', icon: 'file' },
+          { value: 'files', label: 'My files', icon: 'file' },
           { value: 'syllabus', label: 'Syllabus', icon: 'target' },
           { value: 'papers', label: 'Past papers', icon: 'clipboard' },
           { value: 'bank', label: 'Question bank', icon: 'layers' },
           { value: 'cards', label: 'Flashcards', icon: 'flame' },
           { value: 'textbooks', label: 'Free textbooks', icon: 'book' },
-          { value: 'lessons', label: 'Lessons', icon: 'pen' },
+          { value: 'lessons', label: 'Lesson notes', icon: 'pen' },
         ]}
       />
       {tab === 'lessons' ? <Lessons /> : tab === 'syllabus' ? <Syllabus /> : tab === 'cards' ? <Flashcards /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
@@ -73,6 +73,7 @@ function Files() {
 
   return (
     <>
+      <div className="small muted">Your own books, worksheets and handouts. Prof reads books from here when you ask it to use pages or a whole book.</div>
       <div
         className={'dropzone' + (over ? ' over' : '')}
         onClick={() => input.current.click()}
@@ -114,7 +115,7 @@ function Files() {
         </div>
       )}
       {list.length === 0 ? (
-        files.data && <Empty>No files yet.</Empty>
+        files.data && <Empty>Nothing in My files yet.</Empty>
       ) : (
         <div className="card pad0">
           <table className="table responsive">
@@ -268,10 +269,10 @@ function Lessons() {
   if (lessons.data && list.length === 0)
     return (
       <Empty
-        title="No lessons yet"
+        title="No lesson notes yet"
         action={
           <button className="btn primary" onClick={() => go('/lesson/new')}>
-            <Icon name="plus" size={18} /> New lesson
+            <Icon name="plus" size={18} /> New lesson notes
           </button>
         }
       >
@@ -316,7 +317,7 @@ export function LessonEditor({ id }) {
   useEffect(() => {
     if (!isNew && lessons.data && !l) setL(lessons.data.find((x) => x.id === id) || null);
   }, [lessons.data, id, isNew, l]);
-  if (!l) return <Page title="Lesson">{lessons.data ? <Empty>Lesson not found.</Empty> : null}</Page>;
+  if (!l) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes no longer exist.</Empty> : null}</Page>;
   const set = (patch) => setL((x) => ({ ...x, ...patch }));
 
   async function saveIt({ post = false } = {}) {
@@ -372,17 +373,17 @@ export function LessonEditor({ id }) {
     <Page
       eyebrow={
         <>
-          <Link to="/library/lessons">Lessons</Link> <Icon name="right" size={14} />
+          <Link to="/library/lessons">Lesson notes</Link> <Icon name="right" size={14} />
         </>
       }
-      title={isNew ? 'New lesson' : l.title || 'Lesson'}
+      title={isNew ? 'New lesson notes' : l.title || 'Lesson notes'}
       actions={
         <>
           {!isNew && (
             <button
               className="btn danger"
               onClick={async () => {
-                if (!(await confirm({ title: 'Delete this lesson?', ok: 'Delete', danger: true }))) return;
+                if (!(await confirm({ title: 'Delete these lesson notes?', ok: 'Delete', danger: true }))) return;
                 await api.remove('lessons', l.id);
                 invalidate('lessons');
                 go('/library/lessons');
@@ -413,7 +414,7 @@ export function LessonEditor({ id }) {
           <div className="row">
             <Icon name="cap" style={{ color: 'var(--claude)' }} />
             <span>
-              {l.source === 'prof' ? 'Prof' : 'Claude'} wrote this lesson. Learners can’t see it until you press <b>Approve & post</b>. Change anything you like first.
+              {l.source === 'prof' ? 'Prof' : 'Claude'} wrote these lesson notes. Learners can’t see them until you press <b>Approve & post</b>. Change anything you like first.
             </span>
           </div>
         </div>

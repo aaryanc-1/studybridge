@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Modal, Page, Seg, VisibilityPill, go } from '../../ui/kit.jsx';
+import { Empty, Field, Modal, Page, Seg, VisibilityPill, go, useRoute } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { due, kindLabel } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
+import { MockCards, NewMock } from './Mocks.jsx';
 
 export const KIND_DEFAULTS = {
   homework: { lockdown: false, camera: false, time_limit_min: null, max_attempts: 1, release_mode: 'manual', allow_notes: true },
@@ -17,10 +18,16 @@ export default function Assignments() {
   const lk = useLookups();
   const q = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('attempts', api.listAttempts).data || [];
-  const [filter, setFilter] = useState('all');
+  const mocks = useQuery('mocks', api.listMocks).data || [];
+  const route = useRoute();
+  const [filter, setFilter] = useState(route.query.get('show') || 'all');
   const [creating, setCreating] = useState(false);
   // practice a learner started themselves (Study) isn't listed here; it shows in their progress
-  const list = (q.data || []).filter((a) => a.source !== 'self').filter((a) => filter === 'all' || (filter === 'drafts' ? a.draft : a.kind === filter && !a.draft));
+  const list = (q.data || [])
+    .filter((a) => a.source !== 'self')
+    .filter((a) => filter === 'all' || (filter === 'drafts' ? a.draft : a.kind === filter && !a.draft));
+  const mockTitle = (id) => mocks.find((m) => m.id === id)?.title;
+  const showMocks = filter === 'all' || filter === 'mocks';
   const drafts = (q.data || []).filter((a) => a.draft).length;
 
   return (
@@ -42,10 +49,26 @@ export default function Assignments() {
           { value: 'quiz', label: 'Quizzes' },
           { value: 'test', label: 'Tests' },
           { value: 'exam', label: 'Exams' },
+          { value: 'mocks', label: `Mock exams${mocks.length ? ` (${mocks.length})` : ''}` },
           ...(drafts ? [{ value: 'drafts', label: `Drafts (${drafts})` }] : []),
         ]}
       />
-      {q.data && list.length === 0 ? (
+      {filter === 'mocks' && !mocks.length ? (
+        <Empty
+          title="No mock exams yet"
+          action={
+            <button className="btn primary" onClick={() => setCreating('mock')}>
+              <Icon name="plus" size={18} /> New mock exam
+            </button>
+          }
+        >
+          A mock is one or more papers whose marks add up to one total. StudyBridge works out the grade from your own grade boundaries for the exam.
+        </Empty>
+      ) : filter === 'mocks' ? (
+        <div className="stack">
+          <MockCards mocks={mocks} assignments={q.data || []} />
+        </div>
+      ) : q.data && list.length === 0 && !(showMocks && mocks.length) ? (
         <Empty
           title="Nothing here yet"
           action={
@@ -58,6 +81,7 @@ export default function Assignments() {
         </Empty>
       ) : (
         <div className="stack">
+          {showMocks && <MockCards mocks={mocks} assignments={q.data || []} />}
           {list.map((a) => {
             const mine = attempts.filter((t) => t.assignment_id === a.id);
             const who = lk.audience(a);
@@ -70,6 +94,7 @@ export default function Assignments() {
                 <span className="grow stack sm">
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{a.practice ? 'Practice' : kindLabel[a.kind]}</span>
+                    {a.mock_id && mockTitle(a.mock_id) && <span className="pill accent">Mock: {mockTitle(a.mock_id)}</span>}
                     {a.draft && <span className="pill claude"><Icon name={a.source === 'prof' ? 'cap' : 'spark'} size={12} /> Draft from {a.source === 'prof' ? 'Prof' : 'Claude'}</span>}
                     {a.lockdown && <span className="pill dark"><Icon name="lock" size={12} /> Lockdown</span>}
                     {a.camera && <span className="pill dark"><Icon name="camera" size={12} /> Camera</span>}
@@ -92,12 +117,13 @@ export default function Assignments() {
           })}
         </div>
       )}
-      {creating && <NewAssignment onClose={() => setCreating(false)} />}
+      {creating === 'mock' && <NewMock onClose={() => setCreating(false)} />}
+      {creating === true && <NewAssignment onClose={() => setCreating(false)} onMock={() => setCreating('mock')} />}
     </Page>
   );
 }
 
-function NewAssignment({ onClose }) {
+function NewAssignment({ onClose, onMock }) {
   const lk = useLookups();
   const [kind, setKind] = useState('homework');
   const [title, setTitle] = useState('');
@@ -120,12 +146,13 @@ function NewAssignment({ onClose }) {
         <Field label="Kind">
           <Seg
             value={kind}
-            onChange={setKind}
+            onChange={(v) => (v === 'mock' ? onMock() : setKind(v))}
             options={[
               { value: 'homework', label: 'Homework' },
               { value: 'quiz', label: 'Quiz' },
               { value: 'test', label: 'Test' },
               { value: 'exam', label: 'Exam' },
+              { value: 'mock', label: 'Mock exam' },
             ]}
           />
         </Field>

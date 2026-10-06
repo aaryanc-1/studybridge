@@ -603,6 +603,14 @@ a.stat.click:hover { border-color: var(--accent); }
 .syllabus-topics { display: flex; flex-direction: column; }
 .syllabus-topic { border-top: 1px solid var(--line-soft); padding: 8px 0; display: flex; flex-direction: column; gap: 8px; }
 .syllabus-topic .code { width: 52px; flex-shrink: 0; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.syllabus-topics { list-style: none; margin: 0; padding: 0; }
+.syllabus-name { display: inline-flex; align-items: center; gap: 6px; text-align: left; }
+.syllabus-subs { list-style: none; margin: 0 0 0 60px; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--ink-2); }
+.syllabus-subs li { display: flex; gap: 10px; align-items: baseline; }
+.syllabus-subs .code { width: 44px; flex-shrink: 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.syllabus-edit { padding: 4px 0 6px 60px; }
+.syllabus-setup { border: 1px dashed var(--line); border-radius: 12px; padding: 14px; margin: 6px 0; }
+@media (max-width: 640px) { .syllabus-subs, .syllabus-edit { margin-left: 0; padding-left: 0; } }
 .table-wrap { overflow-x: auto; max-width: 100%; }
 table.coverage td, table.coverage th { white-space: nowrap; }
 table.coverage td:first-child { white-space: normal; min-width: 180px; }
@@ -676,3 +684,13 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .setup-bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .3s; }
 .setup .item.next { background: var(--card); border-radius: 10px; }
 .setup .item > svg { flex-shrink: 0; }
+
+/* Prof history */
+.history-row { width: 100%; text-align: left; background: none; border: 0; font: inherit; cursor: pointer; }
+.history-row:hover { background: var(--sunk); }
+.history-open { background: var(--sunk); }
+
+/* Mock exams */
+.mock-grade { min-width: 56px; height: 56px; padding: 0 10px; border-radius: 14px; background: var(--accent-tint); color: var(--accent-ink); display: inline-flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 800; flex-shrink: 0; }
+.mock-grade.sm { min-width: 40px; height: 40px; font-size: 18px; border-radius: 10px; }
+.mock-result { border-color: var(--accent-tint); }

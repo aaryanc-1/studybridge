@@ -176,8 +176,8 @@ try {
 
   // ---------------- lesson ----------------
   step('Tutor writes a lesson with maths');
-  await T.getByRole('button', { name: 'Lessons' }).click();
-  await T.getByRole('button', { name: 'New lesson' }).first().click();
+  await T.getByRole('button', { name: 'Lesson notes' }).click();
+  await T.getByRole('button', { name: 'New lesson notes' }).first().click();
   await T.getByLabel('Title').fill('Solving linear equations');
   await T.locator('textarea').first().fill('## The idea\nDo the **same thing to both sides**.\n\n## Worked example\nSolve $2x + 3 = 11$.\n\n$$2x = 8 \\Rightarrow x = 4$$\n\n- Subtract 3\n- Divide by 2');
   await T.getByRole('combobox').nth(0).selectOption({ label: 'Mathematics (Extended)' });
@@ -351,6 +351,35 @@ try {
   await T.getByText('Anaya').first().click();
   await T.getByText('Strengths by topic').waitFor();
   await shot(T, 'tutor-learner-progress', true);
+
+  step('Mock exam: a paper adds up to a grade from the tutor’s own boundaries; the learner sees only her grade');
+  await nav(T, 'Assignments').click();
+  await T.getByRole('button', { name: 'New assignment' }).first().click();
+  await T.getByRole('dialog').getByRole('button', { name: 'Mock exam', exact: true }).click();
+  await T.getByLabel('Title').fill('October mock');
+  await T.getByLabel('Subject').selectOption({ label: 'Mathematics (Extended)' });
+  await T.getByRole('button', { name: 'Create' }).click();
+  await T.getByRole('heading', { name: 'Papers' }).waitFor();
+  await T.getByLabel('Add a paper you already made').selectOption({ label: 'Linear equations 1' });
+  await T.getByRole('button', { name: 'Add', exact: true }).click();
+  await T.locator('tr', { hasText: 'Anaya' }).getByText('Add grade boundaries').waitFor();
+  await T.getByRole('button', { name: 'Add grade boundaries' }).click();
+  await T.getByRole('button', { name: 'Type them in' }).click();
+  await T.getByLabel('Session').fill('June 2025');
+  await T.getByLabel(/Out of/).fill('100');
+  for (const [g, m] of [['A*', 90], ['A', 75], ['B', 60], ['C', 45], ['D', 30], ['E', 15]]) await T.getByLabel(`Lowest mark for ${g}`, { exact: true }).fill(String(m));
+  await T.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await T.getByText('Grade boundaries saved').waitFor();
+  const grade = await T.locator('tr', { hasText: 'Anaya' }).locator('td').nth(3).locator('.strong').textContent();
+  assert.match(grade, /^(A\*|[A-E]|U)$/, 'a grade from the boundaries: ' + grade);
+  await shot(T, 'tutor-mock-exam', true);
+  // the learner: her grade on Progress, never the boundaries
+  await L.reload();
+  await nav(L, 'Progress').click();
+  await L.getByRole('heading', { name: /Mock exams/ }).waitFor();
+  await L.getByText('October mock').waitFor();
+  assert.equal(await L.getByText('June 2025').count(), 0, 'the learner never sees the boundaries');
+  await shot(L, 'learner-mock-grade');
 
   step('Messages');
   await T.getByRole('button', { name: 'Message' }).click();

@@ -98,6 +98,26 @@ function reply(body) {
     const list = Array.from({ length: want }, (_, i) => ({ front: `Card ${i + 1}: what is $${i + 2}^2$?`, back: `$${(i + 2) ** 2}$` }));
     return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_cards', { cards: list })] };
   }
+  if (tools.includes('save_boundaries')) {
+    const pics = body.messages[0].content.filter((b) => b.type === 'image').length;
+    assert.ok(pics >= 1, 'the threshold pages arrive as pictures');
+    return {
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      usage,
+      content: [
+        tu('save_boundaries', {
+          session: 'June 2025',
+          options: [
+            { option: 'Core (AX: papers 1, 3, 5)', max_mark: 160, grades: [{ grade: 'C', min: 106 }, { grade: 'D', min: 86 }, { grade: 'E', min: 66 }] },
+            { option: 'Extended (BX: papers 2, 4, 6)', max_mark: 200, grades: [{ grade: 'A*', min: 163 }, { grade: 'A', min: 133 }, { grade: 'B', min: 104 }, { grade: 'C', min: 75 }] },
+            { option: 'Unreadable row', max_mark: 50, grades: [{ grade: 'A', min: 80 }] },
+          ],
+          note: 'Check these against the document.',
+        }),
+      ],
+    };
+  }
   if (tools.includes('save_syllabus')) {
     const topics = [
       { code: '1', name: 'Number', details: ['Types of number', 'Fractions, decimals and percentages', 'Standard form'] },

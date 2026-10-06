@@ -518,7 +518,7 @@ create table if not exists public.prof_alerts (
 );
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
-  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards'));
+  alter table public.prof_jobs add constraint prof_jobs_kind_check check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards', 'boundaries'));
 end $$;
 do $$ begin
   alter table public.prof_jobs drop constraint if exists prof_jobs_status_check;
@@ -1540,7 +1540,7 @@ begin
   if tg_table_name = 'assignments' then
     v_title := 'New ' || new.kind || ': ' || new.title;
   else
-    v_title := 'New lesson: ' || new.title;
+    v_title := 'New lesson notes: ' || new.title;
     v_body := 'Open StudyBridge to read it.';
   end if;
   for l in select public._audience(new.tutor_id, new.learner_ids, new.subject_id) loop
@@ -2063,6 +2063,10 @@ begin
         from public.assignments a
         where a.tutor_id = v_tutor and not a.practice and public._assignment_visible_to(a, p_learner)
           and a.due_at >= p_to and a.due_at < p_to + interval '7 days'), '[]'),
+    -- the latest mock grade they've been given back (1.6)
+    'mock', (select z.r from (select jsonb_build_object('title', m.title) || (public._mock_result(m.id, p_learner, true) - 'papers') as r
+                                from public.mocks m where m.tutor_id = v_tutor) z
+              where (z.r ->> 'released')::boolean and z.r ->> 'pct' is not null order by z.r ->> 'last_at' desc limit 1),
     'exam', case when r.exam_date is not null then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - (p_to at time zone 'UTC')::date) end,
     'topics', public._learner_topics(p_learner, true, v_tutor)
   );
@@ -3885,6 +3889,299 @@ begin
   perform public._lesson_reminders();
 end $$;
 
+-- =====================================================================
+-- 1.6 part 2: mock exams and grade boundaries. A mock is one or more papers (the tutor's own tests or
+-- exams). Its marks add up to one total, and the grade comes from the tutor's own grade boundaries for
+-- that exam by plain maths, never AI. Boundaries are set once per exam and session and stay private to
+-- the tutor: learners only ever see their grade and how many marks short of the next one they were.
+-- =====================================================================
+create table if not exists public.grade_boundaries (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  exam text not null,                            -- 'cie:0607', 'ib:math-aa', or 'subject:<id>'
+  session text not null default '',              -- e.g. 'June 2025'
+  option_label text not null default '',         -- e.g. 'Extended (Papers 2 and 4)'
+  max_mark numeric not null check (max_mark > 0),
+  grades jsonb not null default '[]',            -- [{"grade": "A*", "min": 160}, ...] highest first
+  source text not null default 'tutor' check (source in ('tutor', 'prof')),
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_boundaries_exam on public.grade_boundaries (tutor_id, exam, created_at desc);
+alter table public.grade_boundaries enable row level security;
+revoke all on public.grade_boundaries from public, anon, authenticated;
+grant select, insert, update, delete on public.grade_boundaries to authenticated;
+drop policy if exists boundaries_tutor on public.grade_boundaries;
+create policy boundaries_tutor on public.grade_boundaries for all using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and public.my_role() = 'tutor');
+
+-- Each grade needs a name and the lowest mark that gets it; they're kept highest first
+create or replace function public._check_boundaries() returns trigger
+language plpgsql set search_path = public as $$
+declare
+  g jsonb;
+  v numeric;
+  n text;
+  names text[] := '{}';
+  mins numeric[] := '{}';
+  out jsonb := '[]';
+begin
+  new.exam := trim(coalesce(new.exam, ''));
+  if new.exam = '' then raise exception 'Say which exam these boundaries are for.'; end if;
+  new.session := left(trim(coalesce(new.session, '')), 60);
+  new.option_label := left(trim(coalesce(new.option_label, '')), 120);
+  if new.max_mark is null or new.max_mark <= 0 then raise exception 'Give the total marks the boundaries are out of.'; end if;
+  if jsonb_typeof(new.grades) is distinct from 'array' or jsonb_array_length(new.grades) = 0 then raise exception 'Add at least one grade.'; end if;
+  if jsonb_array_length(new.grades) > 12 then raise exception 'Up to 12 grades.'; end if;
+  for g in select * from jsonb_array_elements(new.grades) loop
+    n := left(trim(coalesce(g ->> 'grade', '')), 8);
+    if n = '' then raise exception 'Every grade needs a name, like A* or 7.'; end if;
+    begin
+      v := (g ->> 'min')::numeric;
+    exception when others then
+      v := null;
+    end;
+    if v is null then raise exception 'Grade % needs the lowest mark that gets it.', n; end if;
+    if v < 0 or v > new.max_mark then raise exception 'Grade %: % isn’t between 0 and %.', n, v, new.max_mark; end if;
+    if upper(n) = any (select upper(x) from unnest(names) x) then raise exception 'Grade % is there twice.', n; end if;
+    if v = any (mins) then raise exception 'Two grades can’t start at the same mark (%).', v; end if;
+    names := names || n;
+    mins := mins || v;
+    out := out || jsonb_build_object('grade', n, 'min', v);
+  end loop;
+  select jsonb_agg(x order by (x ->> 'min')::numeric desc) into new.grades from jsonb_array_elements(out) x;
+  return new;
+end $$;
+drop trigger if exists boundaries_check on public.grade_boundaries;
+create trigger boundaries_check before insert or update on public.grade_boundaries for each row execute function public._check_boundaries();
+
+create table if not exists public.mocks (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  title text not null,
+  subject_id uuid references public.subjects (id) on delete set null,
+  exam text,
+  boundary_id uuid references public.grade_boundaries (id) on delete set null,   -- null: the latest for the exam
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.mocks enable row level security;
+revoke all on public.mocks from public, anon, authenticated;
+grant select, insert, update, delete on public.mocks to authenticated;
+drop policy if exists mocks_tutor on public.mocks;
+create policy mocks_tutor on public.mocks for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid() and public.my_role() = 'tutor');
+
+create or replace function public._check_mock() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  new.title := left(trim(coalesce(new.title, '')), 200);
+  if new.title = '' then raise exception 'Give the mock exam a title.'; end if;
+  if new.subject_id is not null and not exists (select 1 from public.subjects where id = new.subject_id and tutor_id = new.tutor_id) then
+    raise exception 'Unknown subject.';
+  end if;
+  if new.boundary_id is not null and not exists (select 1 from public.grade_boundaries where id = new.boundary_id and tutor_id = new.tutor_id) then
+    raise exception 'Unknown grade boundaries.';
+  end if;
+  new.updated_at := now();
+  return new;
+end $$;
+drop trigger if exists mocks_check on public.mocks;
+create trigger mocks_check before insert or update on public.mocks for each row execute function public._check_mock();
+
+alter table public.assignments add column if not exists mock_id uuid references public.mocks (id) on delete set null;
+alter table public.assignments add column if not exists mock_position int;
+create index if not exists idx_assignments_mock on public.assignments (mock_id) where mock_id is not null;
+
+create or replace function public._check_assignment_mock() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if new.mock_id is not null and not exists (select 1 from public.mocks where id = new.mock_id and tutor_id = new.tutor_id) then
+    raise exception 'Not your mock exam.';
+  end if;
+  if new.mock_id is null then new.mock_position := null; end if;
+  return new;
+end $$;
+drop trigger if exists assignments_mock on public.assignments;
+create trigger assignments_mock before insert or update of mock_id, mock_position on public.assignments
+  for each row execute function public._check_assignment_mock();
+
+-- Who a piece of work is for, whether or not it's visible yet
+create or replace function public._in_audience(a public.assignments, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case
+           when a.learner_ids is not null and cardinality(a.learner_ids) > 0 then p_learner = any (a.learner_ids)
+           when a.subject_id is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p_learner and ls.subject_id = a.subject_id)
+           else true
+         end
+$$;
+
+-- The boundaries a mock uses: the ones chosen for it, else the newest the tutor has for its exam
+create or replace function public._mock_boundary(p_mock uuid) returns public.grade_boundaries
+language sql stable security definer set search_path = public as $$
+  select b.* from public.mocks m
+    join public.grade_boundaries b on b.tutor_id = m.tutor_id
+   where m.id = p_mock and (b.id = m.boundary_id or (m.boundary_id is null and b.exam = m.exam))
+   order by b.created_at desc
+   limit 1
+$$;
+
+-- The grade for a score, by plain maths. Boundaries out of a different total are scaled, so a mock out of
+-- 100 marks uses the same percentages as the real exam out of 200.
+create or replace function public._grade_for(p_grades jsonb, p_max_mark numeric, p_score numeric, p_out_of numeric) returns jsonb
+language sql immutable set search_path = public as $$
+  with g as (
+    select x ->> 'grade' as grade, ceil(round((x ->> 'min')::numeric * p_out_of / p_max_mark, 6)) as need
+      from jsonb_array_elements(p_grades) x
+  )
+  select jsonb_build_object(
+    'grade', coalesce((select grade from g where p_score >= need order by need desc limit 1), 'U'),
+    'next', (select grade from g where need > p_score order by need limit 1),
+    'short_by', (select need - p_score from g where need > p_score order by need limit 1))
+$$;
+
+-- One learner's mock: each paper, the total and the grade. In the learner's own view, marks show only once
+-- given back, and the total and grade only once every paper is.
+create or replace function public._mock_result(p_mock uuid, p_learner uuid, p_learner_view boolean default false) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_papers jsonb;
+  v_n int;
+  v_marked int;
+  v_released int;
+  v_total numeric;
+  v_max numeric;
+  v_last timestamptz;
+  v_complete boolean;
+  v_show boolean;
+  b public.grade_boundaries;
+  g jsonb;
+begin
+  select coalesce(jsonb_agg(p order by (p ->> 'position')::int nulls last, p ->> 'created_at'), '[]') into v_papers from (
+    select jsonb_build_object(
+      'id', a.id, 'title', a.title, 'kind', a.kind, 'position', a.mock_position, 'created_at', a.created_at,
+      'visible', public._assignment_visible_to(a, p_learner),
+      'attempt_id', t.id,
+      'status', case when t.id is null then 'not_started'
+                     when t.status = 'in_progress' then 'doing'
+                     when t.score is not null and t.status in ('marked', 'returned') then 'marked'
+                     else 'submitted' end,
+      'released', coalesce(t.rel, false),
+      '_score', case when t.score is not null and t.status in ('marked', 'returned') then t.score end,
+      'max', coalesce(t.max_score, (select sum(q.marks) from public.questions q where q.assignment_id = a.id), 0),
+      'submitted_at', t.submitted_at) as p
+    from public.assignments a
+    left join lateral (select x.*, public._is_released(x) as rel from public.attempts x
+                        where x.assignment_id = a.id and x.learner_id = p_learner order by x.number desc limit 1) t on true
+    where a.mock_id = p_mock and not a.draft
+  ) z;
+  v_n := jsonb_array_length(v_papers);
+  select count(*) filter (where x ->> 'status' = 'marked'),
+         count(*) filter (where x ->> 'status' = 'marked' and (x ->> 'released')::boolean),
+         coalesce(sum((x ->> '_score')::numeric), 0), coalesce(sum((x ->> 'max')::numeric), 0), max((x ->> 'submitted_at')::timestamptz)
+    into v_marked, v_released, v_total, v_max, v_last
+    from jsonb_array_elements(v_papers) x;
+  v_complete := v_n > 0 and v_marked = v_n;
+  v_show := not p_learner_view or (v_complete and v_released = v_n);
+  b := public._mock_boundary(p_mock);
+  if v_complete and v_max > 0 and b.id is not null then g := public._grade_for(b.grades, b.max_mark, v_total, v_max); end if;
+  return jsonb_build_object(
+    'papers', coalesce((select jsonb_agg((x - '_score') || jsonb_build_object('score',
+                          case when not p_learner_view or (x ->> 'released')::boolean then x -> '_score' end))
+                          from jsonb_array_elements(v_papers) x
+                         where not p_learner_view or (x ->> 'visible')::boolean or x ->> 'attempt_id' is not null), '[]'),
+    'count', v_n,
+    'marked', v_marked,
+    'complete', v_complete,
+    'released', v_complete and v_released = v_n,
+    'last_at', v_last,
+    'max', case when v_show then v_max end,
+    'total', case when v_show and (v_complete or not p_learner_view) then v_total end,
+    'pct', case when v_show and v_complete and v_max > 0 then round(100 * v_total / v_max) end,
+    'grade', case when v_show then g ->> 'grade' end,
+    'next', case when v_show then g ->> 'next' end,
+    'short_by', case when v_show then (g ->> 'short_by')::numeric end,
+    'has_boundaries', b.id is not null) - case when p_learner_view then 'has_boundaries' else '' end;
+end $$;
+
+-- The tutor's results table for a mock: every learner it's for, paper by paper
+create or replace function public.mock_results(p_mock uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  m public.mocks;
+  b public.grade_boundaries;
+begin
+  select * into m from public.mocks where id = p_mock and tutor_id = auth.uid();
+  if m.id is null then raise exception 'Not your mock exam.'; end if;
+  b := public._mock_boundary(p_mock);
+  return jsonb_build_object(
+    'boundary', case when b.id is not null then to_jsonb(b) end,
+    'learners', coalesce((
+      select jsonb_agg(public._mock_result(p_mock, p.id) || jsonb_build_object('learner_id', p.id, 'name', p.display_name) order by p.display_name)
+        from public.profiles p
+       where p.tutor_id = auth.uid() and p.role = 'learner'
+         and exists (select 1 from public.assignments a where a.mock_id = p_mock and not a.draft
+                       and (public._in_audience(a, p.id) or exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p.id)))), '[]'));
+end $$;
+
+-- A learner's mocks (the ones with a paper they can see), without boundaries
+create or replace function public.my_mocks() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'title', m.title, 'subject_id', m.subject_id)
+                            || public._mock_result(m.id, auth.uid(), true) order by m.created_at desc), '[]')
+    from public.mocks m
+   where public.my_role() = 'learner' and m.tutor_id = public.my_tutor()
+     and exists (select 1 from public.assignments a where a.mock_id = m.id and public._assignment_visible_to(a, auth.uid()))
+$$;
+
+-- Mock grades over time, oldest first. The tutor sees every finished mock; a learner sees the ones given back.
+create or replace function public.mock_history(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  v_own boolean;
+  v_tutor uuid;
+begin
+  if v_l = auth.uid() and public.my_role() = 'learner' then
+    v_own := true;
+    v_tutor := public.my_tutor();
+  elsif public.is_my_learner(v_l) then
+    v_own := false;
+    v_tutor := auth.uid();
+  else
+    raise exception 'Not your learner.';
+  end if;
+  return coalesce((
+    select jsonb_agg(r order by r ->> 'last_at') from (
+      select jsonb_build_object('id', m.id, 'title', m.title, 'subject_id', m.subject_id) || (public._mock_result(m.id, v_l, v_own) - 'papers') as r
+        from public.mocks m
+       where m.tutor_id = v_tutor
+    ) z
+    where r ->> 'pct' is not null), '[]');
+end $$;
+
+-- Prof reads the tutor's own grade-threshold PDF (pictures of its pages); the tutor checks the numbers before saving
+create or replace function public.prof_boundaries(p_exam text, p_label text, p_pages jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text;
+  v_id uuid;
+  p jsonb;
+begin
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  if nullif(trim(coalesce(p_exam, '')), '') is null then raise exception 'Say which exam these boundaries are for.'; end if;
+  if jsonb_typeof(p_pages) is distinct from 'array' or jsonb_array_length(p_pages) = 0 then raise exception 'Choose the grade-threshold PDF first.'; end if;
+  if jsonb_array_length(p_pages) > 6 then raise exception 'Up to 6 pages at a time.'; end if;
+  for p in select * from jsonb_array_elements(p_pages) loop
+    if coalesce(p ->> 'path', '') not like auth.uid()::text || '/prof/%' then raise exception 'Unknown page.'; end if;
+  end loop;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'boundaries', format('Read the grade thresholds for %s', left(coalesce(nullif(trim(p_label), ''), trim(p_exam)), 150)),
+          jsonb_build_object('exam', trim(p_exam), 'label', left(trim(coalesce(p_label, '')), 200), 'pages', p_pages))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -3916,6 +4213,10 @@ revoke execute on function public._series_check(text, timestamptz, uuid[], text,
 revoke execute on function public._lesson_reminders() from public, anon, authenticated;
 revoke execute on function public._lesson_tick() from public, anon, authenticated;
 revoke execute on function public._tz_of(uuid) from public, anon, authenticated;
+revoke execute on function public._in_audience(public.assignments, uuid) from public, anon, authenticated;
+revoke execute on function public._mock_boundary(uuid) from public, anon, authenticated;
+revoke execute on function public._grade_for(jsonb, numeric, numeric, numeric) from public, anon, authenticated;
+revoke execute on function public._mock_result(uuid, uuid, boolean) from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

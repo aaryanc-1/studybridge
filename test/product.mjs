@@ -342,7 +342,7 @@ try {
   await shot(A, 'syllabus-coverage');
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
-  await A.getByRole('button', { name: 'Files' }).click();
+  await A.getByRole('button', { name: 'My files' }).click();
   await A.getByText(/past papers? (is|are) filed under/).waitFor();
 
   step('Question bank: Prof writes questions, a second check flags a wrong one, the tutor approves the rest');

@@ -5,6 +5,7 @@ import { Bar, Empty, Loading, Seg, copyText, useToast } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { day, dur, kindLabel, monthRange, pct, weekRange, ymd } from '../../lib/format.js';
+import MockHistory from './MockHistory.jsx';
 
 const PERIODS = {
   week: { label: 'This week', range: () => weekRange(0) },
@@ -159,6 +160,8 @@ export default function ProgressView({ learnerId, name }) {
           </div>
         </>
       )}
+
+      <MockHistory learnerId={learnerId} />
 
       <div className="split even">
         <div className="card">

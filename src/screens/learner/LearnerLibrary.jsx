@@ -18,13 +18,13 @@ export default function LearnerLibrary() {
   const l = (lessons.data || []).filter((x) => !subject || x.subject_id === subject);
 
   return (
-    <Page title="Library" subtitle="Lessons and books from your tutor. Anything you open is kept on this device for offline use.">
+    <Page title="Library" subtitle="Lesson notes and books from your tutor. Anything you open is kept on this device for offline use.">
       <div className="row wrap between">
         <Seg
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'lessons', label: `Lessons (${l.length})`, icon: 'book' },
+            { value: 'lessons', label: `Lesson notes (${l.length})`, icon: 'book' },
             { value: 'files', label: `Books & files (${f.length})`, icon: 'file' },
           ]}
         />
@@ -43,7 +43,7 @@ export default function LearnerLibrary() {
         !lessons.data ? (
           <Loading />
         ) : l.length === 0 ? (
-          <Empty>No lessons yet.</Empty>
+          <Empty>No lesson notes yet.</Empty>
         ) : (
           <div className="card">
             <div className="list">
@@ -97,7 +97,7 @@ export function LessonView({ id }) {
   const files = useQuery('files', api.listFiles).data || [];
   const x = (lessons.data || []).find((l) => l.id === id);
   useReadingTime(x ? id : null, 'lesson');
-  if (!x) return <Page title="Lesson">{lessons.data ? <Empty>This lesson isn’t available.</Empty> : <Loading />}</Page>;
+  if (!x) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes aren’t available.</Empty> : <Loading />}</Page>;
   const attached = (x.file_ids || []).map((fid) => files.find((f) => f.id === fid)).filter(Boolean);
   return (
     <Page

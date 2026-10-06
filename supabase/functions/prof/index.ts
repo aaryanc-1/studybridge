@@ -829,6 +829,82 @@ Rules: follow the official syllabus as closely as you know it; don't add content
     });
   }
 
+  // ---------------- grade boundaries ----------------
+  // Prof reads the tutor's own grade-threshold document (pictures of its pages) and copies the numbers
+  // out. Nothing is saved: the tutor checks every number, then saves the ones they want.
+  const BOUNDARIES_TOOL = {
+    name: 'save_boundaries',
+    description: 'The grade thresholds as printed in the document. Copy the numbers exactly; never guess one that isn’t printed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: 'The exam series the document is for, e.g. "June 2025" or "May 2024"' },
+        options: {
+          type: 'array',
+          description: 'One entry per row of overall thresholds (each syllabus option / tier / level)',
+          items: {
+            type: 'object',
+            properties: {
+              option: { type: 'string', description: 'The option as the document names it, e.g. "Extended (BX: papers 2, 4, 6)" or "HL"' },
+              max_mark: { type: 'number', description: 'The maximum (total) mark the thresholds are out of' },
+              grades: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { grade: { type: 'string' }, min: { type: 'number', description: 'Lowest mark for this grade' } },
+                  required: ['grade', 'min'],
+                },
+              },
+            },
+            required: ['option', 'max_mark', 'grades'],
+          },
+        },
+        note: { type: 'string', description: 'One or two sentences for the tutor: anything unclear, and a reminder to check the numbers against the document' },
+      },
+      required: ['options'],
+    },
+  };
+  async function stepBoundaries(job, cfg) {
+    const c = job.context || {};
+    const pages = c.pages || [];
+    await save(job, 'running', { p_progress: 'Reading the grade thresholds…', p_input: 0 });
+    const content = [
+      {
+        type: 'text',
+        text: `The tutor's own grade-threshold document${c.label ? ` for ${c.label}` : ''} follows as ${pages.length} page picture${pages.length === 1 ? '' : 's'}. Copy out the overall grade thresholds (the total marks for each grade), one entry per option/tier/level.`,
+      },
+      ...pages.map((p) => ({ type: 'sb_image', bucket: 'library', path: p.path })),
+    ];
+    const res = await claude(cfg, {
+      max_tokens: 4000,
+      system: `You help a tutor on StudyBridge read an official grade-threshold document. Copy the overall thresholds exactly as printed: the maximum mark and the lowest mark for each grade, highest grade first. Use the overall (total) thresholds, not the per-component ones, unless only component thresholds are printed. Don't invent or estimate numbers; leave out anything you can't read and say so in note.`,
+      tools: [BOUNDARIES_TOOL],
+      tool_choice: { type: 'tool', name: 'save_boundaries' },
+      messages: [{ role: 'user', content: await expandBlocks(content) }],
+    });
+    await removeFiles('library', pages.map((p) => p.path));
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_boundaries');
+    const options = (call?.input?.options || [])
+      .map((o) => ({
+        option: String(o?.option || '').slice(0, 120),
+        max_mark: Number(o?.max_mark),
+        grades: (Array.isArray(o?.grades) ? o.grades : [])
+          .map((g) => ({ grade: String(g?.grade || '').trim().slice(0, 8), min: Number(g?.min) }))
+          .filter((g) => g.grade && Number.isFinite(g.min) && g.min >= 0)
+          .slice(0, 12),
+      }))
+      .filter((o) => Number.isFinite(o.max_mark) && o.max_mark > 0 && o.grades.length && o.grades.every((g) => g.min <= o.max_mark))
+      .slice(0, 12);
+    if (!options.length) throw new Error('Prof couldn’t read grade thresholds from those pages. Check it’s the grade-threshold document, or type the numbers in yourself.');
+    const session = String(call.input.session || '').slice(0, 60);
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { boundaries: { exam: c.exam, label: c.label || '', session, options, note: String(call.input.note || '').slice(0, 600) }, reply: `${options.length} set${options.length === 1 ? '' : 's'} of grade thresholds${session ? ` for ${session}` : ''}` },
+      p_progress: 'Ready for you to check',
+      p_notify: { title: `Prof read the grade thresholds${session ? ` for ${session}` : ''}`, body: 'Check the numbers against the document, then save the ones you want.', ref: { boundaries: true, exam: c.exam } },
+    });
+  }
+
   // ---------------- flashcards ----------------
   const CARDS_TOOL = {
     name: 'save_cards',
@@ -1220,6 +1296,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       else if (job.kind === 'syllabus') await stepSyllabus(job, cfg);
       else if (job.kind === 'cards') await stepCards(job, cfg);
       else if (job.kind === 'paper') await stepPaper(job, cfg);
+      else if (job.kind === 'boundaries') await stepBoundaries(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

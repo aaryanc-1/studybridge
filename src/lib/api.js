@@ -307,7 +307,8 @@ export const listKeys = (qids) => (qids.length ? run(sb().from('question_keys').
 export const saveKey = (key) => run(sb().from('question_keys').upsert(key, { onConflict: 'question_id' }));
 
 export async function duplicateAssignment(a) {
-  const { id, created_at, updated_at, ...rest } = a;
+  // a copy never joins the original's mock exam
+  const { id, created_at, updated_at, mock_id, mock_position, ...rest } = a;
   const copy = await save('assignments', { ...rest, title: a.title + ' (copy)', visibility: 'hidden', draft: false });
   const qs = await listQuestions(id);
   const keys = await listKeys(qs.map((q) => q.id));
@@ -318,6 +319,37 @@ export async function duplicateAssignment(a) {
     if (k) await saveKey({ question_id: nq.id, answer: k.answer, mark_scheme_md: k.mark_scheme_md, solution_md: k.solution_md });
   }
   return copy;
+}
+
+// ---------------- mock exams and grade boundaries ----------------
+// Boundaries are private to the tutor; learners only ever get their grade from the server.
+export const listMocks = () => run(sb().from('mocks').select('*').order('created_at', { ascending: false }));
+export const saveMock = (row) => save('mocks', row);
+export const deleteMock = (id) => remove('mocks', id);
+export const mockResults = (id) => run(sb().rpc('mock_results', { p_mock: id }));
+export const myMocks = () => run(sb().rpc('my_mocks'));
+export const mockHistory = (learnerId = null) => run(sb().rpc('mock_history', { p_learner: learnerId }));
+export const setMockPapers = async (mockId, ids, removed = []) => {
+  for (const [i, id] of ids.entries()) await run(sb().from('assignments').update({ mock_id: mockId, mock_position: i + 1 }).eq('id', id));
+  for (const id of removed) await run(sb().from('assignments').update({ mock_id: null }).eq('id', id));
+};
+export const listBoundaries = () => run(sb().from('grade_boundaries').select('*').order('created_at', { ascending: false }));
+export const saveBoundaries = (row) => save('grade_boundaries', row);
+export const deleteBoundaries = (id) => remove('grade_boundaries', id);
+// Pictures of the tutor's own grade-threshold PDF go to their private folder; Prof copies the numbers out
+export async function profBoundaries(exam, label, blob) {
+  const { renderPdfPages } = await import('../ui/PdfViewer.jsx');
+  const r = await renderPdfPages(blob, [1, 2, 3, 4], { maxSide: 1700, quality: 0.85 });
+  if (!r.pages.length) throw new Error('Couldn’t open that PDF.');
+  const pages = [];
+  for (const p of r.pages) {
+    const path = `${uid()}/prof/${uuid()}.jpg`;
+    await run(sb().storage.from('library').upload(path, await p.blob.arrayBuffer(), { contentType: 'image/jpeg' }));
+    pages.push({ path, label: `page ${p.page}` });
+  }
+  const job = await run(sb().rpc('prof_boundaries', { p_exam: exam, p_label: label || '', p_pages: pages }));
+  callProf().catch(() => {});
+  return job;
 }
 
 // ---------------- attempts (tutor) ----------------
@@ -491,8 +523,17 @@ export async function callProf(action = 'kick') {
   if (!r.ok) throw new Error(body.error || (r.status === 404 ? 'The Prof server isn’t installed yet.' : `Prof server error ${r.status}`));
   return body;
 }
-export const profJobs = () =>
-  run(sb().from('prof_jobs').select('id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context').order('created_at', { ascending: false }).limit(40));
+const JOB_COLS = 'id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context';
+export const profJobs = () => run(sb().from('prof_jobs').select(JOB_COLS).order('created_at', { ascending: false }).limit(40));
+// Every request ever made, newest first, a page at a time (Prof → History)
+export function profHistory({ kinds = null, text = '', before = null, limit = 30 } = {}) {
+  let q = sb().from('prof_jobs').select(JOB_COLS).order('created_at', { ascending: false }).limit(limit);
+  if (kinds?.length) q = q.in('kind', kinds);
+  const words = text.replace(/[%_*,()]/g, ' ').trim();
+  if (words) q = q.ilike('prompt', `%${words}%`);
+  if (before) q = q.lt('created_at', before);
+  return run(q);
+}
 export const profUsage = () => run(sb().rpc('prof_usage'));
 
 // ---------------- self-study: flashcards, practice, notes, goal ----------------
@@ -560,15 +601,28 @@ export async function setTopicState(learnerId, topicId, state) {
   return run(sb().from('taught_topics').delete().eq('learner_id', learnerId).eq('topic_id', topicId));
 }
 export const setTaught = (learnerId, topicId, on) => setTopicState(learnerId, topicId, on ? 'taught' : null);
-// Put a list of topics into a subject: adds the new ones, updates codes/details of ones with the same name
-export async function applyTopics(subjectId, list, existing = []) {
-  const byName = new Map(existing.map((t) => [t.name.trim().toLowerCase(), t]));
+// Put a list of topics into a subject: adds the new ones, updates codes/details of ones with the same name.
+// With reorder, the subject's topics then follow the list's order (the syllabus order); topics not in the
+// list keep their order after them. Matching topics keep their id, so questions, flashcards and coverage stay.
+export const topicKey = (name) => String(name || '').toLowerCase().replace(/^\s*(?:[a-z]{1,3}\s?)?\d+(?:\.\d+)*[a-z]?[.):]?\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+export async function applyTopics(subjectId, list, existing = [], { reorder = false } = {}) {
+  const byName = new Map(existing.map((t) => [topicKey(t.name), t]));
   let pos = existing.reduce((m, t) => Math.max(m, t.position || 0), -1) + 1;
+  const order = [];
   for (const t of list) {
-    const old = byName.get(t.name.trim().toLowerCase());
-    if (old) await run(sb().from('topics').update({ code: t.code || old.code || null, details: t.details?.length ? t.details : old.details || [] }).eq('id', old.id));
-    else await run(sb().from('topics').insert({ subject_id: subjectId, name: t.name.trim(), code: t.code || null, details: t.details || [], position: pos++ }));
+    const old = byName.get(topicKey(t.name));
+    if (old) {
+      await run(sb().from('topics').update({ code: t.code || old.code || null, details: t.details?.length ? t.details : old.details || [] }).eq('id', old.id));
+      if (!order.includes(old.id)) order.push(old.id);
+    } else {
+      const row = await run(sb().from('topics').insert({ subject_id: subjectId, name: t.name.trim(), code: t.code || null, details: t.details || [], position: pos++ }).select('id').maybeSingle());
+      if (row?.id) order.push(row.id);
+    }
   }
+  if (!reorder) return;
+  const rest = [...existing].sort((a, b) => (a.position || 0) - (b.position || 0)).map((t) => t.id).filter((id) => !order.includes(id));
+  const was = new Map(existing.map((t) => [t.id, t.position]));
+  for (const [i, id] of [...order, ...rest].entries()) if (was.get(id) !== i) await run(sb().from('topics').update({ position: i }).eq('id', id));
 }
 export const profSettings = () => run(sb().from('prof_settings').select('*').eq('tutor_id', uid()).maybeSingle());
 export const saveProfSettings = (patch) =>

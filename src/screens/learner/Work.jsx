@@ -8,12 +8,14 @@ import { desktop } from '../../lib/config.js';
 import { ago, due, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
+import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
 
 export default function Work() {
   const lk = useLookups();
   const assignments = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('myattempts', () => api.myAttempts()).data || [];
   const route = useRoute();
+  const { paperOf } = useMyMocks();
   const [tab, setTab] = useState(route.query.get('tab') || 'todo');
   const all = (assignments.data || []).map((a) => ({ a, s: workState(a, attempts) }));
   const states = all.filter((x) => !x.a.practice);
@@ -76,6 +78,7 @@ export default function Work() {
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span>
                     <span className={'pill ' + s.tone}>{s.label}</span>
+                    <MockPill assignmentId={a.id} paperOf={paperOf} />
                   </span>
                   <span className="strong" style={{ fontSize: 16 }}>{a.title}</span>
                   <span className="small muted row wrap" style={{ gap: 10 }}>

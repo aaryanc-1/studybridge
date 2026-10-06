@@ -334,6 +334,32 @@ test('Prof sets out a syllabus; nothing changes until the tutor uses it', async 
   assert.ok(bad.error);
 });
 
+test('Prof reads a grade-threshold PDF; nothing is saved until the tutor checks it', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const me = (await T.auth.getUser()).data.user.id;
+  const page = `${me}/prof/gt-1.jpg`;
+  await q(T.storage.from('library').upload(page, new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 7]), { contentType: 'image/jpeg' }));
+  const bad = await T.rpc('prof_boundaries', { p_exam: 'cie:0607', p_label: '0607', p_pages: [{ path: 'someone-else/prof/x.jpg' }] });
+  assert.match(bad.error.message, /Unknown page/);
+  const none = await T.rpc('prof_boundaries', { p_exam: 'cie:0607', p_label: '0607', p_pages: [] });
+  assert.match(none.error.message, /grade-threshold PDF/);
+  const job = await q(T.rpc('prof_boundaries', { p_exam: 'cie:0607', p_label: 'Cambridge IGCSE 0607 June 2025', p_pages: [{ path: page, label: 'page 1' }] }));
+  await kick(T);
+  const j = await q(T.from('prof_jobs').select('status,result,error').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  const b = j.result.boundaries;
+  assert.equal(b.exam, 'cie:0607');
+  assert.equal(b.session, 'June 2025');
+  assert.deepEqual(b.options.map((o) => o.max_mark), [160, 200], 'a row with impossible numbers is left out');
+  assert.equal(b.options[1].grades[0].grade, 'A*');
+  assert.equal((await q(T.from('grade_boundaries').select('id'))).length, 0, 'nothing saved until the tutor checks it');
+  assert.equal((await T.storage.from('library').download(page)).data, null, 'the page pictures are tidied away');
+  // the tutor saves the one they want
+  const saved = await q(T.from('grade_boundaries').insert({ exam: b.exam, session: b.session, option_label: b.options[1].option, max_mark: b.options[1].max_mark, grades: b.options[1].grades, source: 'prof' }).select().single());
+  assert.equal(saved.grades.length, 4);
+});
+
 test('Prof writes flashcards for the tutor to pick from; learners get nothing until then', async () => {
   const T = client();
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
