@@ -200,7 +200,7 @@ jobs:
           set -e
           rm -rf site && mkdir -p site/app
           ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --ignore-scripts --no-audit --no-fund >/dev/null
-          node scripts/build-website.mjs site "$VERSION"
+          SB_URL="${{ vars.SUPABASE_URL }}" SB_KEY="${{ vars.SUPABASE_ANON_KEY }}" node scripts/build-website.mjs site "$VERSION"
           unzip -q out/StudyBridge-web.zip -d site/app
           touch site/.nojekyll
           cd site

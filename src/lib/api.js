@@ -60,6 +60,7 @@ export const myPlan = () => run(sb().rpc('my_plan'));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));
+export const adminEarlyAccess = () => run(sb().rpc('admin_early_access'));
 export const adminSetSelling = (patch) =>
   run(sb().rpc('admin_set_selling', {
     p_enforce: patch.enforce ?? null, p_google: patch.google ?? null, p_email_from: patch.email_from ?? null, p_resend_key: patch.resend_key || null,

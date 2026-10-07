@@ -9,21 +9,14 @@
 <link rel="icon" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="site.css">
 <script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
-<header class="top">
-  <div class="wrap bar">
-    <a class="brand" href="./"><img src="logo-192.png" alt="" width="32" height="32"><span>{{brand}}</span></a>
-    <div class="actions">
-      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
-      <a class="btn primary" href="{{app}}#start=tutor">Start free</a>
-    </div>
-  </div>
-</header>
-<main class="legal">
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+<main class="legal" id="main">
   <div class="wrap narrow">
     <h1>Privacy policy</h1>
     <p class="fine">Last updated {{updated}}</p>
@@ -33,7 +26,7 @@
     <ul>
       <li>We keep what’s needed to run {{brand}} for you, and nothing for advertising.</li>
       <li>We don’t sell your data or show ads.</li>
-      <li>Learners never use AI. When a tutor asks Prof for help, the work involved is sent to our AI provider to make a draft for the tutor.</li>
+      <li>With a tutor, learners never use AI: when the tutor asks Prof for help, the work involved is sent to our AI provider to make a draft for the tutor. In the student version, Prof guides students directly with hints, using content checked before it’s shown.</li>
       <li>You can download your data or delete your account in Settings at any time.</li>
     </ul>
 
@@ -43,6 +36,7 @@
       <li><b>Teaching:</b> subjects, lessons, files, assignments, answers (including photos and whiteboard drawings), marks, feedback, messages, flashcards, notes and time studied.</li>
       <li><b>Parents:</b> the parent’s name and email, and their link to their child. Optionally a parent phone number or email the tutor adds for sending reports.</li>
       <li><b>Billing (tutors on a paid plan):</b> your plan and a Stripe customer reference. Card details go to Stripe and never reach us.</li>
+      <li><b>Early access:</b> if you join the list on the website, your email, who you are (student, parent, tutor, centre or school), and what you study, your exam session and country if you tell us. We use it only to tell you when the student version opens and to decide which subjects to build first. Ask us and we’ll delete it.</li>
       <li><b>Technical:</b> error reports (which screen, what went wrong) to fix bugs. No tracking across other websites.</li>
     </ul>
 
@@ -55,10 +49,10 @@
     </ul>
 
     <h2>Children</h2>
-    <p>Many learners are under 18. They join only through their tutor’s invite, and the tutor confirms a parent or guardian agrees. We collect only what’s needed for tutoring, never use children’s data for marketing, and never let learners use AI. A parent can ask the tutor, or us, to see or delete their child’s data.</p>
+    <p>Many learners are under 18. Below grade 8, a parent sets up or approves the account; where the law asks for it (for example India, under 18), a parent confirms by email. Learners with a tutor join through their tutor’s invite, and the tutor confirms a parent or guardian agrees. We collect only what’s needed for learning, never use children’s data for marketing, and a parent can ask the tutor, or us, to see or delete their child’s data. The early-access list is for people aged 13 or over, or parents signing up for their child.</p>
 
     <h2>Prof and AI</h2>
-    <p>Prof is used only by tutors. When a tutor asks it to mark, plan, make questions or draft a report, the relevant material (for example a learner’s answers and the mark scheme) is sent to Anthropic, which provides the AI model. Anthropic processes it to produce the draft and doesn’t use it to train its models. Every draft is checked by the tutor before anyone else sees it.</p>
+    <p>When a tutor asks Prof to mark, plan, make questions or draft a report, the relevant material (for example a learner’s answers and the mark scheme) is sent to Anthropic, which provides the AI model. In the student version, a student’s answers are sent the same way when Prof marks them or gives a hint. Anthropic processes it to produce the result and doesn’t use it to train its models. With a tutor, every draft is checked by the tutor before anyone else sees it.</p>
 
     <h2>Services we use</h2>
     <ul>
@@ -88,7 +82,7 @@
     <p>If this policy changes in a way that matters, we’ll tell you in the app first. Questions: Settings → Contact {{brand}} in the app.</p>
   </div>
 </main>
-<footer class="foot"><div class="wrap fine"><a href="./">Home</a> · <a href="terms.html">Terms</a> · © {{year}} {{brand}}</div></footer>
+{{footer}}
 <script src="config.js"></script>
 <script src="site.js"></script>
 </body>

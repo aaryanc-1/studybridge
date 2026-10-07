@@ -9,28 +9,21 @@
 <link rel="icon" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="site.css">
 <script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
-<header class="top">
-  <div class="wrap bar">
-    <a class="brand" href="./"><img src="logo-192.png" alt="" width="32" height="32"><span>{{brand}}</span></a>
-    <div class="actions">
-      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
-      <a class="btn primary" href="{{app}}#start=tutor">Start free</a>
-    </div>
-  </div>
-</header>
-<main class="legal">
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+<main class="legal" id="main">
   <div class="wrap narrow">
     <h1>Terms of use</h1>
     <p class="fine">Last updated {{updated}}</p>
     <div class="draft"><b>Draft.</b> These terms are a plain-English draft and will be reviewed by a lawyer before paid plans start.</div>
 
     <h2>1. What {{brand}} is</h2>
-    <p>{{brand}} is a place for a tutor and their learners to share lessons, assignments, tests, marks and messages, and for parents to follow their child’s progress. It includes Prof, an assistant that drafts things for the tutor.</p>
+    <p>{{brand}} helps people prepare for exams. Tutors and their learners share lessons, assignments, tests, marks and messages, and parents follow their child’s progress. Students without a tutor (the student version, in early access) get a plan, lessons, practice papers and mocks, with Prof as their guide. Prof is the built-in assistant.</p>
 
     <h2>2. Accounts</h2>
     <ul>
@@ -39,14 +32,19 @@
       <li>Give accurate details, and use one account per person.</li>
     </ul>
 
-    <h2>3. Learners under 18</h2>
-    <p>A learner under 18 may use {{brand}} only with the agreement of a parent or guardian. Tutors who invite learners under 18 confirm that they have that agreement. Parents can ask the tutor for a read-only parent account.</p>
+    <h2>3. Age and parents</h2>
+    <ul>
+      <li>Students in grade 8 and above can start on their own. Below grade 8, a parent or guardian sets up or approves the account.</li>
+      <li>Where the law in your country asks for a parent’s consent for anyone under 18 (for example India), a parent confirms by email.</li>
+      <li>Tutors who invite learners under 18 confirm that a parent or guardian agrees. Parents can have a free, read-only parent account.</li>
+      <li>The early-access list is for people aged 13 or over, or parents signing up for their child.</li>
+    </ul>
 
     <h2>4. Prof, the assistant</h2>
     <ul>
-      <li>Prof only works for tutors. Learners and parents never use it directly.</li>
-      <li>Everything Prof makes (marks, feedback, plans, reports, questions) is a draft. The tutor checks it and decides what to use. The tutor is responsible for what they approve.</li>
-      <li>Prof can make mistakes. Don’t rely on it without checking.</li>
+      <li><b>With a tutor:</b> Prof works for the tutor. Everything it makes (marks, feedback, plans, reports, questions) is a draft the tutor checks and approves before a learner or parent sees it. The tutor is responsible for what they approve.</li>
+      <li><b>On your own (student version):</b> Prof guides you with hints rather than handing over answers. Lessons, questions and practice papers are checked automatically before they reach you, and you can report anything that looks wrong; reports are reviewed by the {{brand}} team.</li>
+      <li>Prof can make mistakes. Check anything important with your teacher or tutor.</li>
     </ul>
 
     <h2>5. Your content</h2>
@@ -54,7 +52,8 @@
 
     <h2>6. Fair use</h2>
     <ul>
-      <li>Only upload material you have the right to use. {{brand}} doesn’t host or share exam-board papers; tutors use their own copies with their own learners.</li>
+      <li>Only upload material you have the right to use. {{brand}} doesn’t host or share exam-board papers: official past papers open from the exam board’s own website, and tutors use their own copies with their own learners.</li>
+      <li>{{brand}}’s practice papers are original papers written in the format of each exam. They are not official papers. Cambridge, Pearson Edexcel and IB are trademarks of their owners, and {{brand}} is not affiliated with or endorsed by them.</li>
       <li>Don’t use {{brand}} to harass anyone, break the law, cheat in real exams, or attack or overload the service.</li>
       <li>We may suspend an account that breaks these terms, and we’ll tell you why where we can.</li>
     </ul>
@@ -83,7 +82,7 @@
     <p>Questions? Use Settings → Contact {{brand}} in the app.</p>
   </div>
 </main>
-<footer class="foot"><div class="wrap fine"><a href="./">Home</a> · <a href="privacy.html">Privacy</a> · © {{year}} {{brand}}</div></footer>
+{{footer}}
 <script src="config.js"></script>
 <script src="site.js"></script>
 </body>

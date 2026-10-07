@@ -4765,6 +4765,50 @@ begin
   delete from auth.users where id = me.id;
 end $$;
 
+-- 2.0: the early-access list from the website (students on their own, parents, tutors, centres, schools).
+-- Anyone can join from the website without an account; only the Owner (admin) can read it.
+create table if not exists public.early_access (
+  email text primary key,
+  role text not null default 'student' check (role in ('student', 'parent', 'tutor', 'centre', 'school')),
+  curriculum text,
+  subjects text,
+  exam text,
+  country text,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.early_access enable row level security;
+
+create or replace function public.join_early_access(p_email text, p_role text default 'student', p_curriculum text default null,
+  p_subjects text default null, p_exam text default null, p_country text default null, p_note text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_email text := lower(btrim(coalesce(p_email, '')));
+begin
+  if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]{2,}$' then
+    raise exception 'Please check your email address.';
+  end if;
+  if coalesce(p_role, 'student') not in ('student', 'parent', 'tutor', 'centre', 'school') then
+    raise exception 'Please choose who you are.';
+  end if;
+  insert into public.early_access (email, role, curriculum, subjects, exam, country, note)
+  values (v_email, coalesce(p_role, 'student'), left(nullif(btrim(p_curriculum), ''), 80), left(nullif(btrim(p_subjects), ''), 400),
+          left(nullif(btrim(p_exam), ''), 80), left(nullif(btrim(p_country), ''), 80), left(nullif(btrim(p_note), ''), 600))
+  on conflict (email) do update set role = excluded.role,
+    curriculum = coalesce(excluded.curriculum, early_access.curriculum), subjects = coalesce(excluded.subjects, early_access.subjects),
+    exam = coalesce(excluded.exam, early_access.exam), country = coalesce(excluded.country, early_access.country),
+    note = coalesce(excluded.note, early_access.note), updated_at = now();
+  return jsonb_build_object('ok', true);
+end $$;
+grant execute on function public.join_early_access(text, text, text, text, text, text, text) to anon;
+
+create or replace function public.admin_early_access() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((select jsonb_agg(to_jsonb(e) order by e.created_at desc) from public.early_access e), '[]'::jsonb);
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$

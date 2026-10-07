@@ -1446,3 +1446,19 @@ test('selling basics: plan limits only once switched on; download my data; delet
   assert.deepEqual(freed, { role: null, tutor_id: null }, 'the learner can join another tutor');
   await fails(as('A', `select delete_my_account('DELETE')`), /admin account/);
 });
+
+test('early access from the website: anyone can join (no account); saving again updates it; only the admin can read the list', async () => {
+  assert.deepEqual(await val(null, `select join_early_access('  Student@Example.com ', 'student', 'IGCSE', 'Physics, Maths', 'May/June 2027', 'Zambia')`), { ok: true });
+  await val(null, `select join_early_access('student@example.com', 'student', null, null, null, null, 'Please add Further Maths')`);
+  await fails(as(null, `select join_early_access('not-an-email')`), /check your email/);
+  await fails(as(null, `select join_early_access('a@b.co', 'hacker')`), /choose who you are/);
+  assert.equal((await as(null, `select * from early_access`)).length, 0, 'nobody can read the list directly');
+  assert.equal((await as('T', `select * from early_access`)).length, 0);
+  await fails(as(null, `insert into early_access (email) values ('sneaky@x.com')`), /row-level|permission denied/);
+  await fails(as('T', `select admin_early_access()`), /admins only/);
+  const list = await val('A', `select admin_early_access()`);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].email, 'student@example.com');
+  assert.equal(list[0].subjects, 'Physics, Maths', 'an empty field keeps what was there');
+  assert.equal(list[0].note, 'Please add Further Maths');
+});

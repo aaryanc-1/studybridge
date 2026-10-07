@@ -20,7 +20,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (72)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (75)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -78,6 +78,12 @@ Pro 25 ($29/mo, $290/yr), limits off until Admin → Selling switches `enforce_p
 (checkout/billing in Prof, webhook `prof?stripe=webhook` → `_set_paid_plan`; shown once a secret key and a price exist).
 Website: `website/` (one config `site.config.json` for name, prices, currencies; `scripts/build-website.mjs`), published by
 CI at the releases repo's Pages root next to `app/`; links `app/#start=tutor|invite|parent|signin` open the right screen.
+2.0 step 2 (website 2.0): students first ("Get exam-ready, step by step"), "Where do you fit?" cards, a free exam
+countdown (sessions per board in `site.config.json` → `boards[].sessions`), subjects by board (`boards[].levels`, also
+`website/subjects.html` with search and "Ask for a subject"), Prof's rules, accessibility, browser vs desktop, tutors +
+pricing, FAQ, early-access form → `join_early_access` (anon RPC; table `early_access`, RLS on, no policies; the Owner reads
+it in Admin → Selling via `admin_early_access`, with CSV download). Shared header/footer come from build-website.mjs; the
+form gets the public Supabase URL/key from env `SB_URL`/`SB_KEY` at build time and hides itself without them.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subjects · {{brand}}</title>
+<meta name="description" content="Every subject {{brand}} covers: Cambridge IGCSE and International A Level, Pearson Edexcel International GCSE and A Level, and the IB Diploma at SL and HL. Ask for yours if it isn’t here.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+<main id="main">
+  <div class="wrap page-head">
+    <h1>Subjects</h1>
+    <p>{{subjectCount}} subjects to start, across the boards international schools use most. Can’t see yours? Ask for it below: the most-requested come next.</p>
+  </div>
+  <div class="wrap">
+    <div class="finder">
+      <input type="search" id="find" placeholder="Search, e.g. Physics or 0625" aria-label="Search subjects">
+      <div class="seg" role="group" aria-label="Exam board">
+        <button type="button" data-filter="all" aria-pressed="true">All</button>
+        {{filterButtons}}
+      </div>
+    </div>
+    <div class="all-boards">{{allSubjects}}</div>
+    <p class="none-found" id="none" hidden>Nothing matches yet. Ask for it below and we’ll add it.</p>
+    <div class="request" id="request">
+      <h2 class="left" style="font-size:28px">Ask for a subject</h2>
+      <p class="muted">Another board, another subject, your national exam or a university course. Tell us and we’ll email you when it’s ready.</p>
+      <form id="req-form" novalidate>
+        <label>Subject or exam<input name="subject" id="req-subject" placeholder="e.g. Cambridge IGCSE Further Maths" maxlength="200"></label>
+        <label>Your email<input type="email" name="email" placeholder="you@example.com" autocomplete="email"></label>
+        <button class="btn primary" type="submit">Ask for it</button>
+      </form>
+      <p class="ea-msg" id="req-msg" role="status"></p>
+    </div>
+  </div>
+</main>
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

@@ -15,3 +15,4 @@ test/.dist-product/
 electron/build-config.json
 out/
 dist-site/
+.claude/

@@ -37,7 +37,42 @@ function planCards(c) {
     .join('\n        ');
 }
 
-export async function buildWebsite(out, version) {
+const statusClass = (s) => ({ 'Available now': 'now', Free: 'free', 'Early access': 'early' })[s] || '';
+const levelTitle = (b, l) => (b.id === 'ib' ? `IB Diploma ${l.name === 'Core' ? 'core' : `subjects, ${l.name}`}` : `${b.name} ${l.name}`);
+export const subjectCount = (c) => c.boards.reduce((n, b) => n + b.levels.reduce((m, l) => m + l.subjects.length, 0), 0);
+
+// The header and footer every page shares; links to sections of the home page start with `home`
+function header(c, home) {
+  const links = `<a href="${home}#students">Students</a><a href="${home}#tutors">Tutors</a><a href="subjects.html">Subjects</a><a href="${home}#pricing">Pricing</a><a href="${home}#get">Get the app</a>`;
+  return `<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./" aria-label="${esc(c.brand)} home"><img src="logo-192.png" alt="" width="32" height="32"><span>${esc(c.brand)}</span></a>
+    <nav class="links" aria-label="Main">${links}</nav>
+    <div class="actions">
+      <button class="icon-btn theme-btn" id="theme" type="button" data-theme-toggle aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+      <a class="btn ghost hide-sm" href="${esc(c.appPath)}#start=signin">Sign in</a>
+      <a class="btn primary" href="${home}#countdown">Get my plan</a>
+      <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobile-nav"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    </div>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden>${links}<a href="${esc(c.appPath)}#start=signin">Sign in</a><button type="button" class="nav-theme" data-theme-toggle>Switch light or dark</button></nav>
+</header>`;
+}
+function footer(c, home, year) {
+  return `<footer class="foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p></div>
+      <nav aria-label="For students"><b>Students</b><a href="${home}#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="${home}#early">Early access</a></nav>
+      <nav aria-label="For tutors"><b>Tutors</b><a href="${home}#tutors">Features</a><a href="${home}#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Start free</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
+      <nav aria-label="About"><b>About</b><a href="${home}#faq">Questions</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+    </div>
+    <p class="legal-line">© ${year} ${esc(c.brand)}. Cambridge, Pearson Edexcel and IB are trademarks of their owners. ${esc(c.brand)} is not affiliated with or endorsed by them, and its practice papers are original.</p>
+  </div>
+</footer>`;
+}
+
+export async function buildWebsite(out, version, sb = { url: process.env.SB_URL, key: process.env.SB_KEY }) {
   const c = siteConfig();
   mkdirSync(out, { recursive: true });
   const today = new Date();
@@ -54,17 +89,52 @@ export async function buildWebsite(out, version) {
     freeLine: c.freeNow ? 'Free now, paid plans coming soon.' : 'Start free with one learner.',
     plans: planCards(c),
     currencyOptions: c.currencies.map((x) => `<option value="${esc(x.code)}">${esc(x.code)} (${esc(x.symbol)})</option>`).join(''),
+    subjectCount: String(subjectCount(c)),
+    languages: c.languages.map((l, i) => `<i${i ? ' class="soon"' : ''}>${esc(l)}</i>`).join(''),
+    audienceCards: c.audiences
+      .map((a) => `<a class="fit-card" href="${esc(a.href)}"><span class="status ${statusClass(a.status)}">${esc(a.status)}</span><b>${esc(a.name)}</b><p>${esc(a.line)}</p><span class="go">Show me →</span></a>`)
+      .join(''),
+    boardButtons: c.boards.map((b, i) => `<button type="button" data-board="${esc(b.id)}" aria-pressed="${i === 0}">${esc(b.name)}</button>`).join(''),
+    boardTabs: c.boards
+      .map((b, i) => `<button role="tab" id="tab-${esc(b.id)}" aria-selected="${i === 0}" aria-controls="panel-${esc(b.id)}"${i ? ' tabindex="-1"' : ''}>${esc(b.name)}</button>`)
+      .join(''),
+    boardPanels: c.boards
+      .map(
+        (b, i) => `<div class="board-panel" role="tabpanel" id="panel-${esc(b.id)}" aria-labelledby="tab-${esc(b.id)}"${i ? ' hidden' : ''}>${b.levels
+          .map((l) => `<div class="level"><h3>${esc(levelTitle(b, l))}</h3><ul class="chips">${l.subjects.map(([n, code]) => `<li>${esc(n)}${code && b.id !== 'ib' ? `<small>${esc(code)}</small>` : ''}</li>`).join('')}</ul></div>`)
+          .join('')}</div>`,
+      )
+      .join('\n      '),
+    filterButtons: c.boards.map((b) => `<button type="button" data-filter="${esc(b.id)}" aria-pressed="false">${esc(b.name)}</button>`).join(''),
+    allSubjects: c.boards
+      .map(
+        (b) => `<section class="board-panel board-block" data-board="${esc(b.id)}"><h2 class="left" style="font-size:28px">${esc(b.name)}</h2>${b.levels
+          .map(
+            (l) => `<div class="level"><h3>${esc(levelTitle(b, l))}</h3><ul class="subject-list">${l.subjects
+              .map(([n, code]) => `<li data-s="${esc(`${n} ${code || ''} ${b.name} ${l.name}`.toLowerCase())}"><span>${esc(n)}</span>${code ? `<small>${esc(code)}</small>` : ''}</li>`)
+              .join('')}</ul></div>`,
+          )
+          .join('')}</section>`,
+      )
+      .join('\n    '),
   };
   for (const f of readdirSync(join(root, 'website'))) {
     if (f.endsWith('.html')) {
+      const home = f === 'index.html' ? '' : './';
+      const page = { ...tokens, header: header(c, home), footer: footer(c, home, tokens.year) };
       const html = readFileSync(join(root, 'website', f), 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => {
-        if (!(k in tokens)) throw new Error(`website/${f}: unknown {{${k}}}`);
-        return tokens[k];
+        if (!(k in page)) throw new Error(`website/${f}: unknown {{${k}}}`);
+        return page[k];
       });
       writeFileSync(join(out, f), html);
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
-  const pub = { brand: c.brand, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies };
+  const pub = {
+    brand: c.brand, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
+    boards: c.boards.map((b) => ({ id: b.id, name: b.name, sessions: b.sessions })),
+    // the public address and key of the server (both public by design), for the early-access form
+    sb: sb?.url && sb?.key ? { url: sb.url.replace(/\/+$/, ''), key: sb.key } : null,
+  };
   writeFileSync(join(out, 'config.js'), `window.SITE = ${JSON.stringify(pub)};\n`);
   copyFileSync(join(root, 'public/favicon.png'), join(out, 'favicon.png'));
   copyFileSync(join(root, 'public/icon-192.png'), join(out, 'logo-192.png'));

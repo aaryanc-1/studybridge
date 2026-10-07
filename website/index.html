@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{brand}}: tutoring, organised</title>
-<meta name="description" content="{{brand}} keeps a tutor, their learners and the learners' parents in one place: assignments, marking, lessons, mock exams and weekly reports. Free for one learner.">
+<title>{{brand}}: get exam-ready, step by step</title>
+<meta name="description" content="{{brand}} guides you to your exam: a plan for the weeks you have, lessons, original practice papers and timed mocks for IGCSE, A-Level and IB. With a tutor, or on your own with Prof.">
 <meta property="og:title" content="{{brand}}">
 <meta property="og:description" content="{{tagline}}">
 <meta property="og:image" content="{{siteUrl}}logo-512.png">
@@ -13,216 +13,314 @@
 <link rel="apple-touch-icon" href="logo-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="site.css">
 <script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to the page</a>
-<header class="top">
-  <div class="wrap bar">
-    <a class="brand" href="./" aria-label="{{brand}} home"><img src="logo-192.png" alt="" width="32" height="32"><span>{{brand}}</span></a>
-    <nav class="links" aria-label="Main">
-      <a href="#features">Features</a>
-      <a href="#pricing">Pricing</a>
-      <a href="#get">Get the app</a>
-      <a href="#faq">FAQ</a>
-    </nav>
-    <div class="actions">
-      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
-      <a class="btn ghost hide-sm" href="{{app}}#start=signin">Sign in</a>
-      <a class="btn primary" href="{{app}}#start=tutor">Start free</a>
-      <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobile-nav"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-    </div>
-  </div>
-  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden>
-    <a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#get">Get the app</a><a href="#faq">FAQ</a><a href="{{app}}#start=signin">Sign in</a>
-  </nav>
-</header>
+{{header}}
 
 <main id="main">
+  <!-- 1. Hero -->
   <section class="hero">
     <div class="wrap hero-grid">
-      <div class="hero-copy reveal">
-        <span class="pill">{{freeBadge}}</span>
-        <h1>Tutoring, <em>organised.</em></h1>
-        <p class="lead">Assignments, marking, lessons, mock exams and weekly reports for parents, in one place. Prof, the built-in assistant, drafts the busywork. <b>You check it and decide.</b></p>
+      <div class="hero-copy">
+        <span class="pill">IGCSE · A-Level · IB</span>
+        <h1>Get exam-ready,<br><em>step by step.</em></h1>
+        <p class="lead">A plan for the weeks you have, lessons that make sense, practice papers in the real format and timed mocks with a grade. With your tutor, or on your own with Prof as your guide.</p>
         <div class="cta">
-          <a class="btn primary big" href="{{app}}#start=tutor">I’m a tutor: start free</a>
-          <a class="btn big" href="{{app}}#start=invite">I have an invite</a>
+          <a class="btn primary big" href="#countdown">Get my plan</a>
+          <a class="btn big" href="#tutors">I teach</a>
         </div>
-        <p class="fine">Free for one learner, no card needed. Windows, Mac, iPhone and Android.</p>
+        <p class="fine">Tutors and their learners can start today, free. The student version is in early access. Have an invite from your tutor? <a href="{{app}}#start=invite">Join here</a>.</p>
       </div>
-      <div class="hero-art reveal" aria-hidden="true">
-        <div class="mock mark">
-          <div class="mock-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="mock-title">Marking · Quadratics, week 4</span></div>
-          <div class="mock-body">
-            <div class="q"><span class="qn">Q3</span> Solve x² − 5x + 6 = 0</div>
-            <div class="ans"><span class="hand">(x − 2)(x − 3) = 0 → x = 2 or 3</span></div>
-            <div class="prof">
-              <div class="prof-top"><span class="badge">Prof suggests</span><span class="score">4 / 4</span></div>
-              <div class="prof-text">Factorised correctly: (x − 2)(x − 3) = 0, so x = 2 or x = 3. Neat working.</div>
-            </div>
-            <div class="row-btns"><span class="b ok">Approve</span><span class="b">Change</span></div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="plan-card">
+          <div class="pc-top">
+            <div><div class="pc-sub">IGCSE Physics · 0625</div><div class="pc-title">Your plan</div></div>
+            <div class="pc-weeks"><b>9</b><span>weeks to go</span></div>
           </div>
+          <ol class="pc-list">
+            <li class="done"><span>Week 1</span><b>Motion, forces and energy</b><i style="--w:100%"></i></li>
+            <li class="done"><span>Week 2</span><b>Thermal physics</b><i style="--w:100%"></i></li>
+            <li class="now"><span>Week 3</span><b>Waves</b><i style="--w:45%"></i></li>
+            <li><span>Week 4</span><b>Electricity and magnetism</b><i style="--w:0%"></i></li>
+            <li><span>Weeks 5–7</span><b>Practice papers</b><i style="--w:0%"></i></li>
+            <li><span>Weeks 8–9</span><b>Mock and review</b><i style="--w:0%"></i></li>
+          </ol>
+          <div class="pc-today"><span class="dot"></span>Today · Wave speed, frequency and wavelength · 15 min</div>
         </div>
-        <div class="mock report">
-          <div class="r-top"><b>Weekly report</b><span>for Mrs Banda</span></div>
-          <div class="bars"><span style="--w:82%"></span><span style="--w:64%"></span><span style="--w:91%"></span></div>
-          <div class="r-foot"><span class="tick">✓</span> Approved by the tutor</div>
+        <div class="float-card">
+          <div class="fc-label">Mock grade</div>
+          <div class="fc-grade">B <small>→ A in 6 marks</small></div>
         </div>
       </div>
-    </div>
-    <div class="wrap trust reveal">
-      <div><b>Learners never use AI.</b> Everything Prof makes is a draft for the tutor.</div>
-      <div><b>Parents see reports</b> only after you approve them.</div>
-      <div><b>Your data is yours.</b> Download it or delete it any time.</div>
     </div>
   </section>
 
-  <section class="how" id="how">
+  <!-- 2. Where do you fit -->
+  <section class="fit" id="fit">
     <div class="wrap">
-      <h2 class="reveal">How it works</h2>
-      <ol class="steps">
-        <li class="reveal"><span class="n">1</span><h3>Set up your subjects</h3><p>Add a subject and its exam. Upload the syllabus PDF and Prof suggests a week-by-week plan you can change.</p></li>
-        <li class="reveal"><span class="n">2</span><h3>Invite learners and parents</h3><p>Send an invite by WhatsApp or email. Learners join on any device; parents get a read-only account.</p></li>
-        <li class="reveal"><span class="n">3</span><h3>Teach, set work, mark</h3><p>Share lesson notes and files, set homework and timed tests. Prof drafts marks and feedback; you approve.</p></li>
-        <li class="reveal"><span class="n">4</span><h3>Report every week</h3><p>A clear report card for each parent, written with you, sent when you say so.</p></li>
+      <h2 class="reveal">Where do you fit?</h2>
+      <p class="sub reveal">Pick what sounds like you. We’ll show you the way in.</p>
+      <div class="fit-grid reveal">{{audienceCards}}</div>
+    </div>
+  </section>
+
+  <!-- 3. Exam countdown (free tool) -->
+  <section class="countdown" id="countdown">
+    <div class="wrap narrow">
+      <h2 class="reveal">How long until your exams?</h2>
+      <p class="sub reveal">Pick your exam and see how your weeks could be shaped. Free, no sign-up.</p>
+      <div class="cd-card reveal">
+        <div class="cd-controls">
+          <div class="seg" role="group" aria-label="Exam board" id="cd-board">{{boardButtons}}</div>
+          <label class="cd-session">Exam session
+            <select id="cd-session"></select>
+          </label>
+          <label class="cd-date" id="cd-date-wrap" hidden>Your exam date
+            <input type="date" id="cd-date">
+          </label>
+        </div>
+        <div class="cd-result" aria-live="polite">
+          <div class="cd-weeks"><b id="cd-n">–</b><span id="cd-unit">weeks to go</span></div>
+          <div class="cd-when" id="cd-when"></div>
+          <div class="cd-bar" id="cd-bar"></div>
+          <ul class="cd-legend" id="cd-legend"></ul>
+          <p class="cd-tip" id="cd-tip"></p>
+        </div>
+        <div class="cd-foot">
+          <span class="fine">Session dates are approximate. Check your own exam timetable.</span>
+          <a class="btn primary" href="#early" id="cd-save">Save my plan: get early access</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Students: how it works + what's inside -->
+  <section class="students" id="students">
+    <div class="wrap">
+      <span class="eyebrow reveal">For students · early access</span>
+      <h2 class="reveal">Everything you need, in the right order</h2>
+      <ol class="steps reveal">
+        <li><span class="n">1</span><h3>Tell us what you study</h3><p>Your exam board, subjects and exam date. If we have your syllabus, you’ll see it. If not, upload it or ask for it.</p></li>
+        <li><span class="n">2</span><h3>A quick check</h3><p>Ten minutes to see what you already know, so your time goes where it matters. You can skip it.</p></li>
+        <li><span class="n">3</span><h3>Your plan</h3><p>Every topic spread over the weeks you have, weak ones first, with time for papers and a mock. Miss a day and it re-plans itself.</p></li>
+        <li><span class="n">4</span><h3>Learn, practise, mock</h3><p>Short lessons, instant marking, practice papers and timed mocks with a grade, so you know exactly where you stand.</p></li>
       </ol>
-    </div>
-  </section>
-
-  <section class="features" id="features">
-    <div class="wrap">
-      <h2 class="reveal">Made for everyone around the learner</h2>
-      <div class="tabs reveal" role="tablist" aria-label="Who it’s for">
-        <button role="tab" id="tab-tutors" aria-selected="true" aria-controls="panel-tutors">Tutors</button>
-        <button role="tab" id="tab-learners" aria-selected="false" aria-controls="panel-learners" tabindex="-1">Learners</button>
-        <button role="tab" id="tab-parents" aria-selected="false" aria-controls="panel-parents" tabindex="-1">Parents</button>
-      </div>
-      <div class="panel" role="tabpanel" id="panel-tutors" aria-labelledby="tab-tutors">
-        <div class="cards">
-          <article><h3>Marking in minutes</h3><p>Prof reads typed answers, photos and whiteboard working, and drafts marks and feedback against your mark scheme. You approve or change every word.</p></article>
-          <article><h3>Mock exams that feel real</h3><p>Timed papers, grade boundaries for each exam and session, and a lockdown mode on computers so tests stay fair.</p></article>
-          <article><h3>Plans from the syllabus</h3><p>Upload the syllabus and get the topics in order, then a teaching plan week by week, month by month or chapter by chapter.</p></article>
-          <article><h3>Weekly lessons and notes</h3><p>Lesson notes, your files and a question bank you build once and reuse with every learner.</p></article>
-          <article><h3>Live sessions</h3><p>Video, a shared whiteboard and the work in one window, with no other app to install.</p></article>
-          <article><h3>Reports parents read</h3><p>A tidy report card each week: marks, time studied, what went well and what’s next. Send it in the app, by WhatsApp or by email.</p></article>
-        </div>
-      </div>
-      <div class="panel" role="tabpanel" id="panel-learners" aria-labelledby="tab-learners" hidden>
-        <div class="cards">
-          <article><h3>Everything due, in one list</h3><p>Homework, tests and lessons with due dates, reminders and a calendar link for your phone.</p></article>
-          <article><h3>Answer your way</h3><p>Type it, write maths with a proper keyboard, take a photo of your page or work it out on the whiteboard.</p></article>
-          <article><h3>Feedback from your tutor</h3><p>Marks and comments come back from your tutor, written for you. No chatbot, no shortcuts.</p></article>
-          <article><h3>Revise smarter</h3><p>Flashcards, study notes and a record of the time you’ve put in.</p></article>
-          <article><h3>Works on any device</h3><p>Computer or phone, light or dark, with a data saver for slow or expensive connections.</p></article>
-          <article><h3>Ask your tutor</h3><p>Messages to your tutor sit next to the work they’re about.</p></article>
-        </div>
-      </div>
-      <div class="panel" role="tabpanel" id="panel-parents" aria-labelledby="tab-parents" hidden>
-        <div class="cards">
-          <article><h3>A report every week</h3><p>Approved by the tutor before you see it: what was covered, marks, effort and next steps.</p></article>
-          <article><h3>What’s coming up</h3><p>Lessons, due dates and test dates at a glance.</p></article>
-          <article><h3>Marks once they’re given back</h3><p>See results after the tutor releases them to your child.</p></article>
-          <article><h3>Private by design</h3><p>A read-only account. You never see your child’s messages or working, only what the tutor shares.</p></article>
-          <article><h3>Free for parents</h3><p>Parent accounts are always free, on every plan.</p></article>
-          <article><h3>On your phone</h3><p>Open the invite link and add {{brand}} to your home screen. No app store needed.</p></article>
-        </div>
+      <div class="inside reveal">
+        <article><span class="ic" aria-hidden="true">✦</span><h3>Lessons that make sense</h3><p>Short and focused, one idea at a time, with a worked example. Tap “say it more simply” or “explain it another way” any time.</p></article>
+        <article><span class="ic" aria-hidden="true">✎</span><h3>Practice papers, real format</h3><p>Original papers built to match each real paper: same sections, timing, marks and style, with full mark schemes.</p></article>
+        <article><span class="ic" aria-hidden="true">⌘</span><h3>Official past papers</h3><p>Find any past paper and open it from the exam board’s own site, then practise it timed and marked.</p></article>
+        <article><span class="ic" aria-hidden="true">◷</span><h3>Timed mocks with a grade</h3><p>Exam conditions, a grade at the end, and how many marks you are from the next one.</p></article>
+        <article><span class="ic" aria-hidden="true">❏</span><h3>Flashcards that come back</h3><p>Cards for every topic, plus your own mistakes, brought back just before you’d forget them.</p></article>
+        <article><span class="ic" aria-hidden="true">∑</span><h3>Maths checked line by line</h3><p>Show your working and see which line went wrong, not just the final answer.</p></article>
       </div>
     </div>
   </section>
 
-  <section class="pricing" id="pricing">
-    <div class="wrap">
-      <h2 class="reveal">Simple pricing</h2>
-      <p class="sub reveal">{{freeLine}} Parent accounts are always free. Pay yearly and get {{monthsFree}} months free.</p>
-      <div class="price-controls reveal">
-        <div class="seg" role="group" aria-label="Billing">
-          <button type="button" data-period="month" aria-pressed="true">Monthly</button>
-          <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{monthsFree}} months free</small></button>
-        </div>
-        <label class="cur">Show prices in
-          <select id="currency">{{currencyOptions}}</select>
-        </label>
-      </div>
-      <div class="plans reveal">{{plans}}</div>
-      <div class="calc reveal" aria-labelledby="calc-h">
-        <h3 id="calc-h">Which plan fits?</h3>
-        <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
-        <input type="range" id="learners" min="1" max="40" value="5">
-        <div class="calc-out" id="calc-out" aria-live="polite"></div>
-      </div>
-      <p class="fine center">Prices in kwacha and rupees are approximate; plans are charged in US dollars. {{brand}} is free while paid plans are being set up, and nobody is charged without choosing a plan.</p>
-    </div>
-  </section>
-
-  <section class="get" id="get">
-    <div class="wrap get-grid">
+  <!-- 5. Prof -->
+  <section class="prof" id="prof">
+    <div class="wrap prof-grid">
       <div class="reveal">
-        <h2>Get the app</h2>
-        <p class="sub left" id="get-lead">Use it on a computer and your phone with the same account.</p>
-        <div class="dl" id="dl"></div>
-        <div class="all-dl">
-          <span>All downloads:</span>
-          <a data-dl="windows" href="https://github.com/{{repo}}/releases/latest">Windows</a>
-          <a data-dl="mac_arm" href="https://github.com/{{repo}}/releases/latest">Mac (Apple silicon)</a>
-          <a data-dl="mac_x64" href="https://github.com/{{repo}}/releases/latest">Mac (Intel)</a>
-          <a href="{{app}}">Phone and web</a>
-        </div>
-        <p class="fine" id="dl-version"></p>
+        <span class="eyebrow">Meet Prof</span>
+        <h2 class="left">Prof guides.<br>It never does the work for you.</h2>
+        <ul class="ticks">
+          <li><b>Hints before answers.</b> Prof asks the next question instead of handing you the answer, so the learning is yours.</li>
+          <li><b>With a tutor, the tutor decides.</b> Everything Prof drafts is checked and approved by your tutor before you see it.</li>
+          <li><b>On your own, it’s checked twice.</b> Lessons and papers are worked through a second time before they reach you, and anything can be reported in one tap.</li>
+          <li><b>No ads, nothing sold.</b> Your work is yours. Download it or delete it any time.</li>
+        </ul>
       </div>
-      <div class="reveal">
-        <div class="qr-card">
-          <img src="app-qr.svg" alt="QR code that opens {{brand}} on your phone" width="160" height="160">
-          <div>
-            <b>On your phone</b>
-            <p>Scan this with the camera, then add {{brand}} to your home screen.</p>
+      <div class="chat reveal" aria-label="Example of Prof giving a hint">
+        <div class="msg me">I’m stuck on 3x − 7 = 11</div>
+        <div class="msg prof"><span class="who">Prof</span>What could you do to both sides to get 3x on its own?</div>
+        <div class="msg me">Add 7?</div>
+        <div class="msg prof"><span class="who">Prof</span>Yes. Now you have 3x = 18. What’s the last step?</div>
+        <div class="msg me">x = 6 🎉</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. Subjects -->
+  <section class="subjects" id="subjects">
+    <div class="wrap">
+      <h2 class="reveal">The subjects international schools teach</h2>
+      <p class="sub reveal">{{subjectCount}} subjects across Cambridge, Pearson Edexcel and the IB Diploma to start, with more on request.</p>
+      <div class="tabs reveal" role="tablist" aria-label="Exam boards">{{boardTabs}}</div>
+      {{boardPanels}}
+      <p class="center reveal"><a class="btn" href="subjects.html">See every subject, or ask for yours</a></p>
+    </div>
+  </section>
+
+  <!-- 7. Accessibility and languages -->
+  <section class="access" id="access">
+    <div class="wrap">
+      <h2 class="reveal">Made for every kind of learner</h2>
+      <p class="sub reveal">Learning should fit you, not the other way round.</p>
+      <ul class="access-grid reveal">
+        <li><b>Read aloud</b><span>Hear any lesson or question.</span></li>
+        <li><b>Answer by voice</b><span>Say it instead of typing.</span></li>
+        <li><b>Say it more simply</b><span>Plainer words, same idea.</span></li>
+        <li><b>Focus mode</b><span>One idea on screen at a time.</span></li>
+        <li><b>Reading mode</b><span>Large, calm text and nothing else.</span></li>
+        <li><b>Screen readers</b><span>Works with a keyboard and screen reader throughout.</span></li>
+        <li><b>Colour-blind safe</b><span>Charts that never rely on colour alone.</span></li>
+        <li><b>Extra time</b><span>For timed tests, if you need it.</span></li>
+      </ul>
+      <p class="langs reveal"><span>Languages</span> {{languages}}</p>
+    </div>
+  </section>
+
+  <!-- 8. Browser or desktop + downloads -->
+  <section class="devices" id="get">
+    <div class="wrap">
+      <h2 class="reveal">Use it anywhere</h2>
+      <p class="sub reveal">One account works on every device: your plan and progress follow you.</p>
+      <div class="dev-grid reveal">
+        <article>
+          <h3>In your browser</h3>
+          <p class="muted">Nothing to install. Perfect for everyday study on a laptop, tablet or phone.</p>
+          <ul class="ticks small"><li>Your plan, lessons and practice</li><li>Marking and flashcards</li><li>Add it to your phone’s home screen</li></ul>
+          <a class="btn" href="{{app}}">Open in your browser</a>
+        </article>
+        <article class="feature">
+          <h3>Desktop app <small>Windows and Mac</small></h3>
+          <p class="muted">Everything in the browser, plus the things a browser can’t do.</p>
+          <ul class="ticks small"><li>Locked-down mocks, just like the real thing</li><li>Exam camera for tutors</li><li>Big PDFs and books, smoother</li><li>Desktop notifications</li></ul>
+          <div class="dl" id="dl"></div>
+          <div class="all-dl">
+            <span>All downloads:</span>
+            <a data-dl="windows" href="https://github.com/{{repo}}/releases/latest">Windows</a>
+            <a data-dl="mac_arm" href="https://github.com/{{repo}}/releases/latest">Mac (Apple silicon)</a>
+            <a data-dl="mac_x64" href="https://github.com/{{repo}}/releases/latest">Mac (Intel)</a>
           </div>
+          <p class="fine" id="dl-version"></p>
+        </article>
+      </div>
+      <div class="phone-row reveal">
+        <div class="qr-card">
+          <img src="app-qr.svg" alt="QR code that opens {{brand}} on your phone" width="128" height="128">
+          <div><b>On your phone</b><p>Scan with your camera, then add {{brand}} to your home screen.</p></div>
         </div>
-        <div class="a2hs">
-          <details open id="a2hs-ios"><summary>iPhone or iPad (Safari)</summary>
-            <ol><li>Open the link in <b>Safari</b>.</li><li>Tap <b>Share</b> (the square with an arrow).</li><li>Tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol>
-          </details>
-          <details id="a2hs-android"><summary>Android (Chrome)</summary>
-            <ol><li>Open the link in <b>Chrome</b>.</li><li>Tap <b>⋮</b> at the top right.</li><li>Tap <b>Add to Home screen</b> or <b>Install app</b>, then <b>Install</b>.</li></ol>
-          </details>
-        </div>
+        <details id="a2hs-ios"><summary>iPhone or iPad (Safari)</summary><ol><li>Open the link in <b>Safari</b>.</li><li>Tap <b>Share</b>.</li><li>Tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol></details>
+        <details id="a2hs-android"><summary>Android (Chrome)</summary><ol><li>Open the link in <b>Chrome</b>.</li><li>Tap <b>⋮</b>.</li><li>Tap <b>Add to Home screen</b> or <b>Install app</b>.</li></ol></details>
       </div>
     </div>
   </section>
 
+  <!-- 9. Tutors (available now) -->
+  <section class="tutors" id="tutors">
+    <div class="wrap">
+      <span class="eyebrow reveal">For tutors · available now</span>
+      <h2 class="reveal">Your whole tutoring week, in one calm place</h2>
+      <div class="t-grid reveal">
+        <article><h3>Set work in minutes</h3><p>Homework, quizzes and tests from your own books and papers, drafted by Prof and approved by you.</p></article>
+        <article><h3>Mark faster</h3><p>Prof reads typed answers, photos and whiteboard working and drafts marks against your mark scheme. You decide.</p></article>
+        <article><h3>Teach live</h3><p>Video, whiteboard and the work in one window, with weekly lessons shown in both time zones.</p></article>
+        <article><h3>Mocks that feel real</h3><p>Locked-down exams, grade boundaries for each exam and session, and a grade for each learner.</p></article>
+        <article><h3>Plans from the syllabus</h3><p>Upload a syllabus and get the topics in order, then a plan week by week or chapter by chapter.</p></article>
+        <article><h3>Reports parents read</h3><p>A tidy weekly report card you approve, in the app, by WhatsApp or by email.</p></article>
+      </div>
+
+      <div class="pricing" id="pricing">
+        <h3 class="price-h reveal">Simple pricing for tutors</h3>
+        <p class="sub reveal">{{freeLine}} Parent accounts are always free. Pay yearly and get {{monthsFree}} months free.</p>
+        <div class="price-controls reveal">
+          <div class="seg" role="group" aria-label="Billing">
+            <button type="button" data-period="month" aria-pressed="true">Monthly</button>
+            <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{monthsFree}} months free</small></button>
+          </div>
+          <label class="cur">Prices in <select id="currency">{{currencyOptions}}</select></label>
+        </div>
+        <div class="plans reveal">{{plans}}</div>
+        <div class="calc reveal">
+          <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
+          <input type="range" id="learners" min="1" max="40" value="5">
+          <div class="calc-out" id="calc-out" aria-live="polite"></div>
+        </div>
+        <p class="fine center">Kwacha and rupee prices are approximate; plans are charged in US dollars. Student plans will be announced with early access.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. Parents, centres, schools -->
+  <section class="others">
+    <div class="wrap others-grid">
+      <article id="parents" class="reveal">
+        <span class="eyebrow">For parents · free</span>
+        <h3>See how they’re really doing</h3>
+        <p>A read-only parent account: weekly reports, upcoming lessons and due dates, marks once they’re given back, and the exam countdown. Never their messages or working. Below grade 8, you approve their account.</p>
+        <a class="link" href="{{app}}#start=parent">I have a parent invite →</a>
+      </article>
+      <article id="centres" class="reveal">
+        <span class="eyebrow">For tuition centres and schools · coming soon</span>
+        <h3>Everyone in one place</h3>
+        <p>Managers, tutors or teachers, classes, learners and parents, with the same lessons, papers, mocks and reports. Tell us about yours and we’ll set it up with you.</p>
+        <a class="link" href="#early" data-role="centre">Tell us about your centre or school →</a>
+      </article>
+    </div>
+  </section>
+
+  <!-- 11. FAQ -->
   <section class="faq" id="faq">
     <div class="wrap narrow">
       <h2 class="reveal">Questions</h2>
-      <details class="reveal"><summary>Is it really free?</summary><p>Yes. The Free plan is one learner with every feature, for as long as you like. While paid plans are being set up, nobody is charged at all. When they start, you choose whether to upgrade; nothing changes on its own.</p></details>
-      <details class="reveal"><summary>Do learners use AI?</summary><p>No. Prof, the assistant, only works for the tutor. It drafts marks, feedback, plans and reports, and nothing reaches a learner or parent until the tutor has checked and approved it.</p></details>
-      <details class="reveal"><summary>Can it mark handwriting and whiteboard working?</summary><p>Yes. Prof reads photos of written work and whiteboard drawings, tells you what it read them as, and drafts a mark. You confirm or change it.</p></details>
-      <details class="reveal"><summary>What can parents see?</summary><p>Weekly reports you’ve approved, upcoming lessons and due dates, and marks once you’ve given them back. Never messages or working. Parent accounts are free.</p></details>
-      <details class="reveal"><summary>Which exams and subjects does it work with?</summary><p>Any. Add your own subjects and exams (Cambridge, Edexcel, ECZ, CBSE and others) with your own syllabus. {{brand}} never hosts exam-board papers; you use your own copies.</p></details>
-      <details class="reveal"><summary>Which devices?</summary><p>Windows and Mac apps, plus a phone version for iPhone and Android that you add to your home screen. One account works everywhere.</p></details>
-      <details class="reveal"><summary>What about my data?</summary><p>You can download everything that’s yours as a ZIP file, or delete your account, from Settings at any time. We don’t sell data or show ads. See the <a href="privacy.html">privacy policy</a>.</p></details>
-      <details class="reveal"><summary>I run a tutoring centre with more than 25 learners.</summary><p>Get in touch through the app (Settings → Contact {{brand}}) and we’ll set up a plan that fits.</p></details>
+      <details class="reveal"><summary>Can I use {{brand}} without a tutor?</summary><p>Yes, that’s the student version, in early access now. You’ll get a plan to your exam, lessons, practice papers and mocks, with Prof as your guide. Join the list below and we’ll tell you when it opens.</p></details>
+      <details class="reveal"><summary>Do students use AI?</summary><p>With a tutor: no. Prof works for the tutor, and nothing reaches a learner until the tutor approves it. On your own: Prof guides you with hints, never answers handed over, and everything it makes is checked before you see it and can be reported in one tap.</p></details>
+      <details class="reveal"><summary>Are the practice papers real past papers?</summary><p>No. They are original papers written to match each real paper’s format: sections, timing, marks and style. Real past papers open from the exam board’s own website. {{brand}} is not affiliated with or endorsed by Cambridge, Pearson Edexcel or the IB.</p></details>
+      <details class="reveal"><summary>My subject or exam isn’t listed.</summary><p>Ask for it on the <a href="subjects.html">subjects page</a>. The most-requested come next. In the student version you can also upload your own syllabus or course outline, from grade 7 to university, and get a plan from it.</p></details>
+      <details class="reveal"><summary>How old do I need to be?</summary><p>From grade 8 you can start on your own. Below grade 8, a parent sets up or approves the account. In some countries the law asks a parent to confirm for anyone under 18, and the app handles that for you.</p></details>
+      <details class="reveal"><summary>Is it free?</summary><p>For tutors, the Free plan is one learner with every feature, and nobody is charged while paid plans are being set up. Parent accounts are always free. Student prices will be announced with early access, with a free way to start.</p></details>
+      <details class="reveal"><summary>Which devices?</summary><p>Any browser, on a laptop, tablet or phone, plus the desktop app for Windows and Mac for locked-down mocks. One account works everywhere.</p></details>
+      <details class="reveal"><summary>What about my data?</summary><p>You can download everything that’s yours, or delete your account, from Settings at any time. We don’t sell data or show ads. See the <a href="privacy.html">privacy policy</a>.</p></details>
     </div>
   </section>
 
-  <section class="final">
-    <div class="wrap final-box reveal">
-      <h2>Ready when you are.</h2>
-      <p>Set up your first subject in a few minutes.</p>
-      <div class="cta center"><a class="btn primary big" href="{{app}}#start=tutor">Start free</a><a class="btn big on-dark" href="{{app}}#start=invite">I have an invite</a></div>
+  <!-- 12. Early access -->
+  <section class="early" id="early">
+    <div class="wrap narrow">
+      <div class="early-box reveal">
+        <h2>Be first in</h2>
+        <p>The student version opens soon. Tell us what you’re studying and we’ll save your place, and build your subjects first.</p>
+        <form id="ea-form" novalidate>
+          <div class="ea-grid">
+            <label class="span2">Email<input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
+            <label>I am
+              <select name="role">
+                <option value="student">A student</option>
+                <option value="parent">A parent</option>
+                <option value="tutor">A tutor</option>
+                <option value="centre">A tuition centre</option>
+                <option value="school">A school</option>
+              </select>
+            </label>
+            <label>Curriculum
+              <select name="curriculum">
+                <option value="">Choose…</option>
+                <option>Cambridge IGCSE</option><option>Cambridge AS & A Level</option>
+                <option>Edexcel International GCSE</option><option>Edexcel International A Level</option>
+                <option>IB Diploma</option><option>University</option><option>Other</option>
+              </select>
+            </label>
+            <label class="span2">Subjects<input name="subjects" placeholder="e.g. Physics, Maths, Economics" maxlength="400"></label>
+            <label>Exam session<input name="exam" id="ea-exam" placeholder="e.g. May/June 2027" maxlength="80"></label>
+            <label>Country<input name="country" placeholder="e.g. Zambia" maxlength="80" autocomplete="country-name"></label>
+            <label class="span2"><span>Anything else? <small>(optional)</small></span><input name="note" id="ea-note" placeholder="A subject we don’t have yet, or what you need most" maxlength="600"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="age" required> I’m 13 or older, or I’m a parent signing up for my child.</label>
+          <button class="btn primary big" type="submit">Save my place</button>
+          <p class="fine">We’ll only email you about early access. See the <a href="privacy.html">privacy policy</a>.</p>
+          <p class="ea-msg" id="ea-msg" role="status"></p>
+        </form>
+        <div class="ea-off" id="ea-off" hidden>Early access opens here soon. Tutors can <a href="{{app}}#start=tutor">start free today</a>.</div>
+      </div>
     </div>
   </section>
 </main>
 
-<footer class="foot">
-  <div class="wrap foot-grid">
-    <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>{{brand}}</span></a><p class="fine">{{tagline}}</p></div>
-    <nav aria-label="More"><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#get">Get the app</a><a href="#faq">FAQ</a></nav>
-    <nav aria-label="Legal"><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="{{app}}#start=signin">Sign in</a></nav>
-  </div>
-  <div class="wrap fine">© {{year}} {{brand}}</div>
-</footer>
+{{footer}}
 <script src="config.js"></script>
 <script src="site.js"></script>
 </body>

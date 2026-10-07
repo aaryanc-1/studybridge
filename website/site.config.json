@@ -1,7 +1,7 @@
 {
-  "_note": "Everything a rename or a price change touches is here. scripts/build-website.mjs puts it into the pages; test/website.test.mjs checks it matches the app.",
+  "_note": "Everything a rename, a price change or a new subject touches is here. scripts/build-website.mjs puts it into the pages; test/website.test.mjs checks it matches the app.",
   "brand": "StudyBridge",
-  "tagline": "Tutoring, organised. With an assistant that drafts and a tutor who decides.",
+  "tagline": "Get exam-ready, step by step. With a tutor, or on your own with Prof.",
   "siteUrl": "https://aaryanc-1.github.io/studybridge-releases/",
   "appPath": "app/",
   "releasesRepo": "aaryanc-1/studybridge-releases",
@@ -16,5 +16,94 @@
     { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
     { "code": "ZMW", "symbol": "K", "rate": 19.69, "label": "Zambian kwacha" },
     { "code": "INR", "symbol": "₹", "rate": 96.22, "label": "Indian rupees" }
-  ]
+  ],
+  "audiences": [
+    { "id": "student", "name": "A student on my own", "status": "Early access", "line": "A guided plan to your exam, lessons, practice papers and mocks, with Prof as your guide.", "href": "#students" },
+    { "id": "tutor", "name": "A learner with a tutor", "status": "Available now", "line": "Your tutor sets the work and approves every mark and comment.", "href": "#tutors" },
+    { "id": "parent", "name": "A parent", "status": "Free", "line": "Follow your child's progress with weekly reports their tutor approves.", "href": "#parents" },
+    { "id": "centre", "name": "A tuition centre", "status": "Coming soon", "line": "All your tutors, learners and reports in one place.", "href": "#centres" },
+    { "id": "school", "name": "A school", "status": "Coming soon", "line": "Classes, teachers and parents, with exam prep built in.", "href": "#centres" }
+  ],
+  "boards": [
+    {
+      "id": "cambridge",
+      "name": "Cambridge",
+      "levels": [
+        {
+          "name": "IGCSE",
+          "subjects": [
+            ["Mathematics", "0580"], ["International Mathematics", "0607"], ["Additional Mathematics", "0606"],
+            ["English First Language", "0500"], ["English as a Second Language", "0510"], ["English Literature", "0475"],
+            ["Biology", "0610"], ["Chemistry", "0620"], ["Physics", "0625"], ["Co-ordinated Sciences", "0654"],
+            ["Computer Science", "0478"], ["ICT", "0417"], ["Business Studies", "0450"], ["Economics", "0455"],
+            ["Accounting", "0452"], ["Geography", "0460"], ["History", "0470"], ["Global Perspectives", "0457"],
+            ["Environmental Management", "0680"], ["French", "0520"], ["Spanish", "0530"], ["Hindi as a Second Language", "0549"]
+          ]
+        },
+        {
+          "name": "International AS & A Level",
+          "subjects": [
+            ["Mathematics", "9709"], ["Further Mathematics", "9231"], ["Physics", "9702"], ["Chemistry", "9701"],
+            ["Biology", "9700"], ["Computer Science", "9618"], ["Economics", "9708"], ["Business", "9609"],
+            ["Accounting", "9706"], ["Psychology", "9990"], ["English Language", "9093"], ["English Literature", "9695"],
+            ["Sociology", "9699"], ["Geography", "9696"], ["History", "9489"]
+          ]
+        }
+      ],
+      "sessions": [
+        { "name": "May/June", "month": 4, "day": 27 },
+        { "name": "October/November", "month": 10, "day": 1 }
+      ]
+    },
+    {
+      "id": "edexcel",
+      "name": "Pearson Edexcel",
+      "levels": [
+        {
+          "name": "International GCSE",
+          "subjects": [
+            ["Mathematics A"], ["Further Pure Mathematics"], ["English Language A"], ["English as a Second Language"],
+            ["English Literature"], ["Biology"], ["Chemistry"], ["Physics"], ["Science (Double Award)"],
+            ["Computer Science"], ["ICT"], ["Business"], ["Economics"], ["Accounting"], ["Geography"], ["History"],
+            ["French"], ["Spanish"]
+          ]
+        },
+        {
+          "name": "International A Level",
+          "subjects": [
+            ["Mathematics"], ["Further Mathematics"], ["Physics"], ["Chemistry"], ["Biology"], ["Information Technology"],
+            ["Economics"], ["Business"], ["Accounting"], ["Psychology"], ["English Language"], ["English Literature"],
+            ["Geography"], ["History"]
+          ]
+        }
+      ],
+      "sessions": [
+        { "name": "January", "month": 1, "day": 8 },
+        { "name": "May/June", "month": 5, "day": 8 },
+        { "name": "October/November", "month": 10, "day": 12 }
+      ]
+    },
+    {
+      "id": "ib",
+      "name": "IB Diploma",
+      "levels": [
+        {
+          "name": "SL and HL",
+          "subjects": [
+            ["Mathematics: Analysis and Approaches", "SL · HL"], ["Mathematics: Applications and Interpretation", "SL · HL"],
+            ["Physics", "SL · HL"], ["Chemistry", "SL · HL"], ["Biology", "SL · HL"], ["Computer Science", "SL · HL"],
+            ["Economics", "SL · HL"], ["Business Management", "SL · HL"], ["Psychology", "SL · HL"], ["History", "SL · HL"],
+            ["Geography", "SL · HL"], ["English A: Language and Literature", "SL · HL"], ["English A: Literature", "SL · HL"],
+            ["French B", "SL · HL"], ["Spanish B", "SL · HL"], ["Environmental Systems and Societies", "SL · HL"]
+          ]
+        },
+        { "name": "Core", "subjects": [["Theory of Knowledge", "support"], ["Extended Essay", "support"]] }
+      ],
+      "sessions": [
+        { "name": "May", "month": 4, "day": 24 },
+        { "name": "November", "month": 10, "day": 23 }
+      ]
+    }
+  ],
+  "languages": ["English", "Français", "Español", "Português", "हिन्दी", "العربية"]
 }

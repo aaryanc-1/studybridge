@@ -119,9 +119,72 @@ export default function SellingPage() {
         </div>
         <Toggle checked={s.google_on} onChange={(v) => save({ google: v }, v ? 'Google sign-in is on' : 'Google sign-in is off')} icon="globe" title="Show “Continue with Google”" />
       </div>
+      <EarlyAccess />
       <div className="tiny muted">
         <Icon name="lock" size={12} /> Keys are stored on the server and can’t be read back by anyone, including you.
       </div>
     </Page>
+  );
+}
+
+// People who asked for early access on the website (students on their own, parents, tutors, centres, schools)
+function EarlyAccess() {
+  const q = useQuery('admin-early-access', api.adminEarlyAccess);
+  const rows = q.data || [];
+  const roles = rows.reduce((m, r) => ({ ...m, [r.role]: (m[r.role] || 0) + 1 }), {});
+  function download() {
+    const cols = ['email', 'role', 'curriculum', 'subjects', 'exam', 'country', 'note', 'created_at'];
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `studybridge-early-access-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  return (
+    <div className="card">
+      <div className="row between wrap">
+        <h2>Early access</h2>
+        {rows.length > 0 && (
+          <button className="btn sm" onClick={download}>
+            <Icon name="download" size={16} /> Download (CSV)
+          </button>
+        )}
+      </div>
+      <div className="small muted">
+        {rows.length
+          ? `${rows.length} ${rows.length === 1 ? 'person' : 'people'} asked from the website: ${Object.entries(roles).map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`).join(', ')}.`
+          : 'Nobody yet. People who ask for early access on the website appear here.'}
+      </div>
+      {rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Who</th>
+                <th>Studying</th>
+                <th>Exam</th>
+                <th>Country</th>
+                <th>Asked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 50).map((r) => (
+                <tr key={r.email}>
+                  <td>{r.email}</td>
+                  <td>{r.role}</td>
+                  <td>{[r.curriculum, r.subjects].filter(Boolean).join(': ') || '–'}{r.note ? <div className="tiny muted">“{r.note}”</div> : null}</td>
+                  <td>{r.exam || '–'}</td>
+                  <td>{r.country || '–'}</td>
+                  <td className="tiny">{new Date(r.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
