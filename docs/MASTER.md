@@ -15,7 +15,7 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 | First real user | Aaryan tutoring his sister (Cambridge IGCSE International Maths 0607, Lusaka) from NYC |
 | Admin | Aaryan is the StudyBridge admin, on a separate admin account: approves tutors, manages accounts and access, never sees content |
 | Business model | Monthly or yearly subscription per tutor (Free: 1 learner; Starter: 5 learners, $15; Pro: 25 learners, $29; yearly = 2 months free; parents free), no commission. Free for everyone until paid plans are switched on; StudyBridge pays the AI and video costs |
-| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026 (app 1.1.54) |
+| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026; on gostudybridge.com since 7 Oct 2026 (app 1.1.55) |
 
 **Rules StudyBridge lives by**
 
@@ -102,9 +102,10 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.54 |
-| Website | Published with every release next to the phone version; its early-access form saves to the server (Admin → Selling shows the list) | Live at `aaryanc-1.github.io/studybridge-releases/` |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.55 |
+| Website | Published with every release next to the phone version; its early-access form saves to the server (Admin → Selling shows the list) | Live at gostudybridge.com (app at gostudybridge.com/app/), served by Cloudflare Pages (project gostudybridge) from the releases repo's gh-pages branch; old github.io links redirect |
 | Admin → Selling | Plan limits, Stripe (secret key, webhook secret, four price IDs), Resend email (sender and key), Google sign-in | Nothing set; all off |
+| Domain gostudybridge.com (Cloudflare) | The website and the phone/web version; Cloudflare Pages serves them free and fast worldwide. Later: email from the domain (Resend) and hello@ forwarding (Cloudflare Email Routing) | Live 7 Oct 2026; Supabase Site URL to be set to gostudybridge.com/app/ |
 | Secret `RELEASES_TOKEN` | Lets the build publish to the public repo | Added |
 | Variables `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Built into the apps so nobody types a server address | Added |
 | Secret `SUPABASE_DB_URL` | Runs `setup.sql` and nightly backups automatically | Added 5 Oct 2026; works |
@@ -118,7 +119,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 2. Supabase → Edge Functions → `prof` → replace the code with the latest `supabase/functions/prof/index.ts` → Deploy (JWT verification stays off).
 3. Restart StudyBridge when the new-version bar appears.
 
-**Links to give people:** the website is `aaryanc-1.github.io/studybridge-releases/` (sign-up, invites, downloads); tutors and learners download from `github.com/aaryanc-1/studybridge-releases/releases/latest`. On a Mac, the first open needs System Settings → Privacy & Security → Open Anyway. The phone version is at `aaryanc-1.github.io/studybridge-releases/app/` (add it to the home screen); it updates itself with every release.
+**Links to give people:** the website is `gostudybridge.com` (sign-up, invites, downloads) and the phone and web version is `gostudybridge.com/app/`; tutors and learners download from `github.com/aaryanc-1/studybridge-releases/releases/latest`. On a Mac, the first open needs System Settings → Privacy & Security → Open Anyway. The phone version is at `gostudybridge.com/app/` (add it to the home screen); it updates itself with every release.
 
 ## Costs and pricing
 
@@ -297,6 +298,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 
 | Date | Change |
 | --- | --- |
+| 7 Oct 2026 | Moved to gostudybridge.com (app 1.1.55): the domain was bought on Cloudflare; Cloudflare Pages serves the website and the app at /app/; invites, parent invites, password-reset links, Stripe returns and the QR code use it; old github.io links redirect (signed-in phone users get a note first). The backend stays on Supabase (decided: not GoDaddy shared hosting, which can't run it safely) |
 | 7 Oct 2026 | 2.0 step 3, the 6 Oct fixes (app 1.1.54): lockdown alerts say test, quiz or exam as it is; the marking total and buttons stay in view (a bar on narrow screens); "Return marks" is always there and final, "Return marks and ask to redo N" only when you tick redo, "Save, return later" never releases; Prof no longer ticks redo; feedback with "
 " written out gets real line breaks (old feedback fixed too); blank or rubbed-out drawings count as no answer; tutor plans chosen from a list (Free, Starter, Pro, Custom, Complimentary), typed-in names became Complimentary |
 | 7 Oct 2026 | Website (app 1.1.53): a Home page with a proper introduction (what StudyBridge is in four ideas, who it's for, how it works) and its own page for students, tutors, parents, schools and centres, and getting the app; the menu marks the current page and each early-access form starts on the right role. A GitHub fault skipped the release step once (1.1.52); rebuilt as 1.1.53 |
