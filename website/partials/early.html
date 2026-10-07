@@ -1,0 +1,39 @@
+  <section class="early" id="early">
+    <div class="wrap narrow">
+      <div class="early-box reveal">
+        <h2>Be first in</h2>
+        <p>Tell us who you are and what you need. We’ll save your place, build your subjects first, and tell you as soon as it opens.</p>
+        <form id="ea-form" novalidate data-default-role="{{arg}}">
+          <div class="ea-grid">
+            <label class="span2">Email<input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
+            <label>I am
+              <select name="role">
+                <option value="student">A student</option>
+                <option value="parent">A parent</option>
+                <option value="tutor">A tutor</option>
+                <option value="centre">A tuition centre</option>
+                <option value="school">A school</option>
+              </select>
+            </label>
+            <label>Curriculum
+              <select name="curriculum">
+                <option value="">Choose…</option>
+                <option>Cambridge IGCSE</option><option>Cambridge AS & A Level</option>
+                <option>Edexcel International GCSE</option><option>Edexcel International A Level</option>
+                <option>IB Diploma</option><option>Several</option><option>University</option><option>Other</option>
+              </select>
+            </label>
+            <label class="span2">Subjects<input name="subjects" placeholder="e.g. Physics, Maths, Economics" maxlength="400"></label>
+            <label>Exam session<input name="exam" id="ea-exam" placeholder="e.g. May/June 2027" maxlength="80"></label>
+            <label>Country<input name="country" placeholder="e.g. Zambia" maxlength="80" autocomplete="country-name"></label>
+            <label class="span2"><span>Anything else? <small>(optional)</small></span><input name="note" id="ea-note" placeholder="A subject we don’t have yet, how many learners, or what you need most" maxlength="600"></label>
+          </div>
+          <label class="check"><input type="checkbox" name="age" required> I’m 13 or older, or I’m a parent signing up for my child.</label>
+          <button class="btn primary big" type="submit">Save my place</button>
+          <p class="fine">We’ll only email you about early access. See the <a href="privacy.html">privacy policy</a>.</p>
+          <p class="ea-msg" id="ea-msg" role="status"></p>
+        </form>
+        <div class="ea-off" id="ea-off" hidden>Early access opens here soon. Tutors can <a href="{{app}}#start=tutor">start free today</a>.</div>
+      </div>
+    </div>
+  </section>

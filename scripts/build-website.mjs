@@ -2,7 +2,7 @@
 // change is one edit. CI publishes it at the root of the releases repo's GitHub Pages, next to the phone app at app/.
 //   node scripts/build-website.mjs <out dir> [version]
 // With a version, release.json points the download buttons straight at that release's files.
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
@@ -41,9 +41,19 @@ const statusClass = (s) => ({ 'Available now': 'now', Free: 'free', 'Early acces
 const levelTitle = (b, l) => (b.id === 'ib' ? `IB Diploma ${l.name === 'Core' ? 'core' : `subjects, ${l.name}`}` : `${b.name} ${l.name}`);
 export const subjectCount = (c) => c.boards.reduce((n, b) => n + b.levels.reduce((m, l) => m + l.subjects.length, 0), 0);
 
-// The header and footer every page shares; links to sections of the home page start with `home`
-function header(c, home) {
-  const links = `<a href="${home}#students">Students</a><a href="${home}#tutors">Tutors</a><a href="subjects.html">Subjects</a><a href="${home}#pricing">Pricing</a><a href="${home}#get">Get the app</a>`;
+// The pages, in the order the menu shows them
+export const PAGES = [
+  ['students.html', 'Students'],
+  ['tutors.html', 'Tutors'],
+  ['parents.html', 'Parents'],
+  ['schools.html', 'Schools'],
+  ['subjects.html', 'Subjects'],
+  ['download.html', 'Get the app'],
+];
+
+// The header and footer every page shares; the current page is marked in the menu
+function header(c, file) {
+  const links = PAGES.map(([f, name]) => `<a href="${f}"${f === file ? ' aria-current="page"' : ''}>${name}</a>`).join('');
   return `<header class="top">
   <div class="wrap bar">
     <a class="brand" href="./" aria-label="${esc(c.brand)} home"><img src="logo-192.png" alt="" width="32" height="32"><span>${esc(c.brand)}</span></a>
@@ -51,25 +61,36 @@ function header(c, home) {
     <div class="actions">
       <button class="icon-btn theme-btn" id="theme" type="button" data-theme-toggle aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
       <a class="btn ghost hide-sm" href="${esc(c.appPath)}#start=signin">Sign in</a>
-      <a class="btn primary" href="${home}#countdown">Get my plan</a>
+      <a class="btn primary" href="students.html#countdown">Get my plan</a>
       <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobile-nav"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
   </div>
-  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden>${links}<a href="${esc(c.appPath)}#start=signin">Sign in</a><button type="button" class="nav-theme" data-theme-toggle>Switch light or dark</button></nav>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden><a href="./">Home</a>${links}<a href="${esc(c.appPath)}#start=signin">Sign in</a><button type="button" class="nav-theme" data-theme-toggle>Switch light or dark</button></nav>
 </header>`;
 }
-function footer(c, home, year) {
+function footer(c, year) {
   return `<footer class="foot">
   <div class="wrap">
     <div class="foot-grid">
       <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p></div>
-      <nav aria-label="For students"><b>Students</b><a href="${home}#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="${home}#early">Early access</a></nav>
-      <nav aria-label="For tutors"><b>Tutors</b><a href="${home}#tutors">Features</a><a href="${home}#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Start free</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
-      <nav aria-label="About"><b>About</b><a href="${home}#faq">Questions</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+      <nav aria-label="For students"><b>Students</b><a href="students.html">How it works</a><a href="students.html#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="students.html#early">Early access</a></nav>
+      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="tutors.html#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Start free</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
+      <nav aria-label="Parents and schools"><b>Families and schools</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
+      <nav aria-label="About"><b>About</b><a href="./">Home</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
     </div>
     <p class="legal-line">© ${year} ${esc(c.brand)}. Cambridge, Pearson Edexcel and IB are trademarks of their owners. ${esc(c.brand)} is not affiliated with or endorsed by them, and its practice papers are original.</p>
   </div>
 </footer>`;
+}
+
+// {{name}} fills in a value; {{name:arg}} drops in website/partials/name.html, where {{arg}} is the argument
+function render(src, tokens, where, depth = 0) {
+  return src.replace(/\{\{(\w+)(?::([\w-]*))?\}\}/g, (m, k, arg) => {
+    if (k in tokens && arg === undefined) return tokens[k];
+    const file = join(root, 'website/partials', `${k}.html`);
+    if (depth < 3 && existsSync(file)) return render(readFileSync(file, 'utf8'), { ...tokens, arg: arg || '' }, `partials/${k}.html`, depth + 1);
+    throw new Error(`website/${where}: unknown {{${k}}}`);
+  });
 }
 
 export async function buildWebsite(out, version, sb = { url: process.env.SB_URL, key: process.env.SB_KEY }) {
@@ -92,7 +113,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     subjectCount: String(subjectCount(c)),
     languages: c.languages.map((l, i) => `<i${i ? ' class="soon"' : ''}>${esc(l)}</i>`).join(''),
     audienceCards: c.audiences
-      .map((a) => `<a class="fit-card" href="${esc(a.href)}"><span class="status ${statusClass(a.status)}">${esc(a.status)}</span><b>${esc(a.name)}</b><p>${esc(a.line)}</p><span class="go">Show me →</span></a>`)
+      .map((a) => `<a class="fit-card" href="${esc(a.href)}"><span class="status ${statusClass(a.status)}">${esc(a.status)}</span><b>${esc(a.name)}</b><p>${esc(a.line)}</p><span class="go">${esc(a.go || 'Show me')} →</span></a>`)
       .join(''),
     boardButtons: c.boards.map((b, i) => `<button type="button" data-board="${esc(b.id)}" aria-pressed="${i === 0}">${esc(b.name)}</button>`).join(''),
     boardTabs: c.boards
@@ -120,13 +141,8 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
   };
   for (const f of readdirSync(join(root, 'website'))) {
     if (f.endsWith('.html')) {
-      const home = f === 'index.html' ? '' : './';
-      const page = { ...tokens, header: header(c, home), footer: footer(c, home, tokens.year) };
-      const html = readFileSync(join(root, 'website', f), 'utf8').replace(/\{\{(\w+)\}\}/g, (m, k) => {
-        if (!(k in page)) throw new Error(`website/${f}: unknown {{${k}}}`);
-        return page[k];
-      });
-      writeFileSync(join(out, f), html);
+      const page = { ...tokens, header: header(c, f), footer: footer(c, tokens.year) };
+      writeFileSync(join(out, f), render(readFileSync(join(root, 'website', f), 'utf8'), page, f));
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
   const pub = {

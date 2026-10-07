@@ -84,6 +84,10 @@ countdown (sessions per board in `site.config.json` → `boards[].sessions`), su
 pricing, FAQ, early-access form → `join_early_access` (anon RPC; table `early_access`, RLS on, no policies; the Owner reads
 it in Admin → Selling via `admin_early_access`, with CSV download). Shared header/footer come from build-website.mjs; the
 form gets the public Supabase URL/key from env `SB_URL`/`SB_KEY` at build time and hides itself without them.
+Website pages (7 Oct 2026): Home (index.html: the introduction, who it's for, how it works, countdown teaser, subjects,
+trust), students.html, tutors.html (pricing), parents.html, schools.html, subjects.html, download.html, terms, privacy.
+The menu comes from `PAGES` in build-website.mjs; shared pieces live in `website/partials/` and are dropped in with
+`{{name:arg}}` (e.g. `{{early:parent}}` presets the form's role, `{{countdown:}}`).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

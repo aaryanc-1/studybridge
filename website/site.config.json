@@ -18,11 +18,10 @@
     { "code": "INR", "symbol": "₹", "rate": 96.22, "label": "Indian rupees" }
   ],
   "audiences": [
-    { "id": "student", "name": "A student on my own", "status": "Early access", "line": "A guided plan to your exam, lessons, practice papers and mocks, with Prof as your guide.", "href": "#students" },
-    { "id": "tutor", "name": "A learner with a tutor", "status": "Available now", "line": "Your tutor sets the work and approves every mark and comment.", "href": "#tutors" },
-    { "id": "parent", "name": "A parent", "status": "Free", "line": "Follow your child's progress with weekly reports their tutor approves.", "href": "#parents" },
-    { "id": "centre", "name": "A tuition centre", "status": "Coming soon", "line": "All your tutors, learners and reports in one place.", "href": "#centres" },
-    { "id": "school", "name": "A school", "status": "Coming soon", "line": "Classes, teachers and parents, with exam prep built in.", "href": "#centres" }
+    { "id": "student", "name": "Students", "status": "Early access", "line": "A plan to your exam, short lessons, practice papers in the real format and timed mocks, with Prof as your guide.", "href": "students.html", "go": "For students" },
+    { "id": "tutor", "name": "Tutors", "status": "Available now", "line": "Set work, mark with Prof, teach live and send weekly reports, all in one calm place.", "href": "tutors.html", "go": "For tutors" },
+    { "id": "parent", "name": "Parents", "status": "Free", "line": "See how they’re really doing, with weekly reports, due dates and marks.", "href": "parents.html", "go": "For parents" },
+    { "id": "school", "name": "Schools and tuition centres", "status": "Coming soon", "line": "Teachers, classes, learners and parents in one place, with exam prep built in.", "href": "schools.html", "go": "For schools" }
   ],
   "boards": [
     {

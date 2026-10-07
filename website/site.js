@@ -270,6 +270,7 @@
           form.innerHTML = '<div class="ea-done" role="status"><b>You’re on the list.</b>We’ll email ' + esc(f.email.value.trim()) + ' when the student version opens. Thank you!</div>';
         }, function (err) { btn.disabled = false; msg.className = 'ea-msg bad'; msg.textContent = err.message; });
     });
+    if (form.dataset.defaultRole) form.elements.role.value = form.dataset.defaultRole;
     // From the subjects page or a "tell us" link: fill in what we already know
     var q = new URLSearchParams(location.search);
     if (q.get('request')) {

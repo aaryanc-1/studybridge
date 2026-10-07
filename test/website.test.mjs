@@ -4,31 +4,44 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildWebsite, siteConfig, subjectCount } from '../scripts/build-website.mjs';
+import { buildWebsite, siteConfig, subjectCount, PAGES } from '../scripts/build-website.mjs';
 
 test('website: every page builds with nothing left unfilled', async () => {
   const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
   try {
     await buildWebsite(out, '1.1.99', { url: 'https://example.supabase.co/', key: 'anon-key' });
-    for (const f of ['index.html', 'subjects.html', 'terms.html', 'privacy.html', 'site.css', 'site.js', 'config.js', 'app-qr.svg', 'logo-192.png', 'favicon.png', 'release.json']) {
+    const pages = ['index.html', ...PAGES.map(([f]) => f), 'terms.html', 'privacy.html'];
+    for (const f of [...pages, 'site.css', 'site.js', 'config.js', 'app-qr.svg', 'logo-192.png', 'favicon.png', 'release.json']) {
       assert.ok(existsSync(join(out, f)), f);
     }
+    assert.ok(!existsSync(join(out, 'partials')), 'the shared pieces are built into the pages, not published');
     const c = siteConfig();
-    for (const f of ['index.html', 'subjects.html', 'terms.html', 'privacy.html']) {
-      const html = readFileSync(join(out, f), 'utf8');
+    const read = (f) => readFileSync(join(out, f), 'utf8');
+    for (const f of pages) {
+      const html = read(f);
       assert.doesNotMatch(html, /\{\{/, f);
       assert.match(html, new RegExp(`<title>[^<]*${c.brand}`), f);
+      assert.match(html, /not affiliated with or endorsed by/, `${f}: the trademark note`);
+      for (const [p] of PAGES) assert.ok(html.includes(`href="${p}"`), `${f} links to ${p}`);
     }
-    const home = readFileSync(join(out, 'index.html'), 'utf8');
-    assert.match(home, /#start=tutor/);
+    // each page marks itself in the menu
+    for (const [p, name] of PAGES) assert.ok(read(p).includes(`<a href="${p}" aria-current="page">${name}</a>`), p);
+    // home: the introduction, every audience with its own page, and the ways in
+    const home = read('index.html');
+    for (const a of c.audiences) assert.ok(home.includes(a.name) && home.includes(`href="${a.href}"`), a.name);
     assert.match(home, /#start=invite/);
-    for (const p of c.plans) assert.match(home, new RegExp(`data-plan="${p.id}"`));
-    // every audience, every board, the countdown and the early-access form; the trademark note on every page
-    for (const a of c.audiences) assert.ok(home.includes(a.name), a.name);
-    for (const b of c.boards) assert.ok(home.includes(`data-board="${b.id}"`) && home.includes(`id="panel-${b.id}"`), b.id);
-    assert.match(home, /id="cd-session"/);
-    assert.match(home, /id="ea-form"/);
-    for (const f of ['index.html', 'subjects.html', 'terms.html', 'privacy.html']) assert.match(readFileSync(join(out, f), 'utf8'), /not affiliated with or endorsed by/, f);
+    assert.match(home, /#start=tutor/);
+    // students: the countdown for every board, the subjects and the early-access form
+    const students = read('students.html');
+    for (const b of c.boards) assert.ok(students.includes(`data-board="${b.id}"`) && students.includes(`id="panel-${b.id}"`), b.id);
+    assert.match(students, /id="cd-session"/);
+    assert.match(students, /data-default-role="student"/);
+    // tutors: plans and the calculator; parents and schools: their own early-access forms; downloads
+    for (const p of c.plans) assert.match(read('tutors.html'), new RegExp(`data-plan="${p.id}"`));
+    assert.match(read('parents.html'), /#start=parent/);
+    assert.match(read('parents.html'), /data-default-role="parent"/);
+    assert.match(read('schools.html'), /data-default-role="centre"/);
+    assert.match(read('download.html'), /data-dl="windows"/);
     // the subjects page lists every subject in the config, searchable
     const subjects = readFileSync(join(out, 'subjects.html'), 'utf8');
     assert.equal((subjects.match(/<li data-s=/g) || []).length, subjectCount(c));

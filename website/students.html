@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For students · {{brand}}</title>
+<meta name="description" content="Get exam-ready, step by step: a plan for the weeks you have, short lessons, practice papers in the real format and timed mocks with a grade, with Prof as your guide. IGCSE, A-Level and IB.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap narrow center">
+      <span class="pill">For students · early access</span>
+      <h1>Get exam-ready,<br><em>step by step.</em></h1>
+      <p class="lead">A plan for the weeks you have, lessons that make sense, practice papers in the real format and timed mocks with a grade. On your own with Prof as your guide, or with your tutor.</p>
+      <div class="cta center">
+        <a class="btn primary big" href="#countdown">Get my plan</a>
+        <a class="btn big" href="#early">Join early access</a>
+      </div>
+      <p class="fine">Already have a tutor on {{brand}}? <a href="{{app}}#start=invite">Join with your invite</a> or <a href="{{app}}#start=signin">sign in</a>.</p>
+    </div>
+  </section>
+
+  {{countdown:}}
+
+  <section class="students" id="how">
+    <div class="wrap">
+      <h2 class="reveal">Everything you need, in the right order</h2>
+      <ol class="steps reveal">
+        <li><span class="n">1</span><h3>Tell us what you study</h3><p>Your exam board, subjects and exam date. If we have your syllabus, you’ll see it. If not, upload it or ask for it.</p></li>
+        <li><span class="n">2</span><h3>A quick check</h3><p>Ten minutes to see what you already know, so your time goes where it matters. You can skip it.</p></li>
+        <li><span class="n">3</span><h3>Your plan</h3><p>Every topic spread over the weeks you have, weak ones first, with time for papers and a mock. Miss a day and it re-plans itself.</p></li>
+        <li><span class="n">4</span><h3>Learn, practise, mock</h3><p>Short lessons, instant marking, practice papers and timed mocks with a grade, so you know exactly where you stand.</p></li>
+      </ol>
+      <div class="inside reveal">
+        <article><span class="ic" aria-hidden="true">✦</span><h3>Lessons that make sense</h3><p>Short and focused, one idea at a time, with a worked example. Tap “say it more simply” or “explain it another way” any time.</p></article>
+        <article><span class="ic" aria-hidden="true">✎</span><h3>Practice papers, real format</h3><p>Original papers built to match each real paper: same sections, timing, marks and style, with full mark schemes.</p></article>
+        <article><span class="ic" aria-hidden="true">⌘</span><h3>Official past papers</h3><p>Find any past paper and open it from the exam board’s own site, then practise it timed and marked.</p></article>
+        <article><span class="ic" aria-hidden="true">◷</span><h3>Timed mocks with a grade</h3><p>Exam conditions, a grade at the end, and how many marks you are from the next one.</p></article>
+        <article><span class="ic" aria-hidden="true">❏</span><h3>Flashcards that come back</h3><p>Cards for every topic, plus your own mistakes, brought back just before you’d forget them.</p></article>
+        <article><span class="ic" aria-hidden="true">∑</span><h3>Maths checked line by line</h3><p>Show your working and see which line went wrong, not just the final answer.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="prof" id="prof">
+    <div class="wrap prof-grid">
+      <div class="reveal">
+        <span class="eyebrow">Meet Prof</span>
+        <h2 class="left">Prof guides.<br>It never does the work for you.</h2>
+        <ul class="ticks">
+          <li><b>Hints before answers.</b> Prof asks the next question instead of handing you the answer, so the learning is yours.</li>
+          <li><b>Checked twice.</b> Lessons and papers are worked through a second time before they reach you, and anything can be reported in one tap.</li>
+          <li><b>With a tutor, the tutor decides.</b> Everything Prof drafts is approved by your tutor before you see it.</li>
+          <li><b>No ads, nothing sold.</b> Your work is yours. Download it or delete it any time.</li>
+        </ul>
+      </div>
+      <div class="chat reveal" aria-label="Example of Prof giving a hint">
+        <div class="msg me">I’m stuck on 3x − 7 = 11</div>
+        <div class="msg prof"><span class="who">Prof</span>What could you do to both sides to get 3x on its own?</div>
+        <div class="msg me">Add 7?</div>
+        <div class="msg prof"><span class="who">Prof</span>Yes. Now you have 3x = 18. What’s the last step?</div>
+        <div class="msg me">x = 6 🎉</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="subjects" id="subjects">
+    <div class="wrap">
+      <h2 class="reveal">Your subjects</h2>
+      <p class="sub reveal">{{subjectCount}} subjects across Cambridge, Pearson Edexcel and the IB Diploma to start, with more on request.</p>
+      <div class="tabs reveal" role="tablist" aria-label="Exam boards">{{boardTabs}}</div>
+      {{boardPanels}}
+      <p class="center reveal"><a class="btn" href="subjects.html">See every subject, or ask for yours</a></p>
+    </div>
+  </section>
+
+  <section class="access" id="access">
+    <div class="wrap">
+      <h2 class="reveal">Learning that fits you</h2>
+      <p class="sub reveal">Not the other way round.</p>
+      <ul class="access-grid reveal">
+        <li><b>Read aloud</b><span>Hear any lesson or question.</span></li>
+        <li><b>Answer by voice</b><span>Say it instead of typing.</span></li>
+        <li><b>Say it more simply</b><span>Plainer words, same idea.</span></li>
+        <li><b>Focus mode</b><span>One idea on screen at a time.</span></li>
+        <li><b>Reading mode</b><span>Large, calm text and nothing else.</span></li>
+        <li><b>Screen readers</b><span>Works with a keyboard and screen reader throughout.</span></li>
+        <li><b>Colour-blind safe</b><span>Charts that never rely on colour alone.</span></li>
+        <li><b>Extra time</b><span>For timed tests, if you need it.</span></li>
+      </ul>
+      <p class="langs reveal"><span>Languages</span> {{languages}}</p>
+    </div>
+  </section>
+
+  <section class="devices-short">
+    <div class="wrap">
+      <div class="split reveal">
+        <div>
+          <h2 class="left">Study in your browser. Mock on your computer.</h2>
+          <p class="muted">Everything works in any browser, on a laptop, tablet or phone. For locked-down mocks just like the real exam, use the free desktop app for Windows or Mac. One account works everywhere.</p>
+        </div>
+        <a class="btn big" href="download.html">Get the app</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="faq" id="faq">
+    <div class="wrap narrow">
+      <h2 class="reveal">Questions from students</h2>
+      <details class="reveal"><summary>Can I use {{brand}} without a tutor?</summary><p>Yes, that’s the student version, in early access now. You’ll get a plan to your exam, lessons, practice papers and mocks, with Prof as your guide. Join the list below and we’ll tell you when it opens.</p></details>
+      <details class="reveal"><summary>Is it cheating to use Prof?</summary><p>No. Prof never does your work for you. It gives hints and asks questions so you get there yourself, the way a good teacher would.</p></details>
+      <details class="reveal"><summary>Are the practice papers real past papers?</summary><p>No. They are original papers written to match each real paper’s format: sections, timing, marks and style. Real past papers open from the exam board’s own website. {{brand}} is not affiliated with or endorsed by Cambridge, Pearson Edexcel or the IB.</p></details>
+      <details class="reveal"><summary>My subject or exam isn’t listed.</summary><p>Ask for it on the <a href="subjects.html">subjects page</a>. The most-requested come next. You’ll also be able to upload your own syllabus or course outline, from grade 7 to university, and get a plan from it.</p></details>
+      <details class="reveal"><summary>How old do I need to be?</summary><p>From grade 8 you can start on your own. Below grade 8, a parent sets up or approves the account. In some countries the law asks a parent to confirm for anyone under 18, and the app handles that for you.</p></details>
+      <details class="reveal"><summary>How much will it cost?</summary><p>Prices will be announced with early access, with a free way to start. Joining the list is free and doesn’t commit you to anything.</p></details>
+    </div>
+  </section>
+
+  {{early:student}}
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

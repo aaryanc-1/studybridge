@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For tutors · {{brand}}</title>
+<meta name="description" content="Your whole tutoring week in one calm place: set work, mark with Prof, teach live, run real mocks and send weekly reports parents read. Free for one learner.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap narrow center">
+      <span class="pill">For tutors · available now</span>
+      <h1>Your whole tutoring week,<br><em>in one calm place.</em></h1>
+      <p class="lead">Set work in minutes, mark faster with Prof drafting and you deciding, teach live, run mocks that feel real and send weekly reports parents actually read.</p>
+      <div class="cta center">
+        <a class="btn primary big" href="{{app}}#start=tutor">Start free</a>
+        <a class="btn big" href="#pricing">See pricing</a>
+      </div>
+      <p class="fine">Free for one learner, no card needed. Already teaching on {{brand}}? <a href="{{app}}#start=signin">Sign in</a>.</p>
+    </div>
+  </section>
+
+  <section class="tutors" id="features">
+    <div class="wrap">
+      <h2 class="reveal">Everything a tutor needs</h2>
+      <div class="t-grid reveal">
+        <article><h3>Set work in minutes</h3><p>Homework, quizzes and tests from your own books and papers, drafted by Prof and approved by you.</p></article>
+        <article><h3>Mark faster</h3><p>Prof reads typed answers, photos and whiteboard working and drafts marks against your mark scheme. You decide.</p></article>
+        <article><h3>Teach live</h3><p>Video, whiteboard and the work in one window, with weekly lessons shown in both time zones.</p></article>
+        <article><h3>Mocks that feel real</h3><p>Locked-down exams on the desktop app, grade boundaries for each exam and session, and a grade for each learner.</p></article>
+        <article><h3>Plans from the syllabus</h3><p>Upload a syllabus and get the topics in order, then a plan week by week or chapter by chapter.</p></article>
+        <article><h3>Reports parents read</h3><p>A tidy weekly report card you approve, in the app, by WhatsApp or by email.</p></article>
+        <article><h3>Your own library</h3><p>Your files, lesson notes, a question bank you build once, and every past paper filed and paired with its mark scheme.</p></article>
+        <article><h3>Progress at a glance</h3><p>Strong and weak topics, time studied, missed deadlines and mock grades over time, for every learner.</p></article>
+        <article><h3>Parents included, free</h3><p>A read-only parent account that sees only what you approve. Never messages or working.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="how">
+    <div class="wrap">
+      <h2 class="reveal">How it works</h2>
+      <ol class="steps reveal">
+        <li><span class="n">1</span><h3>Set up your subjects</h3><p>Add a subject and its exam. Upload the syllabus and Prof suggests a plan you can change.</p></li>
+        <li><span class="n">2</span><h3>Invite learners and parents</h3><p>Send an invite by WhatsApp or email. Learners join on any device; parents get a read-only account.</p></li>
+        <li><span class="n">3</span><h3>Teach, set work, mark</h3><p>Share lessons and files, set homework and timed tests. Prof drafts marks and feedback; you approve.</p></li>
+        <li><span class="n">4</span><h3>Report every week</h3><p>A clear report card for each parent, written with you, sent when you say so.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="prof">
+    <div class="wrap prof-grid">
+      <div class="reveal">
+        <span class="eyebrow">Prof, your assistant</span>
+        <h2 class="left">Prof drafts.<br>You decide.</h2>
+        <ul class="ticks">
+          <li><b>Nothing goes out without you.</b> Every mark, comment, question and report Prof drafts waits for your approval.</li>
+          <li><b>It shows its thinking.</b> For photos and whiteboard working, Prof tells you what it read, so you can check it at a glance.</li>
+          <li><b>It learns your style.</b> Your mark schemes, your books, your way of explaining.</li>
+          <li><b>Learners never use AI.</b> Prof works for you, not for them.</li>
+        </ul>
+      </div>
+      <div class="mark-mock reveal" aria-hidden="true">
+        <div class="mm-head">Marking · Quadratics, week 4</div>
+        <div class="mm-q"><span class="qn">Q3</span> Solve x² − 5x + 6 = 0</div>
+        <div class="mm-ans">(x − 2)(x − 3) = 0 → x = 2 or 3</div>
+        <div class="mm-prof">
+          <div class="mm-top"><span>Prof suggests</span><b>4 / 4</b></div>
+          <p>Factorised correctly, so x = 2 or x = 3. Neat working.</p>
+          <small>Read as: (x − 2)(x − 3) = 0</small>
+        </div>
+        <div class="mm-btns"><span class="b">Change</span><span class="b ok">Approve</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pricing-sec" id="pricing">
+    <div class="wrap">
+      <h2 class="reveal">Simple pricing</h2>
+      <p class="sub reveal">{{freeLine}} Parent accounts are always free. Pay yearly and get {{monthsFree}} months free.</p>
+      <div class="price-controls reveal">
+        <div class="seg" role="group" aria-label="Billing">
+          <button type="button" data-period="month" aria-pressed="true">Monthly</button>
+          <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{monthsFree}} months free</small></button>
+        </div>
+        <label class="cur">Prices in <select id="currency">{{currencyOptions}}</select></label>
+      </div>
+      <div class="plans reveal">{{plans}}</div>
+      <div class="calc reveal">
+        <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
+        <input type="range" id="learners" min="1" max="40" value="5">
+        <div class="calc-out" id="calc-out" aria-live="polite"></div>
+      </div>
+      <p class="fine center">Kwacha and rupee prices are approximate; plans are charged in US dollars. More than 25 learners? <a href="schools.html">See schools and centres</a>.</p>
+    </div>
+  </section>
+
+  <section class="devices-short">
+    <div class="wrap">
+      <div class="split reveal">
+        <div>
+          <h2 class="left">Best on the desktop app</h2>
+          <p class="muted">Locked-down mocks, the exam camera, big PDFs and books, and desktop notifications. Free for Windows and Mac, and it updates itself. Your learners can use any browser or their phone.</p>
+        </div>
+        <a class="btn big" href="download.html">Get the app</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="faq">
+    <div class="wrap narrow">
+      <h2 class="reveal">Questions from tutors</h2>
+      <details class="reveal"><summary>Is it really free?</summary><p>Yes. The Free plan is one learner with every feature, for as long as you like. While paid plans are being set up, nobody is charged. When they start, you choose whether to upgrade.</p></details>
+      <details class="reveal"><summary>Do my learners use AI?</summary><p>No. Prof works only for you. Nothing it drafts reaches a learner or parent until you’ve checked and approved it.</p></details>
+      <details class="reveal"><summary>Can I use my own past papers and books?</summary><p>Yes. Import a whole folder: papers are filed, paired with their mark schemes and kept private to you. {{brand}} never shares exam-board papers.</p></details>
+      <details class="reveal"><summary>My learners live in another time zone.</summary><p>Weekly lessons keep your clock time and show each learner their own, with reminders a day and 15 minutes before.</p></details>
+      <details class="reveal"><summary>What do parents see?</summary><p>Only what you approve: weekly reports, upcoming lessons and due dates, and marks once you’ve returned them. Never messages or working.</p></details>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap">
+      <div class="final-box reveal">
+        <h2>Start with one learner, free.</h2>
+        <p>Set up your first subject in a few minutes.</p>
+        <div class="cta center">
+          <a class="btn big on-dark-primary" href="{{app}}#start=tutor">Start free</a>
+          <a class="btn big on-dark" href="download.html">Get the app</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

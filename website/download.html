@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get the app · {{brand}}</title>
+<meta name="description" content="Use {{brand}} in any browser, add it to your phone’s home screen, or download the free desktop app for Windows and Mac. One account works everywhere.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap narrow center">
+      <span class="pill">Free on every device</span>
+      <h1>Use it <em>anywhere.</em></h1>
+      <p class="lead">One account works on your laptop, tablet and phone. Your plan, work and progress follow you.</p>
+    </div>
+  </section>
+
+  <section class="devices" id="get">
+    <div class="wrap">
+      <div class="dev-grid reveal">
+        <article>
+          <h3>In your browser</h3>
+          <p class="muted">Nothing to install. Perfect for everyday study on a laptop, tablet or phone.</p>
+          <ul class="ticks small"><li>Your plan, lessons and practice</li><li>Marking and flashcards</li><li>Add it to your phone’s home screen</li></ul>
+          <a class="btn" href="{{app}}">Open in your browser</a>
+        </article>
+        <article class="feature">
+          <h3>Desktop app <small>Windows and Mac</small></h3>
+          <p class="muted">Everything in the browser, plus the things a browser can’t do.</p>
+          <ul class="ticks small"><li>Locked-down mocks, just like the real thing</li><li>Exam camera for tutors</li><li>Big PDFs and books, smoother</li><li>Desktop notifications</li><li>Updates itself</li></ul>
+          <div class="dl" id="dl"></div>
+          <div class="all-dl">
+            <span>All downloads:</span>
+            <a data-dl="windows" href="https://github.com/{{repo}}/releases/latest">Windows</a>
+            <a data-dl="mac_arm" href="https://github.com/{{repo}}/releases/latest">Mac (Apple silicon)</a>
+            <a data-dl="mac_x64" href="https://github.com/{{repo}}/releases/latest">Mac (Intel)</a>
+          </div>
+          <p class="fine" id="dl-version"></p>
+        </article>
+      </div>
+      <div class="phone-row reveal">
+        <div class="qr-card">
+          <img src="app-qr.svg" alt="QR code that opens {{brand}} on your phone" width="128" height="128">
+          <div><b>On your phone</b><p>Scan with your camera, then add {{brand}} to your home screen.</p></div>
+        </div>
+        <details id="a2hs-ios"><summary>iPhone or iPad (Safari)</summary><ol><li>Open the link in <b>Safari</b>.</li><li>Tap <b>Share</b>.</li><li>Tap <b>Add to Home Screen</b>, then <b>Add</b>.</li></ol></details>
+        <details id="a2hs-android"><summary>Android (Chrome)</summary><ol><li>Open the link in <b>Chrome</b>.</li><li>Tap <b>⋮</b>.</li><li>Tap <b>Add to Home screen</b> or <b>Install app</b>.</li></ol></details>
+      </div>
+      <p class="center fine reveal">On a Mac, the first time you open it: System Settings → Privacy &amp; Security → Open Anyway. On Windows, if asked: More info → Run anyway.</p>
+    </div>
+  </section>
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

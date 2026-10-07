@@ -1,0 +1,28 @@
+  <section class="countdown" id="countdown">
+    <div class="wrap narrow">
+      <h2 class="reveal">How long until your exams?</h2>
+      <p class="sub reveal">Pick your exam and see how your weeks could be shaped. Free, no sign-up.</p>
+      <div class="cd-card reveal">
+        <div class="cd-controls">
+          <div class="seg" role="group" aria-label="Exam board" id="cd-board">{{boardButtons}}</div>
+          <label class="cd-session">Exam session
+            <select id="cd-session"></select>
+          </label>
+          <label class="cd-date" id="cd-date-wrap" hidden>Your exam date
+            <input type="date" id="cd-date">
+          </label>
+        </div>
+        <div class="cd-result" aria-live="polite">
+          <div class="cd-weeks"><b id="cd-n">–</b><span id="cd-unit">weeks to go</span></div>
+          <div class="cd-when" id="cd-when"></div>
+          <div class="cd-bar" id="cd-bar"></div>
+          <ul class="cd-legend" id="cd-legend"></ul>
+          <p class="cd-tip" id="cd-tip"></p>
+        </div>
+        <div class="cd-foot">
+          <span class="fine">Session dates are approximate. Check your own exam timetable.</span>
+          <a class="btn primary" href="#early" id="cd-save">Save my plan: get early access</a>
+        </div>
+      </div>
+    </div>
+  </section>

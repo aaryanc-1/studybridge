@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For parents · {{brand}}</title>
+<meta name="description" content="See how your child is really doing: weekly reports, upcoming lessons and due dates, marks and the exam countdown, in a free, read-only parent account.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <span class="pill">For parents · always free</span>
+        <h1>See how they’re<br><em>really doing.</em></h1>
+        <p class="lead">A calm, read-only view of your child’s learning: a weekly report, what’s coming up, their marks once they’re given back and how long until their exams. Without reading over their shoulder.</p>
+        <div class="cta">
+          <a class="btn primary big" href="{{app}}#start=parent">I have a parent invite</a>
+          <a class="btn big" href="#early">My child studies on their own</a>
+        </div>
+        <p class="fine">Parent accounts are free on every plan, on your phone or computer.</p>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="report-mock">
+          <div class="rm-top"><div><div class="pc-sub">Weekly report · 29 Sep – 5 Oct</div><div class="pc-title">Anaya</div></div><span class="status now">Approved by her tutor</span></div>
+          <div class="rm-stats">
+            <div><b>3 / 3</b><span>lessons</span></div>
+            <div><b>78%</b><span>average mark</span></div>
+            <div><b>4h 20m</b><span>studied</span></div>
+          </div>
+          <div class="rm-bars">
+            <div><span>Algebra</span><i style="--w:86%"></i></div>
+            <div><span>Graphs</span><i style="--w:58%"></i></div>
+            <div><span>Probability</span><i style="--w:72%"></i></div>
+          </div>
+          <p class="rm-note">“Anaya worked hard this week. Next: practise reading graphs, then a timed paper on Friday.”</p>
+          <div class="pc-today"><span class="dot"></span>Exams in 9 weeks · Mock grade B</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="intro">
+    <div class="wrap">
+      <h2 class="reveal">What you see, and what you don’t</h2>
+      <div class="two-col reveal">
+        <div class="see">
+          <h3>You see</h3>
+          <ul class="ticks">
+            <li><b>A weekly report</b>, approved by their tutor: lessons, marks, time studied and what’s next.</li>
+            <li><b>Upcoming lessons and due dates</b>, so nothing is a surprise.</li>
+            <li><b>Marks once they’re given back</b>, with strong and weak topics.</li>
+            <li><b>Mock grades and the exam countdown.</b></li>
+          </ul>
+        </div>
+        <div class="dont">
+          <h3>You never see</h3>
+          <ul class="crosses">
+            <li>Their messages with their tutor</li>
+            <li>Their working, photos or drafts</li>
+            <li>Anything before their tutor has approved it</li>
+            <li>The exam camera</li>
+          </ul>
+          <p class="muted small">Your child can see which parents are linked to their account.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="how">
+    <div class="wrap">
+      <h2 class="reveal">Getting started</h2>
+      <ol class="steps three reveal">
+        <li><span class="n">1</span><h3>Get an invite</h3><p>Your child’s tutor sends you a parent invite by WhatsApp or email.</p></li>
+        <li><span class="n">2</span><h3>Open it on your phone</h3><p>Tap the link, create your account and you’re linked to your child.</p></li>
+        <li><span class="n">3</span><h3>Add it to your home screen</h3><p>It opens like an app. No app store needed. <a href="download.html">How to add it</a></p></li>
+      </ol>
+      <p class="center fine reveal">Is your child studying on their own? Below grade 8, you’ll set up or approve their account, and you can follow along the same way.</p>
+    </div>
+  </section>
+
+  <section class="faq">
+    <div class="wrap narrow">
+      <h2 class="reveal">Questions from parents</h2>
+      <details class="reveal"><summary>Does it cost anything?</summary><p>No. Parent accounts are free on every plan.</p></details>
+      <details class="reveal"><summary>Does my child use AI?</summary><p>With a tutor, no: Prof works for the tutor, and everything is approved by the tutor first. On their own, Prof guides them with hints rather than answers, and everything it makes is checked before they see it.</p></details>
+      <details class="reveal"><summary>Can I message the tutor here?</summary><p>Not yet. For now, keep talking to the tutor the way you already do.</p></details>
+      <details class="reveal"><summary>How do I get the weekly report?</summary><p>In your parent account. If your child has switched it on, the tutor can also send it by WhatsApp or email.</p></details>
+      <details class="reveal"><summary>What about my child’s data?</summary><p>We collect only what’s needed for learning, never sell it or show ads, and you can ask the tutor, or us, to see or delete it. See the <a href="privacy.html">privacy policy</a>.</p></details>
+    </div>
+  </section>
+
+  {{early:parent}}
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>
