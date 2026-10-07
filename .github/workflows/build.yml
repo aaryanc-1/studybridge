@@ -79,7 +79,7 @@ jobs:
       - run: npm ci
       - run: npm version "$VERSION" --no-git-tag-version --allow-same-version
       # where the phone version lives (GitHub Pages on the public releases repo)
-      - run: echo "VITE_WEB_URL=https://${RELEASES_REPO%%/*}.github.io/${RELEASES_REPO#*/}/app/" >> "$GITHUB_ENV"
+      - run: echo "VITE_WEB_URL=https://gostudybridge.com/app/" >> "$GITHUB_ENV"
       - run: npm run build
         env:
           VITE_SB_URL: ${{ vars.SUPABASE_URL }}
@@ -215,4 +215,4 @@ jobs:
             gh api -X POST "repos/$RELEASES_REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null 2>&1 \
               || echo "::warning title=Phone version::Turn on GitHub Pages once for $RELEASES_REPO: Settings → Pages → Deploy from a branch → gh-pages, / (root) → Save."
           fi
-          echo "Website: https://${RELEASES_REPO%%/*}.github.io/${RELEASES_REPO#*/}/  Phone version: …/app/"
+          echo "Published to the gh-pages branch; Cloudflare Pages puts it live at https://gostudybridge.com/ (phone version: https://gostudybridge.com/app/)"

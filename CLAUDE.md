@@ -15,8 +15,10 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Accounts:** one sign-in page; the role decides tutor / learner / admin. The admin is a separate
   account (role 'admin', `aaryanchouhan1+admin@gmail.com`). No authenticator/two-step.
 - **Releases:** `.github/workflows/build.yml` builds version 1.1.<run>, publishes to the public repo
-  `aaryanc-1/studybridge-releases` (desktop auto-updates) and the phone app to GitHub Pages at
-  https://aaryanc-1.github.io/studybridge-releases/app/
+  `aaryanc-1/studybridge-releases` (desktop auto-updates) and the website + phone app to its `gh-pages` branch.
+  Since 7 Oct 2026 the domain is **gostudybridge.com** (bought on Cloudflare): Cloudflare Pages (project `gostudybridge`)
+  serves that branch, so the website is https://gostudybridge.com and the app https://gostudybridge.com/app/.
+  Old aaryanc-1.github.io links redirect there (website at once; the app unless someone is signed in, who gets a note).
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)

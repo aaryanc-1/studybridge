@@ -1476,7 +1476,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
   // ---------------- payments (Stripe) and email (Resend), once the admin adds their keys ----------------
   const STRIPE = String(env('STRIPE_BASE_URL') || 'https://api.stripe.com').replace(/\/+$/, '');
   const RESEND = String(env('RESEND_BASE_URL') || 'https://api.resend.com').replace(/\/+$/, '');
-  const WEB = String(env('WEB_APP_URL') || 'https://aaryanc-1.github.io/studybridge-releases/app/');
+  const WEB = String(env('WEB_APP_URL') || 'https://gostudybridge.com/app/');
   async function sellingConfig() {
     const s = (await rest('platform_secrets?id=eq.1&select=stripe_secret,stripe_webhook_secret,resend_key'))[0] || {};
     const c = (await rest('app_config?id=eq.1&select=stripe_prices,email_from'))[0] || {};

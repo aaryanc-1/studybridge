@@ -215,7 +215,8 @@ function PhoneAlerts() {
 function PhoneApp() {
   const app = useApp();
   const toast = useToast();
-  const [web, setWeb] = useState(() => localStorage.getItem('sb.webUrl') || import.meta.env.VITE_WEB_URL || (!desktop && location.protocol.startsWith('http') ? location.origin + location.pathname : ''));
+  // an address saved before the move to gostudybridge.com (7 Oct 2026) is ignored
+  const [web, setWeb] = useState(() => (localStorage.getItem('sb.webUrl') || '').replace(/^.*github\.io.*$/, '') || import.meta.env.VITE_WEB_URL || (!desktop && location.protocol.startsWith('http') ? location.origin + location.pathname : ''));
   const [qr, setQr] = useState('');
   const link = web && /^https?:\/\//.test(web) ? connectLink(web, app.server) : '';
   useEffect(() => {

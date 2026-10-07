@@ -11,6 +11,26 @@
     <link rel="icon" type="image/png" href="./favicon.png" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <title>StudyBridge</title>
+    <script>
+      // StudyBridge moved to gostudybridge.com (7 Oct 2026). Old phone links go there; someone signed in on this device
+      // gets a note instead, so nothing saved here (like work waiting to upload) is left behind without them knowing.
+      (function () {
+        if (!/\.github\.io$/.test(location.hostname)) return;
+        var to = 'https://gostudybridge.com' + location.pathname.replace(/^\/[^/]+/, '') + location.search + location.hash;
+        var signedIn = false;
+        try {
+          for (var i = 0; i < localStorage.length; i++) if (/-auth-token$/.test(localStorage.key(i) || '')) signedIn = true;
+        } catch (e) {}
+        if (!signedIn) return location.replace(to);
+        addEventListener('DOMContentLoaded', function () {
+          var a = document.createElement('a');
+          a.href = to;
+          a.textContent = 'StudyBridge has moved to gostudybridge.com. Once your work has uploaded, tap here to open it there (you’ll sign in once) and add it to your home screen again.';
+          a.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;padding:12px 16px;background:#0E6B6B;color:#fff;font:600 14px system-ui,sans-serif;text-align:center;text-decoration:none';
+          document.body.appendChild(a);
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

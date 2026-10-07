@@ -146,7 +146,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
   const pub = {
-    brand: c.brand, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
+    brand: c.brand, siteUrl: c.siteUrl, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
     boards: c.boards.map((b) => ({ id: b.id, name: b.name, sessions: b.sessions })),
     // the public address and key of the server (both public by design), for the early-access form
     sb: sb?.url && sb?.key ? { url: sb.url.replace(/\/+$/, ''), key: sb.key } : null,

@@ -2,7 +2,7 @@
   "_note": "Everything a rename, a price change or a new subject touches is here. scripts/build-website.mjs puts it into the pages; test/website.test.mjs checks it matches the app.",
   "brand": "StudyBridge",
   "tagline": "Get exam-ready, step by step. With a tutor, or on your own with Prof.",
-  "siteUrl": "https://aaryanc-1.github.io/studybridge-releases/",
+  "siteUrl": "https://gostudybridge.com/",
   "appPath": "app/",
   "releasesRepo": "aaryanc-1/studybridge-releases",
   "freeNow": true,

@@ -37,7 +37,7 @@ export const acceptInvite = (code, name) => run(sb().rpc('accept_invite', { p_co
 export const updateProfile = (patch) => run(sb().from('profiles').update(patch).eq('id', uid()).select().maybeSingle());
 export const changePassword = (password) => run(sb().auth.updateUser({ password }));
 // Where links in StudyBridge's emails open (the phone/web version; set as Supabase's Site URL too)
-export const WEB_APP = 'https://aaryanc-1.github.io/studybridge-releases/app/';
+export const WEB_APP = 'https://gostudybridge.com/app/';
 const webHome = () => (typeof location !== 'undefined' && location.protocol.startsWith('http') && !window.studybridge ? location.origin + location.pathname : WEB_APP);
 export const sendPasswordReset = (email) => run(sb().auth.resetPasswordForEmail(email.trim(), { redirectTo: webHome() }));
 export const signInWithGoogle = () => run(sb().auth.signInWithOAuth({ provider: 'google', options: { redirectTo: webHome() } }));

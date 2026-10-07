@@ -8,6 +8,11 @@
     set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
   };
   var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+  // the old address (github.io) moved to the domain: go there, same page
+  if (/\.github\.io$/.test(location.hostname) && S.siteUrl) {
+    location.replace(S.siteUrl.replace(/\/$/, '') + location.pathname.replace(/^\/[^/]+/, '') + location.search + location.hash);
+    return;
+  }
   document.documentElement.classList.add('js');
 
   // Light / dark
