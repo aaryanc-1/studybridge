@@ -159,6 +159,76 @@ Open questions: ask 3–5 tutors what they would pay; mobile money for Zambia (F
 | 4. Data-saver mode | A switch per device, suggested on slow connections: smaller photo uploads, PDFs a page at a time, images on tap, low-video or audio-only live lessons |  | Shipped |
 | 5. Selling basics + website | Website and landing page; forgot password; download my data and delete my account; terms and privacy drafts (under-18s with a parent's OK); plans with limits off; Google sign-in, StudyBridge email and Stripe payments built and off. Also: Prof marks drawings from a picture; maths shown as finished text | Prices raised slightly (Starter $15, Pro $29); website on GitHub Pages until a domain; a rename is likely, so the name and prices sit in one file. Still needs Aaryan: the domain, a Google sign-in client, Stripe and Resend accounts, a lawyer's check | Shipped |
 
+## 2.0 plan: open to every learner
+
+Agreed with Aaryan on 7 Oct 2026; nothing is built yet. StudyBridge grows from "a tutor and their learners" into a learning resource for anyone in education: a student on their own, a tutor and their learners, tuition centres, then schools. A student without a tutor gets Prof as their guide, with content made and checked ahead of time. The big goal is to be the most complete and trustworthy place to prepare for an exam, better than studybridge.tech (an AI-first South African platform with the same name).
+
+**Who uses it**
+
+| Group | People in it | Who approves AI-made content |
+| --- | --- | --- |
+| StudyBridge team | Owner (Aaryan; the final say on everything, including who gets admin access), Admin, Reviewer (content quality only). Aaryan is all three until he adds a team | Automatic checks for shared content; reports come to the Owner |
+| A student on their own | Learner (grade 8 and up starts alone; below grade 8 needs a parent; in countries whose law needs it, such as India under 18, a parent also confirms by email), Parent (optional, read-only, can pay) | Automatic checks, then it goes out with a report button |
+| An independent tutor | Tutor → learners → parents | The tutor approves everything (as today) |
+| A tuition centre | Centre manager (tutors, every learner, billing) → tutors → learners → parents | Each tutor, for their own learners |
+| A school | School admin → head of department (optional) → teachers → classes → students → parents | The teacher (or head of department) |
+
+A self-learner who later joins a tutor keeps their history and their own study space; work the tutor sets follows the tutor's rules.
+
+**Rules for 2.0**
+
+- The Owner decides everything, including who gets Admin or Reviewer access.
+- Learners with a tutor, centre or school: nothing AI-made reaches them until a person approves it (unchanged).
+- Self-learners: StudyBridge's own content goes out after automatic checks (a second, separate solve plus the maths checker), with a report button on everything; reports go to the Owner.
+- Practice papers are original: the same format as the real paper (structure, timing, sections, marks, command terms, topic spread), never copied or reworded from real papers, and labelled "not affiliated with or endorsed by" the exam board. Real past papers are never hosted: the catalogue opens them from the exam board's own site.
+- Payment happens on the website only, never through Apple's or Google's stores.
+- The Claude Desktop connector is for the Owner only (to make content on his own Claude subscription, with no API cost). Tutors and learners don't get it, because Prof is what they pay for.
+
+**What students get**
+
+1. **Guided setup**, before making an account, on the website or in the app (one flow, never asked twice): who you are, grade, curriculum and subjects, exam session or date, "is this your syllabus?" (or upload it, or request it), your goal and time each week, how you like to learn, an optional 10-minute starting check, then your plan, then "create your account to keep it".
+2. **Exam countdown plan**: every topic spread over the weeks left, weak topics first, the last weeks for practice papers and a full mock; it re-plans itself when days are missed.
+3. **Ready-made lessons** per syllabus point: a short explanation, a worked example, practice and a quick check, with "say it more simply" and "explain it another way".
+4. **Practice and papers**: the question bank, instant marking, flashcards, past papers opened from the official site, three original practice papers per paper type, and timed mocks with estimated grade boundaries.
+5. **Bring your own course**: anyone not covered (grade 7, a university module, a national exam) uploads a syllabus or course outline and Prof builds the plan and practice, with the same checks.
+6. **Accessibility**: screen reader and keyboard support, colour-blind-safe charts, focus mode, reading mode, read-aloud, voice answers, dyslexia-friendly font, text size and contrast, extra time on timed tests. Languages: English, French, Spanish, Portuguese, Hindi and Arabic (the app first, then lessons).
+
+**Curricula at launch** (the common international-school subjects; anything else by "Request a subject")
+
+- **IGCSE (Cambridge and Pearson Edexcel International GCSE)**: Maths, International Maths, Additional Maths, English First Language, English as a Second Language, English Literature, Biology, Chemistry, Physics, Co-ordinated Sciences, Computer Science, ICT, Business, Economics, Accounting, Geography, History, Global Perspectives, Environmental Management, French, Spanish, Hindi.
+- **A-Level (Cambridge International and Pearson Edexcel International A Level)**: Maths, Further Maths, Physics, Chemistry, Biology, Computer Science, Economics, Business, Accounting, Psychology, English Language, English Literature, Sociology, Geography, History.
+- **IB Diploma, every subject at SL and HL**: Maths AA and AI, Physics, Chemistry, Biology, Computer Science, Economics, Business Management, Psychology, History, Geography, English A (Language and Literature; Literature), French B, Spanish B, ESS; support for TOK and the Extended Essay.
+
+**Website and app**
+
+- The website is the front door: setup, plan, sign-up and payment all happen there, and studying works straight away in the browser.
+- One account everywhere (browser, desktop app, phone): nothing to sync.
+- The browser is enough for most students. It says plainly what the desktop app adds: fully locked-down mock exams, the exam camera, a smoother experience for big PDFs, desktop notifications. Tutors, centres and schools are recommended the desktop app.
+
+**Growth**
+
+- Free tools with no sign-up: exam countdown, grade estimator, try one question.
+- Refer a friend: both get a discount.
+- A shareable progress card for WhatsApp and Instagram.
+- A public page per syllabus (for example "IGCSE Physics 0625: 12-week revision plan"), so students find StudyBridge from Google.
+- Later: university student ambassadors, and self-learners finding a tutor on StudyBridge.
+
+**Build order**
+
+| Step | What | Status |
+| --- | --- | --- |
+| 0 | Plan written into this doc and the repo's rules | Done 7 Oct 2026 |
+| 1 | Choose the new name and buy the domain (Aaryan) | Next |
+| 2 | Website 2.0 under the new name: students first ("exam in 9 weeks? get your plan"), a switcher for students, parents, tutors, centres and schools, curricula and subjects, accessibility, how Prof works and its rules, an early-access list for the student version | Before any app build |
+| 3 | Fixes from 6 Oct (test vs exam wording, a panel that stays in view when marking, return marks without a redo, Prof's line breaks, blank drawings, plans chosen from a list) | Planned |
+| 4 | Foundations: account types (Owner, Admin, Reviewer, self-learner), the curriculum catalogue (boards, subjects, levels, paper formats), Owner-only content tools in the Claude Desktop connector, removing the connector from tutors | Planned |
+| 5 | Content: practice papers, lessons, questions and flashcards made on the Owner's Claude subscription, the automatic checks, the report button and the review queue. Hundreds of paper types, so this runs as steady batches over weeks, most-taken subjects first | Planned |
+| 6 | The student experience: guided setup, starting check, exam countdown plan, daily "today" screen, practice and mocks, browser vs desktop, parent approval by grade and country | Planned |
+| 7 | Accessibility pack, then languages | Planned |
+| 8 | Growth: free tools, referral discount, progress card, syllabus pages | Planned |
+| 9 | Prices and payments (website), email from the domain, WhatsApp | With the domain |
+| 10 | Tuition centres and schools (an organisation layer), university ambassadors, finding a tutor | Later |
+
 ## Update 1.2: library, question bank and parent reports
 
 Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server update (new setup.sql and Prof code) before it all works.
@@ -190,6 +260,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Terms, privacy, data export and delete | Needed before charging; learners may be under 18 | 1.6 part 5 | Shipped |
 | Payments and billing | Stripe subscriptions built (off until keys and prices are added); still to come: mobile money for Zambia, UPI for India, tutors invoicing and taking payments from learners | 1.6 part 5 (Stripe, off) | Planned |
 | Landing page and website | Pricing, download link, sign-up | 1.6 part 5 | Shipped |
+| 2.0: open to every learner | Students on their own (Prof as guide), then tuition centres and schools; guided setup, exam countdown plan, lessons, original practice papers, accessibility, six languages. See 2.0 plan | 2.0 | Planned |
 | Lesson recording + Prof notes | Recording with notes for the learner afterwards (Bramble gives this free). On hold since 5 Oct 2026: needs paid speech-to-text (about $0.35 per lesson hour) and LiveKit recording |  | Idea |
 | Exam camera alerts | Flag no face or a second face on the existing exam camera |  | Idea |
 | Native phone apps | App Store ($99/yr) and Google Play ($25 once) |  | Idea |
@@ -219,6 +290,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 - Macs show a security warning on first open and can't take silent shell updates (no Apple Developer account).
 - **Prices are set but untested with tutors:** still worth asking 3–5 tutors. Kwacha and rupee prices are straight conversions (K295 and ₹1,445 for Starter), not lower local prices; decide whether Zambia and India get their own.
 - **Terms and privacy are drafts** on the website (under-18s with a parent's OK, Prof for tutors only, the services used); a lawyer should check them before charging.
+- **Name clash:** studybridge.tech is an AI learning platform in South Africa with the same name and an African audience, so families could mix the two up. Another reason to rename before 2.0.
 - **A new name is likely:** the website's name and prices live in `website/site.config.json`; the app itself still says StudyBridge in many places, so a rename is its own small update.
 
 ## Changelog

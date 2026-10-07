@@ -79,6 +79,31 @@ Pro 25 ($29/mo, $290/yr), limits off until Admin → Selling switches `enforce_p
 Website: `website/` (one config `site.config.json` for name, prices, currencies; `scripts/build-website.mjs`), published by
 CI at the releases repo's Pages root next to `app/`; links `app/#start=tutor|invite|parent|signin` open the right screen.
 
+## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
+- Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
+  Reviewer until he adds a team.
+- Self-learners (no tutor): StudyBridge's own content goes out after automatic checks with a report button; reports
+  go to the Owner. Learners with a tutor, centre or school keep the strict rule: a person approves everything.
+- Practice papers are original (same format as the real paper, never copied or reworded) and say "not affiliated with
+  or endorsed by" the board. Aaryan said on 7 Oct that his lawyer OK'd copying IB papers question by question; Claude
+  declined (copyright, and it breaks the rule above). Don't copy or reword real exam papers.
+- Payment only on the website. The Claude Desktop connector is Owner-only (content on his subscription); remove it for
+  tutors.
+- Order: name + domain → website 2.0 → 6 Oct fixes → foundations → content → student experience → accessibility and
+  languages → growth → payments → centres and schools.
+
+## Next build (noted 6 Oct 2026, discuss before building)
+- Lockdown alerts say "exam" for tests too: use the assignment's kind ("Left the test without handing in").
+- Marking: the right-hand Total/feedback/return panel should stay in view (sticky) instead of scrolling to the bottom.
+- Marking: with redo requests set, the only button is "Send back to redo N"; the tutor must also be able to just return
+  the marks. Prof's draft had ticked redo on 16 unanswered questions by itself.
+- Overall feedback from Prof showed literal "
+
+-" (escaped newlines) instead of line breaks.
+- An unanswered drawing question was sent to Prof as a blank picture ("check the drawing saved"): treat no strokes as no answer.
+- Admin's tutor plan is free text ("Basic Plan" -> limit 1000): make it a choice that matches the website and app.
+- Rename: Aaryan asked for creative new names (6 Oct 2026); none chosen yet.
+
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge
 grade boundaries) · parent accounts (read-only) · data-saver mode · then selling basics: email from his
