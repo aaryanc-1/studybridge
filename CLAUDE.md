@@ -20,7 +20,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude, Prof tests (57)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (72)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -68,6 +68,16 @@ switcher (`src/lib/accounts.js`) only on a device where the admin account signed
 includes build/icon.png, so a new logo reinstalls the shell. Syllabus from the tutor's PDF (text, or pictures if scanned)
 via `prof_syllabus(..., p_source)`; teaching plans (`teaching_plans`, one per subject; `src/lib/plan.js` spreads evenly,
 `prof_plan` asks Prof). Supabase: "Confirm email" is off and Site URL is the phone web app (Aaryan, 6 Oct 2026).
+1.6 part 5: drawings are marked from a picture (`strokesPicture` in DrawingPad; old attempts get pictures on the tutor's
+side via `ensureDrawingPictures`); Prof's `read_as`/`tutor_note` go to `responses.prof_note`, tutor-only, never in learner
+feedback. `src/ui/MathText.jsx` shows feedback/comments/solutions as finished text with a maths keyboard; `plainMaths`
+(`src/lib/plain.js`) for WhatsApp/email. Selling basics: forgot password (Supabase email, `NewPassword` in App.jsx),
+`export_my_data` → ZIP (`src/lib/zip.js`), `delete_my_account('DELETE')`, plans Free 1 / Starter 5 ($15/mo, $150/yr) /
+Pro 25 ($29/mo, $290/yr), limits off until Admin → Selling switches `enforce_plans` on. Ready but off: Google sign-in
+(`google_on`, web/phone only), Resend email (`email_from` + key; reports email straight from StudyBridge), Stripe
+(checkout/billing in Prof, webhook `prof?stripe=webhook` → `_set_paid_plan`; shown once a secret key and a price exist).
+Website: `website/` (one config `site.config.json` for name, prices, currencies; `scripts/build-website.mjs`), published by
+CI at the releases repo's Pages root next to `app/`; links `app/#start=tutor|invite|parent|signin` open the right screen.
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge
@@ -84,7 +94,8 @@ Decided 5 Oct 2026, before building 1.6:
   only their grade ("Mock grade", not "predicted") and how many marks short of the next one. Plain maths, never AI.
 - Weekly parent reports always wait for the tutor's approval before going to a parent.
 - Lesson recording + Prof notes: on hold (paid services: speech-to-text and LiveKit recording).
-- Website/landing page: Aaryan said "build" (5 Oct 2026); host on GitHub Pages until he gives a domain; pricing is
-  Claude's call from the competitor comparison; interactive and modern.
+- Website/landing page: built in part 5; on GitHub Pages until Aaryan gives a domain. He plans to rename StudyBridge
+  (6 Oct 2026): keep the name in one place where possible (website/site.config.json for the site).
+- Prices raised slightly (6 Oct 2026): Starter $15, Pro $29; yearly = 2 months free; parents free; "free now, paid soon".
 - The repo `aaryanc-1/studybridge` is publicly readable (it was thought to be private). Raise it with Aaryan
   before selling; private repos get limited Actions minutes and the Mac builds use them fastest.

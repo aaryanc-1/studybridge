@@ -1277,8 +1277,10 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
             type: 'object',
             properties: {
               number: { type: 'integer' },
-              marks: { type: 'number', description: 'Leave out if you cannot judge it (e.g. you cannot see the drawing)' },
-              feedback: { type: 'string', description: 'What was right or wrong and how to fix it, written to the learner' },
+              marks: { type: 'number', description: 'Leave out if you cannot judge it (e.g. the handwriting is unreadable)' },
+              feedback: { type: 'string', description: 'What was right or wrong and how to fix it, written to the learner. Never say what you could or could not see or read: that goes in tutor_note.' },
+              read_as: { type: 'string', description: 'drawing and photo questions: the learner’s working and final answer as you read them, in plain words (e.g. "-3x(2x + 3)")' },
+              tutor_note: { type: 'string', description: 'For the tutor only: anything to check, e.g. a line you could not read' },
               mistake: { type: 'string', description: 'Short label for the main mistake, e.g. "Sign error expanding brackets". Leave out if none.' },
               redo: { type: 'boolean', description: 'Ask the learner to try this question again' },
               correct_steps: { type: 'array', items: { type: 'boolean' }, description: 'steps questions: true/false for each working line, in order' },
@@ -1301,7 +1303,7 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
         q.type === 'steps'
           ? { working_lines_latex: (a.steps || []).filter(Boolean) }
           : q.type === 'drawing'
-            ? { drawing: a.strokes?.length ? 'drawn on screen (you cannot see it: leave its marks out unless a photo is attached)' : 'nothing drawn' }
+            ? { drawing: a.image ? 'drawn on screen: the picture of it follows below' : a.strokes?.length ? 'drawn on screen, but no picture of it is available: leave its marks out and say so in tutor_note' : 'nothing drawn' }
             : a;
       return { ...q, learner_answer: shown };
     });
@@ -1311,14 +1313,20 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
         text: `Mark this submission by ${mc.learner}: “${mc.assignment.title}” (${mc.assignment.kind}).
 Questions of type mcq and numeric were marked automatically (auto_marks); include them only if the automatic mark looks wrong.
 Include every short, steps, upload and drawing question. Follow the mark scheme. Give partial credit the way an examiner would. Feedback goes to the learner: kind, clear, specific.
+Drawings and photos are handwriting: read them carefully, give read_as for each, and mark what is written. If part is unreadable, mark what you can and say what you couldn't read in tutor_note (never in the learner's feedback).
 ${mc.style ? `\nThe tutor's own instructions:\n${mc.style}\n` : ''}
 ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.learner_notes })}`,
       },
     ];
     let n = 0;
     for (const q of mc.questions) {
+      if (q.type === 'drawing' && q.learner_answer?.image && n < 16) {
+        content.push({ type: 'text', text: `The learner’s drawing for question ${q.number}:` });
+        content.push({ type: 'sb_image', bucket: 'work', path: q.learner_answer.image });
+        n++;
+      }
       for (const f of q.learner_answer?.files || []) {
-        if (n >= 10 || !f.path) continue;
+        if (n >= 16 || !f.path) continue;
         content.push({ type: 'text', text: `Photo of the learner’s work for question ${q.number}:` });
         content.push({ type: 'sb_image', bucket: 'work', path: f.path });
         n++;
@@ -1346,6 +1354,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
         ...(x.mistake ? { mistake: x.mistake } : {}),
         ...(x.redo ? { redo: true } : {}),
         ...(Array.isArray(x.correct_steps) ? { step_marks: x.correct_steps.map((ok) => ({ ok: !!ok })) } : {}),
+        ...(x.read_as || x.tutor_note ? { prof_note: [x.read_as ? `Read as: ${x.read_as}` : '', x.tutor_note || ''].filter(Boolean).join(' · ').slice(0, 600) } : {}),
       });
     }
     const d = await insert('claude_drafts', {
@@ -1461,11 +1470,147 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     });
   }
 
+  // ---------------- payments (Stripe) and email (Resend), once the admin adds their keys ----------------
+  const STRIPE = String(env('STRIPE_BASE_URL') || 'https://api.stripe.com').replace(/\/+$/, '');
+  const RESEND = String(env('RESEND_BASE_URL') || 'https://api.resend.com').replace(/\/+$/, '');
+  const WEB = String(env('WEB_APP_URL') || 'https://aaryanc-1.github.io/studybridge-releases/app/');
+  async function sellingConfig() {
+    const s = (await rest('platform_secrets?id=eq.1&select=stripe_secret,stripe_webhook_secret,resend_key'))[0] || {};
+    const c = (await rest('app_config?id=eq.1&select=stripe_prices,email_from'))[0] || {};
+    return { ...s, prices: c.stripe_prices || {}, from: c.email_from || null };
+  }
+  // Stripe takes form fields: { a: { b: 1 } } → a[b]=1
+  function form(obj, prefix = '', out = new URLSearchParams()) {
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}[${k}]` : k;
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'object') form(v, key, out);
+      else out.append(key, String(v));
+    }
+    return out;
+  }
+  async function stripe(secret, path, fields) {
+    const r = await fetch(`${STRIPE}/v1/${path}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/x-www-form-urlencoded' },
+      body: form(fields).toString(),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data?.error?.message || `Stripe error ${r.status}`);
+    return data;
+  }
+  const safeReturn = (u) => {
+    try {
+      const x = new URL(String(u || ''));
+      return x.protocol === 'https:' || x.hostname === 'localhost' || x.hostname === '127.0.0.1' ? x.toString() : WEB;
+    } catch {
+      return WEB;
+    }
+  };
+  async function checkout(user, body) {
+    const plan = ['starter', 'pro'].includes(body.plan) ? body.plan : null;
+    const period = body.period === 'year' ? 'year' : 'month';
+    if (!plan) return json({ error: 'Choose Starter or Pro.' }, 400);
+    const cfg = await sellingConfig();
+    const price = cfg.prices?.[`${plan}_${period}`];
+    if (!cfg.stripe_secret || !price) return json({ error: 'Paid plans aren’t open yet.' }, 400);
+    const me = (await rest(`profiles?id=eq.${user.id}&select=email,stripe_customer`))[0] || {};
+    const back = safeReturn(body.return_url);
+    const meta = { tutor: user.id, plan, period };
+    const s = await stripe(cfg.stripe_secret, 'checkout/sessions', {
+      mode: 'subscription',
+      line_items: { 0: { price, quantity: 1 } },
+      client_reference_id: user.id,
+      ...(me.stripe_customer ? { customer: me.stripe_customer } : { customer_email: me.email }),
+      metadata: meta,
+      subscription_data: { metadata: meta },
+      allow_promotion_codes: 'true',
+      success_url: back,
+      cancel_url: back,
+    });
+    return json({ url: s.url });
+  }
+  async function billing(user, body) {
+    const cfg = await sellingConfig();
+    const me = (await rest(`profiles?id=eq.${user.id}&select=stripe_customer`))[0] || {};
+    if (!cfg.stripe_secret || !me.stripe_customer) return json({ error: 'There’s no paid plan to manage.' }, 400);
+    const s = await stripe(cfg.stripe_secret, 'billing_portal/sessions', { customer: me.stripe_customer, return_url: safeReturn(body.return_url) });
+    return json({ url: s.url });
+  }
+  async function hmacHex(secret, text) {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(text));
+    return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Stripe tells us about payments here (signed with the webhook secret)
+  async function stripeWebhook(req) {
+    const raw = await req.text();
+    const cfg = await sellingConfig();
+    if (!cfg.stripe_webhook_secret) return json({ error: 'Not set up.' }, 400);
+    const parts = Object.fromEntries((req.headers.get('stripe-signature') || '').split(',').map((p) => p.split('=')).filter((p) => p.length === 2));
+    const sigs = (req.headers.get('stripe-signature') || '').split(',').filter((p) => p.startsWith('v1=')).map((p) => p.slice(3));
+    const t = Number(parts.t || 0);
+    if (!t || Math.abs(Date.now() / 1000 - t) > 300) return json({ error: 'Bad signature.' }, 400);
+    const want = await hmacHex(cfg.stripe_webhook_secret, `${t}.${raw}`);
+    if (!sigs.includes(want)) return json({ error: 'Bad signature.' }, 400);
+    let ev;
+    try {
+      ev = JSON.parse(raw);
+    } catch {
+      return json({ error: 'Bad event.' }, 400);
+    }
+    const o = ev?.data?.object || {};
+    const m = o.metadata || {};
+    const when = o.current_period_end ? new Date(o.current_period_end * 1000).toISOString() : null;
+    if (ev.type === 'checkout.session.completed' && m.tutor) {
+      await rpc('_set_paid_plan', { p_tutor: m.tutor, p_plan: m.plan, p_period: m.period, p_customer: o.customer || null, p_renews: null });
+    } else if (ev.type === 'customer.subscription.updated' && m.tutor) {
+      const live = ['active', 'trialing', 'past_due'].includes(o.status);
+      await rpc('_set_paid_plan', { p_tutor: m.tutor, p_plan: live ? m.plan : 'free', p_period: live ? m.period : null, p_customer: o.customer || null, p_renews: live ? when : null });
+    } else if (ev.type === 'customer.subscription.deleted' && m.tutor) {
+      await rpc('_set_paid_plan', { p_tutor: m.tutor, p_plan: 'free', p_period: null, p_customer: o.customer || null, p_renews: null });
+    }
+    return json({ received: true });
+  }
+  // The weekly report by email, straight from StudyBridge (once there's a domain and a Resend key)
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const plain = (s) => String(s || '').replace(/\$([^$\n]+?)\$/g, (_, m) => m.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').replace(/\^2/g, '²').replace(/\^3/g, '³')).replace(/\*\*([^*]+)\*\*/g, '$1');
+  async function emailReport(user, body) {
+    const cfg = await sellingConfig();
+    if (!cfg.resend_key || !cfg.from) return json({ error: 'Email isn’t set up yet.' }, 400);
+    const r = (await rest(`parent_reports?id=eq.${encodeURIComponent(body.report_id || '')}&tutor_id=eq.${user.id}&select=*`))[0];
+    if (!r || r.status !== 'sent') return json({ error: 'Approve the report first.' }, 400);
+    const lr = (await rest(`learner_reports?learner_id=eq.${r.learner_id}&tutor_id=eq.${user.id}&select=enabled,parent_email,parent_name`))[0];
+    if (!lr?.enabled || !lr.parent_email) return json({ error: 'There’s no parent email for this learner.' }, 400);
+    const d = r.data || {};
+    const work = (d.work || [])
+      .map((w) => `<li>${esc(w.title)}${w.score != null && w.max ? ` — ${esc(w.score)}/${esc(w.max)}` : ''}</li>`)
+      .join('');
+    const html = `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#1C1F23">
+<div style="background:#0E6B6B;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0"><div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase">Weekly report</div><div style="font-size:24px;font-weight:bold">${esc(d.learner)}</div><div>${esc(d.tutor || '')}</div></div>
+<div style="border:1px solid #E3DED3;border-top:0;padding:18px 22px;border-radius:0 0 12px 12px">
+<p><b>Lessons:</b> ${esc(d.lessons || 0)} · <b>Average mark:</b> ${d.avg_pct != null ? esc(d.avg_pct) + '%' : '—'}</p>
+${r.comment ? `<p style="background:#E3F0EE;border-left:4px solid #0E6B6B;padding:10px 14px;border-radius:8px"><b>From ${esc(d.tutor || 'the tutor')}:</b><br>${esc(plain(r.comment))}</p>` : ''}
+${work ? `<p><b>Work this week</b></p><ul>${work}</ul>` : ''}
+${d.mock?.grade ? `<p><b>Latest mock:</b> ${esc(d.mock.title)}: grade ${esc(d.mock.grade)} (${esc(d.mock.pct)}%)</p>` : ''}
+${d.exam?.date && d.exam.days >= 0 ? `<p><b>${esc(d.exam.name || 'Exam')}:</b> ${esc(d.exam.days)} days to go</p>` : ''}
+${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
+<p style="color:#5E6168;font-size:12px">Sent with StudyBridge</p></div></div>`;
+    const res = await fetch(`${RESEND}/emails`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${cfg.resend_key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ from: cfg.from, to: [lr.parent_email], subject: `Weekly report: ${d.learner || ''}`, html }),
+    });
+    if (!res.ok) return json({ error: `The email didn’t send (${res.status}).` }, 502);
+    return json({ sent: true });
+  }
+
   return async function handle(req) {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     if (!SB || !KEY) return json({ error: 'Prof is missing its Supabase settings.' }, 500);
     const reqUrl = new URL(req.url);
     if (req.method === 'GET' && reqUrl.searchParams.get('calendar')) return calendar(reqUrl.searchParams.get('calendar'));
+    if (req.method === 'POST' && reqUrl.searchParams.get('stripe') === 'webhook') return stripeWebhook(req);
     let body = {};
     try {
       body = await req.json();
@@ -1485,6 +1630,14 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     if (action === 'cleanup') {
       if (!fromDb && !user.admin) return json({ error: 'Admins only.' }, 403);
       return json({ removed: await cleanup() });
+    }
+    if (action === 'checkout' || action === 'billing' || action === 'email_report') {
+      if (!user || user.role !== 'tutor') return json({ error: 'Tutors only.' }, 403);
+      try {
+        return action === 'checkout' ? await checkout(user, body) : action === 'billing' ? await billing(user, body) : await emailReport(user, body);
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
     }
     if (action === 'kick') {
       if (user && user.role !== 'tutor' && !user.admin) return json({ error: 'Tutors only.' }, 403);

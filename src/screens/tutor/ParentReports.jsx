@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
+import MathText from '../../ui/MathText.jsx';
 import { Avatar, Empty, Field, Loading, Modal, Page, copyText, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -259,6 +260,8 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
 
   // Prof only suggests a comment; the report itself is filled in by StudyBridge
   const fresh = useQuery('parent-reports', api.listParentReports, { poll: asked ? 3000 : 0 });
+  // Once StudyBridge has its own email (admin -> Selling), "Email" sends it straight from StudyBridge
+  const emailOn = !!useQuery('public-settings', api.publicSettings).data?.email_on;
   const wrote = useRef(false);
   useEffect(() => {
     const now = (fresh.data || []).find((x) => x.id === r.id);
@@ -279,17 +282,19 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
     setBusy(true);
     try {
       await saveWords();
+      const direct = via === 'email' && emailOn && contact?.parent_email;
       if (via === 'whatsapp') window.open(waLink(contact?.parent_phone, text), '_blank');
-      else if (via === 'email') window.open(mailLink(contact?.parent_email, `Weekly report: ${d.learner}`, text), '_blank');
+      else if (via === 'email' && !direct) window.open(mailLink(contact?.parent_email, `Weekly report: ${d.learner}`, text), '_blank');
       else if (via === 'copy') await copyText(text);
       await api.markReportSent(r.id, via);
+      if (direct) await api.emailReport(r.id);
       invalidate('parent-reports');
       const inApp = parents > 0 ? `It’s in ${parents === 1 ? 'the parent’s account' : 'the parents’ accounts'}. ` : '';
       toast({
         title: 'Approved',
         body:
           inApp +
-          (via === 'whatsapp' ? 'WhatsApp opened with the report written. Press send there.' : via === 'email' ? 'Your email app opened with the report written. Press send there.' : via === 'copy' ? 'Copied: paste it wherever you like.' : ''),
+          (via === 'whatsapp' ? 'WhatsApp opened with the report written. Press send there.' : via === 'email' ? (emailOn && contact?.parent_email ? `Emailed to ${contact.parent_email}.` : 'Your email app opened with the report written. Press send there.') : via === 'copy' ? 'Copied: paste it wherever you like.' : ''),
       });
       onClose();
     } catch (e) {
@@ -336,7 +341,7 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
                 StudyBridge filled in everything from {d.learner || 'the learner'}’s week. The only words you write are your comment and, if you like, next week’s plan.
               </div>
               <Field label="Your comment to the parent (optional)">
-                <textarea className="textarea" value={r.comment || ''} onChange={(e) => set({ comment: e.target.value })} placeholder="What went well, and what to work on." />
+                <MathText value={r.comment || ''} onChange={(v) => set({ comment: v })} label="Your comment to the parent" placeholder="What went well, and what to work on." minHeight={80} />
               </Field>
               {usage?.ready && (
                 <div>
@@ -346,7 +351,7 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
                 </div>
               )}
               <Field label="Next week (optional)" hint="Leave it empty and the report lists what’s due next week.">
-                <textarea className="textarea" style={{ minHeight: 70 }} value={r.next_week || ''} onChange={(e) => set({ next_week: e.target.value })} placeholder="What’s coming and what to practise at home." />
+                <MathText value={r.next_week || ''} onChange={(v) => set({ next_week: v })} label="Next week" placeholder="What’s coming and what to practise at home." minHeight={70} />
               </Field>
               <div className="small muted">
                 {[parents > 0 && `${parents} parent account${parents === 1 ? '' : 's'}`, byMessage && contact.parent_phone && `WhatsApp ${contact.parent_phone}`, byMessage && contact.parent_email && contact.parent_email]

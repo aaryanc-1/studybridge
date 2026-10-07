@@ -17,6 +17,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+export { plainMaths } from './plain.js';
+
 export function renderMarkdown(src) {
   if (!src) return '';
   const math = [];

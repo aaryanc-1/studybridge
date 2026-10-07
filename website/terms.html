@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terms of use · {{brand}}</title>
+<meta name="description" content="The terms for using {{brand}}.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="logo-192.png" alt="" width="32" height="32"><span>{{brand}}</span></a>
+    <div class="actions">
+      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+      <a class="btn primary" href="{{app}}#start=tutor">Start free</a>
+    </div>
+  </div>
+</header>
+<main class="legal">
+  <div class="wrap narrow">
+    <h1>Terms of use</h1>
+    <p class="fine">Last updated {{updated}}</p>
+    <div class="draft"><b>Draft.</b> These terms are a plain-English draft and will be reviewed by a lawyer before paid plans start.</div>
+
+    <h2>1. What {{brand}} is</h2>
+    <p>{{brand}} is a place for a tutor and their learners to share lessons, assignments, tests, marks and messages, and for parents to follow their child’s progress. It includes Prof, an assistant that drafts things for the tutor.</p>
+
+    <h2>2. Accounts</h2>
+    <ul>
+      <li>Tutors create their own account. Learners and parents join with an invite from their tutor.</li>
+      <li>Keep your password private. You’re responsible for what happens in your account.</li>
+      <li>Give accurate details, and use one account per person.</li>
+    </ul>
+
+    <h2>3. Learners under 18</h2>
+    <p>A learner under 18 may use {{brand}} only with the agreement of a parent or guardian. Tutors who invite learners under 18 confirm that they have that agreement. Parents can ask the tutor for a read-only parent account.</p>
+
+    <h2>4. Prof, the assistant</h2>
+    <ul>
+      <li>Prof only works for tutors. Learners and parents never use it directly.</li>
+      <li>Everything Prof makes (marks, feedback, plans, reports, questions) is a draft. The tutor checks it and decides what to use. The tutor is responsible for what they approve.</li>
+      <li>Prof can make mistakes. Don’t rely on it without checking.</li>
+    </ul>
+
+    <h2>5. Your content</h2>
+    <p>What you put into {{brand}} stays yours. You give us permission to store it, show it to the people you share it with, and process it to run the features you use (for example, sending work to Prof when a tutor asks it to mark). We don’t claim ownership and we don’t sell it.</p>
+
+    <h2>6. Fair use</h2>
+    <ul>
+      <li>Only upload material you have the right to use. {{brand}} doesn’t host or share exam-board papers; tutors use their own copies with their own learners.</li>
+      <li>Don’t use {{brand}} to harass anyone, break the law, cheat in real exams, or attack or overload the service.</li>
+      <li>We may suspend an account that breaks these terms, and we’ll tell you why where we can.</li>
+    </ul>
+
+    <h2>7. Plans and payment</h2>
+    <ul>
+      <li>The Free plan is one learner. Starter and Pro allow more learners for a monthly or yearly price shown on the <a href="./#pricing">pricing page</a>. Parent accounts are free.</li>
+      <li>Payments are handled by Stripe. Plans renew automatically until you cancel; you can cancel any time in Settings and keep your plan until the end of the period you’ve paid for.</li>
+      <li>We’ll give at least 30 days’ notice before a price change affects you.</li>
+      <li>While paid plans are being set up, {{brand}} is free and nobody is charged.</li>
+    </ul>
+
+    <h2>8. Your data</h2>
+    <p>You can download your data or delete your account from Settings at any time. The <a href="privacy.html">privacy policy</a> explains what we keep and why.</p>
+
+    <h2>9. Availability</h2>
+    <p>We work hard to keep {{brand}} running and your work safe, but we can’t promise it will never be interrupted. Keep your own copies of anything important.</p>
+
+    <h2>10. Liability</h2>
+    <p>{{brand}} is a tool to help with tutoring. Results in exams depend on many things, and we can’t guarantee any result. As far as the law allows, we aren’t liable for indirect losses, and our total liability is limited to what you paid us in the 12 months before the problem.</p>
+
+    <h2>11. Changes</h2>
+    <p>We may update these terms. If a change matters, we’ll tell you in the app before it takes effect.</p>
+
+    <h2>12. Contact</h2>
+    <p>Questions? Use Settings → Contact {{brand}} in the app.</p>
+  </div>
+</main>
+<footer class="foot"><div class="wrap fine"><a href="./">Home</a> · <a href="privacy.html">Privacy</a> · © {{year}} {{brand}}</div></footer>
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

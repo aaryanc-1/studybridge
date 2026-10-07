@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
 import Icon, { Wordmark } from '../ui/Icon.jsx';
 import { Field, useToast, copyText } from '../ui/kit.jsx';
@@ -9,9 +9,20 @@ import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
   const app = useApp();
+  // From the website: #start=tutor (sign up), #start=invite / parent (I have an invite), #start=signin
+  const [linked] = useState(() => {
+    const m = (location.hash || '').match(/start=(tutor|invite|parent|signin)/);
+    if (m) history.replaceState(null, '', location.pathname + location.search);
+    return m?.[1] || null;
+  });
   // First time on this device: choose tutor / learner / sign in. After that: straight to sign in.
-  const [step, setStep] = useState(app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start');
-  const [role, setRole] = useState(null);
+  const [step, setStep] = useState(() => {
+    if (linked === 'tutor') return app.server ? 'account' : 'server';
+    if (linked === 'invite' || linked === 'parent') return 'invite';
+    if (linked === 'signin' && app.server) return 'signin';
+    return app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start';
+  });
+  const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : null);
 
   return (
     <div className="welcome">
@@ -310,6 +321,57 @@ function Account({ role, onBack }) {
   );
 }
 
+// A link to set a new password, by email (Supabase sends it; it opens StudyBridge)
+function ForgotPassword({ email: start }) {
+  const [email, setEmail] = useState(start || '');
+  const [state, setState] = useState('');
+  return (
+    <div className="note small stack sm">
+      <div>Type your email and we’ll send you a link to set a new password. Learners can also ask their tutor.</div>
+      <div className="row wrap">
+        <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" aria-label="Email for the reset link" style={{ maxWidth: 260 }} />
+        <button
+          type="button"
+          className="btn sm"
+          disabled={!/@/.test(email) || state === 'sending'}
+          onClick={async () => {
+            setState('sending');
+            try {
+              await api.sendPasswordReset(email);
+              setState('sent');
+            } catch (e) {
+              setState(e.message);
+            }
+          }}
+        >
+          Send the link
+        </button>
+      </div>
+      {state === 'sent' && <div className="okmsg">Sent. Open the email and follow the link (check spam too).</div>}
+      {state && state !== 'sent' && state !== 'sending' && <div className="error">{state}</div>}
+    </div>
+  );
+}
+
+// "Continue with Google": only once the StudyBridge admin has switched it on, and not in the desktop app
+// (the sign-in opens in the browser there, so the phone/web version is the place for it)
+function GoogleButton() {
+  const [on, setOn] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!desktop) api.publicSettings().then((s) => setOn(!!s?.google_on));
+  }, []);
+  if (!on) return null;
+  return (
+    <>
+      <button type="button" className="btn big google" onClick={() => api.signInWithGoogle().catch((e) => setErr(e.message))}>
+        <span className="g">G</span> Continue with Google
+      </button>
+      {err && <div className="error">{err}</div>}
+    </>
+  );
+}
+
 function SignIn({ onNewLearner, onNewTutor, onChangeServer, onStart }) {
   const app = useApp();
   const [forgot, setForgot] = useState(false);
@@ -353,13 +415,8 @@ function SignIn({ onNewLearner, onNewTutor, onChangeServer, onStart }) {
         <button type="button" className="linkbtn small" onClick={() => setForgot((f) => !f)} aria-expanded={forgot}>
           Forgot your password?
         </button>
-        {forgot && (
-          <div className="note small">
-            <b>Learners:</b> ask your tutor. They can set a new password for you in StudyBridge (Learners → your name → Account), and you can change it afterwards in Settings.
-            <br />
-            <b>Tutors:</b> {builtInServer ? 'ask StudyBridge: the admin can set a new password for you.' : 'reset it from the Supabase SQL Editor (the setup guide has the one-line command).'}
-          </div>
-        )}
+        {forgot && <ForgotPassword email={email} />}
+        <GoogleButton />
         <hr />
         <div className="stack sm small">
           <div>

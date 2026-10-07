@@ -36,6 +36,39 @@ export const becomeTutor = (name, signup = null) => run(sb().rpc('become_tutor',
 export const acceptInvite = (code, name) => run(sb().rpc('accept_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
 export const updateProfile = (patch) => run(sb().from('profiles').update(patch).eq('id', uid()).select().maybeSingle());
 export const changePassword = (password) => run(sb().auth.updateUser({ password }));
+// Where links in StudyBridge's emails open (the phone/web version; set as Supabase's Site URL too)
+export const WEB_APP = 'https://aaryanc-1.github.io/studybridge-releases/app/';
+const webHome = () => (typeof location !== 'undefined' && location.protocol.startsWith('http') && !window.studybridge ? location.origin + location.pathname : WEB_APP);
+export const sendPasswordReset = (email) => run(sb().auth.resetPasswordForEmail(email.trim(), { redirectTo: webHome() }));
+export const signInWithGoogle = () => run(sb().auth.signInWithOAuth({ provider: 'google', options: { redirectTo: webHome() } }));
+// After a link in an email (password reset) or Google sign-in: the sign-in arrives in the address
+export async function sessionFromLink() {
+  const h = typeof location !== 'undefined' ? location.hash || '' : '';
+  if (!/access_token=/.test(h)) return null;
+  const q = new URLSearchParams(h.replace(/^#\/?/, '').replace(/^.*?(access_token=)/, '$1'));
+  const access_token = q.get('access_token');
+  const refresh_token = q.get('refresh_token');
+  const type = q.get('type');
+  history.replaceState(null, '', location.pathname + location.search + '#/');
+  if (!access_token || !refresh_token) return null;
+  const d = await run(sb().auth.setSession({ access_token, refresh_token }));
+  return { user: d.user, recovery: type === 'recovery' };
+}
+export const publicSettings = () => run(sb().rpc('public_settings')).catch(() => ({}));
+// Plans, payments, your data, deleting your account
+export const myPlan = () => run(sb().rpc('my_plan'));
+export const exportMyData = () => run(sb().rpc('export_my_data'));
+export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
+export const adminSelling = () => run(sb().rpc('admin_selling'));
+export const adminSetSelling = (patch) =>
+  run(sb().rpc('admin_set_selling', {
+    p_enforce: patch.enforce ?? null, p_google: patch.google ?? null, p_email_from: patch.email_from ?? null, p_resend_key: patch.resend_key || null,
+    p_stripe_secret: patch.stripe_secret || null, p_stripe_webhook: patch.stripe_webhook || null, p_prices: patch.prices ?? null,
+  }));
+export const checkout = (plan, period) => callProf('checkout', { plan, period, return_url: webHome() });
+export const billingPortal = () => callProf('billing', { return_url: webHome() });
+export const emailReport = (reportId) => callProf('email_report', { report_id: reportId });
+export const profUrl = () => (getServer()?.url ? `${getServer().url}/functions/v1/prof` : null);
 
 // ---------------- structure ----------------
 export const listProgrammes = () => run(sb().from('programmes').select('*').order('created_at'));
@@ -371,6 +404,22 @@ export async function profBoundaries(exam, label, blob) {
 export const listAttempts = () => run(sb().from('attempts').select('*').order('started_at', { ascending: false }).limit(500));
 export const attemptDetail = (id) => run(sb().rpc('attempt_detail', { p_attempt: id }));
 export const updateResponse = (id, patch) => run(sb().from('responses').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', id));
+// Drawings handed in without a picture (older apps, or handed in automatically): make the pictures here
+export async function ensureDrawingPictures(detail, questions) {
+  const { strokesPicture } = await import('../ui/DrawingPad.jsx');
+  let made = 0;
+  for (const r of detail?.responses || []) {
+    const q = (questions || []).find((x) => x.id === r.question_id);
+    if (q?.type !== 'drawing' || !r.answer?.strokes?.length || r.answer.image) continue;
+    const pic = await strokesPicture(r.answer.strokes);
+    if (!pic) continue;
+    const path = `${detail.attempt.learner_id}/${detail.attempt.id}/${q.id}-drawing.png`;
+    await run(sb().storage.from('work').upload(path, await pic.arrayBuffer(), { contentType: 'image/png', upsert: true }));
+    await run(sb().from('responses').update({ answer: { ...r.answer, image: path } }).eq('id', r.id));
+    made++;
+  }
+  return made;
+}
 export const finishMarking = (id, release, feedback) => run(sb().rpc('finish_marking', { p_attempt: id, p_release: release, p_feedback: feedback ?? null }));
 export async function uploadAnnotation(learnerId, attemptId, questionId, blob) {
   const path = `${learnerId}/${attemptId}/${questionId}-marked-${Date.now()}.png`;
@@ -528,7 +577,7 @@ export const adminLog = () => run(sb().from('admin_log').select('*').order('at',
 
 // ---------------- Prof (the AI assistant, tutors only) ----------------
 // Wakes the Prof server. The database also does this by itself; this makes it instant.
-export async function callProf(action = 'kick') {
+export async function callProf(action = 'kick', extra = {}) {
   const s = getServer();
   const { data } = await sb().auth.getSession();
   const token = data.session?.access_token;
@@ -536,7 +585,7 @@ export async function callProf(action = 'kick') {
   const r = await fetch(`${s.url}/functions/v1/prof`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', apikey: s.key, authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ...extra }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error || (r.status === 404 ? 'The Prof server isn’t installed yet.' : `Prof server error ${r.status}`));

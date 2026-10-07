@@ -3,6 +3,7 @@
 // (if they like) next week's plan. The same page is what the tutor approves, the parent reads in their
 // account, and the learner sees; it prints or saves as a PDF.
 import Icon from '../../ui/Icon.jsx';
+import { Markdown } from '../../ui/kit.jsx';
 import { dur } from '../../lib/format.js';
 
 const fmt = (d, opts) => new Date(String(d).length === 10 ? d + 'T12:00:00' : d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...opts });
@@ -84,7 +85,7 @@ export default function ReportCard({ report, tutorName, draft = false, compact =
       {report.comment && (
         <section className="rc-comment">
           <div className="rc-label">From {tutor}</div>
-          <p>{report.comment}</p>
+          <Markdown src={report.comment} className="rc-md" />
         </section>
       )}
 
@@ -158,7 +159,7 @@ export default function ReportCard({ report, tutorName, draft = false, compact =
         <section>
           <h3 className="rc-h">Next week</h3>
           {report.next_week ? (
-            <p className="rc-text">{report.next_week}</p>
+            <Markdown src={report.next_week} className="rc-md" />
           ) : (
             <ul className="rc-list">
               {next.map((x, i) => (

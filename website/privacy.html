@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy · {{brand}}</title>
+<meta name="description" content="How {{brand}} looks after your data.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="logo-192.png" alt="" width="32" height="32"><span>{{brand}}</span></a>
+    <div class="actions">
+      <button class="icon-btn" id="theme" type="button" aria-label="Switch light or dark"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
+      <a class="btn primary" href="{{app}}#start=tutor">Start free</a>
+    </div>
+  </div>
+</header>
+<main class="legal">
+  <div class="wrap narrow">
+    <h1>Privacy policy</h1>
+    <p class="fine">Last updated {{updated}}</p>
+    <div class="draft"><b>Draft.</b> This policy is a plain-English draft and will be reviewed by a lawyer before paid plans start.</div>
+
+    <h2>The short version</h2>
+    <ul>
+      <li>We keep what’s needed to run {{brand}} for you, and nothing for advertising.</li>
+      <li>We don’t sell your data or show ads.</li>
+      <li>Learners never use AI. When a tutor asks Prof for help, the work involved is sent to our AI provider to make a draft for the tutor.</li>
+      <li>You can download your data or delete your account in Settings at any time.</li>
+    </ul>
+
+    <h2>What we keep</h2>
+    <ul>
+      <li><b>Account:</b> name, email, password (stored scrambled, never readable), role, and the tutor you’re linked to.</li>
+      <li><b>Teaching:</b> subjects, lessons, files, assignments, answers (including photos and whiteboard drawings), marks, feedback, messages, flashcards, notes and time studied.</li>
+      <li><b>Parents:</b> the parent’s name and email, and their link to their child. Optionally a parent phone number or email the tutor adds for sending reports.</li>
+      <li><b>Billing (tutors on a paid plan):</b> your plan and a Stripe customer reference. Card details go to Stripe and never reach us.</li>
+      <li><b>Technical:</b> error reports (which screen, what went wrong) to fix bugs. No tracking across other websites.</li>
+    </ul>
+
+    <h2>Who can see what</h2>
+    <ul>
+      <li>A tutor sees their own learners’ work, marks and messages.</li>
+      <li>A learner sees their own work, and marks once the tutor gives them back.</li>
+      <li>A parent sees reports the tutor has approved, upcoming lessons and due dates, and released marks. Never messages or working.</li>
+      <li>The {{brand}} team can access data only to keep the service running, fix problems you report, or meet a legal duty.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>Many learners are under 18. They join only through their tutor’s invite, and the tutor confirms a parent or guardian agrees. We collect only what’s needed for tutoring, never use children’s data for marketing, and never let learners use AI. A parent can ask the tutor, or us, to see or delete their child’s data.</p>
+
+    <h2>Prof and AI</h2>
+    <p>Prof is used only by tutors. When a tutor asks it to mark, plan, make questions or draft a report, the relevant material (for example a learner’s answers and the mark scheme) is sent to Anthropic, which provides the AI model. Anthropic processes it to produce the draft and doesn’t use it to train its models. Every draft is checked by the tutor before anyone else sees it.</p>
+
+    <h2>Services we use</h2>
+    <ul>
+      <li><b>Supabase:</b> database, sign-in and file storage.</li>
+      <li><b>Anthropic:</b> the AI behind Prof, for tutor requests only.</li>
+      <li><b>Stripe:</b> payments, once paid plans start.</li>
+      <li><b>Resend:</b> sending emails such as weekly reports, once switched on.</li>
+      <li><b>GitHub:</b> hosts this website and the app downloads.</li>
+      <li><b>Google:</b> only if you choose “Continue with Google” to sign in.</li>
+    </ul>
+
+    <h2>How long we keep it</h2>
+    <p>As long as your account is open. When you delete your account, your data is deleted straight away, apart from backups, which roll over within 30 days, and anything we must keep by law (such as payment records).</p>
+
+    <h2>Your choices and rights</h2>
+    <ul>
+      <li><b>Download:</b> Settings → Your data → Download my data gives you a ZIP of everything that’s yours.</li>
+      <li><b>Correct:</b> change your details in Settings, or ask your tutor.</li>
+      <li><b>Delete:</b> Settings → Your data → Delete my account.</li>
+      <li>Depending on where you live, you may have further rights (for example under GDPR or India’s DPDP Act). Contact us and we’ll help.</li>
+    </ul>
+
+    <h2>Security</h2>
+    <p>Connections are encrypted, each person can reach only their own data (enforced by the database itself), and secret keys are stored on the server where nobody can read them back.</p>
+
+    <h2>Changes and contact</h2>
+    <p>If this policy changes in a way that matters, we’ll tell you in the app first. Questions: Settings → Contact {{brand}} in the app.</p>
+  </div>
+</main>
+<footer class="foot"><div class="wrap fine"><a href="./">Home</a> · <a href="terms.html">Terms</a> · © {{year}} {{brand}}</div></footer>
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

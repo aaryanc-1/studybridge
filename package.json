@@ -14,7 +14,7 @@
     "start": "npm run build && electron .",
     "pack:connector": "node scripts/pack-connector.mjs",
     "dist": "npm run build && npm run pack:connector && electron-builder --publish never",
-    "test": "node --test test/exams.test.mjs test/db.test.mjs test/fake-supabase.test.mjs test/steps.test.mjs test/connector.test.mjs test/prof.test.mjs test/plan.test.mjs",
+    "test": "node --test test/exams.test.mjs test/db.test.mjs test/fake-supabase.test.mjs test/steps.test.mjs test/connector.test.mjs test/prof.test.mjs test/plan.test.mjs test/text.test.mjs test/zip.test.mjs test/website.test.mjs",
     "walkthrough": "npm run build && node test/walkthrough.mjs",
     "icons": "python3 scripts/make-icons.py",
     "product": "npm run build && node test/product.mjs"

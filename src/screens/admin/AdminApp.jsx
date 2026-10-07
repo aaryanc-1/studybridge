@@ -9,6 +9,7 @@ import Settings from '../shared/Settings.jsx';
 import { TutorsPage, SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
 import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPage } from './AdminPages.jsx';
 import PapersAdmin from './PapersAdmin.jsx';
+import SellingPage from './Selling.jsx';
 import { useProfJobs } from '../tutor/Prof.jsx';
 
 function notificationTarget(n) {
@@ -42,6 +43,7 @@ export default function AdminApp() {
     { to: '/papers', label: 'StudyBridge papers', icon: 'clipboard' },
     { to: '/bank', label: 'StudyBridge questions', icon: 'cap', count: toReview, tone: 'claude' },
     { to: '/platform', label: 'StudyBridge settings', icon: 'shield' },
+    { to: '/selling', label: 'Selling', icon: 'star' },
     { to: '/log', label: 'What’s been done', icon: 'file' },
   ];
   const tabs = [nav[0], nav[1], nav[2], nav[3]];
@@ -56,6 +58,7 @@ export default function AdminApp() {
   else if (a === 'papers') page = <PapersAdmin />;
   else if (a === 'bank') page = <SharedBankPage />;
   else if (a === 'platform') page = <PlatformPage />;
+  else if (a === 'selling') page = <SellingPage />;
   else if (a === 'log') page = <LogPage />;
   else if (a === 'settings') page = <Settings />;
   else page = <Overview />;

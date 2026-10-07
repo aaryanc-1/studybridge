@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
+import MathText from '../../ui/MathText.jsx';
 import { Empty, Field, Loading, Markdown, Modal, Seg, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -543,10 +544,10 @@ function BankEdit({ b, onClose }) {
         </div>
       </div>
       <Field label="Mark scheme">
-        <textarea className="textarea" value={x.mark_scheme_md || ''} onChange={(e) => set({ mark_scheme_md: e.target.value })} />
+        <MathText value={x.mark_scheme_md || ''} onChange={(v) => set({ mark_scheme_md: v })} label="Mark scheme" />
       </Field>
       <Field label="Worked solution">
-        <textarea className="textarea" value={x.solution_md || ''} onChange={(e) => set({ solution_md: e.target.value })} />
+        <MathText value={x.solution_md || ''} onChange={(v) => set({ solution_md: v })} label="Worked solution" />
       </Field>
     </Modal>
   );

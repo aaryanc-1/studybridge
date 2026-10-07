@@ -14,6 +14,7 @@ import { Thread } from '../shared/Messages.jsx';
 import { FileBody } from '../shared/FileView.jsx';
 import { joinRoom } from '../shared/Live.jsx';
 import AnswerInput from './AnswerInputs.jsx';
+import { strokesPicture } from '../../ui/DrawingPad.jsx';
 import { confetti } from '../../ui/confetti.js';
 
 export default function Attempt({ id }) {
@@ -212,6 +213,19 @@ export default function Attempt({ id }) {
         const all = pendingSaves.current;
         pendingSaves.current = {};
         for (const [qid, ans] of Object.entries(all)) await api.saveAnswer(id, qid, ans);
+        // drawings: a picture of each goes with it, so Prof can read and mark it (works offline too)
+        for (const q of qs.filter((x) => x.type === 'drawing')) {
+          const ans = answers?.[q.id];
+          if (!ans?.strokes?.length) continue;
+          try {
+            const pic = await strokesPicture(ans.strokes);
+            if (!pic) continue;
+            const f = await api.saveWorkImage(id, q.id, pic, 'drawing.png');
+            await api.saveAnswer(id, q.id, { ...ans, image: f.path });
+          } catch {
+            /* the tutor's app makes the picture later if this one couldn't */
+          }
+        }
         const r = await api.submitAttempt(id);
         camRoom.current?.disconnect();
         if (desktop) await desktop.lockdown.exit();
@@ -226,7 +240,7 @@ export default function Attempt({ id }) {
         setSubmitting(false);
       }
     },
-    [id, submitting, toast],
+    [id, submitting, toast, qs, answers],
   );
 
   // Hand in automatically when time runs out

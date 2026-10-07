@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
+import MathText from '../../ui/MathText.jsx';
 import { Avatar, Link, Markdown, go, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -135,7 +136,7 @@ function MarkingDraft({ d }) {
                 </label>
               </div>
               {q?.prompt_md && <div className="muted small ellipsis">{q.prompt_md.slice(0, 160)}</div>}
-              <textarea className="textarea" style={{ minHeight: 60 }} value={m.feedback_md || ''} onChange={(e) => setMark(i, { feedback_md: e.target.value })} aria-label="Feedback" />
+              <MathText value={m.feedback_md || ''} onChange={(v) => setMark(i, { feedback_md: v })} label="Feedback" minHeight={60} />
               {m.feedback_md && /\$/.test(m.feedback_md) && <Markdown src={m.feedback_md} className="small" />}
               <div className="row wrap small">
                 <input className="input sm" style={{ flex: 1, minWidth: 200 }} value={m.mistake || ''} placeholder="Mistake" onChange={(e) => setMark(i, { mistake: e.target.value })} aria-label="Mistake" />
@@ -148,7 +149,7 @@ function MarkingDraft({ d }) {
           );
         })}
       </div>
-      <textarea className="textarea" value={payload.feedback_md || ''} onChange={(e) => setPayload((p) => ({ ...p, feedback_md: e.target.value }))} placeholder="Overall feedback" aria-label="Overall feedback" />
+      <MathText value={payload.feedback_md || ''} onChange={(v) => setPayload((p) => ({ ...p, feedback_md: v }))} placeholder="Overall feedback" label="Overall feedback" />
     </div>
   );
 }

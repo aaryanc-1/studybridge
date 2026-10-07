@@ -18,6 +18,41 @@ function inkLayer(strokes, w, h) {
   return c;
 }
 
+// A drawn answer as a picture (for Prof to read, and to keep): white background, cropped to what was drawn
+export async function strokesPicture(strokes, { aspect = 0.62, width = 1400, pad = 40 } = {}) {
+  const ink = (strokes || []).filter((s) => !s.e && s.p?.length);
+  if (!ink.length) return null;
+  const w = width;
+  const h = Math.round(width * aspect);
+  const full = document.createElement('canvas');
+  full.width = w;
+  full.height = h;
+  drawStrokes(full.getContext('2d'), strokes, w, h);
+  let x0 = 1,
+    y0 = 1,
+    x1 = 0,
+    y1 = 0;
+  for (const s of ink)
+    for (const [x, y] of s.p) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+  const cx = Math.max(0, Math.floor(x0 * w) - pad);
+  const cy = Math.max(0, Math.floor(y0 * h) - pad);
+  const cw = Math.min(w, Math.ceil(x1 * w) + pad) - cx;
+  const ch = Math.min(h, Math.ceil(y1 * h) + pad) - cy;
+  const out = document.createElement('canvas');
+  out.width = Math.max(200, cw);
+  out.height = Math.max(120, ch);
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
+  return new Promise((r) => out.toBlob(r, 'image/png'));
+}
+
 export function drawStrokes(ctx, strokes, w, h, { grid = false, bg = null, extra = null } = {}) {
   ctx.save();
   ctx.clearRect(0, 0, w, h);

@@ -1,0 +1,20 @@
+{
+  "_note": "Everything a rename or a price change touches is here. scripts/build-website.mjs puts it into the pages; test/website.test.mjs checks it matches the app.",
+  "brand": "StudyBridge",
+  "tagline": "Tutoring, organised. With an assistant that drafts and a tutor who decides.",
+  "siteUrl": "https://aaryanc-1.github.io/studybridge-releases/",
+  "appPath": "app/",
+  "releasesRepo": "aaryanc-1/studybridge-releases",
+  "freeNow": true,
+  "yearlyMonthsFree": 2,
+  "plans": [
+    { "id": "free", "name": "Free", "learners": 1, "month": 0, "year": 0, "blurb": "Try everything with one learner." },
+    { "id": "starter", "name": "Starter", "learners": 5, "month": 15, "year": 150, "blurb": "For a small group of regular learners." },
+    { "id": "pro", "name": "Pro", "learners": 25, "month": 29, "year": 290, "blurb": "For busy tutors and small tutoring centres.", "popular": true }
+  ],
+  "currencies": [
+    { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
+    { "code": "ZMW", "symbol": "K", "rate": 23, "label": "Zambian kwacha" },
+    { "code": "INR", "symbol": "₹", "rate": 88, "label": "Indian rupees" }
+  ]
+}

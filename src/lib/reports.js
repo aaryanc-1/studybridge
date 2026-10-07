@@ -1,5 +1,6 @@
 // Weekly parent reports: the text that goes to the parent (WhatsApp formatting: *bold*)
 import { dur } from './format.js';
+import { plainMaths } from './plain.js';
 
 const fmtDay = (d, opts) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...opts });
 
@@ -41,9 +42,9 @@ export function reportText(r) {
   const weak = topics.filter((t) => t.strength === 'weak' || t.strength === 'developing').slice(-2).reverse();
   if (strong.length) lines.push(`*Strongest:* ${strong.map((t) => `${t.topic} (${Math.round(t.ratio * 100)}%)`).join(', ')}`);
   if (weak.length) lines.push(`*To work on:* ${weak.map((t) => `${t.topic} (${Math.round(t.ratio * 100)}%)`).join(', ')}`);
-  if (r.comment) lines.push('', `*From ${d.tutor || 'your tutor'}:* ${r.comment}`);
+  if (r.comment) lines.push('', `*From ${d.tutor || 'your tutor'}:* ${plainMaths(r.comment)}`);
   if (r.next_week || (d.next || []).length) {
-    lines.push('', `*Next week:* ${r.next_week || ''}`.trim());
+    lines.push('', `*Next week:* ${plainMaths(r.next_week || '')}`.trim());
     if (!r.next_week) for (const x of d.next.slice(0, 5)) lines.push(`  • ${x.title} (due ${fmtDay(x.due_at, { weekday: 'short' })})`);
   }
   if (d.exam?.date && d.exam.days >= 0) lines.push('', `*${d.exam.name || 'Exam'}:* ${d.exam.days} days to go (${fmtDay(d.exam.date, { year: 'numeric' })})`);

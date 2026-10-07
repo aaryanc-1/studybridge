@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 // ---------------- stand-in Claude ----------------
 const seen = [];
+export const outside = []; // requests to the stand-in Stripe and Resend
 let mode = 'ok'; // 'ok' | 'busy-once' | 'bad-key'
 export const setMode = (m) => (mode = m);
 export { seen };
@@ -12,6 +13,13 @@ export async function startFakeClaude() {
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
+    // stand-in Stripe and Resend (same server)
+    if (req.url.startsWith('/v1/checkout/sessions') || req.url.startsWith('/v1/billing_portal/sessions') || req.url.startsWith('/emails')) {
+      const raw = Buffer.concat(chunks).toString();
+      outside.push({ url: req.url, auth: req.headers.authorization, body: req.url.startsWith('/emails') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw)) });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(req.url.startsWith('/emails') ? { id: 'email_1' } : { id: 'cs_1', url: 'https://checkout.stripe.test/pay/cs_1' }));
+    }
     const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
     seen.push({ headers: req.headers, body });
     const send = (status, o) => {

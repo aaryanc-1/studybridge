@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
+import MathText from '../../ui/MathText.jsx';
 import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import MathField from '../../ui/MathField.jsx';
 import { StoredImage } from '../../ui/media.jsx';
@@ -670,11 +671,11 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate }
             </Field>
           )}
           <Field label="Worked solution" hint="Shown to the learner only if you turn on “Show answers & solutions”.">
-            <textarea className="textarea" style={{ minHeight: 60 }} value={q.key.solution_md || ''} onChange={(e) => setKey({ solution_md: e.target.value })} placeholder="$2x + 3 = 11 \Rightarrow 2x = 8 \Rightarrow x = 4$" />
+            <MathText value={q.key.solution_md || ''} onChange={(v) => setKey({ solution_md: v })} label="Worked solution" placeholder="e.g. 2x + 3 = 11, so 2x = 8, so x = 4" minHeight={60} />
           </Field>
           {!['mcq', 'numeric'].includes(q.type) && (
             <Field label="Mark scheme (for you)">
-              <textarea className="textarea" style={{ minHeight: 50 }} value={q.key.mark_scheme_md || ''} onChange={(e) => setKey({ mark_scheme_md: e.target.value })} placeholder="M1 for subtracting 3, A1 for x = 4" />
+              <MathText value={q.key.mark_scheme_md || ''} onChange={(v) => setKey({ mark_scheme_md: v })} label="Mark scheme" placeholder="M1 for subtracting 3, A1 for x = 4" minHeight={50} />
             </Field>
           )}
         </div>

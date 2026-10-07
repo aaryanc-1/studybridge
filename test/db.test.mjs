@@ -1388,3 +1388,61 @@ test('teaching plans: the tutor’s own, per subject; learners and other tutors 
   assert.equal((await as('T', `select * from teaching_plans`)).length, 0);
   await fails(as('T', `insert into teaching_plans (subject_id) values ($1)`, [subj]), /row-level security/);
 });
+
+test('selling basics: plan limits only once switched on; download my data; delete my own account', async () => {
+  // what the app may know, even before signing in; no secrets
+  const pub = await val(null, `select public_settings()`);
+  assert.deepEqual(Object.keys(pub).sort(), ['email_on', 'enforce_plans', 'google_on', 'payments_on']);
+  assert.equal(pub.enforce_plans, false);
+  await fails(as('TW', `select admin_set_selling(p_enforce => true)`), /admins only/);
+  await fails(as('TW', `select _set_paid_plan($1, 'pro', 'month', 'cus_1', null)`, [U.TW]), /permission denied/);
+  const plan = await val('TW', `select my_plan()`);
+  assert.equal(plan.plan, 'free');
+  assert.equal(plan.limit, 1);
+  assert.equal(plan.enforced, false);
+
+  // a fresh tutor on the Free plan: limits off, a second learner can join; on, the next one can't
+  U.TP = (await db.query(`insert into auth.users (email) values ('plan-tutor@x.com') returning id`)).rows[0].id;
+  await as('TP', `select * from become_tutor('Plan Tutor', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.TP]);
+  const join = async (key) => {
+    U[key] = (await db.query(`insert into auth.users (email) values ($1) returning id`, [`${key.toLowerCase()}@x.com`])).rows[0].id;
+    const code = await val('TP', `insert into invites (name) values ($1) returning code`, [key]);
+    return as(key, `select accept_invite($1, $2)`, [code, key]);
+  };
+  await join('P1');
+  await join('P2');
+  await as('A', `select admin_set_selling(p_enforce => true)`);
+  await fails(join('P3'), /plan is full/);
+  assert.equal((await val('TP', `select my_plan()`)).learners, 2);
+  await db.query(`select _set_paid_plan($1, 'starter', 'month', 'cus_123', now() + interval '30 days')`, [U.TP]);
+  await join('P4');
+  assert.equal((await val('TP', `select my_plan()`)).limit, 5);
+  assert.equal((await as('TP', `select * from notifications where kind = 'plan'`)).length, 1);
+  await as('A', `select admin_set_selling(p_enforce => false, p_resend_key => 're_x', p_email_from => 'hello@example.com')`);
+  assert.equal((await val(null, `select public_settings()`)).email_on, true);
+  assert.equal((await val('A', `select admin_selling()`)).resend_set, true);
+  await fails(as('A', `select resend_key from platform_secrets`), /permission denied/);
+
+  // download my data: the tutor's own things, the learner's own work, nobody else's
+  const mine = await val('TW', `select export_my_data()`);
+  assert.equal(mine.account.role, 'tutor');
+  assert.ok(mine.assignments.length > 0 && mine.mocks.length > 0 && Array.isArray(mine.learners));
+  assert.ok(mine.learners.some((l) => l.name === 'Sis'));
+  assert.ok(!JSON.stringify(mine).includes('plan-tutor@x.com'), 'nothing from another tutor');
+  const theirs = await val('LW', `select export_my_data()`);
+  assert.equal(theirs.account.role, 'learner');
+  assert.ok(theirs.work.length > 0);
+  assert.equal(theirs.assignments, undefined);
+
+  // delete my own account: a learner; then a tutor, whose learners are released
+  await fails(as('P1', `select delete_my_account('nope')`), /Type DELETE/);
+  await as('P1', `select delete_my_account('DELETE')`);
+  assert.equal((await db.query(`select count(*)::int n from auth.users where id = $1`, [U.P1])).rows[0].n, 0);
+  assert.equal((await as('TP', `select * from notifications where kind = 'learner_left'`)).length, 1);
+  await as('TP', `select delete_my_account('delete')`);
+  assert.equal((await db.query(`select count(*)::int n from auth.users where id = $1`, [U.TP])).rows[0].n, 0);
+  const freed = (await db.query(`select role, tutor_id from profiles where id = $1`, [U.P2])).rows[0];
+  assert.deepEqual(freed, { role: null, tutor_id: null }, 'the learner can join another tutor');
+  await fails(as('A', `select delete_my_account('DELETE')`), /admin account/);
+});

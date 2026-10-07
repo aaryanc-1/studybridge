@@ -192,26 +192,27 @@ jobs:
             --title "StudyBridge ${VERSION}" \
             --notes "Download StudyBridge: Windows → StudyBridge-Setup-${VERSION}.exe · Mac (Apple silicon) → StudyBridge-${VERSION}-arm64.dmg · Mac (Intel) → StudyBridge-${VERSION}-x64.dmg. Installed apps update themselves." 2>&1) || fail "$out"
           echo "$out"
-      - name: Publish the phone version (GitHub Pages on the releases repo)
+      - name: Publish the website and the phone version (GitHub Pages on the releases repo)
         if: env.RELEASES_TOKEN != ''
         env:
           GH_TOKEN: ${{ env.RELEASES_TOKEN }}
         run: |
           set -e
           rm -rf site && mkdir -p site/app
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+          node scripts/build-website.mjs site "$VERSION"
           unzip -q out/StudyBridge-web.zip -d site/app
           touch site/.nojekyll
-          printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=app/"><title>StudyBridge</title><a href="app/">Open StudyBridge</a>' > site/index.html
           cd site
           git init -q -b gh-pages
           git config user.name "StudyBridge build"
           git config user.email "build@users.noreply.github.com"
           git add -A
-          git commit -qm "StudyBridge ${VERSION} (phone version)"
+          git commit -qm "StudyBridge ${VERSION} (website and phone version)"
           git push -qf "https://x-access-token:${RELEASES_TOKEN}@github.com/${RELEASES_REPO}.git" gh-pages
           # Switch GitHub Pages on the first time (needs Pages permission on the token; otherwise it's one click in the repo settings)
           if ! gh api "repos/$RELEASES_REPO/pages" >/dev/null 2>&1; then
             gh api -X POST "repos/$RELEASES_REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null 2>&1 \
               || echo "::warning title=Phone version::Turn on GitHub Pages once for $RELEASES_REPO: Settings → Pages → Deploy from a branch → gh-pages, / (root) → Save."
           fi
-          echo "Phone version: https://${RELEASES_REPO%%/*}.github.io/${RELEASES_REPO#*/}/app/"
+          echo "Website: https://${RELEASES_REPO%%/*}.github.io/${RELEASES_REPO#*/}/  Phone version: …/app/"

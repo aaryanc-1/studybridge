@@ -823,3 +823,27 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .plan-proposal { border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
 .setup-pdf { margin-bottom: 12px; }
 @media (max-width: 640px) { .plan-item { flex-direction: column; } .plan-when { width: auto; } }
+
+/* Prof's private note on an answer (what it read a drawing as) */
+.prof-note { display: flex; gap: 6px; align-items: flex-start; background: var(--claude-tint); color: var(--ink-2); border-radius: 8px; padding: 6px 10px; }
+
+/* text boxes that show finished maths (MathText) */
+.mt-view { position: relative; border: 1px solid var(--btn-line); border-radius: 10px; padding: 9px 12px 22px; background: var(--card); cursor: text; }
+.mt-view:hover, .mt-view:focus-visible { border-color: var(--accent); }
+.mt-view.disabled { cursor: default; background: var(--sunk); }
+.mt-view .md p { margin: 0 0 6px; } .mt-view .md p:last-child { margin: 0; }
+.mt-edit { position: absolute; right: 8px; bottom: 4px; font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+.mt-edit-box { display: flex; flex-direction: column; gap: 6px; }
+.mt-keys { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.mt-key { min-width: 34px; height: 30px; border: 1px solid var(--btn-line); border-radius: 8px; background: var(--card); cursor: pointer; font-size: 14px; }
+.mt-key:hover { border-color: var(--accent); }
+.mt-preview { display: inline-flex; gap: 6px; align-items: baseline; margin-left: 8px; font-size: 14px; }
+.mt-preview .md p { margin: 0; display: inline; }
+.rc-md p { margin: 4px 0 0; line-height: 1.5; }
+
+/* Continue with Google */
+.btn.google { background: var(--card); border-color: var(--btn-line); gap: 10px; }
+.btn.google .g { font-weight: 800; color: #4285F4; font-size: 18px; }
+
+.plan-meter { height: 8px; background: var(--sunk); border-radius: 4px; overflow: hidden; border: 1px solid var(--line-soft); }
+.plan-meter span { display: block; height: 100%; background: var(--accent); }

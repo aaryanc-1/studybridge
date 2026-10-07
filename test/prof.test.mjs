@@ -4,7 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@supabase/supabase-js';
 import { startFakeSupabase } from './fake-supabase.mjs';
-import { startFakeClaude, setMode, seen } from './fake-claude.mjs';
+import { startFakeClaude, setMode, seen, outside } from './fake-claude.mjs';
+import crypto from 'node:crypto';
 
 // ---------------- the test ----------------
 let srv, claude;
@@ -486,4 +487,77 @@ test('StudyBridge practice papers: Prof works out the papers, writes them in the
   await q(T.rpc('paper_used', { p_id: ps[0].id }));
   const bad = await T.from('sb_papers').update({ status: 'approved' }).eq('id', ps[1].id).select();
   assert.ok(bad.error || !bad.data.length, 'tutors can’t approve');
+});
+
+test('payments and email: closed until the admin adds keys; Stripe checkout, signed webhooks set the plan; reports by email', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const me = (await T.auth.getUser()).data.user.id;
+  const call = async (body, c = T) => {
+    const { data } = await c.auth.getSession();
+    const r = await fetch(`${srv.url}/functions/v1/prof`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: srv.anonKey, authorization: `Bearer ${data.session.access_token}` },
+      body: JSON.stringify(body),
+    });
+    return [r.status, await r.json()];
+  };
+  let [st, r] = await call({ action: 'checkout', plan: 'starter', period: 'month' });
+  assert.equal(st, 400);
+  assert.match(r.error, /aren’t open yet/);
+
+  const A = await admin();
+  await q(A.rpc('admin_set_selling', { p_stripe_secret: 'sk_test_x', p_stripe_webhook: 'whsec_test', p_prices: { starter_month: 'price_s_m', pro_year: 'price_p_y' }, p_resend_key: 're_test', p_email_from: 'StudyBridge <hello@example.com>' }));
+  assert.equal((await q(T.rpc('public_settings'))).payments_on, true);
+  [st, r] = await call({ action: 'checkout', plan: 'starter', period: 'month', return_url: 'javascript:alert(1)' });
+  assert.equal(st, 200, JSON.stringify(r));
+  assert.match(r.url, /checkout\.stripe\.test/);
+  const co = outside.findLast((x) => x.url.startsWith('/v1/checkout/sessions'));
+  assert.equal(co.auth, 'Bearer sk_test_x');
+  assert.equal(co.body['line_items[0][price]'], 'price_s_m');
+  assert.equal(co.body['metadata[tutor]'], me);
+  assert.equal(co.body.mode, 'subscription');
+  assert.doesNotMatch(co.body.success_url, /javascript/, 'only safe return links');
+
+  // Stripe's webhook, signed; a bad signature changes nothing
+  const hook = async (event, secret = 'whsec_test') => {
+    const raw = JSON.stringify(event);
+    const t = Math.floor(Date.now() / 1000);
+    const sig = crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex');
+    const res = await fetch(`${srv.url}/functions/v1/prof?stripe=webhook`, { method: 'POST', headers: { 'content-type': 'application/json', 'stripe-signature': `t=${t},v1=${sig}` }, body: raw });
+    return res.status;
+  };
+  const paid = { type: 'checkout.session.completed', data: { object: { customer: 'cus_42', metadata: { tutor: me, plan: 'starter', period: 'month' } } } };
+  assert.equal(await hook(paid, 'wrong'), 400);
+  assert.equal((await q(T.rpc('my_plan'))).plan, 'free');
+  assert.equal(await hook(paid), 200);
+  let plan = await q(T.rpc('my_plan'));
+  assert.equal(plan.plan, 'starter');
+  assert.equal(plan.has_billing, true);
+  [st, r] = await call({ action: 'billing' });
+  assert.equal(st, 200);
+  assert.equal(outside.findLast((x) => x.url.startsWith('/v1/billing_portal')).body.customer, 'cus_42');
+  assert.equal(await hook({ type: 'customer.subscription.deleted', data: { object: { customer: 'cus_42', metadata: { tutor: me, plan: 'starter' } } } }), 200);
+  assert.equal((await q(T.rpc('my_plan'))).plan, 'free');
+
+  // an approved report by email, from StudyBridge itself
+  const inv = await q(T.from('invites').insert({ name: 'Pay learner' }).select().single());
+  const L = client();
+  await q(L.auth.signUp({ email: 'pay-learner@x.com', password: 'secret123' }));
+  await q(L.rpc('accept_invite', { p_code: inv.code, p_name: 'Sis' }));
+  const lid = (await L.auth.getUser()).data.user.id;
+  await q(L.rpc('set_parent_reports', { p_on: true, p_name: 'Mum', p_phone: null, p_email: 'mum@example.com' }));
+  const rep = await q(T.from('parent_reports').insert({ learner_id: lid, week_start: '2026-08-03', data: { learner: 'Sis', tutor: 'Aaryan', lessons: 2, avg_pct: 70, work: [{ title: 'Algebra', score: 7, max: 10 }] }, comment: 'Factorise **fully**: $x^2-25$' }).select().single());
+  [st, r] = await call({ action: 'email_report', report_id: rep.id });
+  assert.match(r.error, /Approve the report first/);
+  await q(T.from('parent_reports').update({ status: 'sent', sent_via: 'email', sent_at: new Date().toISOString() }).eq('id', rep.id));
+  [st, r] = await call({ action: 'email_report', report_id: rep.id });
+  assert.equal(st, 200, JSON.stringify(r));
+  const mail = outside.findLast((x) => x.url.startsWith('/emails'));
+  assert.deepEqual(mail.body.to, ['mum@example.com']);
+  assert.equal(mail.auth, 'Bearer re_test');
+  assert.match(mail.body.html, /Factorise fully: x²-25/);
+  assert.doesNotMatch(mail.body.html, /\$|\*\*/);
+  [st] = await call({ action: 'checkout', plan: 'pro', period: 'month' }, L);
+  assert.equal(st, 403, 'learners can’t buy plans');
 });

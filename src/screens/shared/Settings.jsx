@@ -11,6 +11,7 @@ import { connectLink, desktop, timezone } from '../../lib/config.js';
 import { useUpdateStatus, AccountSwitcher } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
 import ReportCard from './ReportCard.jsx';
+import { dataZip } from '../../lib/zip.js';
 import { bytes } from '../../lib/format.js';
 import { setTheme, useTheme, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
 
@@ -37,7 +38,9 @@ export default function Settings() {
       {isLearner && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <LearnerPhoneAlerts />}
+      {isTutor && <YourPlan />}
       <Device />
+      <YourData />
       <About />
     </Page>
   );
@@ -712,6 +715,147 @@ function LearnerPhoneAlerts() {
         }}
         title="Send reminders to my phone"
       />
+    </Section>
+  );
+}
+
+// The tutor's plan: how full it is, and (once StudyBridge takes payments) upgrading or managing it
+const PLAN = {
+  free: { name: 'Free', learners: 1 },
+  starter: { name: 'Starter', learners: 5, month: '$15 a month', year: '$150 a year (2 months free)' },
+  pro: { name: 'Pro', learners: 25, month: '$29 a month', year: '$290 a year (2 months free)' },
+};
+function YourPlan() {
+  const toast = useToast();
+  const q = useQuery('my-plan', api.myPlan);
+  const pub = useQuery('public-settings', api.publicSettings).data || {};
+  const [period, setPeriod] = useState('month');
+  const [busy, setBusy] = useState('');
+  const p = q.data;
+  if (!p) return null;
+  const cur = PLAN[p.plan] || { name: p.plan, learners: p.limit };
+  async function open(fn, what) {
+    setBusy(what);
+    try {
+      const r = await fn();
+      if (r?.url) window.open(r.url, '_blank'); // the desktop app opens this in the browser
+    } catch (e) {
+      toast({ title: 'Couldn’t open payments', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy('');
+    }
+  }
+  return (
+    <Section id="plan" icon="star" title="Your plan" sub={`${cur.name}: up to ${cur.learners} learner${cur.learners === 1 ? '' : 's'}. You have ${p.learners}.${p.renews_at ? ` Renews ${new Date(p.renews_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.` : ''}`}>
+      <div className="plan-meter" aria-label={`${p.learners} of ${p.limit} learners`}>
+        <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, p.limit)) * 100)}%` }} />
+      </div>
+      {!p.enforced && <div className="small muted">Plan limits aren’t switched on yet, so you can add as many learners as you like for now.</div>}
+      {pub.payments_on ? (
+        <div className="stack sm">
+          <div className="seg" role="group" aria-label="Pay">
+            <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>
+              Monthly
+            </button>
+            <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
+              Yearly (2 months free)
+            </button>
+          </div>
+          <div className="row wrap">
+            {['starter', 'pro']
+              .filter((k) => k !== p.plan)
+              .map((k) => (
+                <button key={k} className="btn primary" disabled={!!busy} onClick={() => open(() => api.checkout(k, period), k)}>
+                  {busy === k ? 'Opening…' : `${PLAN[k].name}: ${PLAN[k][period]}`}
+                </button>
+              ))}
+            {p.has_billing && (
+              <button className="btn" disabled={!!busy} onClick={() => open(api.billingPortal, 'billing')}>
+                Manage or cancel
+              </button>
+            )}
+          </div>
+          <div className="tiny muted">Payment opens in your browser (Stripe). Your plan changes here as soon as it’s paid.</div>
+        </div>
+      ) : (
+        <div className="small muted">Paid plans are coming soon: Starter (5 learners) and Pro (25 learners).</div>
+      )}
+    </Section>
+  );
+}
+
+// Download everything that's yours, or delete your account
+function YourData() {
+  const app = useApp();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [typed, setTyped] = useState('');
+  if (app.me.role === 'admin') return null;
+  return (
+    <Section id="data" icon="download" title="Your data" sub="Download a copy of everything that’s yours, or delete your account.">
+      <div className="row wrap">
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const zip = dataZip(await api.exportMyData());
+              const name = `studybridge-data-${new Date().toISOString().slice(0, 10)}.zip`;
+              if (desktop?.saveFile) await desktop.saveFile(name, new Uint8Array(await zip.arrayBuffer()));
+              else {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(zip);
+                a.download = name;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              }
+              toast('Your data is downloaded');
+            } catch (e) {
+              toast({ title: 'Couldn’t download it', body: e.message, tone: 'bad' });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Icon name="download" size={16} /> {busy ? 'Getting it ready…' : 'Download my data'}
+        </button>
+        <button className="btn danger ghost" onClick={() => setDeleting((x) => !x)} aria-expanded={deleting}>
+          <Icon name="trash" size={16} /> Delete my account
+        </button>
+      </div>
+      {deleting && (
+        <div className="note small stack sm">
+          <div className="strong">This can’t be undone.</div>
+          <div>
+            {app.me.role === 'tutor'
+              ? 'Your subjects, work, marks, reports and files are deleted. Your learners keep their accounts and can join another tutor with a new invite; their work with you is deleted.'
+              : app.me.role === 'learner'
+                ? 'Your work, marks and messages are deleted, and your tutor is told.'
+                : 'Your parent account and its links are deleted.'}{' '}
+            Download your data first if you want a copy.
+          </div>
+          <div className="row wrap">
+            <input className="input" style={{ maxWidth: 200 }} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Type DELETE" aria-label="Type DELETE to confirm" />
+            <button
+              className="btn danger solid"
+              disabled={typed.trim().toUpperCase() !== 'DELETE'}
+              onClick={async () => {
+                try {
+                  await api.deleteMyAccount(typed);
+                  toast('Your account has been deleted');
+                  app.signOut();
+                } catch (e) {
+                  toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Delete my account
+            </button>
+          </div>
+        </div>
+      )}
     </Section>
   );
 }

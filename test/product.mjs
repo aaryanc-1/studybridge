@@ -493,7 +493,7 @@ try {
   await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'View report' }).click();
   const rep = A.getByRole('dialog', { name: 'Anaya’s report' });
   await rep.getByRole('button', { name: 'Prof, suggest a comment' }).click();
-  await expectValue(rep.getByLabel('Your comment to the parent (optional)'), /She worked hard/);
+  await rep.locator('.mt-view', { hasText: /She worked hard/ }).first().waitFor(); // shown as finished text (click to edit)
   await rep.locator('.report-card', { hasText: 'Work this week' }).waitFor();
   await shot(A, 'parent-report');
   await A.context().route(/wa\.me|whatsapp\.com/, (r) => r.fulfill({ contentType: 'text/html', body: '<p>WhatsApp</p>' }));
@@ -657,6 +657,21 @@ try {
   await ADM.locator('.tutor-row a', { hasText: 'Aaryan Chouhan' }).click();
   await ADM.getByRole('heading', { name: 'Your notes' }).waitFor();
   await shot(ADM, 'admin-tutor');
+
+  step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
+  await nav(ADM, 'Selling').click();
+  await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();
+  assert.equal(await ADM.getByRole('switch', { name: 'Enforce plan limits' }).getAttribute('aria-checked'), 'false', 'plan limits start off');
+  await shot(ADM, 'admin-selling');
+  await A.goto(web.url + '#/settings');
+  const plan = A.locator('#set-plan');
+  await plan.getByText('Paid plans are coming soon').waitFor();
+  await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
+  const [zip] = await Promise.all([A.waitForEvent('download'), A.locator('#set-data').getByRole('button', { name: /Download my data/ }).click()]);
+  assert.match(zip.suggestedFilename(), /^studybridge-data-\d{4}-\d{2}-\d{2}\.zip$/);
+  await A.getByText('Your data is downloaded').waitFor();
+  await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).click();
+  assert.ok(await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).last().isDisabled(), 'nothing is deleted until DELETE is typed');
 
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');

@@ -334,6 +334,8 @@ create table if not exists public.responses (
   updated_at timestamptz not null default now(),
   unique (attempt_id, question_id)
 );
+-- Prof's note to the tutor about an answer (what it read a drawing or photo as, anything to check); never shown to learners
+alter table public.responses add column if not exists prof_note text;
 
 -- Notes and messages, both directions. Optionally pinned to an assignment/question.
 create table if not exists public.comments (
@@ -1257,6 +1259,7 @@ begin
       'strikes', t.strikes, 'auto_reason', t.auto_reason),
     'responses', coalesce((select jsonb_agg(jsonb_build_object(
         'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
+        'prof_note', case when is_tutor then r.prof_note end,
         'marks', case when rel or is_tutor then r.marks end,
         'auto_marks', case when rel or is_tutor then r.auto_marks end,
         'feedback_md', case when rel or is_tutor then r.feedback_md end,
@@ -1443,6 +1446,7 @@ begin
              step_marks = coalesce(m -> 'step_marks', step_marks),
              mistake = coalesce(m ->> 'mistake', mistake),
              redo = coalesce((m ->> 'redo')::boolean, redo),
+             prof_note = coalesce(m ->> 'prof_note', prof_note),
              updated_at = now()
        where attempt_id = d.attempt_id and question_id = (m ->> 'question_id')::uuid and tutor_id = auth.uid();
     end loop;
@@ -4572,6 +4576,195 @@ begin
   return jsonb_build_object('id', v_id);
 end $$;
 
+-- =====================================================================
+-- 1.6 part 5: selling basics. Plans (Free 1 learner, Starter 5, Pro 25) with limits the admin switches on
+-- when StudyBridge starts charging; payments through Stripe once the admin adds its keys; emails through
+-- Resend once there's a domain; Google sign-in once it's set up in Supabase. Everyone can download their
+-- data and delete their own account.
+-- =====================================================================
+alter table public.app_config add column if not exists enforce_plans boolean not null default false;
+alter table public.app_config add column if not exists google_on boolean not null default false;
+alter table public.app_config add column if not exists email_from text;
+alter table public.app_config add column if not exists stripe_prices jsonb not null default '{}';  -- {"starter_month": "price_…", …}
+alter table public.platform_secrets add column if not exists stripe_secret text;
+alter table public.platform_secrets add column if not exists stripe_webhook_secret text;
+alter table public.platform_secrets add column if not exists resend_key text;
+alter table public.profiles add column if not exists stripe_customer text;
+alter table public.profiles add column if not exists plan_period text;
+alter table public.profiles add column if not exists plan_renews_at timestamptz;
+
+-- How many learners a plan has room for
+create or replace function public._plan_learners(p_plan text) returns int
+language sql immutable as $$
+  select case coalesce(p_plan, 'free') when 'free' then 1 when 'starter' then 5 when 'pro' then 25 else 1000 end
+$$;
+
+-- What the app may know about how StudyBridge is set up (no secrets); also before signing in
+create or replace function public.public_settings() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'enforce_plans', c.enforce_plans,
+    'google_on', c.google_on,
+    'payments_on', s.stripe_secret is not null and c.stripe_prices <> '{}'::jsonb,
+    'email_on', s.resend_key is not null and c.email_from is not null)
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
+$$;
+grant execute on function public.public_settings() to anon;
+
+-- The tutor's plan and how full it is
+create or replace function public.my_plan() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('plan', p.plan, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
+    'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+    'limit', public._plan_learners(p.plan),
+    'enforced', (select enforce_plans from public.app_config where id = 1),
+    'has_billing', p.stripe_customer is not null)
+    from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
+$$;
+
+-- A learner joining a full plan is stopped (only once the admin switches limits on)
+create or replace function public._check_plan_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_plan text; v_n int;
+begin
+  if new.role = 'learner' and new.tutor_id is not null and new.tutor_id is distinct from old.tutor_id
+     and (select enforce_plans from public.app_config where id = 1) then
+    select plan into v_plan from public.profiles where id = new.tutor_id;
+    select count(*) into v_n from public.profiles where tutor_id = new.tutor_id and role = 'learner' and id <> new.id;
+    if v_n >= public._plan_learners(v_plan) then
+      raise exception 'Your tutor’s StudyBridge plan is full. Ask them to upgrade, then use the invite again.';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists profiles_plan_room on public.profiles;
+create trigger profiles_plan_room before update of tutor_id, role on public.profiles for each row execute function public._check_plan_room();
+
+-- Admin: payments, email, Google sign-in and plan limits. Keys are write-only.
+create or replace function public.admin_set_selling(p_enforce boolean default null, p_google boolean default null, p_email_from text default null,
+  p_resend_key text default null, p_stripe_secret text default null, p_stripe_webhook text default null, p_prices jsonb default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_config set
+    enforce_plans = coalesce(p_enforce, enforce_plans),
+    google_on = coalesce(p_google, google_on),
+    email_from = case when p_email_from is null then email_from else nullif(trim(p_email_from), '') end,
+    stripe_prices = coalesce(p_prices, stripe_prices)
+   where id = 1;
+  update public.platform_secrets set
+    resend_key = coalesce(nullif(trim(p_resend_key), ''), resend_key),
+    stripe_secret = coalesce(nullif(trim(p_stripe_secret), ''), stripe_secret),
+    stripe_webhook_secret = coalesce(nullif(trim(p_stripe_webhook), ''), stripe_webhook_secret)
+   where id = 1;
+  perform public._admin_log('settings', null, jsonb_build_object('selling', true));
+end $$;
+create or replace function public.admin_selling() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return (select jsonb_build_object('enforce_plans', c.enforce_plans, 'google_on', c.google_on, 'email_from', c.email_from,
+      'resend_set', s.resend_key is not null, 'stripe_set', s.stripe_secret is not null, 'webhook_set', s.stripe_webhook_secret is not null,
+      'prices', c.stripe_prices,
+      'plans', (select jsonb_object_agg(coalesce(plan, 'free'), n) from (select plan, count(*) n from public.profiles where role = 'tutor' group by plan) z))
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
+end $$;
+
+-- The Prof server (service role) records a Stripe payment or cancellation
+create or replace function public._set_paid_plan(p_tutor uuid, p_plan text, p_period text, p_customer text, p_renews timestamptz)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles set plan = coalesce(nullif(p_plan, ''), 'free'), plan_period = p_period,
+         stripe_customer = coalesce(p_customer, stripe_customer), plan_renews_at = p_renews
+   where id = p_tutor and role = 'tutor';
+  if found then
+    perform public.notify_user(p_tutor, 'plan', case when coalesce(p_plan, 'free') = 'free' then 'You’re on the Free plan' else 'You’re on the ' || initcap(p_plan) || ' plan' end,
+      case when coalesce(p_plan, 'free') = 'free' then 'Your paid plan has ended.' else 'Thank you! Your plan is active.' end, '{}');
+  end if;
+end $$;
+
+-- Everything that's yours, to download (Settings → Download my data). Tutors get everything they run;
+-- learners get their own work (marks only once given back); parents get their account and links.
+create or replace function public.export_my_data() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v jsonb;
+  t text;
+  rows jsonb;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null then raise exception 'Not signed in.'; end if;
+  v := jsonb_build_object('exported_at', now(), 'account',
+         jsonb_build_object('name', me.display_name, 'email', me.email, 'role', me.role, 'timezone', me.timezone, 'plan', me.plan, 'created_at', me.created_at));
+  if me.role = 'tutor' then
+    foreach t in array array['programmes', 'subjects', 'topics', 'invites', 'files', 'lessons', 'assignments', 'questions', 'question_keys',
+                             'attempts', 'responses', 'comments', 'sessions', 'lesson_series', 'parent_reports', 'learner_reports', 'cards',
+                             'mocks', 'grade_boundaries', 'teaching_plans', 'taught_topics', 'parent_invites', 'activity'] loop
+      if to_regclass('public.' || t) is not null then
+        execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]'') from public.%I x where x.tutor_id = $1', t) into rows using me.id;
+        v := v || jsonb_build_object(t, rows);
+      end if;
+    end loop;
+    v := v || jsonb_build_object(
+      'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'email', l.email, 'timezone', l.timezone, 'joined', l.created_at,
+                     'subjects', (select coalesce(jsonb_agg(ls.subject_id), '[]') from public.learner_subjects ls where ls.learner_id = l.id))), '[]')
+                     from public.profiles l where l.tutor_id = me.id and l.role = 'learner'),
+      'question_bank', (select coalesce(jsonb_agg(to_jsonb(b)), '[]') from public.bank_questions b where b.owner_id = me.id));
+  elsif me.role = 'learner' then
+    v := v || jsonb_build_object(
+      'tutor', (select display_name from public.profiles where id = me.tutor_id),
+      'work', (select coalesce(jsonb_agg(jsonb_build_object(
+                  'assignment', a.title, 'kind', a.kind, 'started_at', x.started_at, 'submitted_at', x.submitted_at, 'status', x.status,
+                  'score', case when public._is_released(x) then x.score end, 'max', x.max_score,
+                  'feedback', case when public._is_released(x) then x.feedback_md end,
+                  'answers', (select coalesce(jsonb_agg(jsonb_build_object('question', q.prompt_md, 'answer', r.answer,
+                                 'marks', case when public._is_released(x) then r.marks end,
+                                 'feedback', case when public._is_released(x) then r.feedback_md end) order by q.position), '[]')
+                                from public.responses r join public.questions q on q.id = r.question_id where r.attempt_id = x.id)) order by x.started_at), '[]')
+                 from public.attempts x join public.assignments a on a.id = x.assignment_id where x.learner_id = me.id),
+      'messages', (select coalesce(jsonb_agg(jsonb_build_object('at', c.created_at, 'from_me', c.author_id = me.id, 'text', c.body) order by c.created_at), '[]')
+                     from public.comments c where c.learner_id = me.id),
+      'time_studied', (select coalesce(jsonb_agg(to_jsonb(x) - 'tutor_id'), '[]') from public.activity x where x.learner_id = me.id),
+      'flashcard_reviews', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.card_reviews x where x.learner_id = me.id),
+      'my_flashcards', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.cards x where x.learner_id = me.id and x.source in ('own', 'mistake')),
+      'study_notes', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.study_notes x where x.learner_id = me.id),
+      'weekly_reports', (select coalesce(jsonb_agg(jsonb_build_object('week', x.week_start, 'report', x.data, 'comment', x.comment)), '[]')
+                           from public.parent_reports x where x.learner_id = me.id and x.status = 'sent'),
+      'parent_report_settings', (select to_jsonb(x) from public.learner_reports x where x.learner_id = me.id));
+  elsif me.role = 'parent' then
+    v := v || jsonb_build_object('children', public.parent_children());
+  end if;
+  return v;
+end $$;
+
+-- Delete my own account. A tutor's learners are released (they can join another tutor with a new invite)
+-- and everything the tutor ran goes with the account; a learner's own work goes with theirs.
+create or replace function public.delete_my_account(p_confirm text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  l uuid;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null then raise exception 'Not signed in.'; end if;
+  if upper(trim(coalesce(p_confirm, ''))) <> 'DELETE' then raise exception 'Type DELETE to confirm.'; end if;
+  if exists (select 1 from public.platform_admins where user_id = me.id) then raise exception 'The StudyBridge admin account can’t be deleted here.'; end if;
+  if me.role = 'tutor' then
+    for l in select id from public.profiles where tutor_id = me.id and role = 'learner' loop
+      perform public.notify_user(l, 'tutor_left', 'Your tutor closed their StudyBridge account',
+        'Your work with them was deleted. You can join another tutor with a new invite.', '{}');
+    end loop;
+    delete from public.learner_subjects where tutor_id = me.id;
+    update public.profiles set role = null, tutor_id = null, programme_id = null where tutor_id = me.id and role = 'learner';
+  elsif me.role = 'learner' and me.tutor_id is not null then
+    perform public.notify_user(me.tutor_id, 'learner_left', coalesce(me.display_name, 'A learner') || ' deleted their account',
+      'Their work and marks were deleted with it.', '{}');
+  end if;
+  delete from public.invites where accepted_by = me.id;
+  delete from auth.users where id = me.id;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -4610,6 +4803,8 @@ revoke execute on function public._mock_result(uuid, uuid, boolean) from public,
 revoke execute on function public._parent_link(uuid) from public, anon, authenticated;
 revoke execute on function public._hand_in(uuid, text) from public, anon, authenticated;
 revoke execute on function public._auto_hand_in() from public, anon, authenticated;
+revoke execute on function public._set_paid_plan(uuid, text, text, text, timestamptz) from public, anon, authenticated;
+revoke execute on function public._check_plan_room() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

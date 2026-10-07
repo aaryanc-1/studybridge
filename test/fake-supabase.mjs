@@ -360,7 +360,7 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
     if (url.pathname !== '/functions/v1/prof') return [404, { message: 'Function not found' }];
     if (!prof) {
       const mod = await import('../supabase/functions/prof/index.ts');
-      const env = { SUPABASE_URL: base, SUPABASE_SERVICE_ROLE_KEY: serviceKey, SUPABASE_ANON_KEY: anonKey, ANTHROPIC_BASE_URL: anthropicUrl || 'http://127.0.0.1:9' };
+      const env = { SUPABASE_URL: base, SUPABASE_SERVICE_ROLE_KEY: serviceKey, SUPABASE_ANON_KEY: anonKey, ANTHROPIC_BASE_URL: anthropicUrl || 'http://127.0.0.1:9', STRIPE_BASE_URL: anthropicUrl || 'http://127.0.0.1:9', RESEND_BASE_URL: anthropicUrl || 'http://127.0.0.1:9' };
       prof = mod.createHandler((k) => env[k]);
     }
     const headers = new Headers();

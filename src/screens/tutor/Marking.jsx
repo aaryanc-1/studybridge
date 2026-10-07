@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
+import MathText from '../../ui/MathText.jsx';
 import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Toggle, copyText, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import DrawingPad, { drawStrokes } from '../../ui/DrawingPad.jsx';
 import { useBlob } from '../../ui/media.jsx';
@@ -130,6 +131,16 @@ export function MarkAttempt({ id }) {
   useEffect(() => {
     if (d && feedback === null) setFeedback(d.attempt.feedback_md || '');
   }, [d, feedback]);
+  // drawings handed in without a picture get one now, so Prof can mark them
+  const pictured = useRef(false);
+  useEffect(() => {
+    if (!d || !questions.data || pictured.current) return;
+    pictured.current = true;
+    api
+      .ensureDrawingPictures(d, questions.data)
+      .then((n) => n && invalidate(`attempt:${id}`))
+      .catch(() => {});
+  }, [d, questions.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const responses = useMemo(() => {
     const m = {};
@@ -268,7 +279,7 @@ export function MarkAttempt({ id }) {
               <span className="strong">{max ? pct(total, max) + '%' : ''}</span>
             </div>
             <Field label="Overall feedback">
-              <textarea className="textarea" value={feedback || ''} onChange={(e) => setFeedback(e.target.value)} placeholder="What went well, and what to focus on next." />
+              <MathText value={feedback || ''} onChange={setFeedback} label="Overall feedback" placeholder="What went well, and what to focus on next." minHeight={80} />
             </Field>
             {redoCount > 0 ? (
               <button className="btn primary big" onClick={() => finish(true)}>
@@ -361,6 +372,11 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
       </div>
       <QuestionPrompt q={q} />
       <div className="label">Their answer</div>
+      {r.prof_note && (
+        <div className="prof-note small">
+          <Icon name="cap" size={14} /> {r.prof_note}
+        </div>
+      )}
       <AnswerDisplay
         q={q}
         answer={r.answer}
@@ -415,7 +431,7 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
         </button>
       </div>
       <Field label="Feedback on this question">
-        <textarea className="textarea" style={{ minHeight: 64 }} value={r.feedback_md || ''} onChange={(e) => onEdit({ feedback_md: e.target.value })} placeholder="What was wrong, and how to fix it. Maths in $…$." />
+        <MathText value={r.feedback_md || ''} onChange={(v) => onEdit({ feedback_md: v })} label={`Feedback on question ${n}`} placeholder="What was wrong, and how to fix it." />
       </Field>
       <div className="grid g2" style={{ gap: 10, alignItems: 'end' }}>
         <Field label="Mistake (collects on their progress page)">

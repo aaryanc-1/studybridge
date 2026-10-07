@@ -30,6 +30,41 @@ function storedUser() {
   }
 }
 
+// Opened from the "set a new password" email: choose one, then carry on
+function NewPassword({ onDone }) {
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="welcome">
+      <div className="box">
+        <form
+          className="card"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (pw.length < 6) return setErr('Use a password of at least 6 characters.');
+            setBusy(true);
+            try {
+              await api.changePassword(pw);
+              onDone();
+            } catch (x) {
+              setErr(x.message);
+              setBusy(false);
+            }
+          }}
+        >
+          <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Set a new password</h2>
+          <input className="input" type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} placeholder="New password" aria-label="New password" autoComplete="new-password" />
+          {err && <div className="error">{err}</div>}
+          <button className="btn primary" disabled={busy}>
+            Save and continue
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [server, setServerState] = useState(() => {
     const fromQr = readConnectFromHash();
@@ -43,6 +78,7 @@ export default function App() {
   const [profile, setProfile] = useState(undefined);
   const [offlineBoot, setOfflineBoot] = useState(false);
   const [bootError, setBootError] = useState(null);
+  const [recovery, setRecovery] = useState(false); // opened from a "set a new password" email
 
   const loadProfile = useCallback(async (u) => {
     setScope(u.id);
@@ -85,6 +121,12 @@ export default function App() {
     }
     let alive = true;
     (async () => {
+      try {
+        const link = await api.sessionFromLink();
+        if (link?.recovery) setRecovery(true);
+      } catch {
+        /* an old or used link: carry on to sign in */
+      }
       const { data, error } = await sb().auth.getSession();
       if (!alive) return;
       let u = data.session?.user || null;
@@ -156,6 +198,7 @@ export default function App() {
 
   let body;
   if (tooOld) body = <UpdateRequired need={tooOld} />;
+  else if (recovery && user) body = <NewPassword onDone={() => setRecovery(false)} />;
   else if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
   else if (!server || !user) body = <Welcome />;
   else if (!profile || !profile.role) body = <FinishSetup />;
