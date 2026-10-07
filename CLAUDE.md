@@ -100,6 +100,23 @@ line break; blank or rubbed-out drawings are `answer.blank` (`drawn()` in questi
 plans come from a list (`profiles_plan_check`: free, starter, pro, custom + `plan_learners`, complimentary + `plan_until`;
 `_tutor_limit`; old typed names became complimentary; `PLANS`/`planName` in format.js).
 
+## Next fixes (noted 7 Oct 2026, not built yet)
+- Tutor Home "Coming up" (and the "Due in the next week" count) still lists an assignment after the learner handed it in:
+  `soon` in src/screens/tutor/Home.jsx:34 filters by due date only. Show only work someone still has to hand in, or
+  say "All handed in" / "1 of 2 handed in".
+- Desktop updater deleted the running version's folder (app-updates/1.1.50) while its window was open, so the exam
+  camera's lazily loaded livekit chunk failed ("Failed to fetch dynamically imported module"). In electron/updater.cjs
+  `startPage` removes `s.current` when switching to `s.pending`: never remove the version in use, tidy old folders
+  (1.1.12, 1.1.36, 1.1.44 still there) only at a fresh start keeping current + one spare, and catch chunk-load errors
+  in the app with "StudyBridge was updated, tap to reload".
+- Live.jsx exam-camera empty text still says "leave the exam window" for a quiz/test (use `forKind`).
+- Discussed, waiting for his go: an account button on every screen (Settings, Switch account, Sign out); make the
+  app's look match the website (welcome/sign-in like the site; site shows "Open my StudyBridge" when signed in, same
+  origin now); a bigger parent menu on phones (bigger tab bar, more tabs: This week, Coming up, Marks, Settings) and a
+  text-size setting; email set-up (Cloudflare Email Routing hello@/support@ → Gmail, Resend for sending + Gmail
+  "send as", Supabase SMTP via Resend, then a website Contact page and emails to him for early access, requests and
+  contact messages).
+
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
   Reviewer until he adds a team.
