@@ -14,7 +14,7 @@
   ],
   "currencies": [
     { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
-    { "code": "ZMW", "symbol": "K", "rate": 23, "label": "Zambian kwacha" },
-    { "code": "INR", "symbol": "₹", "rate": 88, "label": "Indian rupees" }
+    { "code": "ZMW", "symbol": "K", "rate": 19.69, "label": "Zambian kwacha" },
+    { "code": "INR", "symbol": "₹", "rate": 96.22, "label": "Indian rupees" }
   ]
 }

@@ -61,8 +61,12 @@ export default function MathText({ value, onChange, placeholder = '', minHeight 
       className="mt-edit-box"
       ref={box}
       onBlur={(e) => {
-        // back to the finished look when focus leaves the box (not when using the maths keys)
-        if (!box.current?.contains(e.relatedTarget)) setEditing(false);
+        // back to the finished look when focus leaves the box (not when using the maths keys). A moment later,
+        // so the box changing size doesn't move the button that was just pressed out from under the click.
+        if (box.current?.contains(e.relatedTarget)) return;
+        setTimeout(() => {
+          if (!box.current?.contains(document.activeElement)) setEditing(false);
+        }, 400);
       }}
     >
       <textarea
