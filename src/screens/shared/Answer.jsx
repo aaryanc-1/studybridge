@@ -4,7 +4,7 @@ import { Markdown } from '../../ui/kit.jsx';
 import { StoredImage, WorkThumb, Lightbox } from '../../ui/media.jsx';
 import { MathStatic } from '../../ui/MathField.jsx';
 import DrawingPad from '../../ui/DrawingPad.jsx';
-import { items, multi } from '../../lib/questions.js';
+import { drawn, items, multi } from '../../lib/questions.js';
 
 export function QuestionPrompt({ q }) {
   const [zoom, setZoom] = useState(false);
@@ -133,7 +133,7 @@ export function AnswerDisplay({ q, answer = {}, mine: isMine = false, keyAns, st
     );
   }
   // upload / drawing
-  const strokes = q.type === 'drawing' ? answer?.strokes || [] : [];
+  const strokes = q.type === 'drawing' && drawn(answer) ? answer.strokes : [];
   return (
     <div className="stack sm">
       {q.type === 'drawing' && strokes.length > 0 && (

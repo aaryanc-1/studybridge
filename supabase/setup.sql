@@ -74,6 +74,16 @@ alter table public.app_config add column if not exists livekit_url text;
 
 alter table public.profiles add column if not exists status text not null default 'active';
 alter table public.profiles add column if not exists plan text not null default 'free';
+alter table public.profiles add column if not exists plan_learners int; -- a Custom plan: how many learners the admin allows
+alter table public.profiles add column if not exists plan_until date;   -- a Complimentary plan: free until this day (empty: no end)
+-- Plans are chosen from a list (7 Oct 2026). Anything typed in by hand before then becomes Complimentary,
+-- so nothing changes for those tutors and they're never charged.
+update public.profiles set plan = 'complimentary' where plan not in ('free', 'starter', 'pro', 'custom', 'complimentary');
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'profiles_plan_check') then
+    alter table public.profiles add constraint profiles_plan_check check (plan in ('free', 'starter', 'pro', 'custom', 'complimentary'));
+  end if;
+end $$;
 -- A tutor's own Prof allowance (when the admin set one). Only the admin sees it, so it lives in
 -- its own table nobody reads directly; early builds kept it on profiles, move it over.
 create table if not exists public.prof_limits (
@@ -1176,7 +1186,10 @@ begin
 end $$;
 
 -- Tutor finishes marking: totals the marks, optionally releases them.
-create or replace function public.finish_marking(p_attempt uuid, p_release boolean, p_feedback text default null)
+-- Return marks (p_release), or save them for later. With p_redo the questions ticked "redo" go back to the learner;
+-- without it the marks are final and any redo ticks are cleared.
+drop function if exists public.finish_marking(uuid, boolean, text);
+create or replace function public.finish_marking(p_attempt uuid, p_release boolean, p_feedback text default null, p_redo boolean default true)
 returns public.attempts language plpgsql security definer set search_path = public as $$
 declare
   t public.attempts;
@@ -1186,13 +1199,16 @@ begin
   select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
   if t.id is null then raise exception 'Attempt not found.'; end if;
   select * into a from public.assignments where id = t.assignment_id;
-  select exists (select 1 from public.responses where attempt_id = t.id and redo) into v_redo;
+  if p_release and not coalesce(p_redo, true) then
+    update public.responses set redo = false where attempt_id = t.id and redo;
+  end if;
+  v_redo := p_release and exists (select 1 from public.responses where attempt_id = t.id and redo);
   update public.attempts
      set score = (select coalesce(sum(marks), 0) from public.responses where attempt_id = t.id),
          status = case when v_redo then 'returned' else 'marked' end,
-         feedback_md = coalesce(p_feedback, feedback_md),
-         released = released or p_release or v_redo,
-         released_at = case when (p_release or v_redo) and not released then now() else released_at end
+         feedback_md = coalesce(public._fix_newlines(p_feedback), feedback_md),
+         released = released or p_release,
+         released_at = case when p_release and not released then now() else released_at end
    where id = t.id returning * into t;
   if t.released then
     perform public.notify_user(t.learner_id, 'marked',
@@ -1313,14 +1329,17 @@ declare
   t public.attempts;
   v_name text;
   v_title text;
+  v_kind text;
+  v_event text;
 begin
   select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
   if t.id is null then return; end if;
-  update public.attempts set lockdown_events = lockdown_events || jsonb_build_array(jsonb_build_object('at', now(), 'event', left(p_event, 200)))
+  select title, kind into v_title, v_kind from public.assignments where id = t.assignment_id;
+  v_event := replace(p_event, 'the exam', 'the ' || coalesce(v_kind, 'exam'));
+  update public.attempts set lockdown_events = lockdown_events || jsonb_build_array(jsonb_build_object('at', now(), 'event', left(v_event, 200)))
    where id = t.id;
   select display_name into v_name from public.profiles where id = auth.uid();
-  select title into v_title from public.assignments where id = t.assignment_id;
-  perform public.notify_user(t.tutor_id, 'lockdown', coalesce(v_name, 'Learner') || ': ' || left(p_event, 120), v_title,
+  perform public.notify_user(t.tutor_id, 'lockdown', coalesce(v_name, 'Learner') || ': ' || left(v_event, 120), v_title,
     jsonb_build_object('attempt_id', t.id, 'learner_id', t.learner_id));
 end $$;
 
@@ -1428,6 +1447,17 @@ end $$;
 -- ---------------------------------------------------------------------
 -- Claude drafts → applied by the tutor
 -- ---------------------------------------------------------------------
+-- Text that arrived with "\n" written out instead of a real line break (it happened in Prof's feedback, 6 Oct 2026).
+-- Maths commands that start with \n (\neq, \nabla, \not, \nu…) are left alone: a lowercase letter follows them.
+create or replace function public._fix_newlines(p text) returns text
+language sql immutable as $$
+  select case when p is null then null else regexp_replace(replace(p, E'\\r\\n', E'\n'), '\\n(?![a-z])', E'\n', 'g') end
+$$;
+update public.attempts set feedback_md = public._fix_newlines(feedback_md) where strpos(feedback_md, E'\\n') > 0;
+update public.responses set feedback_md = public._fix_newlines(feedback_md) where strpos(feedback_md, E'\\n') > 0;
+update public.claude_drafts set payload = jsonb_set(payload, '{feedback_md}', to_jsonb(public._fix_newlines(payload ->> 'feedback_md')))
+ where status = 'pending' and strpos(payload ->> 'feedback_md', E'\\n') > 0;
+
 create or replace function public.apply_draft(p_draft uuid, p_payload jsonb default null)
 returns void language plpgsql security definer set search_path = public as $$
 declare
@@ -1442,7 +1472,7 @@ begin
     for m in select * from jsonb_array_elements(coalesce(pl -> 'marks', '[]')) loop
       update public.responses
          set marks = coalesce((m ->> 'marks')::numeric, marks),
-             feedback_md = coalesce(m ->> 'feedback_md', feedback_md),
+             feedback_md = coalesce(public._fix_newlines(m ->> 'feedback_md'), feedback_md),
              step_marks = coalesce(m -> 'step_marks', step_marks),
              mistake = coalesce(m ->> 'mistake', mistake),
              redo = coalesce((m ->> 'redo')::boolean, redo),
@@ -1451,7 +1481,7 @@ begin
        where attempt_id = d.attempt_id and question_id = (m ->> 'question_id')::uuid and tutor_id = auth.uid();
     end loop;
     if pl ? 'feedback_md' then
-      update public.attempts set feedback_md = pl ->> 'feedback_md' where id = d.attempt_id and tutor_id = auth.uid();
+      update public.attempts set feedback_md = public._fix_newlines(pl ->> 'feedback_md') where id = d.attempt_id and tutor_id = auth.uid();
     end if;
   elsif d.kind = 'message' then
     insert into public.comments (tutor_id, learner_id, author_id, body)
@@ -1671,6 +1701,7 @@ begin
   return coalesce((
     select jsonb_agg(jsonb_build_object(
       'id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'status', p.status, 'plan', p.plan,
+      'plan_learners', p.plan_learners, 'plan_until', p.plan_until, 'plan_limit', public._tutor_limit(p.id),
       'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at,
       'is_admin', exists (select 1 from public.platform_admins a where a.user_id = p.id),
       'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
@@ -1730,13 +1761,23 @@ begin
   perform public._admin_log(case when p_status = 'suspended' then 'paused' when v.status = 'pending' then 'approved' else 'switched_on' end, p_user);
 end $$;
 
-create or replace function public.admin_set_plan(p_user uuid, p_plan text, p_ai_limit_cents int default null)
+drop function if exists public.admin_set_plan(uuid, text, int);
+create or replace function public.admin_set_plan(p_user uuid, p_plan text, p_ai_limit_cents int default null,
+  p_learners int default null, p_until date default null)
 returns void language plpgsql security definer set search_path = public as $$
+declare v_learners int;
 begin
   perform public._admin();
   if not exists (select 1 from public.profiles where id = p_user and role = 'tutor') then raise exception 'That isn’t a tutor account.'; end if;
   if p_ai_limit_cents is not null and p_ai_limit_cents < 0 then raise exception 'The AI limit can’t be negative.'; end if;
-  update public.profiles set plan = coalesce(nullif(trim(p_plan), ''), plan) where id = p_user;
+  if coalesce(p_plan, '') not in ('free', 'starter', 'pro', 'custom', 'complimentary') then raise exception 'Choose a plan from the list.'; end if;
+  select coalesce(p_learners, plan_learners) into v_learners from public.profiles where id = p_user;
+  if p_plan = 'custom' and (v_learners is null or v_learners < 1) then raise exception 'Say how many learners the custom plan allows.'; end if;
+  update public.profiles
+     set plan = p_plan,
+         plan_learners = case when p_plan = 'custom' then v_learners else plan_learners end,
+         plan_until = case when p_plan = 'complimentary' then p_until end
+   where id = p_user;
   if p_ai_limit_cents is null then
     delete from public.prof_limits where tutor_id = p_user;
   else
@@ -3633,6 +3674,7 @@ begin
   perform public._admin();
   return (select jsonb_build_object(
     'id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'status', p.status, 'plan', p.plan,
+    'plan_learners', p.plan_learners, 'plan_until', p.plan_until, 'plan_limit', public._tutor_limit(p.id),
     'timezone', p.timezone, 'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at,
     'last_seen_at', p.last_seen_at, 'app_version', p.app_version, 'platform', p.platform, 'signup', p.signup,
     'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
@@ -4479,7 +4521,7 @@ begin
   if not a.lockdown then return jsonb_build_object('handed_in', false); end if;
   update public.attempts set strikes = strikes + 1 where id = t.id returning * into t;
   if t.strikes > a.leave_warnings then
-    perform public._hand_in(t.id, 'tried to leave the exam ' || t.strikes || ' time' || case when t.strikes = 1 then '' else 's' end);
+    perform public._hand_in(t.id, 'tried to leave the ' || coalesce(a.kind, 'exam') || ' ' || t.strikes || ' time' || case when t.strikes = 1 then '' else 's' end);
     return jsonb_build_object('handed_in', true);
   end if;
   return jsonb_build_object('handed_in', false, 'warnings_left', a.leave_warnings - t.strikes);
@@ -4596,7 +4638,18 @@ alter table public.profiles add column if not exists plan_renews_at timestamptz;
 -- How many learners a plan has room for
 create or replace function public._plan_learners(p_plan text) returns int
 language sql immutable as $$
-  select case coalesce(p_plan, 'free') when 'free' then 1 when 'starter' then 5 when 'pro' then 25 else 1000 end
+  select case coalesce(p_plan, 'free') when 'free' then 1 when 'starter' then 5 when 'pro' then 25 when 'complimentary' then 25 else 1 end
+$$;
+
+-- How many learners this tutor has room for: their plan, a Custom plan's own number, or a Complimentary plan
+-- (Pro-sized) until its end date, then Free
+create or replace function public._tutor_limit(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select case p.plan
+    when 'custom' then greatest(coalesce(p.plan_learners, 1), 1)
+    when 'complimentary' then case when p.plan_until is null or p.plan_until >= current_date then 25 else 1 end
+    else public._plan_learners(p.plan) end
+  from public.profiles p where p.id = p_tutor
 $$;
 
 -- What the app may know about how StudyBridge is set up (no secrets); also before signing in
@@ -4616,7 +4669,7 @@ create or replace function public.my_plan() returns jsonb
 language sql stable security definer set search_path = public as $$
   select jsonb_build_object('plan', p.plan, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
     'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
-    'limit', public._plan_learners(p.plan),
+    'limit', public._tutor_limit(p.id), 'until', p.plan_until,
     'enforced', (select enforce_plans from public.app_config where id = 1),
     'has_billing', p.stripe_customer is not null)
     from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
@@ -4625,13 +4678,12 @@ $$;
 -- A learner joining a full plan is stopped (only once the admin switches limits on)
 create or replace function public._check_plan_room() returns trigger
 language plpgsql security definer set search_path = public as $$
-declare v_plan text; v_n int;
+declare v_n int;
 begin
   if new.role = 'learner' and new.tutor_id is not null and new.tutor_id is distinct from old.tutor_id
      and (select enforce_plans from public.app_config where id = 1) then
-    select plan into v_plan from public.profiles where id = new.tutor_id;
     select count(*) into v_n from public.profiles where tutor_id = new.tutor_id and role = 'learner' and id <> new.id;
-    if v_n >= public._plan_learners(v_plan) then
+    if v_n >= public._tutor_limit(new.tutor_id) then
       raise exception 'Your tutor’s StudyBridge plan is full. Ask them to upgrade, then use the invite again.';
     end if;
   end if;

@@ -847,3 +847,12 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 
 .plan-meter { height: 8px; background: var(--sunk); border-radius: 4px; overflow: hidden; border: 1px solid var(--line-soft); }
 .plan-meter span { display: block; height: 100%; background: var(--accent); }
+
+/* Marking: the Total and return buttons stay in view while scrolling the questions; on narrow screens a bar does */
+.split.side-r > .mark-side { align-self: stretch; }
+.mark-total { position: sticky; top: 12px; z-index: 3; max-height: calc(100vh - 40px); overflow-y: auto; box-shadow: 0 6px 24px -12px rgba(20, 30, 30, 0.25); }
+.mark-bar { display: none; }
+@media (max-width: 900px) {
+  .mark-total { position: static; max-height: none; box-shadow: none; }
+  .mark-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; bottom: 0; z-index: 3; padding: 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 -6px 20px -10px rgba(0, 0, 0, 0.25); }
+}

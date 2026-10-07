@@ -219,7 +219,10 @@ export default function Attempt({ id }) {
           if (!ans?.strokes?.length) continue;
           try {
             const pic = await strokesPicture(ans.strokes);
-            if (!pic) continue;
+            if (!pic) {
+              await api.saveAnswer(id, q.id, { ...ans, blank: true }); // rubbed out or empty: no answer
+              continue;
+            }
             const f = await api.saveWorkImage(id, q.id, pic, 'drawing.png');
             await api.saveAnswer(id, q.id, { ...ans, image: f.path });
           } catch {
@@ -282,7 +285,7 @@ export default function Attempt({ id }) {
       <CenterMessage
         icon="trophy"
         medal={!done.why}
-        title={done.why === 'left' ? 'Handed in: you tried to leave the exam' : done.auto ? 'Handed in' : 'Handed in. Well done!'}
+        title={done.why === 'left' ? `Handed in: you tried to leave the ${kindLabel[a?.kind]?.toLowerCase() || 'exam'}` : done.auto ? 'Handed in' : 'Handed in. Well done!'}
         body={done.queued ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.' : 'Your tutor has been told. You’ll get a notification when it’s marked.'}
         action={
           <button className="btn primary big" onClick={() => go(done.queued ? '/work' : `/results/${id}`)}>

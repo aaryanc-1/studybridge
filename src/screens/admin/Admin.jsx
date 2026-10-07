@@ -6,7 +6,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Field, Modal, Page, Toggle, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, bytes } from '../../lib/format.js';
+import { ago, bytes, PLANS, planName } from '../../lib/format.js';
 import { easyPassword } from '../tutor/Learners.jsx';
 import { AskProf, ReviewQueue } from '../tutor/QuestionBank.jsx';
 import * as X from '../../lib/exams.js';
@@ -193,7 +193,7 @@ export function TutorRow({ t }) {
       )}
       <div className="facts">
         <span>
-          Plan <b>{t.plan}</b>
+          Plan <b>{planName(t)}</b>
         </span>
         <span>
           Prof <b>{money(t.ai_cents)}</b> of {money(t.ai_limit_cents)}
@@ -229,7 +229,7 @@ export function RaiseAllowance({ t, onDone }) {
           className="btn sm"
           onClick={async () => {
             try {
-              await api.adminSetPlan(t.id, t.plan || 'free', Number(t.ai_limit_cents) + add);
+              await api.adminSetPlan(t.id, t.plan || 'free', Number(t.ai_limit_cents) + add, t.plan_learners, t.plan_until);
               invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview');
               toast(`${t.name}: allowance now ${money(Number(t.ai_limit_cents) + add)} a month`);
               onDone?.();
@@ -331,7 +331,9 @@ export function PasswordModal({ person, onClose }) {
 
 export function PlanModal({ t, onClose }) {
   const toast = useToast();
-  const [plan, setPlan] = useState(t.plan || 'free');
+  const [plan, setPlan] = useState(PLANS.some((p) => p.id === t.plan) ? t.plan : 'complimentary');
+  const [learners, setLearners] = useState(t.plan_learners || Math.max(30, Number(t.learners) || 0));
+  const [until, setUntil] = useState(t.plan_until || '');
   const [custom, setCustom] = useState(!!t.ai_limit_custom);
   const [limit, setLimit] = useState((Number(t.ai_limit_cents) / 100).toFixed(2));
   return (
@@ -347,8 +349,8 @@ export function PlanModal({ t, onClose }) {
             className="btn primary"
             onClick={async () => {
               try {
-                await api.adminSetPlan(t.id, plan, custom ? Math.round(Number(limit) * 100) : null);
-                invalidate('admin-tutors', 'admin-log');
+                await api.adminSetPlan(t.id, plan, custom ? Math.round(Number(limit) * 100) : null, plan === 'custom' ? Math.round(Number(learners)) : null, plan === 'complimentary' ? until || null : null);
+                invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview', 'admin-selling');
                 toast('Saved');
                 onClose();
               } catch (e) {
@@ -361,9 +363,25 @@ export function PlanModal({ t, onClose }) {
         </>
       }
     >
-      <Field label="Plan" hint="A label for your own records (billing comes later).">
-        <input className="input" value={plan} onChange={(e) => setPlan(e.target.value)} />
+      <Field label="Plan" hint={`They have ${t.learners ?? 0} learner${Number(t.learners) === 1 ? '' : 's'}. Learner limits apply once plan limits are on (Admin → Selling).`}>
+        <select className="select" value={plan} onChange={(e) => setPlan(e.target.value)} aria-label="Plan">
+          {PLANS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.id === 'custom' ? 'Custom: you choose the number of learners' : p.id === 'complimentary' ? 'Complimentary: Pro for free (25 learners)' : `${p.name}: ${p.learners} learner${p.learners === 1 ? '' : 's'}`}
+            </option>
+          ))}
+        </select>
       </Field>
+      {plan === 'custom' && (
+        <Field label="Learners allowed" hint="For a tuition centre or anyone who needs more than 25.">
+          <input className="input" type="number" min="1" step="1" value={learners} onChange={(e) => setLearners(e.target.value)} />
+        </Field>
+      )}
+      {plan === 'complimentary' && (
+        <Field label="Free until (optional)" hint="Leave it empty to keep it free. After this day they move to the Free plan. Never charged.">
+          <input className="input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
+        </Field>
+      )}
       <Toggle checked={custom} onChange={setCustom} title="Own Prof allowance" sub="Otherwise they get the default allowance from Admin settings." />
       {custom && (
         <Field label="Prof allowance per month (US$)" hint={`Used so far this month: ${money(t.ai_cents)}`}>

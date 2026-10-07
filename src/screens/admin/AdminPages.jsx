@@ -5,7 +5,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, Loading, Page, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, bytes } from '../../lib/format.js';
+import { ago, bytes, planName } from '../../lib/format.js';
 import { money, RaiseAllowance, PlanModal, PasswordModal, LearnerList } from './Admin.jsx';
 
 const FREE_STORAGE = 1024 ** 3; // Supabase free plan: 1 GB of files
@@ -177,7 +177,7 @@ export function TutorPage({ id }) {
               Status <b>{t.status === 'suspended' ? 'Paused' : t.status === 'pending' ? 'Waiting for approval' : 'Active'}</b>
             </span>
             <span>
-              Plan <b>{t.plan}</b>
+              Plan <b>{planName(t)}</b>
             </span>
             <span>Joined {ago(t.joined_at)}</span>
             <span>{t.last_sign_in_at ? `Last signed in ${ago(t.last_sign_in_at)}` : 'Never signed in'}</span>

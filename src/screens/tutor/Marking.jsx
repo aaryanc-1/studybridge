@@ -8,7 +8,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ProfMarkCard } from './Prof.jsx';
 import { checkSteps } from '../../lib/steps.js';
-import { ago, dur, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
+import { ago, dur, forKind, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { StatusPill } from './Learners.jsx';
@@ -192,13 +192,14 @@ export function MarkAttempt({ id }) {
   const late = a.due_at && d.attempt.submitted_at && new Date(d.attempt.submitted_at) > new Date(a.due_at);
   const others = attempts.filter((t) => t.assignment_id === a.id && t.status === 'submitted' && t.id !== id);
 
-  async function finish(release) {
+  // release: give the marks back now (or save them for later); redo: also send the ticked questions back to redo
+  async function finish(release, redo = false) {
     if (unmarked > 0 && !(await confirm({ title: `${unmarked} question${unmarked > 1 ? 's have' : ' has'} no mark yet`, body: 'They’ll count as 0. Carry on?', ok: 'Carry on' }))) return;
     try {
       await flushSaves();
-      await api.finishMarking(id, release, feedback || null);
+      await api.finishMarking(id, release, feedback || null, redo);
       invalidate('attempts', `attempt:${id}`);
-      toast(redoCount ? 'Sent back for redo' : release ? 'Marks returned' : 'Saved. Not returned yet.');
+      toast(release && redo && redoCount ? 'Marks returned. Sent back for redo.' : release ? 'Marks returned' : 'Saved. Not returned yet.');
       if (others[0]) go(`/marking/${others[0].id}`);
       else go('/marking');
     } catch (e) {
@@ -239,7 +240,7 @@ export function MarkAttempt({ id }) {
             {d.attempt.lockdown_events.map((e, i) => (
               <div key={i} className="item" style={{ padding: '6px 0' }}>
                 <span className="muted" style={{ width: 90 }}>{new Date(e.at).toLocaleTimeString()}</span>
-                {e.event}
+                {forKind(e.event, a.kind)}
               </div>
             ))}
           </div>
@@ -265,9 +266,18 @@ export function MarkAttempt({ id }) {
               />
             );
           })}
+          <div className="mark-bar">
+            <span>
+              Total <b>{total}</b> / {max}
+              {unmarked ? <span className="muted"> · {unmarked} to mark</span> : null}
+            </span>
+            <button className="btn primary sm" onClick={() => document.querySelector('.mark-total')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+              Finish marking
+            </button>
+          </div>
         </div>
-        <div className="stack lg" style={{ position: 'sticky', top: 0 }}>
-          <div className="card">
+        <div className="stack lg mark-side">
+          <div className="card mark-total">
             <div className="row between">
               <h3>Total</h3>
               <span className="muted small">{unmarked ? `${unmarked} still to mark` : 'All marked'}</span>
@@ -281,20 +291,20 @@ export function MarkAttempt({ id }) {
             <Field label="Overall feedback">
               <MathText value={feedback || ''} onChange={setFeedback} label="Overall feedback" placeholder="What went well, and what to focus on next." minHeight={80} />
             </Field>
-            {redoCount > 0 ? (
-              <button className="btn primary big" onClick={() => finish(true)}>
-                <Icon name="refresh" size={18} /> Send back to redo {redoCount} question{redoCount > 1 ? 's' : ''}
-              </button>
-            ) : (
+            <button className="btn primary big" onClick={() => finish(true, false)}>
+              <Icon name="send" size={18} /> Return marks
+            </button>
+            {redoCount > 0 && (
               <>
-                <button className="btn primary big" onClick={() => finish(true)}>
-                  <Icon name="send" size={18} /> Return marks
+                <button className="btn big" onClick={() => finish(true, true)}>
+                  <Icon name="refresh" size={18} /> Return marks and ask to redo {redoCount}
                 </button>
-                <button className="btn" onClick={() => finish(false)}>
-                  Save, return later
-                </button>
+                <div className="tiny muted">“Return marks” makes these marks final and clears the {redoCount === 1 ? 'redo tick' : `${redoCount} redo ticks`}.</div>
               </>
             )}
+            <button className="btn" onClick={() => finish(false)}>
+              Save, return later
+            </button>
             {others.length > 0 && <div className="muted small">{others.length} more submission{others.length > 1 ? 's' : ''} of this to mark.</div>}
           </div>
           <ProfMarkCard

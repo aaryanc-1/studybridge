@@ -1263,6 +1263,9 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
   }
 
   // ---------------- marking ----------------
+  // "\n" written out instead of a real line break (maths like \neq or \nabla is left alone)
+  const fixNewlines = (t) => String(t).replace(/\\r\\n/g, '\n').replace(/\\n(?![a-z])/g, '\n');
+
   const MARK_TOOL = {
     name: 'submit_marking',
     description: 'Suggested marks and feedback for this submission. The tutor checks and edits them before the learner sees anything.',
@@ -1280,9 +1283,8 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
               marks: { type: 'number', description: 'Leave out if you cannot judge it (e.g. the handwriting is unreadable)' },
               feedback: { type: 'string', description: 'What was right or wrong and how to fix it, written to the learner. Never say what you could or could not see or read: that goes in tutor_note.' },
               read_as: { type: 'string', description: 'drawing and photo questions: the learner’s working and final answer as you read them, in plain words (e.g. "-3x(2x + 3)")' },
-              tutor_note: { type: 'string', description: 'For the tutor only: anything to check, e.g. a line you could not read' },
+              tutor_note: { type: 'string', description: 'For the tutor only: anything to check, e.g. a line you could not read, or "worth a redo" if you think they should try it again' },
               mistake: { type: 'string', description: 'Short label for the main mistake, e.g. "Sign error expanding brackets". Leave out if none.' },
-              redo: { type: 'boolean', description: 'Ask the learner to try this question again' },
               correct_steps: { type: 'array', items: { type: 'boolean' }, description: 'steps questions: true/false for each working line, in order' },
             },
             required: ['number'],
@@ -1303,7 +1305,7 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
         q.type === 'steps'
           ? { working_lines_latex: (a.steps || []).filter(Boolean) }
           : q.type === 'drawing'
-            ? { drawing: a.image ? 'drawn on screen: the picture of it follows below' : a.strokes?.length ? 'drawn on screen, but no picture of it is available: leave its marks out and say so in tutor_note' : 'nothing drawn' }
+            ? { drawing: a.image ? 'drawn on screen: the picture of it follows below' : 'nothing drawn (no answer)' }
             : a;
       return { ...q, learner_answer: shown };
     });
@@ -1314,6 +1316,8 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
 Questions of type mcq and numeric were marked automatically (auto_marks); include them only if the automatic mark looks wrong.
 Include every short, steps, upload and drawing question. Follow the mark scheme. Give partial credit the way an examiner would. Feedback goes to the learner: kind, clear, specific.
 Drawings and photos are handwriting: read them carefully, give read_as for each, and mark what is written. If part is unreadable, mark what you can and say what you couldn't read in tutor_note (never in the learner's feedback).
+A question with no answer (nothing drawn, nothing written) gets 0 marks: say nothing about whether it saved or could be seen.
+Write line breaks in feedback as real new lines, never as the characters \\n.
 ${mc.style ? `\nThe tutor's own instructions:\n${mc.style}\n` : ''}
 ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.learner_notes })}`,
       },
@@ -1350,9 +1354,8 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       marks.push({
         question_id: q.question_id,
         marks: x.marks === null || x.marks === undefined ? null : Math.max(0, Math.min(Number(q.max_marks), Number(x.marks))),
-        ...(x.feedback ? { feedback_md: x.feedback } : {}),
+        ...(x.feedback ? { feedback_md: fixNewlines(x.feedback) } : {}),
         ...(x.mistake ? { mistake: x.mistake } : {}),
-        ...(x.redo ? { redo: true } : {}),
         ...(Array.isArray(x.correct_steps) ? { step_marks: x.correct_steps.map((ok) => ({ ok: !!ok })) } : {}),
         ...(x.read_as || x.tutor_note ? { prof_note: [x.read_as ? `Read as: ${x.read_as}` : '', x.tutor_note || ''].filter(Boolean).join(' · ').slice(0, 600) } : {}),
       });
@@ -1363,7 +1366,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       learner_id: mc.learner_id,
       attempt_id: mc.attempt_id,
       summary: inp.summary || null,
-      payload: { marks, ...(inp.overall_feedback ? { feedback_md: inp.overall_feedback } : {}) },
+      payload: { marks, ...(inp.overall_feedback ? { feedback_md: fixNewlines(inp.overall_feedback) } : {}) },
       source: 'prof',
     });
     await save(job, 'done', {

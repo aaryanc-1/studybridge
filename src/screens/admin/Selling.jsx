@@ -37,7 +37,7 @@ export default function SellingPage() {
       <div className="card">
         <h2>Plans</h2>
         <div className="small muted">
-          Free: 1 learner · Starter: up to 5 learners · Pro: up to 25. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
+          Free: 1 learner · Starter: up to 5 · Pro: up to 25 · Custom: you choose · Complimentary: Pro for free. Set each tutor’s plan on their page. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
         </div>
         <Toggle
           checked={s.enforce_plans}

@@ -88,6 +88,15 @@ Website pages (7 Oct 2026): Home (index.html: the introduction, who it's for, ho
 trust), students.html, tutors.html (pricing), parents.html, schools.html, subjects.html, download.html, terms, privacy.
 The menu comes from `PAGES` in build-website.mjs; shared pieces live in `website/partials/` and are dropped in with
 `{{name:arg}}` (e.g. `{{early:parent}}` presets the form's role, `{{countdown:}}`).
+2.0 step 3 (fixes from 6 Oct): lockdown text says the assignment's kind (`log_lockdown_event` swaps "the exam" for
+"the test" etc.; `forKind` in format.js for older events); the Marking Total card is sticky (`.mark-side`/`.mark-total`,
+plus `.mark-bar` under 900px); `finish_marking(p_attempt, p_release, p_feedback, p_redo)`: "Return marks" is final and
+clears redo ticks, "Return marks and ask to redo N" sends them back, "Save, return later" never releases; Prof no longer
+sets redo (it can suggest one in tutor_note); `_fix_newlines` (SQL) / `fixNewlines` (Prof) turn a written-out "
+" into a
+line break; blank or rubbed-out drawings are `answer.blank` (`drawn()` in questions.js) and Prof gets "nothing drawn";
+plans come from a list (`profiles_plan_check`: free, starter, pro, custom + `plan_learners`, complimentary + `plan_until`;
+`_tutor_limit`; old typed names became complimentary; `PLANS`/`planName` in format.js).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
@@ -101,18 +110,6 @@ The menu comes from `PAGES` in build-website.mjs; shared pieces live in `website
   tutors.
 - Order: name + domain → website 2.0 → 6 Oct fixes → foundations → content → student experience → accessibility and
   languages → growth → payments → centres and schools.
-
-## Next build (noted 6 Oct 2026, discuss before building)
-- Lockdown alerts say "exam" for tests too: use the assignment's kind ("Left the test without handing in").
-- Marking: the right-hand Total/feedback/return panel should stay in view (sticky) instead of scrolling to the bottom.
-- Marking: with redo requests set, the only button is "Send back to redo N"; the tutor must also be able to just return
-  the marks. Prof's draft had ticked redo on 16 unanswered questions by itself.
-- Overall feedback from Prof showed literal "
-
--" (escaped newlines) instead of line breaks.
-- An unanswered drawing question was sent to Prof as a blank picture ("check the drawing saved"): treat no strokes as no answer.
-- Admin's tutor plan is free text ("Basic Plan" -> limit 1000): make it a choice that matches the website and app.
-- Rename: Aaryan asked for creative new names (6 Oct 2026); none chosen yet.
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge

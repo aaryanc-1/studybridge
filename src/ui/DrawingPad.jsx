@@ -43,6 +43,11 @@ export async function strokesPicture(strokes, { aspect = 0.62, width = 1400, pad
   const cy = Math.max(0, Math.floor(y0 * h) - pad);
   const cw = Math.min(w, Math.ceil(x1 * w) + pad) - cx;
   const ch = Math.min(h, Math.ceil(y1 * h) + pad) - cy;
+  // what's left after the rubber: count the inked pixels; almost none means nothing was really drawn
+  const px = full.getContext('2d').getImageData(cx, cy, Math.max(1, cw), Math.max(1, ch)).data;
+  let inked = 0;
+  for (let i = 3; i < px.length && inked < 60; i += 4) if (px[i] > 40) inked++;
+  if (inked < 60) return null;
   const out = document.createElement('canvas');
   out.width = Math.max(200, cw);
   out.height = Math.max(120, ch);

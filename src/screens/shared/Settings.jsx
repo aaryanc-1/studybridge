@@ -733,7 +733,13 @@ function YourPlan() {
   const [busy, setBusy] = useState('');
   const p = q.data;
   if (!p) return null;
-  const cur = PLAN[p.plan] || { name: p.plan, learners: p.limit };
+  const cur =
+    p.plan === 'custom'
+      ? { name: 'Custom', learners: p.limit }
+      : p.plan === 'complimentary'
+        ? { name: p.until ? `Complimentary (free until ${new Date(p.until + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})` : 'Complimentary (free)', learners: p.limit }
+        : PLAN[p.plan] || { name: p.plan, learners: p.limit };
+  const setByUs = p.plan === 'custom' || p.plan === 'complimentary';
   async function open(fn, what) {
     setBusy(what);
     try {
@@ -751,7 +757,9 @@ function YourPlan() {
         <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, p.limit)) * 100)}%` }} />
       </div>
       {!p.enforced && <div className="small muted">Plan limits aren’t switched on yet, so you can add as many learners as you like for now.</div>}
-      {pub.payments_on ? (
+      {setByUs ? (
+        <div className="small muted">Your plan was set up for you by StudyBridge. Contact StudyBridge from Settings to change it.</div>
+      ) : pub.payments_on ? (
         <div className="stack sm">
           <div className="seg" role="group" aria-label="Pay">
             <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>

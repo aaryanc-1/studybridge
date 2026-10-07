@@ -6,7 +6,7 @@ import Whiteboard from '../../ui/Whiteboard.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { desktop } from '../../lib/config.js';
-import { ago, day, fromLocalInput, toLocalInput, when, time, timeIn, placeOf, myTimezone, kindLabel, clock } from '../../lib/format.js';
+import { ago, day, fromLocalInput, toLocalInput, when, time, timeIn, placeOf, myTimezone, kindLabel, clock, forKind } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
 import { dataSaver, liveMode } from '../../lib/device.js';
 
@@ -730,7 +730,7 @@ export function Watch({ attemptId }) {
               <div key={i} className="item" style={{ padding: '6px 0' }}>
                 <Icon name="alert" size={16} style={{ color: 'var(--amber-ink)' }} />
                 <span className="muted" style={{ width: 90 }}>{new Date(e.at).toLocaleTimeString()}</span>
-                {e.event}
+                {forKind(e.event, a?.kind)}
               </div>
             ))}
           </div>

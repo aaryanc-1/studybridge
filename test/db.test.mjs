@@ -264,9 +264,13 @@ test('tutor marks, releases, sends back for redo', async () => {
   assert.equal(mine[0].score, 5);
   assert.equal((await as('L', `select * from notifications where kind = 'marked'`)).length, 1);
 
-  // redo question 3
+  // redo question 3: "Save, return later" keeps the tick without sending anything back
   await as('T', `update responses set redo = true where attempt_id = $1 and question_id = $2`, [S.att, S.q3]);
-  const r = await one('T', `select * from finish_marking($1, false)`, [S.att]);
+  const kept = await one('T', `select * from finish_marking($1, false)`, [S.att]);
+  assert.equal(kept.status, 'marked', 'saving for later doesn’t send it back');
+  assert.equal((await one('T', `select redo from responses where attempt_id = $1 and question_id = $2`, [S.att, S.q3])).redo, true);
+  // "Return marks and ask to redo" sends the ticked question back
+  const r = await one('T', `select * from finish_marking($1, true, null, true)`, [S.att]);
   assert.equal(r.status, 'returned');
   const back = await one('L', `select * from start_attempt($1)`, [S.hw]);
   assert.equal(back.id, S.att);
@@ -282,8 +286,12 @@ test('tutor marks, releases, sends back for redo', async () => {
   assert.equal(dt.responses.find((x) => x.question_id === S.q1).marks, 1, 'other marks kept');
   assert.match((await as('T', `select title from notifications where kind = 'submitted' order by created_at desc limit 1`))[0].title, /resubmitted/);
   await as('T', `update responses set marks = 3, mistake = null where attempt_id = $1 and question_id = $2`, [S.att, S.q3]);
-  const fin = await one('T', `select * from finish_marking($1, true)`, [S.att]);
+  // a redo ticked by mistake: "Return marks" makes the marks final and clears the tick
+  await as('T', `update responses set redo = true where attempt_id = $1 and question_id = $2`, [S.att, S.q3]);
+  const fin = await one('T', `select * from finish_marking($1, true, null, false)`, [S.att]);
+  assert.equal(fin.status, 'marked');
   assert.equal(Number(fin.score), 6);
+  assert.equal((await one('T', `select redo from responses where attempt_id = $1 and question_id = $2`, [S.att, S.q3])).redo, false);
   await fails(as('L', `select start_attempt($1)`, [S.hw]), /used all your attempts/);
 });
 
@@ -539,7 +547,7 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   await fails(as('T', `select * from platform_secrets`), /permission denied/);
   await fails(as('T', `select * from platform_admins`), /permission denied/);
   // Plans, passwords, pausing
-  await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
+  await as('A', `select admin_set_plan($1, 'pro', 2500)`, [U.T2]);
   assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_cents, 2500);
   // ...which the tutor can't see anywhere: not on their profile, the log, the settings row or by asking
   assert.equal(JSON.stringify(await as('T2', `select * from profiles where id = auth.uid()`)).includes('2500'), false);
@@ -565,9 +573,9 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   const ap = await val('A', `select admin_prof()`);
   assert.equal(ap.days.length, 30);
   assert.ok(Array.isArray(ap.by_tutor) && Array.isArray(ap.by_kind));
-  await as('A', `select admin_set_plan($1, 'Pro', null)`, [U.T2]);
+  await as('A', `select admin_set_plan($1, 'pro', null)`, [U.T2]);
   assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.T2).ai_limit_custom, false, 'back to the default allowance');
-  await as('A', `select admin_set_plan($1, 'Pro', 2500)`, [U.T2]);
+  await as('A', `select admin_set_plan($1, 'pro', 2500)`, [U.T2]);
   await as('A', `select admin_set_password($1, 'Reset-Pass-1')`, [U.T2]);
   assert.equal((await db.query(`select encrypted_password = extensions.crypt('Reset-Pass-1', encrypted_password) ok from auth.users where id = $1`, [U.T2])).rows[0].ok, true);
   await fails(as('T2', `select admin_set_password($1, 'Hacked-123')`, [U.T]), /admins only/);
@@ -1339,7 +1347,7 @@ test('locked-down exams: a warning, then trying to leave again hands it in; time
   let att = (await db.query(`select * from attempts where id = $1`, [e1.t.id])).rows[0];
   assert.notEqual(att.status, 'in_progress');
   assert.equal(Number(att.score), 2, 'her saved answer was marked');
-  assert.match(att.auto_reason, /tried to leave the exam 2 times/);
+  assert.match(att.auto_reason, /tried to leave the test 2 times/, 'it says test, not exam');
   assert.equal((await as('LW', `select * from notifications where kind = 'auto_submitted'`)).length, 1);
   assert.match((await as('TW', `select title from notifications where kind = 'submitted' order by created_at desc limit 1`))[0].title, /handed in automatically/);
   await fails(as('L2', `select lockdown_strike($1, 'x')`, [e1.t.id]), /not found/);
@@ -1461,4 +1469,42 @@ test('early access from the website: anyone can join (no account); saving again 
   assert.equal(list[0].email, 'student@example.com');
   assert.equal(list[0].subjects, 'Physics, Maths', 'an empty field keeps what was there');
   assert.equal(list[0].note, 'Please add Further Maths');
+});
+
+test('plans come from a list: custom learner limits, complimentary plans with an end date, old typed names', async () => {
+  U.PL = (await db.query(`insert into auth.users (email) values ('plans-tutor@x.com') returning id`)).rows[0].id;
+  await as('PL', `select * from become_tutor('Plans Tutor', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.PL]);
+  // a plan name typed in by hand before the list existed becomes Complimentary
+  await db.query(`alter table profiles drop constraint profiles_plan_check`);
+  await db.query(`update profiles set plan = 'Basic Plan' where id = $1`, [U.PL]);
+  await db.exec(SETUP);
+  const t = () => val('A', `select admin_tutor($1)`, [U.PL]);
+  assert.equal((await t()).plan, 'complimentary');
+  assert.equal((await t()).plan_limit, 25);
+  await fails(db.query(`update profiles set plan = 'Gold' where id = $1`, [U.PL]), /profiles_plan_check/);
+  // only plans from the list
+  await fails(as('A', `select admin_set_plan($1, 'Gold')`, [U.PL]), /from the list/);
+  await fails(as('T', `select admin_set_plan($1, 'pro')`, [U.PL]), /admins only/);
+  // Custom: the admin says how many learners
+  await fails(as('A', `select admin_set_plan($1, 'custom')`, [U.PL]), /how many learners/);
+  await as('A', `select admin_set_plan($1, 'custom', null, 40)`, [U.PL]);
+  assert.equal((await t()).plan_limit, 40);
+  assert.equal((await val('PL', `select my_plan()`)).limit, 40);
+  // keeping the plan while changing only the Prof allowance keeps the custom number
+  await as('A', `select admin_set_plan($1, 'custom', 500)`, [U.PL]);
+  assert.equal((await t()).plan_limit, 40);
+  // Complimentary: Pro-sized until its end date, then Free
+  await as('A', `select admin_set_plan($1, 'complimentary', null, null, current_date + 30)`, [U.PL]);
+  assert.equal((await val('PL', `select my_plan()`)).limit, 25);
+  await as('A', `select admin_set_plan($1, 'complimentary', null, null, current_date - 1)`, [U.PL]);
+  assert.equal((await val('PL', `select my_plan()`)).limit, 1, 'after the end date it is the Free plan');
+  await as('A', `select admin_set_plan($1, 'starter')`, [U.PL]);
+  const st = await t();
+  assert.deepEqual([st.plan, st.plan_limit, st.plan_until], ['starter', 5, null]);
+});
+
+test('Prof feedback with "\\n" written out gets real line breaks; maths like \\neq is left alone', async () => {
+  assert.equal(await val(null, `select _fix_newlines($1)`, ['Well done.\\n\\n- Factorise fully.\\nNext: $x \\neq 0$']), 'Well done.\n\n- Factorise fully.\nNext: $x \\neq 0$');
+  assert.equal(await val(null, `select _fix_newlines(null)`), null);
 });

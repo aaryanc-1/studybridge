@@ -78,6 +78,24 @@ export function bytes(n) {
 }
 
 export const kindLabel = { homework: 'Homework', quiz: 'Quiz', test: 'Test', exam: 'Exam' };
+
+// A tutor's plan. The admin chooses from this list; learner limits match the website (website/site.config.json)
+export const PLANS = [
+  { id: 'free', name: 'Free', learners: 1 },
+  { id: 'starter', name: 'Starter', learners: 5 },
+  { id: 'pro', name: 'Pro', learners: 25 },
+  { id: 'custom', name: 'Custom', learners: null },
+  { id: 'complimentary', name: 'Complimentary', learners: 25 },
+];
+// "Pro · 25 learners", "Custom · 40 learners", "Complimentary · free until 1 Jan 2027"
+export function planName(t) {
+  const p = PLANS.find((x) => x.id === t?.plan) || PLANS[0];
+  const n = t?.plan_limit ?? (p.id === 'custom' ? t?.plan_learners : p.learners);
+  const until = p.id === 'complimentary' && t?.plan_until ? ` · free until ${new Date(t.plan_until + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : '';
+  return `${p.name}${n ? ` · ${n} learner${n === 1 ? '' : 's'}` : ''}${until}`;
+}
+// Lockdown messages were written for exams; say "the test" (or quiz…) when that's what it is
+export const forKind = (text, kind) => (kind && kind !== 'exam' ? String(text ?? '').replace(/\bthe exam\b/g, `the ${kind}`) : String(text ?? ''));
 export const typeLabel = {
   mcq: 'Multiple choice',
   numeric: 'Number answer',

@@ -411,9 +411,14 @@ export async function ensureDrawingPictures(detail, questions) {
   let made = 0;
   for (const r of detail?.responses || []) {
     const q = (questions || []).find((x) => x.id === r.question_id);
-    if (q?.type !== 'drawing' || !r.answer?.strokes?.length || r.answer.image) continue;
+    if (q?.type !== 'drawing' || !r.answer?.strokes?.length || r.answer.image || r.answer.blank) continue;
     const pic = await strokesPicture(r.answer.strokes);
-    if (!pic) continue;
+    if (!pic) {
+      // nothing really drawn: mark it blank so it shows as no answer and Prof isn't asked about it
+      await run(sb().from('responses').update({ answer: { ...r.answer, blank: true } }).eq('id', r.id));
+      made++;
+      continue;
+    }
     const path = `${detail.attempt.learner_id}/${detail.attempt.id}/${q.id}-drawing.png`;
     await run(sb().storage.from('work').upload(path, await pic.arrayBuffer(), { contentType: 'image/png', upsert: true }));
     await run(sb().from('responses').update({ answer: { ...r.answer, image: path } }).eq('id', r.id));
@@ -421,7 +426,8 @@ export async function ensureDrawingPictures(detail, questions) {
   }
   return made;
 }
-export const finishMarking = (id, release, feedback) => run(sb().rpc('finish_marking', { p_attempt: id, p_release: release, p_feedback: feedback ?? null }));
+export const finishMarking = (id, release, feedback, redo = false) =>
+  run(sb().rpc('finish_marking', { p_attempt: id, p_release: release, p_feedback: feedback ?? null, p_redo: !!redo }));
 export async function uploadAnnotation(learnerId, attemptId, questionId, blob) {
   const path = `${learnerId}/${attemptId}/${questionId}-marked-${Date.now()}.png`;
   await run(sb().storage.from('work').upload(path, await blob.arrayBuffer(), { contentType: 'image/png', upsert: true }));
@@ -536,7 +542,8 @@ export const claimAdmin = () => run(sb().rpc('claim_admin'));
 export const adminTutors = () => run(sb().rpc('admin_tutors'));
 export const adminAccounts = (tutorId) => run(sb().rpc('admin_accounts', { p_tutor: tutorId || null }));
 export const adminSetStatus = (id, status) => run(sb().rpc('admin_set_status', { p_user: id, p_status: status }));
-export const adminSetPlan = (id, plan, limitCents) => run(sb().rpc('admin_set_plan', { p_user: id, p_plan: plan, p_ai_limit_cents: limitCents ?? null }));
+export const adminSetPlan = (id, plan, limitCents, learners = null, until = null) =>
+  run(sb().rpc('admin_set_plan', { p_user: id, p_plan: plan, p_ai_limit_cents: limitCents ?? null, p_learners: learners ?? null, p_until: until || null }));
 export const adminSetPassword = (id, password) => run(sb().rpc('admin_set_password', { p_user: id, p_password: password }));
 export async function adminDeleteAccount(id) {
   const r = await run(sb().rpc('admin_delete_account', { p_user: id }));
