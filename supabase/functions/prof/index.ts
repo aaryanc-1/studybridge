@@ -1575,7 +1575,33 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     }
     return json({ received: true });
   }
-  // The weekly report by email, straight from StudyBridge (once there's a domain and a Resend key)
+  // Emails to StudyBridge's own inboxes (website messages, early access, "Contact StudyBridge"), queued by the database.
+  // Sent once the admin has set up email; anything older than a week that never could be sent is left in Admin.
+  async function sendQueued() {
+    const cfg = await sellingConfig();
+    if (!cfg.resend_key || !cfg.from) return 0;
+    const since = new Date(Date.now() - 7 * 86400000).toISOString();
+    const rows = await rest(`outgoing_emails?sent_at=is.null&tries=lt.5&created_at=gte.${encodeURIComponent(since)}&select=*&order=created_at.asc&limit=20`);
+    let sent = 0;
+    for (const m of rows || []) {
+      try {
+        const res = await fetch(`${RESEND}/emails`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${cfg.resend_key}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ from: cfg.from, to: [m.to_addr], subject: m.subject, text: m.body, ...(m.reply_to ? { reply_to: m.reply_to } : {}) }),
+        });
+        if (!res.ok) throw new Error(`Resend said ${res.status}`);
+        await rest(`outgoing_emails?id=eq.${m.id}`, { method: 'PATCH', body: { sent_at: new Date().toISOString(), error: null } });
+        sent++;
+      } catch (e) {
+        await rest(`outgoing_emails?id=eq.${m.id}`, { method: 'PATCH', body: { tries: (m.tries || 0) + 1, error: String(e.message || e).slice(0, 300) } }).catch(() => {});
+      }
+    }
+    return sent;
+  }
+
+  // The weekly report by email, straight from StudyBridge (once there's a domain and a Resend key).
+  // It comes from StudyBridge's address, but a parent's reply goes to the tutor.
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const plain = (s) => String(s || '').replace(/\$([^$\n]+?)\$/g, (_, m) => m.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').replace(/\^2/g, '²').replace(/\^3/g, '³')).replace(/\*\*([^*]+)\*\*/g, '$1');
   async function emailReport(user, body) {
@@ -1585,6 +1611,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     if (!r || r.status !== 'sent') return json({ error: 'Approve the report first.' }, 400);
     const lr = (await rest(`learner_reports?learner_id=eq.${r.learner_id}&tutor_id=eq.${user.id}&select=enabled,parent_email,parent_name`))[0];
     if (!lr?.enabled || !lr.parent_email) return json({ error: 'There’s no parent email for this learner.' }, 400);
+    const tutorEmail = (await rest(`profiles?id=eq.${user.id}&select=email`))[0]?.email || null;
     const d = r.data || {};
     const work = (d.work || [])
       .map((w) => `<li>${esc(w.title)}${w.score != null && w.max ? ` — ${esc(w.score)}/${esc(w.max)}` : ''}</li>`)
@@ -1602,7 +1629,7 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
     const res = await fetch(`${RESEND}/emails`, {
       method: 'POST',
       headers: { authorization: `Bearer ${cfg.resend_key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: cfg.from, to: [lr.parent_email], subject: `Weekly report: ${d.learner || ''}`, html }),
+      body: JSON.stringify({ from: cfg.from, to: [lr.parent_email], subject: `Weekly report: ${d.learner || ''}`, html, ...(tutorEmail ? { reply_to: tutorEmail } : {}) }),
     });
     if (!res.ok) return json({ error: `The email didn’t send (${res.status}).` }, 502);
     return json({ sent: true });
@@ -1644,7 +1671,7 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
     }
     if (action === 'kick') {
       if (user && user.role !== 'tutor' && !user.admin) return json({ error: 'Tutors only.' }, 403);
-      const p = later(work(cfg));
+      const p = later(sendQueued().catch((e) => console.error('Prof email:', e)).then(() => work(cfg)));
       if (p) await p;
       return json({ ok: true });
     }

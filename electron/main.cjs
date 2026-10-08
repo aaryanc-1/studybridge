@@ -199,6 +199,13 @@ ipcMain.handle('update:check', () => updater.check());
 ipcMain.handle('update:apply', () => updater.apply());
 ipcMain.handle('update:ok', () => updater.confirm());
 ipcMain.handle('app:focus', () => showWindow());
+// "StudyBridge was updated: restart" (never during a locked exam)
+ipcMain.handle('app:restart', () => {
+  if (lock.on) return { error: 'Finish the exam first.' };
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
 ipcMain.handle('app:badge', (_e, n) => {
   try {
     app.setBadgeCount(Math.max(0, n | 0));

@@ -723,7 +723,7 @@ export function Watch({ attemptId }) {
       <div className="card">
         <h3>Lockdown alerts</h3>
         {events.length === 0 ? (
-          <div className="muted small">None so far. You’ll be notified if they leave the exam window.</div>
+          <div className="muted small">None so far. You’ll be notified if they leave the {kindLabel[a?.kind]?.toLowerCase() || 'exam'} window.</div>
         ) : (
           <div className="list small">
             {[...events].reverse().map((e, i) => (

@@ -10,7 +10,7 @@ test('website: every page builds with nothing left unfilled', async () => {
   const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
   try {
     await buildWebsite(out, '1.1.99', { url: 'https://example.supabase.co/', key: 'anon-key' });
-    const pages = ['index.html', ...PAGES.map(([f]) => f), 'terms.html', 'privacy.html'];
+    const pages = ['index.html', ...PAGES.map(([f]) => f), 'contact.html', 'terms.html', 'privacy.html'];
     for (const f of [...pages, 'site.css', 'site.js', 'config.js', 'app-qr.svg', 'logo-192.png', 'favicon.png', 'release.json']) {
       assert.ok(existsSync(join(out, f)), f);
     }
@@ -42,6 +42,13 @@ test('website: every page builds with nothing left unfilled', async () => {
     assert.match(read('parents.html'), /data-default-role="parent"/);
     assert.match(read('schools.html'), /data-default-role="centre"/);
     assert.match(read('download.html'), /data-dl="windows"/);
+    // contact: the form, hello@ on every page (footer), never support@ (that one is for inside the app)
+    assert.match(read('contact.html'), /id="contact-form"/);
+    for (const f of pages) {
+      assert.ok(read(f).includes(c.contactEmail) && read(f).includes('href="contact.html"'), `${f}: contact`);
+      assert.ok(!read(f).includes('support@'), `${f}: support@ stays inside the app`);
+    }
+    assert.match(read('privacy.html'), /Cloudflare Web Analytics/);
     // the subjects page lists every subject in the config, searchable
     const subjects = readFileSync(join(out, 'subjects.html'), 'utf8');
     assert.equal((subjects.match(/<li data-s=/g) || []).length, subjectCount(c));

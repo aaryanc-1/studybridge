@@ -103,6 +103,9 @@ export function readConnectFromHash() {
   }
 }
 
+// Where people inside the app write for help (the website shows hello@ instead)
+export const SUPPORT_EMAIL = 'support@gostudybridge.com';
+
 export function timezone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';

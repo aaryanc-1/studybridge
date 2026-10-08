@@ -110,11 +110,13 @@ function createUpdater({ getWindow, isLocked }) {
       return builtIn;
     }
     if (s.pending && !(s.bad || []).includes(s.pending) && fs.existsSync(path.join(root, s.pending, 'index.html'))) {
-      if (s.current && s.current !== s.pending) fs.rmSync(path.join(root, s.current), { recursive: true, force: true });
+      // the version that was running stays on disk as a spare: a window still open on it keeps all its files
+      if (s.current && s.current !== s.pending) s.previous = s.current;
       s.current = s.pending;
       s.pending = null;
       s.confirmed = false;
     }
+    tidy([s.current, s.previous, s.pending]);
     if (s.current && newer(s.current, cfg.bundleVersion) && fs.existsSync(path.join(root, s.current, 'index.html'))) {
       if (!s.confirmed) s.trying = s.current;
       write(s);
@@ -122,6 +124,18 @@ function createUpdater({ getWindow, isLocked }) {
       return path.join(root, s.current, 'index.html');
     }
     return builtIn;
+  }
+
+  // Old versions are removed only here, when the app starts and before any window opens. The newest, the one
+  // before it and one waiting to start are kept.
+  function tidy(keep) {
+    try {
+      for (const d of fs.readdirSync(root)) {
+        if (/^\d+\.\d+\.\d+$/.test(d) && !keep.includes(d)) fs.rmSync(path.join(root, d), { recursive: true, force: true });
+      }
+    } catch {
+      /* nothing to tidy */
+    }
   }
 
   // The app started fine with this version

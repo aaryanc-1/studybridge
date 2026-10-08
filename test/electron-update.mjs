@@ -88,6 +88,7 @@ try {
   await app.close();
   ({ app, win } = await launch());
   assert.equal(await win.title(), 'BROKEN');
+  assert.ok(existsSync(join(userData, 'app-updates', '9.9.9', 'index.html')), 'the version before stays on disk as a spare');
   await app.close();
   ({ app, win } = await launch());
   await win.getByText('Welcome to StudyBridge').waitFor();

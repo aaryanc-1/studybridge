@@ -89,8 +89,9 @@ export default function SellingPage() {
       <div className="card">
         <h2>Email (Resend)</h2>
         <div className="small muted">
-          Once you have a domain: add it in Resend, copy an API key, and choose the sender (e.g. StudyBridge &lt;hello@yourdomain.com&gt;). Weekly reports can then go by email straight from StudyBridge. For password-reset emails from your domain too, add Resend’s SMTP details in Supabase → Authentication → Emails → SMTP.
+          Add gostudybridge.com in Resend, copy an API key, and use the sender StudyBridge &lt;hello@gostudybridge.com&gt;. Then weekly reports go by email straight from StudyBridge (a parent’s reply goes to the tutor), and website messages, early-access sign-ups and “Contact StudyBridge” messages are emailed to hello@ and support@. For password-reset emails from the domain too, add Resend’s SMTP details in Supabase → Authentication → Emails → SMTP.
         </div>
+        <EmailQueue />
         <div className="grid g2" style={{ gap: 10 }}>
           <Field label="Sender">
             <input className="input" value={from ?? s.email_from ?? ''} onChange={(e) => setFrom(e.target.value)} placeholder="StudyBridge <hello@yourdomain.com>" />
@@ -119,11 +120,84 @@ export default function SellingPage() {
         </div>
         <Toggle checked={s.google_on} onChange={(v) => save({ google: v }, v ? 'Google sign-in is on' : 'Google sign-in is off')} icon="globe" title="Show “Continue with Google”" />
       </div>
+      <WebsiteMessages />
       <EarlyAccess />
       <div className="tiny muted">
         <Icon name="lock" size={12} /> Keys are stored on the server and can’t be read back by anyone, including you.
       </div>
     </Page>
+  );
+}
+
+// Emails waiting to go to hello@ / support@ (they wait until email is set up above)
+function EmailQueue() {
+  const q = useQuery('admin-email-queue', api.adminEmailQueue, { poll: 60000 });
+  const e = q.data;
+  if (!e) return null;
+  return (
+    <div className="note small">
+      Messages go to <b>{e.contact_email}</b> (website) and <b>{e.support_email}</b> (the app).{' '}
+      {Number(e.waiting) > 0 ? `${e.waiting} waiting to be emailed${e.last_error ? ` (last problem: ${e.last_error})` : ' (they go as soon as email is set up)'}. ` : ''}
+      {Number(e.sent_week) > 0 ? `${e.sent_week} emailed this week. ` : ''}
+      {Number(e.failed) > 0 ? `${e.failed} couldn’t be emailed; they’re still listed here in Admin.` : ''}
+    </div>
+  );
+}
+
+// Messages from the website's Contact page
+function WebsiteMessages() {
+  const toast = useToast();
+  const q = useQuery('admin-contact', api.adminContactMessages, { poll: 120000 });
+  const rows = q.data || [];
+  const open = rows.filter((m) => !m.handled_at);
+  const [showDone, setShowDone] = useState(false);
+  const list = showDone ? rows : open;
+  return (
+    <div className="card">
+      <div className="row between wrap">
+        <h2>Website messages</h2>
+        {rows.length > open.length && (
+          <button className="linkbtn small" onClick={() => setShowDone((x) => !x)}>
+            {showDone ? 'Hide answered' : `Show answered (${rows.length - open.length})`}
+          </button>
+        )}
+      </div>
+      <div className="small muted">{rows.length ? `${open.length} to answer. Reply by email: each one has the sender’s address.` : 'Nothing yet. Messages from the website’s Contact page appear here (and in your hello@ inbox once email is set up).'}</div>
+      {list.length > 0 && (
+        <div className="list">
+          {list.map((m) => (
+            <div key={m.id} className="item" style={{ alignItems: 'flex-start' }}>
+              <span className="grow stack sm">
+                <span>
+                  <span className="strong">{m.name || m.email}</span>
+                  <span className="tiny muted">
+                    {' '}
+                    · {m.role || 'not said'} · {new Date(m.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </span>
+                <span className="small" style={{ whiteSpace: 'pre-wrap' }}>{m.message}</span>
+                <a className="small" href={`mailto:${m.email}?subject=${encodeURIComponent('Re: your message to StudyBridge')}`}>
+                  Reply to {m.email}
+                </a>
+              </span>
+              <button
+                className="btn sm"
+                onClick={async () => {
+                  try {
+                    await api.adminContactDone(m.id, !m.handled_at);
+                    invalidate('admin-contact');
+                  } catch (e) {
+                    toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+                  }
+                }}
+              >
+                {m.handled_at ? 'Mark to answer' : 'Answered'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

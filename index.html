@@ -19,7 +19,7 @@
         var to = 'https://gostudybridge.com' + location.pathname.replace(/^\/[^/]+/, '') + location.search + location.hash;
         var signedIn = false;
         try {
-          for (var i = 0; i < localStorage.length; i++) if (/-auth-token$/.test(localStorage.key(i) || '')) signedIn = true;
+          signedIn = !!localStorage.getItem('sb.auth');
         } catch (e) {}
         if (!signedIn) return location.replace(to);
         addEventListener('DOMContentLoaded', function () {

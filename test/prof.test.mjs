@@ -558,6 +558,14 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
   assert.equal(mail.auth, 'Bearer re_test');
   assert.match(mail.body.html, /Factorise fully: x²-25/);
   assert.doesNotMatch(mail.body.html, /\$|\*\*/);
+  assert.match(String(mail.body.reply_to), /@/, 'a parent’s reply goes to the tutor, not StudyBridge');
+  // messages to StudyBridge's own inboxes go out once email is set up: a website message to hello@, replying to the sender
+  await q(client().rpc('send_contact', { p_name: 'Mrs Banda', p_email: 'banda@example.com', p_role: 'school', p_message: 'Do you do IGCSE Physics?' }));
+  [st] = await call({ action: 'kick' });
+  const hello = outside.findLast((x) => x.url.startsWith('/emails') && x.body.to?.[0] === 'hello@gostudybridge.com' && /Banda/.test(x.body.subject));
+  assert.ok(hello, 'the website message was emailed to hello@');
+  assert.equal(hello.body.reply_to, 'banda@example.com');
+  assert.match(hello.body.text, /IGCSE Physics/);
   [st] = await call({ action: 'checkout', plan: 'pro', period: 'month' }, L);
   assert.equal(st, 403, 'learners can’t buy plans');
 });

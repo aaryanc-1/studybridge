@@ -37,6 +37,23 @@ export function setTheme(c) {
 darkQuery()?.addEventListener?.('change', () => themeChoice() === 'auto' && applyTheme());
 export const useTheme = () => useSyncExternalStore(subscribe, themeChoice);
 
+// ---------------- text size ----------------
+// The whole app scales, so buttons and menus grow with the text. Parents start on Large.
+const ZOOM = { normal: 1, large: 1.12, xl: 1.25 };
+let roleDefault = 'normal';
+export const textSizeChoice = () => get('sb.textsize', '') || roleDefault; // 'normal' | 'large' | 'xl'
+export function applyTextSize(role) {
+  if (role !== undefined) roleDefault = role === 'parent' ? 'large' : 'normal';
+  const z = ZOOM[textSizeChoice()] || 1;
+  document.documentElement.style.zoom = z === 1 ? '' : String(z);
+}
+export function setTextSize(c) {
+  put('sb.textsize', c);
+  applyTextSize();
+  changed();
+}
+export const useTextSize = () => useSyncExternalStore(subscribe, textSizeChoice);
+
 // ---------------- data saver ----------------
 export const dataSaver = () => get('sb.datasaver', '0') === '1';
 export const liveMode = () => get('sb.datasaver.live', 'low'); // 'low' (low-quality video) | 'audio' (audio only)

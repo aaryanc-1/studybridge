@@ -5,6 +5,7 @@ const info = ipcRenderer.sendSync('app:info');
 contextBridge.exposeInMainWorld('studybridge', {
   ...info,
   focus: () => ipcRenderer.invoke('app:focus'),
+  restart: () => ipcRenderer.invoke('app:restart'),
   setBadge: (n) => ipcRenderer.invoke('app:badge', n),
   keepInBackground: (on) => ipcRenderer.invoke('app:background', on),
   askMedia: () => ipcRenderer.invoke('media:ask'),

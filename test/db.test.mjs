@@ -1508,3 +1508,32 @@ test('Prof feedback with "\\n" written out gets real line breaks; maths like \\n
   assert.equal(await val(null, `select _fix_newlines($1)`, ['Well done.\\n\\n- Factorise fully.\\nNext: $x \\neq 0$']), 'Well done.\n\n- Factorise fully.\nNext: $x \\neq 0$');
   assert.equal(await val(null, `select _fix_newlines(null)`), null);
 });
+
+test('Contact page and emails to hello@ / support@: anyone can write; the emails wait in a queue only the server reads', async () => {
+  assert.deepEqual(await val(null, `select send_contact('Mrs Banda', ' Banda@Example.com ', 'school', 'We have 40 learners for IGCSE')`), { ok: true });
+  await fails(as(null, `select send_contact('x', 'nope', null, 'hi there')`), /check your email/);
+  await fails(as(null, `select send_contact('x', 'a@b.co', null, ' ')`), /write a message/);
+  for (let i = 0; i < 5; i++) await val(null, `select send_contact('x', 'busy@x.com', null, 'hello ' || $1)`, [String(i)]);
+  await fails(as(null, `select send_contact('x', 'busy@x.com', null, 'one more')`), /a lot of messages/);
+  await fails(as(null, `select * from contact_messages`), /permission denied/);
+  await fails(as('T', `select * from contact_messages`), /permission denied/);
+  await fails(as('T', `select admin_contact_messages()`), /admins only/);
+  const msgs = await val('A', `select admin_contact_messages()`);
+  const banda = msgs.find((m) => m.email === 'banda@example.com');
+  assert.equal(banda.role, 'school');
+  await as('A', `select admin_contact_done($1)`, [banda.id]);
+  assert.ok((await val('A', `select admin_contact_messages()`)).find((m) => m.id === banda.id).handled_at);
+  // the website's messages and early access go to hello@ (replying to the sender); in-app messages go to support@
+  const queue = (await db.query(`select * from outgoing_emails order by created_at`)).rows;
+  const fromBanda = queue.find((m) => m.reply_to === 'banda@example.com');
+  assert.equal(fromBanda.to_addr, 'hello@gostudybridge.com');
+  assert.match(fromBanda.body, /40 learners for IGCSE/);
+  assert.ok(queue.some((m) => m.to_addr === 'hello@gostudybridge.com' && /^(Early access|Subject request)/.test(m.subject)), 'early access is emailed');
+  assert.ok(queue.some((m) => m.to_addr === 'support@gostudybridge.com' && /flashcards/.test(m.body)), '"Contact StudyBridge" is emailed to support@');
+  await fails(as('A', `select * from outgoing_emails`), /permission denied/);
+  await fails(as('T', `select _email_us('hello', 'x', 'y')`), /permission denied/);
+  const st = await val('A', `select admin_email_queue()`);
+  assert.ok(Number(st.waiting) >= 3);
+  assert.equal(st.contact_email, 'hello@gostudybridge.com');
+  assert.equal(st.support_email, 'support@gostudybridge.com');
+});

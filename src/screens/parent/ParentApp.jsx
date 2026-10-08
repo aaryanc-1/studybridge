@@ -1,10 +1,11 @@
 // The parent's StudyBridge (1.6): read-only. For each child: the weekly reports the tutor approved, upcoming
 // lessons and due dates, marks that were given back, topic strengths, mock grades and the exam countdown.
 // Never messages, working, photos, the exam camera or anything from Prof (the server only hands these out).
+// Four tabs, big on phones: This week (the report), Coming up, Marks and Settings.
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Bar, Empty, Link, Loading, Modal, Page, useRoute } from '../../ui/kit.jsx';
+import { Bar, Empty, Loading, Modal, Page, go, useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { day, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
@@ -19,63 +20,63 @@ function notificationTarget(n) {
   return '/';
 }
 
+// With more than one child, the one last looked at stays chosen on every tab
+const savedChild = () => {
+  try {
+    return localStorage.getItem('sb.parent.child');
+  } catch {
+    return null;
+  }
+};
+const saveChild = (id) => {
+  try {
+    localStorage.setItem('sb.parent.child', id);
+  } catch {}
+};
+
 export default function ParentApp() {
   const route = useRoute();
   const kids = useQuery('parent-children', api.parentChildren);
   const [a, b] = route.parts;
   const list = kids.data || [];
+  const picked = (a === 'child' && b) || route.query.get('child') || savedChild();
+  const current = list.find((k) => k.id === picked) || list[0];
   const nav = [
-    { to: '/', label: list.length > 1 ? 'My children' : 'Home', icon: 'home', also: ['/child'] },
+    { to: '/', label: 'This week', icon: 'home', also: ['/child'] },
+    { to: '/coming', label: 'Coming up', icon: 'calendar' },
+    { to: '/marks', label: 'Marks', icon: 'chart' },
     { to: '/settings', label: 'Settings', icon: 'settings' },
   ];
   let page;
   if (a === 'settings') page = <Settings />;
-  else if (a === 'child' && b) page = <Child id={b} kids={list} />;
   else if (!kids.data) page = <Loading />;
-  else if (list.length === 1) page = <Child id={list[0].id} kids={list} />;
-  else page = <Children list={list} />;
+  else if (!current) page = <NoChildren />;
+  else page = <Child key={current.id} id={current.id} kids={list} section={a === 'coming' ? 'coming' : a === 'marks' ? 'marks' : 'week'} />;
   return (
-    <Shell nav={nav} tabs={nav} roleLabel="Parent" notificationTarget={notificationTarget}>
+    <Shell nav={nav} tabs={nav} roleLabel="Parent" notificationTarget={notificationTarget} theme="parent">
       {page}
     </Shell>
   );
 }
 
-function Children({ list }) {
+function NoChildren() {
   const app = useApp();
-  if (!list.length)
-    return (
-      <Page title={`Hello, ${app.me.display_name.split(' ')[0]}`}>
-        <Empty title="No children linked">
-          Your account isn’t linked to a learner right now. Ask your child’s tutor for a parent invite, then join with it in a new account or from the sign-in page.
-        </Empty>
-      </Page>
-    );
   return (
-    <Page title={`Hello, ${app.me.display_name.split(' ')[0]}`} subtitle="Choose a child to see their reports, lessons and marks.">
-      <div className="stack">
-        {list.map((k) => (
-          <Link key={k.id} to={`/child/${k.id}`} className="work-card">
-            <span className="bar-l" style={{ background: 'var(--accent)' }} />
-            <span className="grow stack sm">
-              <span className="strong" style={{ fontSize: 17 }}>{k.name}</span>
-              <span className="small muted row wrap" style={{ gap: 10 }}>
-                <span>Tutor: {k.tutor}</span>
-                <span>{k.next_lesson ? `Next lesson ${when(k.next_lesson)}` : 'No lessons booked'}</span>
-                <span>
-                  {k.reports} report{k.reports === 1 ? '' : 's'}
-                </span>
-              </span>
-            </span>
-            <Icon name="right" />
-          </Link>
-        ))}
-      </div>
+    <Page title={`Hello, ${app.me.display_name.split(' ')[0]}`}>
+      <Empty title="No children linked">
+        Your account isn’t linked to a learner right now. Ask your child’s tutor for a parent invite, then join with it in a new account or from the sign-in page.
+      </Empty>
     </Page>
   );
 }
 
-function Child({ id, kids }) {
+const SUBTITLE = {
+  week: 'The weekly report from their tutor, and how long until their exams.',
+  coming: 'Lessons and work due over the next three weeks.',
+  marks: 'Marks once the tutor gives them back, mock grades and how each topic is going.',
+};
+
+function Child({ id, kids, section }) {
   const route = useRoute();
   const q = useQuery(`parent-view:${id}`, () => api.parentView(id));
   const [open, setOpen] = useState(() => route.query.get('report'));
@@ -85,62 +86,73 @@ function Child({ id, kids }) {
   const latest = v.reports[0];
   const opened = v.reports.find((r) => r.id === open);
   const topics = (v.topics || []).filter((t) => t.ratio != null).sort((x, y) => y.ratio - x.ratio);
+  const picker =
+    kids.length > 1 ? (
+      <div className="seg kid-pick" role="group" aria-label="Choose a child">
+        {kids.map((k) => (
+          <button
+            key={k.id}
+            type="button"
+            aria-pressed={k.id === id}
+            onClick={() => {
+              saveChild(k.id);
+              go(`${section === 'week' ? '/' : '/' + section}?child=${k.id}`);
+            }}
+          >
+            {k.name.split(' ')[0]}
+          </button>
+        ))}
+      </div>
+    ) : null;
   return (
-    <Page
-      eyebrow={
-        kids.length > 1 ? (
-          <Link to="/" className="row" style={{ gap: 4 }}>
-            <Icon name="left" size={14} /> My children
-          </Link>
-        ) : null
-      }
-      title={v.learner.name}
-      subtitle={`Tutor: ${v.tutor}. You see weekly reports, lessons, due dates and marks once they’re given back.`}
-    >
-      {v.exam && (
-        <div className="card row parent-exam">
-          <span className="mock-grade">{v.exam.days}</span>
-          <span>
-            <span className="strong">days to {v.exam.name || 'the exam'}</span>
-            <span className="small muted"> · {day(v.exam.date)}</span>
-          </span>
-        </div>
+    <Page eyebrow={picker} title={v.learner.name} subtitle={`${SUBTITLE[section]} Tutor: ${v.tutor}.`}>
+      {section === 'week' && (
+        <>
+          {v.exam && (
+            <div className="card row parent-exam">
+              <span className="mock-grade">{v.exam.days}</span>
+              <span>
+                <span className="strong">days to {v.exam.name || 'the exam'}</span>
+                <span className="small muted"> · {day(v.exam.date)}</span>
+              </span>
+            </div>
+          )}
+          <div className="card">
+            <div className="card-head">
+              <h2>Latest weekly report</h2>
+              {v.reports.length > 1 && <span className="small muted">{v.reports.length} reports so far</span>}
+            </div>
+            {latest ? (
+              <>
+                <ReportCard report={latest} tutorName={v.tutor} />
+                <div className="row wrap">
+                  <button className="btn sm" onClick={() => setOpen(latest.id)}>
+                    <Icon name="download" size={14} /> Print or save as PDF
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="muted small">The first report arrives when {v.tutor} approves it.</div>
+            )}
+            {v.reports.length > 1 && (
+              <div className="list">
+                {v.reports.slice(1).map((r) => (
+                  <button key={r.id} className="item click history-row" onClick={() => setOpen(r.id)}>
+                    <Icon name="send" size={16} style={{ color: 'var(--accent)' }} />
+                    <span className="grow">
+                      <span className="name">Week of {day(r.week_start + 'T12:00')}</span>
+                      {r.comment && <span className="meta ellipsis">{r.comment}</span>}
+                    </span>
+                    <Icon name="right" size={16} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      <div className="card">
-        <div className="card-head">
-          <h2>Latest weekly report</h2>
-          {v.reports.length > 1 && <span className="small muted">{v.reports.length} reports so far</span>}
-        </div>
-        {latest ? (
-          <>
-            <ReportCard report={latest} tutorName={v.tutor} />
-            <div className="row wrap">
-              <button className="btn sm" onClick={() => setOpen(latest.id)}>
-                <Icon name="download" size={14} /> Print or save as PDF
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="muted small">The first report arrives when {v.tutor} approves it.</div>
-        )}
-        {v.reports.length > 1 && (
-          <div className="list">
-            {v.reports.slice(1).map((r) => (
-              <button key={r.id} className="item click history-row" onClick={() => setOpen(r.id)}>
-                <Icon name="send" size={16} style={{ color: 'var(--accent)' }} />
-                <span className="grow">
-                  <span className="name">Week of {day(r.week_start + 'T12:00')}</span>
-                  {r.comment && <span className="meta ellipsis">{r.comment}</span>}
-                </span>
-                <Icon name="right" size={16} />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className="split even">
+      {section === 'coming' && (
         <div className="card">
           <h2>Coming up</h2>
           {v.lessons.length === 0 && v.due.length === 0 ? (
@@ -175,68 +187,70 @@ function Child({ id, kids }) {
             </div>
           )}
         </div>
+      )}
 
-        <div className="card">
-          <h2>Marks</h2>
-          {v.marks.length === 0 ? (
-            <div className="muted small">Marks show here once the tutor gives them back.</div>
-          ) : (
-            <div className="list">
-              {v.marks.map((m, i) => (
-                <div key={i} className="item">
-                  <span className="grow">
-                    <span className="name">{m.title}</span>
-                    <span className="meta">
-                      {kindLabel[m.kind]} · {day(m.at)}
-                      {m.late ? ' · handed in late' : ''}
+      {section === 'marks' && (
+        <>
+          <div className="card">
+            <h2>Marks</h2>
+            {v.marks.length === 0 ? (
+              <div className="muted small">Marks show here once the tutor gives them back.</div>
+            ) : (
+              <div className="list">
+                {v.marks.map((m, i) => (
+                  <div key={i} className="item">
+                    <span className="grow">
+                      <span className="name">{m.title}</span>
+                      <span className="meta">
+                        {kindLabel[m.kind]} · {day(m.at)}
+                        {m.late ? ' · handed in late' : ''}
+                      </span>
                     </span>
+                    <span className="strong">{pct(m.score, m.max)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {v.mocks.length > 0 && (
+            <div className="card">
+              <h2>
+                <Icon name="trophy" size={18} /> Mock exams
+              </h2>
+              <div className="list">
+                {[...v.mocks].reverse().map((m) => (
+                  <div key={m.id} className="item">
+                    <span className="mock-grade sm">{m.grade || '—'}</span>
+                    <span className="grow">
+                      <span className="name">{m.title}</span>
+                      <span className="meta">{gradeLine(m)}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {topics.length > 0 && (
+            <div className="card">
+              <div className="card-head">
+                <h2>Topics</h2>
+                <span className="muted small">From marked answers</span>
+              </div>
+              {topics.map((t) => (
+                <div className="strength" key={t.topic_id || t.topic}>
+                  <div>
+                    <div className="strong">{t.topic}</div>
+                    <div className="muted tiny">{t.subject}</div>
+                  </div>
+                  <Bar value={(t.ratio || 0) * 100} tone={t.strength === 'strong' ? 'good' : t.strength === 'weak' ? 'bad' : 'warn'} />
+                  <span className="small strong" style={{ justifySelf: 'end' }}>
+                    {Math.round((t.ratio || 0) * 100)}%
                   </span>
-                  <span className="strong">{pct(m.score, m.max)}%</span>
                 </div>
               ))}
             </div>
           )}
-        </div>
-      </div>
-
-      {v.mocks.length > 0 && (
-        <div className="card">
-          <h2>
-            <Icon name="trophy" size={18} /> Mock exams
-          </h2>
-          <div className="list">
-            {[...v.mocks].reverse().map((m) => (
-              <div key={m.id} className="item">
-                <span className="mock-grade sm">{m.grade || '—'}</span>
-                <span className="grow">
-                  <span className="name">{m.title}</span>
-                  <span className="meta">{gradeLine(m)}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {topics.length > 0 && (
-        <div className="card">
-          <div className="card-head">
-            <h2>Topics</h2>
-            <span className="muted small">From marked answers</span>
-          </div>
-          {topics.map((t) => (
-            <div className="strength" key={t.topic_id || t.topic}>
-              <div>
-                <div className="strong">{t.topic}</div>
-                <div className="muted tiny">{t.subject}</div>
-              </div>
-              <Bar value={(t.ratio || 0) * 100} tone={t.strength === 'strong' ? 'good' : t.strength === 'weak' ? 'bad' : 'warn'} />
-              <span className="small strong" style={{ justifySelf: 'end' }}>
-                {Math.round((t.ratio || 0) * 100)}%
-              </span>
-            </div>
-          ))}
-        </div>
+        </>
       )}
 
       {opened && (

@@ -286,6 +286,42 @@
       a.addEventListener('click', function () { form.elements.role.value = a.dataset.role; });
     });
   }
+  // Contact page
+  var contact = $('#contact-form');
+  if (contact && !S.sb) { contact.hidden = true; $('#contact-off').hidden = false; }
+  if (contact && S.sb) {
+    contact.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var f = contact.elements, msg = $('#contact-msg');
+      msg.className = 'ea-msg';
+      if (f.website.value) return; // a robot filled the hidden box
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(f.email.value.trim())) { msg.className = 'ea-msg bad'; msg.textContent = 'Please check your email address.'; f.email.focus(); return; }
+      if (f.message.value.trim().length < 2) { msg.className = 'ea-msg bad'; msg.textContent = 'Please write a message.'; f.message.focus(); return; }
+      var btn = $('button[type=submit]', contact);
+      btn.disabled = true;
+      msg.textContent = 'Sending…';
+      fetch(S.sb.url + '/rest/v1/rpc/send_contact', {
+        method: 'POST',
+        headers: { apikey: S.sb.key, Authorization: 'Bearer ' + S.sb.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_name: f.name.value, p_email: f.email.value, p_role: f.role.value, p_message: f.message.value }),
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw new Error(j.message || 'That didn’t go through. Please try again, or email us.'); });
+      }).then(function () {
+        contact.innerHTML = '<div class="ea-done" role="status"><b>Thank you, it’s sent.</b>We’ll reply to ' + esc(f.email.value.trim()) + ' soon.</div>';
+      }, function (err) { btn.disabled = false; msg.className = 'ea-msg bad'; msg.textContent = err.message; });
+    });
+  }
+
+  // Signed in to the app in this browser? The "Sign in" links become "Open my StudyBridge"
+  var signedIn = false;
+  try { signedIn = !!localStorage.getItem('sb.auth'); } catch (e) {}
+  if (signedIn) {
+    $$('a[href$="#start=signin"]').forEach(function (a) {
+      a.href = S.appPath;
+      a.textContent = 'Open my ' + S.brand;
+    });
+  }
+
   var req = $('#req-form');
   if (req && !S.sb) req.hidden = true;
   if (req && S.sb) {

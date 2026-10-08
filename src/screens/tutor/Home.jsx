@@ -30,8 +30,21 @@ export default function Home() {
   const { from } = weekRange(0);
   const weekStr = ymd(from);
   const weekSeconds = (lid) => activity.filter((x) => (!lid || x.learner_id === lid) && x.day >= weekStr).reduce((s, x) => s + x.seconds, 0);
+  // Due in the next week, for the learners it's set for; work everyone has already handed in drops off
+  const forWhom = (a) =>
+    a.learner_ids?.length
+      ? a.learner_ids
+      : a.subject_id
+        ? lk.learnerSubjects.filter((x) => x.subject_id === a.subject_id).map((x) => x.learner_id)
+        : lk.learners.map((l) => l.id);
+  const handedIn = (a, lid) => attempts.some((t) => t.assignment_id === a.id && t.learner_id === lid && t.status !== 'in_progress');
   const soon = assignments
     .filter((a) => !a.draft && a.due_at && new Date(a.due_at) > new Date() && new Date(a.due_at) < new Date(Date.now() + 8 * 86400000))
+    .map((a) => {
+      const who = forWhom(a);
+      return { ...a, who: who.length, done: who.filter((lid) => handedIn(a, lid)).length };
+    })
+    .filter((a) => !a.who || a.done < a.who)
     .sort((x, y) => new Date(x.due_at) - new Date(y.due_at));
   const upcoming = sessions.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > Date.now()).slice(0, 4);
 
@@ -247,7 +260,10 @@ export default function Home() {
                   <Icon name="clipboard" style={{ color: 'var(--muted)' }} />
                   <span className="grow">
                     <span className="name">{a.title}</span>
-                    <span className="meta">{due(a.due_at).text}</span>
+                    <span className="meta">
+                      {due(a.due_at).text}
+                      {a.who > 1 ? ` · ${a.done} of ${a.who} handed in` : ''}
+                    </span>
                   </span>
                 </Link>
               ))}

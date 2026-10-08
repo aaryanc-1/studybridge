@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (75)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (78)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -99,23 +99,19 @@ sets redo (it can suggest one in tutor_note); `_fix_newlines` (SQL) / `fixNewlin
 line break; blank or rubbed-out drawings are `answer.blank` (`drawn()` in questions.js) and Prof gets "nothing drawn";
 plans come from a list (`profiles_plan_check`: free, starter, pro, custom + `plan_learners`, complimentary + `plan_until`;
 `_tutor_limit`; old typed names became complimentary; `PLANS`/`planName` in format.js).
-
-## Next fixes (noted 7 Oct 2026, not built yet)
-- Tutor Home "Coming up" (and the "Due in the next week" count) still lists an assignment after the learner handed it in:
-  `soon` in src/screens/tutor/Home.jsx:34 filters by due date only. Show only work someone still has to hand in, or
-  say "All handed in" / "1 of 2 handed in".
-- Desktop updater deleted the running version's folder (app-updates/1.1.50) while its window was open, so the exam
-  camera's lazily loaded livekit chunk failed ("Failed to fetch dynamically imported module"). In electron/updater.cjs
-  `startPage` removes `s.current` when switching to `s.pending`: never remove the version in use, tidy old folders
-  (1.1.12, 1.1.36, 1.1.44 still there) only at a fresh start keeping current + one spare, and catch chunk-load errors
-  in the app with "StudyBridge was updated, tap to reload".
-- Live.jsx exam-camera empty text still says "leave the exam window" for a quiz/test (use `forKind`).
-- Discussed, waiting for his go: an account button on every screen (Settings, Switch account, Sign out); make the
-  app's look match the website (welcome/sign-in like the site; site shows "Open my StudyBridge" when signed in, same
-  origin now); a bigger parent menu on phones (bigger tab bar, more tabs: This week, Coming up, Marks, Settings) and a
-  text-size setting; email set-up (Cloudflare Email Routing hello@/support@ → Gmail, Resend for sending + Gmail
-  "send as", Supabase SMTP via Resend, then a website Contact page and emails to him for early access, requests and
-  contact messages).
+Fixes and polish (8 Oct 2026): tutor Home "Coming up" drops work everyone has handed in ("1 of 2 handed in");
+desktop updater keeps the version that was running as a spare and tidies old folders only at start (`tidy` in
+updater.cjs), `app:restart` IPC + a "StudyBridge was updated, restart" bar when a lazily loaded part fails (main.jsx,
+`vite:preloadError`); an account menu on every screen (`AccountMenu` in Shell.jsx: Settings, switch account, Sign out);
+parents get four tabs (This week, Coming up, Marks, Settings; child picker for 2+ children) and a bigger phone menu
+(`theme-parent`); text size per device (`applyTextSize`/`setTextSize` in device.js: CSS zoom, parents start on Large);
+the welcome screen has the website's look and a link back to gostudybridge.com; the website shows "Open my StudyBridge"
+when `sb.auth` is in localStorage (same origin), and the old-address redirect checks `sb.auth` (the app's session key).
+Email: hello@ (website) and support@ (inside the app) forward to gostudybridge.hq@gmail.com via Cloudflare Email Routing.
+`outgoing_emails` queue + `_email_us(box, …)`: website Contact page (`contact_messages`, anon `send_contact`), early access
+and subject requests go to hello@; in-app "Contact StudyBridge" (`send_feedback`) to support@, each with reply-to the
+person; Prof's `sendQueued()` sends them through Resend on every kick once Admin → Selling has the Resend key + sender.
+Weekly report emails reply to the tutor. Admin → Selling shows website messages and the email queue.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

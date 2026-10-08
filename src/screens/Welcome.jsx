@@ -26,13 +26,18 @@ export default function Welcome() {
 
   return (
     <div className="welcome">
+      <a className="back-site" href={api.WEB_APP.replace(/app\/?$/, '')}>
+        <Icon name="left" size={16} /> gostudybridge.com
+      </a>
       <div className="box">
         <div className="hero">
           <Wordmark />
           {step === 'start' && (
             <>
-              <h1>Welcome to StudyBridge</h1>
-              <p className="lead">Assignments, marking, lessons and live sessions between a tutor and their learners.</p>
+              <h1>
+                Welcome to <em>StudyBridge.</em>
+              </h1>
+              <p className="lead">Plans, lessons, practice papers, mocks and marking, for students, tutors and parents.</p>
             </>
           )}
         </div>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon, { Logo } from '../../ui/Icon.jsx';
-import { Avatar, ErrorBoundary, go, Link, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, ErrorBoundary, go, Link, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useOnline, useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as outbox from '../../lib/outbox.js';
@@ -9,7 +9,7 @@ import { ago } from '../../lib/format.js';
 import { desktop } from '../../lib/config.js';
 import { startLiveUpdates } from '../../lib/live-updates.js';
 import { addAccount, canSwitch, otherAccounts, switchTo } from '../../lib/accounts.js';
-import { dataSaver, setDataSaver, slowConnection } from '../../lib/device.js';
+import { applyTextSize, dataSaver, setDataSaver, slowConnection } from '../../lib/device.js';
 
 export function isActive(route, item) {
   if (item.to === '/') return route.path === '/' || route.path === '';
@@ -24,6 +24,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   useAnnouncer(notificationTarget);
 
   useEffect(() => startLiveUpdates(app.me.id), [app.me.id]);
+  useEffect(() => applyTextSize(app.me.role), [app.me.role]);
   useEffect(() => {
     if (desktop && app.me.role === 'tutor' && localStorage.getItem('sb.background') === '1') desktop.keepInBackground(true);
     outbox.flush();
@@ -48,24 +49,14 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
         ))}
         <div className="spacer" />
         <NotificationBell target={notificationTarget} inline />
-        <button className="me" onClick={() => go('/settings')}>
-          <Avatar person={app.me} />
-          <span className="grow">
-            <div className="n">{app.me.display_name}</div>
-            <div className="s">Settings</div>
-          </span>
-          <Icon name="settings" size={18} />
-        </button>
-        <AccountSwitcher />
+        <AccountMenu place="side" />
       </aside>
       <div className="main">
         <div className="topbar">
           <Logo size={28} />
           <span className="word">StudyBridge</span>
           <NotificationBell target={notificationTarget} />
-          <button className="btn ghost icon sm" onClick={() => go('/settings')} aria-label="Settings">
-            <Icon name="settings" />
-          </button>
+          <AccountMenu place="top" />
         </div>
         {!online && (
           <div className="banner off" role="status">
@@ -100,6 +91,73 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   );
 }
 
+
+// The account button on every screen: Settings, other accounts on this device (admin's device only) and Sign out
+function AccountMenu({ place }) {
+  const app = useApp();
+  const confirm = useConfirm();
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => !box.current?.contains(e.target) && setOpen(false);
+    const esc = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+  const others = canSwitch() ? otherAccounts(app.me.id) : [];
+  const pick = (f) => () => {
+    setOpen(false);
+    f();
+  };
+  return (
+    <div className={'acct ' + place} ref={box}>
+      {place === 'side' ? (
+        <button className="me" onClick={() => setOpen((x) => !x)} aria-expanded={open} aria-haspopup="menu">
+          <Avatar person={app.me} />
+          <span className="grow">
+            <div className="n">{app.me.display_name}</div>
+            <div className="s">Settings and sign out</div>
+          </span>
+          <Icon name={open ? 'down' : 'up'} size={16} />
+        </button>
+      ) : (
+        <button className="acct-btn" onClick={() => setOpen((x) => !x)} aria-expanded={open} aria-haspopup="menu" aria-label="Your account: settings and sign out">
+          <Avatar person={app.me} size="sm" />
+        </button>
+      )}
+      {open && (
+        <div className="acct-menu" role="menu">
+          <div className="acct-who">
+            <div className="strong">{app.me.display_name}</div>
+            <div className="tiny muted">{ROLE_NAME[app.me.role] || app.me.role}</div>
+          </div>
+          <button role="menuitem" onClick={pick(() => go('/settings'))}>
+            <Icon name="settings" size={18} /> Settings
+          </button>
+          {others.map((a) => (
+            <button key={a.id} role="menuitem" onClick={pick(() => switchTo(app.me.id, a.id))}>
+              <Icon name="users" size={18} /> Switch to {a.name || a.email} <span className="tiny muted">{ROLE_NAME[a.role] || a.role}</span>
+            </button>
+          ))}
+          <button
+            role="menuitem"
+            className="danger"
+            onClick={pick(async () => {
+              if (await confirm({ title: 'Sign out?', body: 'Anything waiting to send is kept and sends next time you sign in here.', ok: 'Sign out' })) app.signOut();
+            })}
+          >
+            <Icon name="logout" size={18} /> Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // A slow connection (or the phone's own data saver): offer StudyBridge's data saver, once
 function SlowConnectionTip() {

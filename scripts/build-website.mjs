@@ -72,11 +72,11 @@ function footer(c, year) {
   return `<footer class="foot">
   <div class="wrap">
     <div class="foot-grid">
-      <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p></div>
+      <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p><p class="fine"><a href="mailto:${esc(c.contactEmail)}">${esc(c.contactEmail)}</a></p></div>
       <nav aria-label="For students"><b>Students</b><a href="students.html">How it works</a><a href="students.html#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="students.html#early">Early access</a></nav>
       <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="tutors.html#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Start free</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
       <nav aria-label="Parents and schools"><b>Families and schools</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
-      <nav aria-label="About"><b>About</b><a href="./">Home</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+      <nav aria-label="About"><b>About</b><a href="./">Home</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
     </div>
     <p class="legal-line">© ${year} ${esc(c.brand)}. Cambridge, Pearson Edexcel and IB are trademarks of their owners. ${esc(c.brand)} is not affiliated with or endorsed by them, and its practice papers are original.</p>
   </div>
@@ -101,6 +101,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     brand: esc(c.brand),
     tagline: esc(c.tagline),
     siteUrl: esc(c.siteUrl),
+    contactEmail: esc(c.contactEmail),
     app: esc(c.appPath),
     repo: esc(c.releasesRepo),
     year: String(today.getFullYear()),
@@ -146,7 +147,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
   const pub = {
-    brand: c.brand, siteUrl: c.siteUrl, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
+    brand: c.brand, siteUrl: c.siteUrl, contactEmail: c.contactEmail, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
     boards: c.boards.map((b) => ({ id: b.id, name: b.name, sessions: b.sessions })),
     // the public address and key of the server (both public by design), for the early-access form
     sb: sb?.url && sb?.key ? { url: sb.url.replace(/\/+$/, ''), key: sb.key } : null,

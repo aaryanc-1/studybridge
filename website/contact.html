@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact · {{brand}}</title>
+<meta name="description" content="Get in touch with {{brand}}: questions, schools and tuition centres, partnerships. Write to {{contactEmail}} or send a message here.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap narrow center">
+      <span class="pill">We read every message</span>
+      <h1>Get in <em>touch.</em></h1>
+      <p class="lead">A question about {{brand}}, your school or tuition centre, or anything else. Send a message here or email us, and we’ll reply by email.</p>
+    </div>
+  </section>
+
+  <section class="contact-sec">
+    <div class="wrap contact-grid">
+      <div class="contact-box reveal">
+        <form id="contact-form" novalidate>
+          <div class="ea-grid">
+            <label>Your name<input name="name" autocomplete="name" maxlength="120"></label>
+            <label>Email<input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
+            <label class="span2">I am
+              <select name="role">
+                <option value="">Choose…</option>
+                <option value="student">A student</option>
+                <option value="parent">A parent</option>
+                <option value="tutor">A tutor</option>
+                <option value="centre">A tuition centre</option>
+                <option value="school">A school</option>
+                <option value="other">Something else</option>
+              </select>
+            </label>
+            <label class="span2">Message<textarea name="message" required rows="6" maxlength="4000" placeholder="How can we help?"></textarea></label>
+            <label class="hp" aria-hidden="true">Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label>
+          </div>
+          <button class="btn primary big" type="submit">Send message</button>
+          <p class="ea-msg" id="contact-msg" role="status"></p>
+        </form>
+        <div class="ea-off" id="contact-off" hidden>Email us at <a href="mailto:{{contactEmail}}">{{contactEmail}}</a> and we’ll reply.</div>
+      </div>
+      <aside class="contact-side reveal">
+        <div class="side-card">
+          <h3>Email us</h3>
+          <p><a class="link" href="mailto:{{contactEmail}}">{{contactEmail}}</a></p>
+          <p class="fine">We usually reply within a day or two.</p>
+        </div>
+        <div class="side-card">
+          <h3>Already using {{brand}}?</h3>
+          <p class="fine">Open the app and go to <b>Settings</b>: help is there, and messages from inside the app reach us with your account details, so we can sort things out faster.</p>
+          <a class="btn" href="{{app}}#start=signin">Open {{brand}}</a>
+        </div>
+        <div class="side-card">
+          <h3>Schools and tuition centres</h3>
+          <p class="fine">Tell us how many teachers and learners you have, and which exams. We’ll set it up with you.</p>
+          <a class="link" href="schools.html">For schools and centres →</a>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

@@ -3,6 +3,7 @@
   "brand": "StudyBridge",
   "tagline": "Get exam-ready, step by step. With a tutor, or on your own with Prof.",
   "siteUrl": "https://gostudybridge.com/",
+  "contactEmail": "hello@gostudybridge.com",
   "appPath": "app/",
   "releasesRepo": "aaryanc-1/studybridge-releases",
   "freeNow": true,

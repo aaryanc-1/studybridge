@@ -3515,6 +3515,11 @@ begin
   for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
     perform public.notify_user(a, 'feedback', coalesce(who, 'Someone') || ' wrote to StudyBridge', left(trim(p_body), 200), jsonb_build_object('feedback_id', v));
   end loop;
+  perform public._email_us('support', initcap(coalesce(p_kind, 'question')) || ' from ' || coalesce(who, 'a tutor'),
+    'From: ' || coalesce(who, 'a tutor') || ' <' || coalesce((select email::text from auth.users where id = auth.uid()), '') || '>'
+      || coalesce(E'\nApp version: ' || nullif(p_version, ''), '') || E'\n\n' || trim(p_body)
+      || E'\n\n(Reply to this email to answer them, or answer in Admin → Inbox.)',
+    (select email::text from auth.users where id = auth.uid()));
   return v;
 end $$;
 
@@ -4832,6 +4837,99 @@ create table if not exists public.early_access (
 );
 alter table public.early_access enable row level security;
 
+-- Emails to StudyBridge's own inboxes: hello@ (the website: contact, early access, subject requests) and support@
+-- (the app: "Contact StudyBridge"). Prof sends them through Resend once email is set up in Admin → Selling; until
+-- then they wait here, and everything is in Admin anyway.
+alter table public.app_config add column if not exists contact_email text not null default 'hello@gostudybridge.com';
+alter table public.app_config add column if not exists support_email text not null default 'support@gostudybridge.com';
+create table if not exists public.outgoing_emails (
+  id uuid primary key default gen_random_uuid(),
+  to_addr text not null,
+  subject text not null,
+  body text not null,
+  reply_to text,
+  created_at timestamptz not null default now(),
+  sent_at timestamptz,
+  tries int not null default 0,
+  error text
+);
+alter table public.outgoing_emails enable row level security;
+revoke all on public.outgoing_emails from anon, authenticated;
+
+create or replace function public._email_us(p_box text, p_subject text, p_body text, p_reply_to text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_to text;
+begin
+  select case when p_box = 'support' then support_email else contact_email end into v_to from public.app_config where id = 1;
+  if coalesce(v_to, '') = '' then return; end if;
+  insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+  values (v_to, left(p_subject, 200), left(p_body, 8000), nullif(btrim(coalesce(p_reply_to, '')), ''));
+  perform public._prof_kick();
+end $$;
+
+-- The website's Contact page: anyone can write (no account); the Owner reads them in Admin → Selling and by email
+create table if not exists public.contact_messages (
+  id uuid primary key default gen_random_uuid(),
+  name text,
+  email text not null,
+  role text,
+  message text not null,
+  created_at timestamptz not null default now(),
+  handled_at timestamptz
+);
+alter table public.contact_messages enable row level security;
+revoke all on public.contact_messages from anon, authenticated;
+
+create or replace function public.send_contact(p_name text, p_email text, p_role text default null, p_message text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_email text := lower(btrim(coalesce(p_email, '')));
+  v_name text := left(nullif(btrim(coalesce(p_name, '')), ''), 120);
+  v_msg text := btrim(coalesce(p_message, ''));
+begin
+  if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]{2,}$' then raise exception 'Please check your email address.'; end if;
+  if length(v_msg) < 2 then raise exception 'Please write a message.'; end if;
+  if length(v_msg) > 4000 then raise exception 'That message is too long. Please keep it under 4,000 characters.'; end if;
+  if (select count(*) from public.contact_messages where email = v_email and created_at > now() - interval '1 day') >= 5 then
+    raise exception 'That’s a lot of messages today. Please try again tomorrow.';
+  end if;
+  insert into public.contact_messages (name, email, role, message) values (v_name, v_email, left(nullif(btrim(coalesce(p_role, '')), ''), 40), v_msg);
+  perform public._email_us('hello', 'Website message from ' || coalesce(v_name, v_email),
+    'From: ' || coalesce(v_name || ' ', '') || '<' || v_email || '>' || E'\n' || 'I am: ' || coalesce(nullif(btrim(coalesce(p_role, '')), ''), 'not said')
+      || E'\n\n' || v_msg || E'\n\n(Reply to this email to answer them.)', v_email);
+  return jsonb_build_object('ok', true);
+end $$;
+grant execute on function public.send_contact(text, text, text, text) to anon;
+
+create or replace function public.admin_contact_messages() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((select jsonb_agg(to_jsonb(m) order by (m.handled_at is null) desc, m.created_at desc)
+    from (select * from public.contact_messages order by created_at desc limit 300) m), '[]'::jsonb);
+end $$;
+
+create or replace function public.admin_contact_done(p_id uuid, p_done boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.contact_messages set handled_at = case when p_done then now() end where id = p_id;
+end $$;
+
+-- What the admin can see about the email queue (never the content of other people's mail beyond what Admin shows)
+create or replace function public.admin_email_queue() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return jsonb_build_object(
+    'waiting', (select count(*) from public.outgoing_emails where sent_at is null and tries < 5),
+    'failed', (select count(*) from public.outgoing_emails where sent_at is null and tries >= 5),
+    'sent_week', (select count(*) from public.outgoing_emails where sent_at > now() - interval '7 days'),
+    'last_error', (select error from public.outgoing_emails where error is not null order by created_at desc limit 1),
+    'contact_email', (select contact_email from public.app_config where id = 1),
+    'support_email', (select support_email from public.app_config where id = 1));
+end $$;
+
 create or replace function public.join_early_access(p_email text, p_role text default 'student', p_curriculum text default null,
   p_subjects text default null, p_exam text default null, p_country text default null, p_note text default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -4850,6 +4948,16 @@ begin
     curriculum = coalesce(excluded.curriculum, early_access.curriculum), subjects = coalesce(excluded.subjects, early_access.subjects),
     exam = coalesce(excluded.exam, early_access.exam), country = coalesce(excluded.country, early_access.country),
     note = coalesce(excluded.note, early_access.note), updated_at = now();
+  perform public._email_us('hello',
+    case when coalesce(p_note, '') ilike 'subject request:%' then 'Subject request: ' || left(btrim(substr(p_note, 17)), 120)
+         else 'Early access: ' || v_email || ' (' || coalesce(p_role, 'student') || ')' end,
+    concat_ws(E'\n', 'Email: ' || v_email, 'I am: ' || coalesce(p_role, 'student'),
+      case when nullif(btrim(coalesce(p_curriculum, '')), '') is not null then 'Curriculum: ' || btrim(p_curriculum) end,
+      case when nullif(btrim(coalesce(p_subjects, '')), '') is not null then 'Subjects: ' || btrim(p_subjects) end,
+      case when nullif(btrim(coalesce(p_exam, '')), '') is not null then 'Exam: ' || btrim(p_exam) end,
+      case when nullif(btrim(coalesce(p_country, '')), '') is not null then 'Country: ' || btrim(p_country) end,
+      case when nullif(btrim(coalesce(p_note, '')), '') is not null then E'\n' || btrim(p_note) end,
+      E'\n(Everyone who asks is listed in Admin → Selling → Early access.)'), v_email);
   return jsonb_build_object('ok', true);
 end $$;
 grant execute on function public.join_early_access(text, text, text, text, text, text, text) to anon;
@@ -4900,6 +5008,7 @@ revoke execute on function public._parent_link(uuid) from public, anon, authenti
 revoke execute on function public._hand_in(uuid, text) from public, anon, authenticated;
 revoke execute on function public._auto_hand_in() from public, anon, authenticated;
 revoke execute on function public._set_paid_plan(uuid, text, text, text, timestamptz) from public, anon, authenticated;
+revoke execute on function public._email_us(text, text, text, text) from public, anon, authenticated;
 revoke execute on function public._check_plan_room() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;

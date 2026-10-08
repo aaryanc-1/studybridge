@@ -856,3 +856,40 @@ table.papers-plan tr.quiet td { color: var(--muted); }
   .mark-total { position: static; max-height: none; box-shadow: none; }
   .mark-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; bottom: 0; z-index: 3; padding: 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 -6px 20px -10px rgba(0, 0, 0, 0.25); }
 }
+
+/* The account button and its menu (every screen) */
+.acct { position: relative; }
+.acct.side { width: 100%; }
+.acct-btn { border: 0; background: none; padding: 2px; border-radius: 50%; cursor: pointer; display: inline-flex; }
+.acct-btn:focus-visible { outline: 2px solid var(--accent); }
+.acct-menu { position: absolute; z-index: 60; min-width: 240px; max-width: 320px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; }
+.acct.side .acct-menu { left: 0; right: 0; bottom: calc(100% + 8px); }
+.acct.top .acct-menu { right: 0; top: calc(100% + 8px); }
+.acct-who { padding: 8px 12px 10px; border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; }
+.acct-menu button[role='menuitem'] { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; background: none; border-radius: 10px; font-size: 15px; font-weight: 500; color: var(--ink); text-align: left; cursor: pointer; }
+.acct-menu button[role='menuitem']:hover, .acct-menu button[role='menuitem']:focus-visible { background: var(--sunk); }
+.acct-menu button.danger { color: var(--red-ink); }
+
+/* Parents: a bigger menu at the bottom of the phone */
+@media (max-width: 900px) {
+  .theme-parent .tabbar { padding-top: 8px; }
+  .theme-parent .tabbar a { font-size: 13.5px; gap: 4px; padding: 6px 0; }
+  .theme-parent .tabbar a svg { width: 27px; height: 27px; }
+}
+
+/* The welcome and sign-in screens share the website's look */
+.welcome { position: relative; background: radial-gradient(560px 320px at 78% 12%, var(--accent-tint), transparent 70%), radial-gradient(460px 280px at 10% 6%, rgba(200, 144, 46, 0.14), transparent 70%), var(--bg); }
+.welcome h1 { font-size: clamp(34px, 6vw, 46px); letter-spacing: -0.03em; }
+.welcome h1 em { font-style: italic; font-weight: 500; color: var(--accent); }
+.welcome .choice { border-radius: 18px; padding: 20px 22px; transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s; }
+.welcome .choice:hover { transform: translateY(-2px); box-shadow: 0 18px 40px -16px rgba(20, 30, 30, 0.22); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.welcome .card { border-radius: 20px; }
+.welcome .btn.big, .welcome .btn.primary { border-radius: 12px; }
+.back-site { position: absolute; top: 16px; left: 18px; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; color: var(--ink-2); text-decoration: none; padding: 6px 10px; border-radius: 10px; }
+.back-site:hover { background: var(--sunk); color: var(--ink); }
+@media (prefers-reduced-motion: reduce) { .welcome .choice { transition: none; } }
+
+/* "StudyBridge was updated: restart" */
+.updated-bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); padding: 12px 16px; border-radius: 14px; background: #0E6B6B; color: #fff; font-weight: 600; font-size: 15px; box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.4); }
+.updated-bar button { border: 0; border-radius: 10px; padding: 8px 14px; background: #fff; color: #0B5757; font-weight: 700; cursor: pointer; }
+@media (max-width: 900px) { .updated-bar { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); } }

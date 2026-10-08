@@ -7,13 +7,13 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
 import { sb } from '../../lib/supabase.js';
-import { connectLink, desktop, timezone } from '../../lib/config.js';
+import { connectLink, desktop, timezone, SUPPORT_EMAIL } from '../../lib/config.js';
 import { useUpdateStatus, AccountSwitcher } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
 import ReportCard from './ReportCard.jsx';
 import { dataZip } from '../../lib/zip.js';
 import { bytes } from '../../lib/format.js';
-import { setTheme, useTheme, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
+import { setTheme, useTheme, setTextSize, useTextSize, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
 
 export default function Settings() {
   const app = useApp();
@@ -39,6 +39,7 @@ export default function Settings() {
       {isLearner && <LearnerNotifications />}
       {isLearner && <LearnerPhoneAlerts />}
       {isTutor && <YourPlan />}
+      {!isTutor && app.me.role !== 'admin' && <Help learner={isLearner} />}
       <Device />
       <YourData />
       <About />
@@ -472,7 +473,7 @@ function ContactStudyBridge() {
   const [busy, setBusy] = useState(false);
   const list = q.data || [];
   return (
-    <Section id="contact" icon="message" title="Contact StudyBridge" sub="A problem, an idea or a question. StudyBridge replies here and you get a notification.">
+    <Section id="contact" icon="message" title="Contact StudyBridge" sub={<>A problem, an idea or a question. StudyBridge replies here and you get a notification. Or email <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.</>}>
       <div className="row wrap" style={{ gap: 6 }}>
         {[
           ['question', 'Question'],
@@ -871,6 +872,7 @@ function YourData() {
 
 function Appearance() {
   const theme = useTheme();
+  const size = useTextSize();
   return (
     <div className="stack sm">
       <div className="small strong">Appearance</div>
@@ -885,7 +887,32 @@ function Appearance() {
           </button>
         ))}
       </div>
+      <div className="small strong" style={{ marginTop: 6 }}>
+        Text size
+      </div>
+      <div className="seg" role="group" aria-label="Text size">
+        {[
+          ['normal', 'Normal'],
+          ['large', 'Large'],
+          ['xl', 'Extra large'],
+        ].map(([v, l]) => (
+          <button key={v} type="button" aria-pressed={size === v} onClick={() => setTextSize(v)}>
+            {l}
+          </button>
+        ))}
+      </div>
     </div>
+  );
+}
+
+// Learners and parents: where to get help
+function Help({ learner }) {
+  return (
+    <Section id="help" icon="info" title="Help" sub={learner ? 'Stuck on your work? Ask your tutor in Messages.' : 'Questions about your child’s work? Ask their tutor.'}>
+      <div className="small">
+        A problem with the app itself? Email <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Help with StudyBridge')}`}>{SUPPORT_EMAIL}</a> and we’ll help.
+      </div>
+    </Section>
   );
 }
 
