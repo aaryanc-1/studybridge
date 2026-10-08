@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { Avatar, Link, Markdown, go, useToast } from '../../ui/kit.jsx';
+import { Avatar, Link, Markdown, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, kindLabel } from '../../lib/format.js';
@@ -17,6 +17,43 @@ export function useDraftCounts() {
 
 const from = (src) => (src === 'prof' ? 'Prof' : src === 'claude' ? 'Claude Desktop' : 'you');
 
+// Throw away a draft nobody has seen (Prof's homework, a copied practice paper, lesson notes)
+export function useDiscardDraft() {
+  const confirm = useConfirm();
+  const toast = useToast();
+  return async (table, row) => {
+    const what = table === 'lessons' ? 'lesson notes' : kindLabel[row.kind]?.toLowerCase() || 'draft';
+    if (!(await confirm({ title: 'Discard this draft?', body: `“${row.title}” (${what}) is deleted. Learners never saw it.`, ok: 'Discard', danger: true }))) return false;
+    try {
+      await api.remove(table, row.id);
+      invalidate(table, 'drafts');
+      toast('Draft discarded');
+      return true;
+    } catch (e) {
+      toast({ title: 'Couldn’t discard it', body: e.message, tone: 'bad' });
+      return false;
+    }
+  };
+}
+
+function DraftRow({ icon, to, title, meta, onDiscard }) {
+  return (
+    <div className="item draft-row">
+      <Icon name={icon} style={{ color: 'var(--claude)' }} />
+      <Link to={to} className="grow draft-open">
+        <span className="name">{title}</span>
+        <span className="meta">{meta}</span>
+      </Link>
+      <button className="btn sm ghost" onClick={onDiscard} aria-label={`Discard “${title}”`}>
+        Discard
+      </button>
+      <Link to={to} className="btn sm">
+        Review
+      </Link>
+    </div>
+  );
+}
+
 export function DraftsWaiting() {
   const drafts = useQuery('drafts', api.listDrafts);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
@@ -25,6 +62,7 @@ export function DraftsWaiting() {
   const draftLessons = lessons.filter((l) => l.draft);
   const list = drafts.data || [];
   const lk = useLookups();
+  const discard = useDiscardDraft();
   const none = drafts.data && list.length === 0 && draftAssignments.length === 0 && draftLessons.length === 0;
 
   return (
@@ -40,27 +78,22 @@ export function DraftsWaiting() {
           <h2>Waiting for you</h2>
           <div className="list">
             {draftAssignments.map((a) => (
-              <Link key={a.id} to={`/assignments/${a.id}`} className="item">
-                <Icon name="clipboard" style={{ color: 'var(--claude)' }} />
-                <span className="grow">
-                  <span className="name">{a.title}</span>
-                  <span className="meta">
+              <DraftRow
+                key={a.id}
+                icon="clipboard"
+                to={`/assignments/${a.id}`}
+                title={a.title}
+                onDiscard={() => discard('assignments', a)}
+                meta={
+                  <>
                     <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span> by {from(a.source)} · {ago(a.created_at)}
                     {lk.audience(a).length > 0 && ` · for ${lk.audience(a).map((l) => l.display_name.split(' ')[0]).join(', ')}`}
-                  </span>
-                </span>
-                <span className="btn sm">Review</span>
-              </Link>
+                  </>
+                }
+              />
             ))}
             {draftLessons.map((l) => (
-              <Link key={l.id} to={`/lesson/${l.id}`} className="item">
-                <Icon name="book" style={{ color: 'var(--claude)' }} />
-                <span className="grow">
-                  <span className="name">{l.title}</span>
-                  <span className="meta">Lesson by {from(l.source)} · {ago(l.created_at)}</span>
-                </span>
-                <span className="btn sm">Review</span>
-              </Link>
+              <DraftRow key={l.id} icon="book" to={`/lesson/${l.id}`} title={l.title} onDiscard={() => discard('lessons', l)} meta={`Lesson by ${from(l.source)} · ${ago(l.created_at)}`} />
             ))}
           </div>
         </div>

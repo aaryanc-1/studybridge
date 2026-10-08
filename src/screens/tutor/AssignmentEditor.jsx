@@ -10,6 +10,7 @@ import { fromLocalInput, toLocalInput, typeLabel, kindLabel } from '../../lib/fo
 import { BankPicker } from './QuestionBank.jsx';
 import { useLookups } from '../shared/lookups.jsx';
 import { KIND_DEFAULTS } from './Assignments.jsx';
+import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { items, multi } from '../../lib/questions.js';
 
 let seq = 0;
@@ -61,6 +62,7 @@ export default function AssignmentEditor({ id }) {
   const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
+  const discard = useDiscardDraft();
   const files = useQuery('files', api.listFiles).data || [];
   const [a, setA] = useState(null);
   const [qs, setQs] = useState([]);
@@ -222,6 +224,11 @@ export default function AssignmentEditor({ id }) {
             </button>
           ) : (
             <>
+              {a.draft && (
+                <button className="btn ghost" onClick={async () => (await discard('assignments', a)) && go(a.source === 'prof' || a.source === 'claude' ? '/prof' : '/assignments')} disabled={busy}>
+                  <Icon name="trash" size={16} /> Discard
+                </button>
+              )}
               <button className="btn" onClick={() => saveAll()} disabled={busy || !dirty} title="Keep it hidden and carry on later">
                 Save draft
               </button>

@@ -383,13 +383,13 @@ export function LessonEditor({ id }) {
             <button
               className="btn danger"
               onClick={async () => {
-                if (!(await confirm({ title: 'Delete these lesson notes?', ok: 'Delete', danger: true }))) return;
+                if (!(await confirm({ title: l.draft ? 'Discard these lesson notes?' : 'Delete these lesson notes?', body: l.draft ? 'Learners never saw them.' : undefined, ok: l.draft ? 'Discard' : 'Delete', danger: true }))) return;
                 await api.remove('lessons', l.id);
-                invalidate('lessons');
-                go('/library/lessons');
+                invalidate('lessons', 'drafts');
+                go(l.draft ? '/prof' : '/library/lessons');
               }}
             >
-              Delete
+              {l.draft ? 'Discard' : 'Delete'}
             </button>
           )}
           {l.visibility === 'hidden' || l.draft ? (

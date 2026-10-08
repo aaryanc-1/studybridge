@@ -92,12 +92,21 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
 }
 
 
-// The account button on every screen: Settings, other accounts on this device (admin's device only) and Sign out
+// The account button on every screen: Settings, other accounts on this device (admin's device only) and Sign out.
+// In the sidebar the menu floats above the button (fixed), so the scrolling sidebar can't clip it.
 function AccountMenu({ place }) {
   const app = useApp();
   const confirm = useConfirm();
   const [open, setOpen] = useState(false);
+  const [at, setAt] = useState(null);
   const box = useRef(null);
+  const toggle = (e) => {
+    if (place === 'side') {
+      const b = e.currentTarget.getBoundingClientRect();
+      setAt({ left: b.left, width: b.width, bottom: window.innerHeight - b.top + 8 });
+    }
+    setOpen((x) => !x);
+  };
   useEffect(() => {
     if (!open) return;
     const away = (e) => !box.current?.contains(e.target) && setOpen(false);
@@ -115,9 +124,9 @@ function AccountMenu({ place }) {
     f();
   };
   return (
-    <div className={'acct ' + place} ref={box}>
+    <div className={'acct acct-' + place} ref={box}>
       {place === 'side' ? (
-        <button className="me" onClick={() => setOpen((x) => !x)} aria-expanded={open} aria-haspopup="menu">
+        <button className="me" onClick={toggle} aria-expanded={open} aria-haspopup="menu">
           <Avatar person={app.me} />
           <span className="grow">
             <div className="n">{app.me.display_name}</div>
@@ -126,12 +135,12 @@ function AccountMenu({ place }) {
           <Icon name={open ? 'down' : 'up'} size={16} />
         </button>
       ) : (
-        <button className="acct-btn" onClick={() => setOpen((x) => !x)} aria-expanded={open} aria-haspopup="menu" aria-label="Your account: settings and sign out">
+        <button className="acct-btn" onClick={toggle} aria-expanded={open} aria-haspopup="menu" aria-label="Your account: settings and sign out">
           <Avatar person={app.me} size="sm" />
         </button>
       )}
       {open && (
-        <div className="acct-menu" role="menu">
+        <div className="acct-menu" role="menu" style={place === 'side' && at ? { position: 'fixed', left: at.left, width: at.width, bottom: at.bottom } : undefined}>
           <div className="acct-who">
             <div className="strong">{app.me.display_name}</div>
             <div className="tiny muted">{ROLE_NAME[app.me.role] || app.me.role}</div>

@@ -112,6 +112,10 @@ Email: hello@ (website) and support@ (inside the app) forward to gostudybridge.h
 and subject requests go to hello@; in-app "Contact StudyBridge" (`send_feedback`) to support@, each with reply-to the
 person; Prof's `sendQueued()` sends them through Resend on every kick once Admin → Selling has the Resend key + sender.
 Weekly report emails reply to the tutor. Admin → Selling shows website messages and the email queue.
+Account menu fix (8 Oct): its classes are `acct-side`/`acct-top` (the old `side` class picked up the sidebar's own
+styles and clipped the menu); in the sidebar it floats (fixed) above the button. Drafts (Prof's work, copied papers,
+lesson notes) can be discarded from Prof → "Waiting for you" or inside the draft (`useDiscardDraft` in ClaudeInbox.jsx).
+test/product.mjs runs on Windows too: `CHROMIUM` = Edge's path (no Playwright browsers installed on Aaryan's PC).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

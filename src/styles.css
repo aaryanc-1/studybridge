@@ -211,6 +211,9 @@ hr { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 0; width: 10
 .item .meta { font-size: 13px; color: var(--muted); display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: center; }
 button.item, a.item { width: 100%; background: none; border-left: 0; border-right: 0; border-bottom: 0; text-align: left; cursor: pointer; color: inherit; text-decoration: none; font: inherit; }
 button.item:hover .name, a.item:hover .name { color: var(--accent); }
+.draft-open { min-width: 0; flex: 1; color: inherit; text-decoration: none; }
+.draft-open:hover .name { color: var(--accent); }
+@media (max-width: 600px) { .draft-row { flex-wrap: wrap; } .draft-row .draft-open { flex-basis: calc(100% - 40px); } }
 .list.boxed .item { padding: 12px 18px; }
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -859,12 +862,12 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 
 /* The account button and its menu (every screen) */
 .acct { position: relative; }
-.acct.side { width: 100%; }
+.acct-side { width: 100%; }
 .acct-btn { border: 0; background: none; padding: 2px; border-radius: 50%; cursor: pointer; display: inline-flex; }
 .acct-btn:focus-visible { outline: 2px solid var(--accent); }
 .acct-menu { position: absolute; z-index: 60; min-width: 240px; max-width: 320px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; }
-.acct.side .acct-menu { left: 0; right: 0; bottom: calc(100% + 8px); }
-.acct.top .acct-menu { right: 0; top: calc(100% + 8px); }
+.acct-side .acct-menu { left: 0; right: 0; bottom: calc(100% + 8px); min-width: 0; }
+.acct-top .acct-menu { right: 0; top: calc(100% + 8px); }
 .acct-who { padding: 8px 12px 10px; border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; }
 .acct-menu button[role='menuitem'] { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; background: none; border-radius: 10px; font-size: 15px; font-weight: 500; color: var(--ink); text-align: left; cursor: pointer; }
 .acct-menu button[role='menuitem']:hover, .acct-menu button[role='menuitem']:focus-visible { background: var(--sunk); }

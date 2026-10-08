@@ -6,13 +6,14 @@ import http from 'node:http';
 import { execSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
 import { startFakeSupabase } from './fake-supabase.mjs';
 import { startFakeClaude, seen } from './fake-claude.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(ROOT, 'test', '.dist-product');
 const SHOTS = process.env.SHOTS || join(ROOT, 'test', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
@@ -21,7 +22,7 @@ const PDF = join(ROOT, 'test', 'fixtures', 'algebra-chapter-3.pdf');
 const claude = await startFakeClaude();
 const srv = await startFakeSupabase({ port: 54329, anthropicUrl: claude.url });
 console.log('• Building the app with the StudyBridge server built in');
-execSync(`npx vite build --outDir ${OUT} --emptyOutDir`, { cwd: ROOT, stdio: 'ignore', env: { ...process.env, VITE_SB_URL: srv.url, VITE_SB_KEY: srv.anonKey } });
+execSync(`npx vite build --outDir "${OUT}" --emptyOutDir`, { cwd: ROOT, stdio: 'ignore', env: { ...process.env, VITE_SB_URL: srv.url, VITE_SB_KEY: srv.anonKey } });
 
 function serve(dir) {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf' };
@@ -172,7 +173,7 @@ try {
   await shot(A, 'prof-draft-ready');
 
   step('Tutor reviews the draft and approves it');
-  await A.locator('.item', { hasText: 'Linear equations quiz' }).first().click();
+  await A.locator('.item', { hasText: 'Linear equations quiz' }).first().getByRole('link', { name: 'Review' }).click();
   await A.getByText('Drafted by Prof').waitFor();
   await shot(A, 'prof-draft-review');
   await A.getByRole('button', { name: 'Approve & post' }).click();
@@ -204,6 +205,15 @@ try {
   const replyJob = A.locator('.prof-job', { hasText: 'Make questions 4 and 5 harder' });
   await replyJob.getByText(/↳ Reply to “Homework on linear equations/).waitFor();
   await replyJob.getByRole('link', { name: /Linear equations quiz/ }).waitFor({ timeout: 45000 });
+
+  step('Tutor discards a draft they don’t want, straight from “Waiting for you”');
+  await nav(A, 'Prof').click();
+  const draftsBefore = (await tc.from('assignments').select('id').eq('draft', true)).data.length;
+  assert.ok(draftsBefore >= 1, 'Prof’s drafts are waiting');
+  await A.locator('.card', { has: A.getByRole('heading', { name: 'Waiting for you' }) }).getByRole('button', { name: /^Discard/ }).first().click();
+  await A.getByRole('dialog', { name: 'Discard this draft?' }).getByRole('button', { name: 'Discard' }).click();
+  await A.getByText('Draft discarded').waitFor();
+  assert.equal((await tc.from('assignments').select('id').eq('draft', true)).data.length, draftsBefore - 1);
 
   step('Tutor switches on auto-marking');
   await nav(A, 'Prof').click();
@@ -351,8 +361,13 @@ try {
   assert.ok((await A.locator('.plan-item').count()) >= 5, 'weeks planned');
   await A.locator('.plan-item.now').first().waitFor();
   await shot(A, 'teaching-plan', true);
+  // the account button (bottom of the sidebar) opens a menu with Settings and Sign out
+  await A.locator('aside.side').getByRole('button', { name: /Settings and sign out/ }).click();
+  await A.getByRole('menuitem', { name: 'Sign out' }).waitFor();
+  await shot(A, 'account-menu');
+  await A.getByRole('menuitem', { name: 'Settings' }).click();
+  await A.getByRole('group', { name: 'Appearance' }).waitFor();
   // dark theme for this device
-  await A.goto(web.url + '#/settings');
   await A.getByRole('group', { name: 'Appearance' }).getByRole('button', { name: 'Dark' }).click();
   assert.equal(await A.evaluate(() => document.documentElement.dataset.theme), 'dark');
   await shot(A, 'settings-dark');
