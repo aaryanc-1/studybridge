@@ -15,7 +15,7 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 | First real user | Aaryan tutoring his sister (Cambridge IGCSE International Maths 0607, Lusaka) from NYC |
 | Admin | Aaryan is the StudyBridge admin, on a separate admin account: approves tutors, manages accounts and access, never sees content |
 | Business model | Monthly or yearly subscription per tutor (Free: 1 learner; Starter: 5 learners, $15; Pro: 25 learners, $29; yearly = 2 months free; parents free), no commission. Free for everyone until paid plans are switched on; StudyBridge pays the AI and video costs |
-| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026; on gostudybridge.com since 7 Oct 2026; fixes and polish 8 Oct 2026 (app 1.1.56) |
+| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026; on gostudybridge.com since 7 Oct 2026; fixes and polish 8 Oct 2026 (app 1.1.56); account menu fix and Discard 8 Oct 2026 (app 1.1.57) |
 
 **Rules StudyBridge lives by**
 
@@ -102,7 +102,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.56 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.57 |
 | Website | Published with every release next to the phone version; its early-access form saves to the server (Admin → Selling shows the list) | Live at gostudybridge.com (app at gostudybridge.com/app/), served by Cloudflare Pages (project gostudybridge) from the releases repo's gh-pages branch; old github.io links redirect |
 | Admin → Selling | Plan limits, Stripe (secret key, webhook secret, four price IDs), Resend email (sender and key), Google sign-in | Nothing set; all off |
 | Domain gostudybridge.com (Cloudflare) | The website and the phone/web version; Cloudflare Pages serves them free and fast worldwide. Later: email from the domain (Resend) and hello@ forwarding (Cloudflare Email Routing) | Live 7 Oct 2026; Supabase Site URL set to gostudybridge.com/app/ (8 Oct 2026); Cloudflare Web Analytics on |
@@ -300,6 +300,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Date | Change |
 | --- | --- |
 | 8 Oct 2026 | Fixes and polish (app 1.1.56): handed-in work drops off tutor Home's Coming up; the desktop app keeps the running version during updates and offers a restart if part of the app can't load (the exam-camera error); the lockdown box says test or quiz; an account menu on every screen with Sign out; parents get four big tabs and a child picker; text size per device; the welcome screen matches the website with a link back; the website shows Open my StudyBridge when signed in; a Contact page; hello@ (website) and support@ (in the app) set up, and website messages, early access and Contact StudyBridge are emailed once Resend is set up; weekly report replies go to the tutor |
+| 8 Oct 2026 | Account menu and Discard (app 1.1.57): the account menu at the bottom of the sidebar opens again (it was opening but hidden), with Settings, Switch account and Sign out; Prof's drafts can be discarded straight from Waiting for you or inside the draft |
 | 7 Oct 2026 | Moved to gostudybridge.com (app 1.1.55): the domain was bought on Cloudflare; Cloudflare Pages serves the website and the app at /app/; invites, parent invites, password-reset links, Stripe returns and the QR code use it; old github.io links redirect (signed-in phone users get a note first). The backend stays on Supabase (decided: not GoDaddy shared hosting, which can't run it safely) |
 | 7 Oct 2026 | 2.0 step 3, the 6 Oct fixes (app 1.1.54): lockdown alerts say test, quiz or exam as it is; the marking total and buttons stay in view (a bar on narrow screens); "Return marks" is always there and final, "Return marks and ask to redo N" only when you tick redo, "Save, return later" never releases; Prof no longer ticks redo; feedback with "
 " written out gets real line breaks (old feedback fixed too); blank or rubbed-out drawings count as no answer; tutor plans chosen from a list (Free, Starter, Pro, Custom, Complimentary), typed-in names became Complimentary |
