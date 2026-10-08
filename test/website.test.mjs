@@ -37,7 +37,10 @@ test('website: every page builds with nothing left unfilled', async () => {
     assert.match(students, /id="cd-session"/);
     assert.match(students, /data-default-role="student"/);
     // tutors: plans and the calculator; parents and schools: their own early-access forms; downloads
-    for (const p of c.plans) assert.match(read('tutors.html'), new RegExp(`data-plan="${p.id}"`));
+    for (const l of c.tutorLevels) assert.match(read('tutors.html'), new RegExp(`data-level="${l.id}"`));
+    assert.match(students, new RegExp(`data-usd="${c.selfLearner.month}"`), 'students see their price');
+    // students never chat with AI: the website doesn't promise it
+    for (const f of pages) assert.doesNotMatch(read(f), /Prof as (your|their) guide|Prof guides (you|them|students)/, `${f}: no AI chat for students`);
     assert.match(read('parents.html'), /#start=parent/);
     assert.match(read('parents.html'), /data-default-role="parent"/);
     assert.match(read('schools.html'), /data-default-role="centre"/);
@@ -65,16 +68,22 @@ test('website: every page builds with nothing left unfilled', async () => {
   }
 });
 
-test('website: plans and the phone address match the app', () => {
+test('website: prices are set once, make sense, and the app says the same', () => {
   const c = siteConfig();
-  const sql = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'utf8');
-  const limits = sql.match(/_plan_learners\(p_plan text\)[\s\S]*?select case[^\n]*/)[0];
-  for (const p of c.plans) assert.match(limits, new RegExp(`'${p.id}' then ${p.learners}\\b`), p.id);
-  for (const p of c.plans.filter((x) => x.month)) assert.equal(p.year, p.month * (12 - c.yearlyMonthsFree), `${p.id} yearly = ${12 - c.yearlyMonthsFree} months`);
-  const settings = readFileSync(new URL('../src/screens/shared/Settings.jsx', import.meta.url), 'utf8');
-  for (const p of c.plans.filter((x) => x.month)) {
-    assert.ok(settings.includes(`$${p.month} a month`) && settings.includes(`$${p.year} a year`), `Settings shows ${p.id} prices`);
+  // tutors pay per learner on two levels, in steps that get cheaper; Plus costs more at every step
+  const [ess, plus] = c.tutorLevels;
+  for (const l of c.tutorLevels) {
+    assert.equal(l.steps.at(-1).upTo, null, `${l.id}: the last step has no top`);
+    for (let i = 1; i < l.steps.length; i++) assert.ok(l.steps[i].price < l.steps[i - 1].price && (l.steps[i].upTo ?? Infinity) > l.steps[i - 1].upTo, `${l.id} step ${i + 1}`);
   }
+  ess.steps.forEach((s, i) => assert.ok(plus.steps[i].price > s.price && plus.steps[i].upTo === s.upTo, `Plus costs more at step ${i + 1}`));
+  assert.ok(c.yearlyMonthsFree >= 0 && c.yearlyMonthsFree <= 2 && c.trialDays > 0);
+  assert.ok(c.selfLearner.passMonth < c.selfLearner.month, 'the exam pass costs less than paying monthly');
+  // the app's "Your plan" names the same levels and starting prices, the same yearly offer and trial
+  const settings = readFileSync(new URL('../src/screens/shared/Settings.jsx', import.meta.url), 'utf8');
+  for (const l of c.tutorLevels) assert.ok(settings.includes(`${l.name} from $${l.steps[0].price}`), `Settings shows ${l.name}`);
+  assert.ok(settings.includes(`Yearly (${c.yearlyMonthsFree} month${c.yearlyMonthsFree === 1 ? '' : 's'} free)`), 'Settings shows the yearly offer');
+  assert.ok(settings.includes(`free for ${c.trialDays} days`), 'Settings shows the trial');
   const api = readFileSync(new URL('../src/lib/api.js', import.meta.url), 'utf8');
   assert.ok(api.includes(`WEB_APP = '${c.siteUrl}${c.appPath}'`), 'the app sends people to the same web address');
 });

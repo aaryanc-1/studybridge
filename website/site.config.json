@@ -1,25 +1,34 @@
 {
   "_note": "Everything a rename, a price change or a new subject touches is here. scripts/build-website.mjs puts it into the pages; test/website.test.mjs checks it matches the app.",
   "brand": "StudyBridge",
-  "tagline": "Get exam-ready, step by step. With a tutor, or on your own with Prof.",
+  "tagline": "Get exam-ready, step by step. With a tutor, or on your own.",
   "siteUrl": "https://gostudybridge.com/",
   "contactEmail": "hello@gostudybridge.com",
   "appPath": "app/",
   "releasesRepo": "aaryanc-1/studybridge-releases",
-  "freeNow": true,
-  "yearlyMonthsFree": 2,
-  "plans": [
-    { "id": "free", "name": "Free", "learners": 1, "month": 0, "year": 0, "blurb": "Try everything with one learner." },
-    { "id": "starter", "name": "Starter", "learners": 5, "month": 15, "year": 150, "blurb": "For a small group of regular learners." },
-    { "id": "pro", "name": "Pro", "learners": 25, "month": 29, "year": 290, "blurb": "For busy tutors and small tutoring centres.", "popular": true }
+  "trialDays": 7,
+  "yearlyMonthsFree": 1,
+  "earlyAccessPayment": "During early access, we arrange payment with you directly. Online checkout is coming.",
+  "tutorLevels": [
+    {
+      "id": "essentials", "name": "Essentials", "blurb": "Everything to run your tutoring, without Prof.",
+      "steps": [{ "upTo": 10, "price": 5 }, { "upTo": 30, "price": 4 }, { "upTo": null, "price": 3 }],
+      "includes": ["Homework, quizzes that mark themselves, tests and exams", "Your own marking and feedback", "Past papers, question bank and practice", "Live lessons with video and whiteboard", "Weekly parent reports", "Locked-down exams on Windows and Mac"]
+    },
+    {
+      "id": "plus", "name": "Plus", "tag": "With Prof", "blurb": "Everything in Essentials, plus Prof and the exam extras.",
+      "steps": [{ "upTo": 10, "price": 9 }, { "upTo": 30, "price": 7 }, { "upTo": null, "price": 5 }],
+      "includes": ["Everything in Essentials", "Prof with no limit: makes work, drafts marking, plans", "Mocks with grade boundaries and grades", "The exam camera, watched live", "StudyBridge practice papers and self-study for your learners"]
+    }
   ],
+  "selfLearner": { "month": 12, "passMonth": 10, "exampleMonths": 8 },
   "currencies": [
     { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
     { "code": "ZMW", "symbol": "K", "rate": 19.69, "label": "Zambian kwacha" },
     { "code": "INR", "symbol": "₹", "rate": 96.22, "label": "Indian rupees" }
   ],
   "audiences": [
-    { "id": "student", "name": "Students", "status": "Early access", "line": "A plan to your exam, short lessons, practice papers in the real format and timed mocks, with Prof as your guide.", "href": "students.html", "go": "For students" },
+    { "id": "student", "name": "Students", "status": "Early access", "line": "A plan to your exam, short lessons, practice papers in the real format and timed mocks, with hints and worked solutions.", "href": "students.html", "go": "For students" },
     { "id": "tutor", "name": "Tutors", "status": "Available now", "line": "Set work, mark with Prof, teach live and send weekly reports, all in one calm place.", "href": "tutors.html", "go": "For tutors" },
     { "id": "parent", "name": "Parents", "status": "Free", "line": "See how they’re really doing, with weekly reports, due dates and marks.", "href": "parents.html", "go": "For parents" },
     { "id": "school", "name": "Schools and tuition centres", "status": "Coming soon", "line": "Teachers, classes, learners and parents in one place, with exam prep built in.", "href": "schools.html", "go": "For schools" }

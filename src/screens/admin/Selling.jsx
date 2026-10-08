@@ -37,7 +37,7 @@ export default function SellingPage() {
       <div className="card">
         <h2>Plans</h2>
         <div className="small muted">
-          Free: 1 learner · Starter: up to 5 · Pro: up to 25 · Custom: you choose · Complimentary: Pro for free. Set each tutor’s plan on their page. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
+          New prices (on the website): tutors pay per learner on Essentials or Plus, after a 7-day free trial; self-learners pay $12 a month or an exam pass. Until online checkout opens, you take payment yourself, then set the tutor’s plan on their page: Custom (the learners they’ve paid for, until the date they’ve paid to) or Complimentary. Essentials and Plus arrive with the tutor launch. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
         </div>
         <Toggle
           checked={s.enforce_plans}
@@ -49,6 +49,7 @@ export default function SellingPage() {
 
       <div className="card">
         <h2>Payments (Stripe)</h2>
+        <div className="small muted">Online checkout comes last, once everything is ready. Leave this empty until then: these steps are for the old Starter and Pro plans and will change for per-learner prices.</div>
         <ol className="small stack sm" style={{ paddingLeft: 18, margin: 0 }}>
           <li>In Stripe, make two products (Starter and Pro), each with a monthly and a yearly price, and copy each price’s ID (it starts with price_).</li>
           <li>Stripe → Developers → API keys: copy the Secret key.</li>

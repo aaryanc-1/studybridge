@@ -12,26 +12,21 @@ export const siteConfig = () => JSON.parse(readFileSync(join(root, 'website/site
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-function planCards(c) {
-  return c.plans
-    .map((p) => {
-      const free = !p.month;
-      const items = [
-        `${p.learners === 1 ? '1 learner' : `Up to ${p.learners} learners`}`,
-        'Every feature, including Prof',
-        'Free parent accounts',
-        free ? 'No card needed' : 'Cancel any time',
-      ];
-      const cta = free ? 'Start free' : c.freeNow ? 'Start free now' : `Choose ${p.name}`;
-      return `<article class="plan${p.popular ? ' popular' : ''}" data-plan="${esc(p.id)}">
-          ${p.popular ? '<span class="tag">Most popular</span>' : ''}
-          <h3>${esc(p.name)}</h3>
-          <div class="who">${esc(p.blurb)}</div>
-          <div><span class="amount">$${p.month}</span><span class="per">${free ? 'for ever' : '/ month'}</span></div>
-          <div class="equiv"></div>
-          <ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
-          <a class="btn${p.popular ? ' primary' : ''}" href="${esc(c.appPath)}#start=tutor">${cta}</a>
-          ${!free && c.freeNow ? '<div class="soon">Paid plans coming soon</div>' : ''}
+// Tutors pay per learner, in steps that get cheaper; site.js turns data-usd into the visitor's currency (and yearly)
+const stepRange = (s, i, steps) => (s.upTo == null ? `after ${steps[i - 1].upTo}` : `${i ? steps[i - 1].upTo + 1 : 1}\u2013${s.upTo}`);
+function levelCards(c) {
+  return c.tutorLevels
+    .map((l) => {
+      const [first, ...rest] = l.steps;
+      const then = rest.map((s, i) => `<span data-usd="${s.price}" data-scale>$${s.price}</span> each for learners ${stepRange(s, i + 1, l.steps)}`).join(', and ');
+      return `<article class="plan${l.tag ? ' popular' : ''}" data-level="${esc(l.id)}">
+          ${l.tag ? `<span class="tag">${esc(l.tag)}</span>` : ''}
+          <h3>${esc(l.name)}</h3>
+          <div class="who">${esc(l.blurb)}</div>
+          <div><span class="amount" data-usd="${first.price}" data-scale>$${first.price}</span><span class="per" data-per>per learner a month</span></div>
+          <div class="equiv steps-line">For learners 1\u2013${first.upTo}. Then ${then}.</div>
+          <ul>${l.includes.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+          <a class="btn${l.tag ? ' primary' : ''}" href="${esc(c.appPath)}#start=tutor">Start your free trial</a>
         </article>`;
     })
     .join('\n        ');
@@ -74,7 +69,7 @@ function footer(c, year) {
     <div class="foot-grid">
       <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p><p class="fine"><a href="mailto:${esc(c.contactEmail)}">${esc(c.contactEmail)}</a></p></div>
       <nav aria-label="For students"><b>Students</b><a href="students.html">How it works</a><a href="students.html#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="students.html#early">Early access</a></nav>
-      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="tutors.html#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Start free</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
+      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="tutors.html#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Free trial</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
       <nav aria-label="Parents and schools"><b>Families and schools</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
       <nav aria-label="About"><b>About</b><a href="./">Home</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
     </div>
@@ -106,10 +101,14 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     repo: esc(c.releasesRepo),
     year: String(today.getFullYear()),
     updated: today.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
-    monthsFree: String(c.yearlyMonthsFree),
-    freeBadge: c.freeNow ? 'Free while we grow · paid plans coming soon' : 'Free for one learner',
-    freeLine: c.freeNow ? 'Free now, paid plans coming soon.' : 'Start free with one learner.',
-    plans: planCards(c),
+    yearlyFree: `${c.yearlyMonthsFree} month${c.yearlyMonthsFree === 1 ? '' : 's'} free`,
+    trialDays: String(c.trialDays),
+    earlyAccessPayment: esc(c.earlyAccessPayment),
+    levels: levelCards(c),
+    studentMonth: String(c.selfLearner.month),
+    studentPass: String(c.selfLearner.passMonth),
+    studentExampleMonths: String(c.selfLearner.exampleMonths),
+    studentExample: String(c.selfLearner.passMonth * c.selfLearner.exampleMonths),
     currencyOptions: c.currencies.map((x) => `<option value="${esc(x.code)}">${esc(x.code)} (${esc(x.symbol)})</option>`).join(''),
     subjectCount: String(subjectCount(c)),
     languages: c.languages.map((l, i) => `<i${i ? ' class="soon"' : ''}>${esc(l)}</i>`).join(''),
@@ -147,7 +146,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
   const pub = {
-    brand: c.brand, siteUrl: c.siteUrl, contactEmail: c.contactEmail, appPath: c.appPath, releasesRepo: c.releasesRepo, freeNow: c.freeNow, plans: c.plans, currencies: c.currencies,
+    brand: c.brand, siteUrl: c.siteUrl, contactEmail: c.contactEmail, appPath: c.appPath, releasesRepo: c.releasesRepo, tutorLevels: c.tutorLevels, yearlyMonthsFree: c.yearlyMonthsFree, currencies: c.currencies,
     boards: c.boards.map((b) => ({ id: b.id, name: b.name, sessions: b.sessions })),
     // the public address and key of the server (both public by design), for the early-access form
     sb: sb?.url && sb?.key ? { url: sb.url.replace(/\/+$/, ''), key: sb.key } : null,

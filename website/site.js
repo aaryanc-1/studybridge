@@ -139,8 +139,8 @@
     });
   }
 
-  // ---------- Pricing (tutors): monthly or yearly, currency, which plan fits ----------
-  var plans = S.plans || [];
+  // ---------- Prices: in the visitor's currency; tutors monthly or yearly, and what N learners cost ----------
+  var levels = S.tutorLevels || [];
   var period = 'month';
   var cur = (S.currencies || [])[0] || { code: 'USD', symbol: '$', rate: 1 };
   var guess = (navigator.language || '') + ' ' + ((Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || '');
@@ -150,32 +150,35 @@
   function money(usd) {
     var v = usd * cur.rate;
     if (cur.rate !== 1) v = v >= 1000 ? Math.round(v / 50) * 50 : Math.round(v / 5) * 5;
-    return cur.symbol + v.toLocaleString('en', { maximumFractionDigits: cur.rate === 1 ? 2 : 0 });
+    var cents = cur.rate === 1 && v % 1 ? 2 : 0; // $4.40, not $4.4; whole dollars stay whole
+    return cur.symbol + v.toLocaleString('en', { minimumFractionDigits: cents, maximumFractionDigits: cents });
+  }
+  var months = function () { return period === 'year' ? 12 - (S.yearlyMonthsFree || 0) : 1; };
+  // what n learners cost a month at one level: each step's price for the learners in that step
+  function total(level, n) {
+    var from = 0, sum = 0;
+    level.steps.forEach(function (s) {
+      var top = s.upTo == null ? Infinity : s.upTo;
+      sum += Math.max(0, Math.min(n, top) - from) * s.price;
+      from = top;
+    });
+    return sum;
   }
   function renderPrices() {
-    $$('.plan').forEach(function (el) {
-      var p = plans.filter(function (x) { return x.id === el.dataset.plan; })[0];
-      if (!p) return;
-      var amt = $('.amount', el), per = $('.per', el), eq = $('.equiv', el);
-      if (!p.month) { amt.textContent = money(0); per.textContent = 'for ever'; eq.textContent = ''; return; }
-      amt.textContent = money(period === 'year' ? p.year : p.month);
-      per.textContent = period === 'year' ? '/ year' : '/ month';
-      eq.textContent = period === 'year' ? 'That’s ' + money(p.year / 12) + ' a month' : 'About ' + money(p.month / p.learners) + ' per learner';
-    });
+    $$('[data-usd]').forEach(function (el) { el.textContent = money(+el.dataset.usd * (el.hasAttribute('data-scale') ? months() : 1)); });
+    $$('[data-per]').forEach(function (el) { el.textContent = period === 'year' ? 'per learner a year' : 'per learner a month'; });
     calc();
   }
   function calc() {
     var input = $('#learners'), out = $('#calc-out');
-    if (!input || !out || !plans.length) return;
+    if (!input || !out || !levels.length) return;
     var n = +input.value;
-    $('#n-out').textContent = n >= +input.max ? input.max + '+' : n;
-    var fit = plans.filter(function (p) { return p.learners >= n; })[0];
-    $$('.plan').forEach(function (el) { el.classList.toggle('fit', !!fit && el.dataset.plan === fit.id); });
-    if (!fit) { out.innerHTML = '<b>More than ' + plans[plans.length - 1].learners + ' learners?</b> Tell us about your centre in the early-access form and we’ll set up a plan with you.'; return; }
-    if (!fit.month) { out.innerHTML = '<b>' + fit.name + '</b> is enough: one learner, every feature, free.'; return; }
-    var cost = period === 'year' ? fit.year / 12 : fit.month;
-    out.innerHTML = '<b>' + fit.name + '</b> fits: up to ' + fit.learners + ' learners for ' + money(period === 'year' ? fit.year : fit.month) + (period === 'year' ? ' a year' : ' a month') +
-      '. With ' + n + ' learner' + (n === 1 ? '' : 's') + ' that’s about <b>' + money(cost / n) + ' per learner a month</b>.' + (S.freeNow ? ' Free while paid plans are being set up.' : '');
+    $('#n-out').textContent = n;
+    var when = period === 'year' ? ' a year' : ' a month';
+    out.innerHTML = 'With ' + n + ' learner' + (n === 1 ? '' : 's') + ': ' + levels.map(function (l) {
+      var t = total(l, n) * months();
+      return '<b>' + l.name + ' ' + money(t) + when + '</b>' + (n > 1 ? ' (' + money(t / n) + ' per learner)' : '');
+    }).join(' or ') + '.';
   }
   $$('[data-period]').forEach(function (b) {
     b.addEventListener('click', function () {

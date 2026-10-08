@@ -768,7 +768,7 @@ function YourPlan() {
               Monthly
             </button>
             <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
-              Yearly (2 months free)
+              Yearly (1 month free)
             </button>
           </div>
           <div className="row wrap">
@@ -788,7 +788,9 @@ function YourPlan() {
           <div className="tiny muted">Payment opens in your browser (Stripe). Your plan changes here as soon as it’s paid.</div>
         </div>
       ) : (
-        <div className="small muted">Paid plans are coming soon: Starter (5 learners) and Pro (25 learners).</div>
+        <div className="small muted">
+          Plans are priced per learner: Essentials from $5 and Plus from $9 per learner a month (Plus adds Prof). Try everything free for 7 days. During early access, StudyBridge arranges payment with you directly.
+        </div>
       )}
     </Section>
   );

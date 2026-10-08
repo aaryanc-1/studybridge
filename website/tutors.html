@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>For tutors · {{brand}}</title>
-<meta name="description" content="Your whole tutoring week in one calm place: set work, mark with Prof, teach live, run real mocks and send weekly reports parents read. Free for one learner.">
+<meta name="description" content="Your whole tutoring week in one calm place: set work, mark with Prof, teach live, run real mocks and send weekly reports parents read. Try it free for {{trialDays}} days.">
 <meta name="theme-color" content="#0E6B6B">
 <link rel="icon" href="favicon.png">
 <link rel="apple-touch-icon" href="logo-192.png">
@@ -25,10 +25,10 @@
       <h1>Your whole tutoring week,<br><em>in one calm place.</em></h1>
       <p class="lead">Set work in minutes, mark faster with Prof drafting and you deciding, teach live, run mocks that feel real and send weekly reports parents actually read.</p>
       <div class="cta center">
-        <a class="btn primary big" href="{{app}}#start=tutor">Start free</a>
+        <a class="btn primary big" href="{{app}}#start=tutor">Start your free trial</a>
         <a class="btn big" href="#pricing">See pricing</a>
       </div>
-      <p class="fine">Free for one learner, no card needed. Already teaching on {{brand}}? <a href="{{app}}#start=signin">Sign in</a>.</p>
+      <p class="fine">{{trialDays}} days free, no card needed. Already teaching on {{brand}}? <a href="{{app}}#start=signin">Sign in</a>.</p>
     </div>
   </section>
 
@@ -89,22 +89,22 @@
 
   <section class="pricing-sec" id="pricing">
     <div class="wrap">
-      <h2 class="reveal">Simple pricing</h2>
-      <p class="sub reveal">{{freeLine}} Parent accounts are always free. Pay yearly and get {{monthsFree}} months free.</p>
+      <h2 class="reveal">Pay per learner</h2>
+      <p class="sub reveal">You pay for each learner you teach, and the price per learner drops as you grow. Your learners’ and their parents’ accounts are free. Try everything free for {{trialDays}} days, and pay yearly to get {{yearlyFree}}.</p>
       <div class="price-controls reveal">
         <div class="seg" role="group" aria-label="Billing">
           <button type="button" data-period="month" aria-pressed="true">Monthly</button>
-          <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{monthsFree}} months free</small></button>
+          <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{yearlyFree}}</small></button>
         </div>
         <label class="cur">Prices in <select id="currency">{{currencyOptions}}</select></label>
       </div>
-      <div class="plans reveal">{{plans}}</div>
+      <div class="plans two reveal">{{levels}}</div>
       <div class="calc reveal">
         <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
-        <input type="range" id="learners" min="1" max="40" value="5">
+        <input type="range" id="learners" min="1" max="60" value="5">
         <div class="calc-out" id="calc-out" aria-live="polite"></div>
       </div>
-      <p class="fine center">Kwacha and rupee prices are approximate; plans are charged in US dollars. More than 25 learners? <a href="schools.html">See schools and centres</a>.</p>
+      <p class="fine center">Prices are in US dollars, shown in your currency. {{earlyAccessPayment}} A centre with several teachers? <a href="schools.html">See schools and centres</a>.</p>
     </div>
   </section>
 
@@ -113,7 +113,7 @@
       <div class="split reveal">
         <div>
           <h2 class="left">Best on the desktop app</h2>
-          <p class="muted">Locked-down mocks, the exam camera, big PDFs and books, and desktop notifications. Free for Windows and Mac, and it updates itself. Your learners can use any browser or their phone.</p>
+          <p class="muted">Locked-down mocks, the exam camera, big PDFs and books, and desktop notifications. Free for Windows and Mac, and it updates itself. Your learners can use any browser or their phone; locked exams run in the desktop app, and watched exams for Chromebooks, iPads and phones are coming.</p>
         </div>
         <a class="btn big" href="download.html">Get the app</a>
       </div>
@@ -123,7 +123,10 @@
   <section class="faq">
     <div class="wrap narrow">
       <h2 class="reveal">Questions from tutors</h2>
-      <details class="reveal"><summary>Is it really free?</summary><p>Yes. The Free plan is one learner with every feature, for as long as you like. While paid plans are being set up, nobody is charged. When they start, you choose whether to upgrade.</p></details>
+      <details class="reveal"><summary>How does the free trial work?</summary><p>You get everything, Plus included, free for {{trialDays}} days, with no card needed. Then you choose Essentials or Plus, monthly or yearly. If you don’t, your account turns read-only: nothing is deleted, and you can still see and download everything.</p></details>
+      <details class="reveal"><summary>What’s the difference between Essentials and Plus?</summary><p>Essentials has everything you need to run your tutoring: work, marking, past papers, live lessons, parent reports and locked-down exams. Plus adds Prof, with no limit, to make work, draft marking and plan with you, plus mocks with grades, the exam camera and {{brand}}’s own practice papers and self-study for your learners.</p></details>
+      <details class="reveal"><summary>Is there a limit on Prof?</summary><p>No. On Plus, Prof makes as many papers and quizzes as you need and changes them as often as you like. You can always edit anything it makes yourself, too.</p></details>
+      <details class="reveal"><summary>How do I pay?</summary><p>{{earlyAccessPayment}} Prices are in US dollars, and you can pay in your own currency.</p></details>
       <details class="reveal"><summary>Do my learners use AI?</summary><p>No. Prof works only for you. Nothing it drafts reaches a learner or parent until you’ve checked and approved it.</p></details>
       <details class="reveal"><summary>Can I use my own past papers and books?</summary><p>Yes. Import a whole folder: papers are filed, paired with their mark schemes and kept private to you. {{brand}} never shares exam-board papers.</p></details>
       <details class="reveal"><summary>My learners live in another time zone.</summary><p>Weekly lessons keep your clock time and show each learner their own, with reminders a day and 15 minutes before.</p></details>
@@ -134,10 +137,10 @@
   <section class="final">
     <div class="wrap">
       <div class="final-box reveal">
-        <h2>Start with one learner, free.</h2>
-        <p>Set up your first subject in a few minutes.</p>
+        <h2>Try it free for {{trialDays}} days.</h2>
+        <p>Set up your first subject in a few minutes. No card needed.</p>
         <div class="cta center">
-          <a class="btn big on-dark-primary" href="{{app}}#start=tutor">Start free</a>
+          <a class="btn big on-dark-primary" href="{{app}}#start=tutor">Start your free trial</a>
           <a class="btn big on-dark" href="download.html">Get the app</a>
         </div>
       </div>

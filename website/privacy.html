@@ -26,7 +26,7 @@
     <ul>
       <li>We keep what’s needed to run {{brand}} for you, and nothing for advertising.</li>
       <li>We don’t sell your data or show ads.</li>
-      <li>With a tutor, learners never use AI: when the tutor asks Prof for help, the work involved is sent to our AI provider to make a draft for the tutor. In the student version, Prof guides students directly with hints, using content checked before it’s shown.</li>
+      <li>With a tutor, learners never use AI: when the tutor asks Prof for help, the work involved is sent to our AI provider to make a draft for the tutor. In the student version, students don’t use AI either: lessons, hints and worked solutions are written ahead and checked.</li>
       <li>You can download your data or delete your account in Settings at any time.</li>
     </ul>
 
@@ -35,7 +35,7 @@
       <li><b>Account:</b> name, email, password (stored scrambled, never readable), role, and the tutor you’re linked to.</li>
       <li><b>Teaching:</b> subjects, lessons, files, assignments, answers (including photos and whiteboard drawings), marks, feedback, messages, flashcards, notes and time studied.</li>
       <li><b>Parents:</b> the parent’s name and email, and their link to their child. Optionally a parent phone number or email the tutor adds for sending reports.</li>
-      <li><b>Billing (tutors on a paid plan):</b> your plan and a Stripe customer reference. Card details go to Stripe and never reach us.</li>
+      <li><b>Billing:</b> your plan and when it’s paid until. Once online checkout opens, also a reference from our payment provider (Stripe, or a mobile money provider); card and mobile money details go to them and never reach us.</li>
       <li><b>Early access:</b> if you join the list on the website, your email, who you are (student, parent, tutor, centre or school), and what you study, your exam session and country if you tell us. We use it only to tell you when the student version opens and to decide which subjects to build first. Ask us and we’ll delete it.</li>
       <li><b>Messages you send us:</b> if you use the Contact page, your name, email, who you are and your message, so we can reply. Ask us and we’ll delete it.</li>
       <li><b>Visits to this website:</b> counted with Cloudflare Web Analytics, which uses no cookies and doesn’t track you across sites or build a profile of you. We see totals: pages visited, countries and devices.</li>
@@ -54,13 +54,13 @@
     <p>Many learners are under 18. Below grade 8, a parent sets up or approves the account; where the law asks for it (for example India, under 18), a parent confirms by email. Learners with a tutor join through their tutor’s invite, and the tutor confirms a parent or guardian agrees. We collect only what’s needed for learning, never use children’s data for marketing, and a parent can ask the tutor, or us, to see or delete their child’s data. The early-access list is for people aged 13 or over, or parents signing up for their child.</p>
 
     <h2>Prof and AI</h2>
-    <p>When a tutor asks Prof to mark, plan, make questions or draft a report, the relevant material (for example a learner’s answers and the mark scheme) is sent to Anthropic, which provides the AI model. In the student version, a student’s answers are sent the same way when Prof marks them or gives a hint. Anthropic processes it to produce the result and doesn’t use it to train its models. With a tutor, every draft is checked by the tutor before anyone else sees it.</p>
+    <p>When a tutor asks Prof to mark, plan, make questions or draft a report, the relevant material (for example a learner’s answers and the mark scheme) is sent to Anthropic, which provides the AI model. In the student version, students’ answers are never sent to AI. Anthropic processes it to produce the result and doesn’t use it to train its models. With a tutor, every draft is checked by the tutor before anyone else sees it.</p>
 
     <h2>Services we use</h2>
     <ul>
       <li><b>Supabase:</b> database, sign-in and file storage.</li>
-      <li><b>Anthropic:</b> the AI behind Prof, for tutor requests only.</li>
-      <li><b>Stripe:</b> payments, once paid plans start.</li>
+      <li><b>Anthropic:</b> the AI behind Prof, for tutor requests and for preparing {{brand}}’s own lessons and papers.</li>
+      <li><b>Stripe:</b> card payments, once online checkout opens.</li>
       <li><b>Resend:</b> sending emails such as weekly reports, once switched on.</li>
       <li><b>Cloudflare:</b> hosts this website and the phone and web version.</li>
       <li><b>GitHub:</b> hosts the app downloads and updates.</li>

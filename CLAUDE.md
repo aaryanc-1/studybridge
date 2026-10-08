@@ -127,8 +127,23 @@ test/product.mjs runs on Windows too: `CHROMIUM` = Edge's path (no Playwright br
   declined (copyright, and it breaks the rule above). Don't copy or reword real exam papers.
 - Payment only on the website. The Claude Desktop connector is Owner-only (content on his subscription); remove it for
   tutors.
-- Order: name + domain → website 2.0 → 6 Oct fixes → foundations → content → student experience → accessibility and
-  languages → growth → payments → centres and schools.
+- Vision (8 Oct 2026): one whole education platform (what ManageBac + Canvas + Google Classroom give, plus lockdown).
+- Order (8 Oct 2026, replaces the 7 Oct order): **launch 1 = self-learners** (web and phone; they sit in StudyBridge's own
+  organisation; every subject, IGCSE/A-Level/IB, switching on one by one as its content is ready), then **launch 2 = tutors**
+  (organisations and classes, new Home + shorter menu, Essentials/Plus, watched mode, signed apps), then online checkout
+  (Stripe + mobile money via Flutterwave/DPO), then classroom, school running, reach. Until checkout, Aaryan takes payment
+  himself and sets plans in Admin (Custom/Complimentary); tutors stay in free early access with a 7-day trial.
+- Prices (8 Oct 2026) live in website/site.config.json: `tutorLevels` (per learner, graduated: Essentials $5/$4/$3, Plus
+  $9/$7/$5 with unlimited Prof, mocks with grades, exam camera, StudyBridge content), `yearlyMonthsFree` 1, `trialDays` 7,
+  `selfLearner` ($12 a month, or an exam pass at $10 a month paid once until the exams). No discounts; one US price shown
+  (and later charged) in local currency. Parents and a tutor's learners are free. test/website.test.mjs checks the app's
+  Settings says the same. Prof has no limit on Plus (Admin gets an alert, nothing stops); "change this part" should redo
+  only that part.
+- Students never chat with AI: self-learners get hints and worked solutions written ahead and checked. The website must
+  not promise "Prof as your guide" (a website test checks).
+- Plans live in three Claude Docs: launch priorities https://claude.ai/code/artifact/75865270-1c1c-453a-8eda-128170b852bd,
+  price sheet https://claude.ai/code/artifact/43264c30-63b7-4a77-93fa-66ef9bfb8cd7, features by user
+  https://claude.ai/code/artifact/bbc39170-31c0-49c6-90d8-4aff29d32ced. Nothing is built until Aaryan says "build" or "go".
 
 ## Next (1.6, agreed)
 Recurring lessons with reminders in both time zones · mock exam mode with predicted grade (Cambridge

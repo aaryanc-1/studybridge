@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>For students · {{brand}}</title>
-<meta name="description" content="Get exam-ready, step by step: a plan for the weeks you have, short lessons, practice papers in the real format and timed mocks with a grade, with Prof as your guide. IGCSE, A-Level and IB.">
+<meta name="description" content="Get exam-ready, step by step: a plan for the weeks you have, short lessons, practice papers in the real format and timed mocks with a grade, with hints and worked solutions. IGCSE, A-Level and IB.">
 <meta name="theme-color" content="#0E6B6B">
 <link rel="icon" href="favicon.png">
 <link rel="apple-touch-icon" href="logo-192.png">
@@ -23,7 +23,7 @@
     <div class="wrap narrow center">
       <span class="pill">For students · early access</span>
       <h1>Get exam-ready,<br><em>step by step.</em></h1>
-      <p class="lead">A plan for the weeks you have, lessons that make sense, practice papers in the real format and timed mocks with a grade. On your own with Prof as your guide, or with your tutor.</p>
+      <p class="lead">A plan for the weeks you have, lessons that make sense, practice papers in the real format and timed mocks with a grade. On your own, or with your tutor.</p>
       <div class="cta center">
         <a class="btn primary big" href="#countdown">Get my plan</a>
         <a class="btn big" href="#early">Join early access</a>
@@ -54,24 +54,24 @@
     </div>
   </section>
 
-  <section class="prof" id="prof">
+  <section class="prof" id="help">
     <div class="wrap prof-grid">
       <div class="reveal">
-        <span class="eyebrow">Meet Prof</span>
-        <h2 class="left">Prof guides.<br>It never does the work for you.</h2>
+        <span class="eyebrow">When you’re stuck</span>
+        <h2 class="left">Hints first.<br>The thinking stays yours.</h2>
         <ul class="ticks">
-          <li><b>Hints before answers.</b> Prof asks the next question instead of handing you the answer, so the learning is yours.</li>
-          <li><b>Checked twice.</b> Lessons and papers are worked through a second time before they reach you, and anything can be reported in one tap.</li>
-          <li><b>With a tutor, the tutor decides.</b> Everything Prof drafts is approved by your tutor before you see it.</li>
-          <li><b>No ads, nothing sold.</b> Your work is yours. Download it or delete it any time.</li>
+          <li><b>Hints before answers.</b> Every question has hints you open one at a time, then a worked solution, so you get there yourself.</li>
+          <li><b>No AI chat.</b> Students never chat with AI. Lessons, hints and solutions are written ahead of time.</li>
+          <li><b>Checked before you see it.</b> Everything is checked before it reaches you, and anything can be reported in one tap.</li>
+          <li><b>With a tutor, the tutor decides.</b> Your tutor approves everything before you see it.</li>
         </ul>
       </div>
-      <div class="chat reveal" aria-label="Example of Prof giving a hint">
-        <div class="msg me">I’m stuck on 3x − 7 = 11</div>
-        <div class="msg prof"><span class="who">Prof</span>What could you do to both sides to get 3x on its own?</div>
-        <div class="msg me">Add 7?</div>
-        <div class="msg prof"><span class="who">Prof</span>Yes. Now you have 3x = 18. What’s the last step?</div>
-        <div class="msg me">x = 6 🎉</div>
+      <div class="hints reveal" aria-label="Example of hints and a worked solution">
+        <div class="h-q"><span class="qn">Q4</span> Solve 3x − 7 = 11</div>
+        <div class="h-step"><b>Hint 1</b>What could you do to both sides to get 3x on its own?</div>
+        <div class="h-step"><b>Hint 2</b>Adding 7 gives 3x = 18. What’s the last step?</div>
+        <div class="h-step done"><b>Worked solution</b>3x − 7 = 11, so 3x = 18, so x = 6</div>
+        <div class="h-note">Open one at a time, only when you need it.</div>
       </div>
     </div>
   </section>
@@ -108,23 +108,50 @@
     <div class="wrap">
       <div class="split reveal">
         <div>
-          <h2 class="left">Study in your browser. Mock on your computer.</h2>
-          <p class="muted">Everything works in any browser, on a laptop, tablet or phone. For locked-down mocks just like the real exam, use the free desktop app for Windows or Mac. One account works everywhere.</p>
+          <h2 class="left">Study anywhere. Mock in exam conditions.</h2>
+          <p class="muted">Everything works in any browser, on a laptop, tablet or phone. Mocks run full screen with a timer, like the real exam. The free desktop app for Windows and Mac adds locked-down exams when your tutor sets one. One account works everywhere.</p>
         </div>
         <a class="btn big" href="download.html">Get the app</a>
       </div>
     </div>
   </section>
 
+  <section class="pricing-sec" id="pricing">
+    <div class="wrap">
+      <h2 class="reveal">What it costs</h2>
+      <p class="sub reveal">Every subject at your level, for one price. Try it free for {{trialDays}} days. Parent accounts are free.</p>
+      <div class="plans two reveal">
+        <article class="plan">
+          <h3>Monthly</h3>
+          <div class="who">Pay as you go. Cancel any time.</div>
+          <div><span class="amount" data-usd="{{studentMonth}}">${{studentMonth}}</span><span class="per">a month</span></div>
+          <div class="equiv"></div>
+          <ul><li>Every subject at your level</li><li>Your plan to exam day</li><li>Lessons, practice papers and timed mocks</li><li>Hints and worked solutions</li></ul>
+          <a class="btn" href="#early">Join early access</a>
+        </article>
+        <article class="plan popular">
+          <span class="tag">Best value</span>
+          <h3>Exam pass</h3>
+          <div class="who">Pay once. It lasts until your exams, then stops by itself.</div>
+          <div><span class="amount" data-usd="{{studentPass}}">${{studentPass}}</span><span class="per">a month, paid once</span></div>
+          <div class="equiv">{{studentExampleMonths}} months to your exams: <span data-usd="{{studentExample}}">${{studentExample}}</span> once</div>
+          <ul><li>Everything in Monthly</li><li>No renewals to remember</li><li>Less than paying monthly</li></ul>
+          <a class="btn primary" href="#early">Join early access</a>
+        </article>
+      </div>
+      <p class="fine center">Shown in your currency. A parent can pay for their child. The student version opens soon; join early access to be first.</p>
+    </div>
+  </section>
+
   <section class="faq" id="faq">
     <div class="wrap narrow">
       <h2 class="reveal">Questions from students</h2>
-      <details class="reveal"><summary>Can I use {{brand}} without a tutor?</summary><p>Yes, that’s the student version, in early access now. You’ll get a plan to your exam, lessons, practice papers and mocks, with Prof as your guide. Join the list below and we’ll tell you when it opens.</p></details>
-      <details class="reveal"><summary>Is it cheating to use Prof?</summary><p>No. Prof never does your work for you. It gives hints and asks questions so you get there yourself, the way a good teacher would.</p></details>
+      <details class="reveal"><summary>Can I use {{brand}} without a tutor?</summary><p>Yes, that’s the student version, opening soon. You’ll get a plan to your exam, lessons, practice papers and mocks, with hints and worked solutions. Join the list below and we’ll tell you when it opens.</p></details>
+      <details class="reveal"><summary>Is there an AI chatbot?</summary><p>No. Students never chat with AI. Lessons, hints and worked solutions are written ahead of time and checked before you see them, so the thinking is always yours.</p></details>
       <details class="reveal"><summary>Are the practice papers real past papers?</summary><p>No. They are original papers written to match each real paper’s format: sections, timing, marks and style. Real past papers open from the exam board’s own website. {{brand}} is not affiliated with or endorsed by Cambridge, Pearson Edexcel or the IB.</p></details>
       <details class="reveal"><summary>My subject or exam isn’t listed.</summary><p>Ask for it on the <a href="subjects.html">subjects page</a>. The most-requested come next. You’ll also be able to upload your own syllabus or course outline, from grade 7 to university, and get a plan from it.</p></details>
       <details class="reveal"><summary>How old do I need to be?</summary><p>From grade 8 you can start on your own. Below grade 8, a parent sets up or approves the account. In some countries the law asks a parent to confirm for anyone under 18, and the app handles that for you.</p></details>
-      <details class="reveal"><summary>How much will it cost?</summary><p>Prices will be announced with early access, with a free way to start. Joining the list is free and doesn’t commit you to anything.</p></details>
+      <details class="reveal"><summary>How much does it cost?</summary><p>${{studentMonth}} a month, or an exam pass at ${{studentPass}} a month paid once, lasting until your exams. Every subject at your level is included, and you can try it free for {{trialDays}} days. Parent accounts are free, and a parent can pay for you. Joining the early-access list is free.</p></details>
     </div>
   </section>
 

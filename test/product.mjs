@@ -680,7 +680,7 @@ try {
   await shot(ADM, 'admin-selling');
   await A.goto(web.url + '#/settings');
   const plan = A.locator('#set-plan');
-  await plan.getByText('Paid plans are coming soon').waitFor();
+  await plan.getByText(/Essentials from \$5 and Plus from \$9 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
   const [zip] = await Promise.all([A.waitForEvent('download'), A.locator('#set-data').getByRole('button', { name: /Download my data/ }).click()]);
   assert.match(zip.suggestedFilename(), /^studybridge-data-\d{4}-\d{2}-\d{2}\.zip$/);
