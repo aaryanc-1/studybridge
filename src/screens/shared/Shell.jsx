@@ -24,6 +24,17 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   useAnnouncer(notificationTarget);
 
   useEffect(() => startLiveUpdates(app.me.id), [app.me.id]);
+  // Ctrl+, (Cmd+, on a Mac) opens Settings from anywhere, so it can always be reached
+  useEffect(() => {
+    const k = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        go('/settings');
+      }
+    };
+    addEventListener('keydown', k);
+    return () => removeEventListener('keydown', k);
+  }, []);
   useEffect(() => applyTextSize(app.me.role), [app.me.role]);
   useEffect(() => {
     if (desktop && app.me.role === 'tutor' && localStorage.getItem('sb.background') === '1') desktop.keepInBackground(true);
@@ -440,17 +451,56 @@ export function useUpdateStatus() {
   return st;
 }
 
+// The website's download page: the way to update by hand if the app can't update itself
+const DOWNLOAD_PAGE = 'https://gostudybridge.com/download';
+
 function UpdateBanner() {
   const st = useUpdateStatus();
   const toast = useToast();
   const [hidden, setHidden] = useState(false);
-  if (!st || st.state !== 'ready' || hidden) return null;
+  const [hiddenState, setHiddenState] = useState('');
+  if (!st || hidden) return null;
+  // A new desktop app (not just new screens) is downloading: it's big, so say so, rather than look stuck
+  if (st.state === 'downloading' && hiddenState !== 'downloading') {
+    return (
+      <div className="banner update-banner" role="status">
+        <Icon name="download" size={18} />
+        <span className="grow">Downloading a new version of StudyBridge{st.version ? ` (${st.version})` : ''}. You can keep working; we’ll tell you when it’s ready.</span>
+        <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHiddenState('downloading')} aria-label="Hide">
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+    );
+  }
+  if (st.state === 'error' && hiddenState !== 'error') {
+    return (
+      <div className="banner update-banner" role="status">
+        <Icon name="alert" size={18} />
+        <span className="grow">StudyBridge couldn’t update itself just now. It tries again later, or you can get the newest version from the website.</span>
+        <button className="btn sm" onClick={() => desktop?.updates.check().catch(() => {})}>
+          Try again
+        </button>
+        <a className="btn sm" href={DOWNLOAD_PAGE} target="_blank" rel="noreferrer">
+          Download
+        </a>
+        <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHiddenState('error')} aria-label="Hide">
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+    );
+  }
+  if (st.state !== 'ready') return null;
   const mac = st.kind === 'mac-install';
+  const install = st.kind === 'install';
   return (
     <div className="banner update-banner" role="status">
       <Icon name="download" size={18} />
       <span className="grow">
-        {mac ? 'A new version of StudyBridge has downloaded. Open it and drag StudyBridge into Applications (replace the old one).' : 'A new version of StudyBridge is ready.'}
+        {mac
+          ? 'A new version of StudyBridge has downloaded. Open it and drag StudyBridge into Applications (replace the old one).'
+          : install
+            ? 'A new version of StudyBridge is ready. It closes, installs (about a minute) and opens again by itself.'
+            : 'A new version of StudyBridge is ready.'}
       </span>
       <button
         className="btn sm"
@@ -460,7 +510,7 @@ function UpdateBanner() {
           if (mac) setHidden(true);
         }}
       >
-        {mac ? 'Open it' : 'Restart now'}
+        {mac ? 'Open it' : install ? 'Install now' : 'Restart now'}
       </button>
       <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHidden(true)} aria-label="Later">
         <Icon name="x" size={16} />

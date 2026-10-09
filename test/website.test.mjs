@@ -22,6 +22,7 @@ test('website: every page builds with nothing left unfilled', async () => {
       assert.doesNotMatch(html, /\{\{/, f);
       assert.match(html, new RegExp(`<title>[^<]*${c.brand}`), f);
       assert.match(html, /not affiliated with or endorsed by/, `${f}: the trademark note`);
+      assert.match(html, /href="site\.css\?v=[0-9a-f]{10}"/, `${f}: asks for this release's styles, not an old saved copy`);
       for (const [p] of PAGES) assert.ok(html.includes(`href="${p}"`), `${f} links to ${p}`);
     }
     // each page marks itself in the menu

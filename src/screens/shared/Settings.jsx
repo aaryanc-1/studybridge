@@ -1016,7 +1016,7 @@ function About() {
               : st.state === 'downloading'
                 ? `Downloading version ${st.version}…`
                 : st.state === 'error'
-                  ? 'Couldn’t check for updates just now.'
+                  ? 'Couldn’t update just now. Try again, or get it from gostudybridge.com/download.'
                   : st.state === 'up-to-date'
                     ? 'You have the latest version.'
                     : 'Updates install by themselves.'}

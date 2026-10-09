@@ -625,14 +625,11 @@ h1 em { background: linear-gradient(90deg, var(--accent), var(--gold) 45%, var(-
 /* The old per-section glows are replaced by the flowing background (one of them showed a hard edge) */
 .hero::before, .page-hero::before, .hero::after, .page-hero::after { content: none; }
 
-/* Banded sections fade in and out of the page instead of starting and stopping with a hard line */
-.who-sec, .subj-strip, .prof, .pricing-sec, .others, .devices, .fit {
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg-2) 55%, transparent) 16%, color-mix(in srgb, var(--bg-2) 55%, transparent) 84%, transparent);
-}
+/* One continuous page: no section draws its own band; the flowing background carries the colour from one to the next */
+.who-sec, .subj-strip, .prof, .pricing-sec, .others, .devices, .fit, .foot { background: transparent; }
 
 /* Cards let a little of the colour through */
 :root { --card: rgba(255, 255, 255, .84); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --card: rgba(26, 34, 33, .82); } }
 :root[data-theme="dark"] { --card: rgba(26, 34, 33, .82); }
 select, input[type=date], input[type=email], input[type=text], input:not([type]), input[type=search], textarea { background: var(--bg); }
-.foot { background: color-mix(in srgb, var(--bg) 60%, transparent); }

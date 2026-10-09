@@ -413,7 +413,7 @@
     Array.prototype.forEach.call(g.children, function (c, i) { c.style.setProperty('--i', i); });
   });
   if (!calm && matchMedia('(hover: hover)').matches) {
-    $$('.fit-card, .plan, .t-grid article, .steps li, .board-card, .side-card, .access-grid li, .who-pick [role=tab], .dev-grid article, .split, .band, .pillars article').forEach(function (c) {
+    $$('.fit-card, .plan, .t-grid article, .steps li, .board-card, .side-card, .access-grid li, .who-pick [role=tab], .dev-grid article, .split, .band').forEach(function (c) {
       c.classList.add('spot');
       c.addEventListener('pointermove', function (e) {
         var r = c.getBoundingClientRect();

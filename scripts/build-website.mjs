@@ -3,6 +3,7 @@
 //   node scripts/build-website.mjs <out dir> [version]
 // With a version, release.json points the download buttons straight at that release's files.
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
@@ -164,10 +165,18 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
       )
       .join('\n    '),
   };
+  // Each page asks for this release's own copy of the styles and scripts (site.css?v=…), so a browser that kept an
+  // older copy for a few hours shows the new look straight away
+  const v = (f) => createHash('sha1').update(readFileSync(join(root, 'website', f))).digest('hex').slice(0, 10);
+  const fresh = (html) =>
+    html
+      .replace(/href="site\.css"/g, `href="site.css?v=${v('site.css')}"`)
+      .replace(/src="site\.js"/g, `src="site.js?v=${v('site.js')}"`)
+      .replace(/src="config\.js"/g, `src="config.js?v=${String(version || Date.now())}"`);
   for (const f of readdirSync(join(root, 'website'))) {
     if (f.endsWith('.html')) {
       const page = { ...tokens, header: header(c, f), footer: footer(c, tokens.year) };
-      writeFileSync(join(out, f), render(readFileSync(join(root, 'website', f), 'utf8'), page, f));
+      writeFileSync(join(out, f), fresh(render(readFileSync(join(root, 'website', f), 'utf8'), page, f)));
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
   const pub = {

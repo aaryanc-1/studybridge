@@ -132,6 +132,12 @@ One flowing background on every page (9 Oct): `.aurora` (added by build-website.
 fields; site.js sets `--p` (scroll progress) and each field's `--o`, so teal, gold, blue and green fade into one another
 as you scroll and back as you scroll up. The old per-section hero glows are off; banded sections fade in and out
 (gradient backgrounds) and cards are slightly see-through (`--card` is translucent on the website only).
+Later the same day: sections draw no bands at all (one continuous page), and every page asks for `site.css?v=<hash>`,
+`site.js?v=<hash>` and `config.js?v=<version>`, because Cloudflare lets browsers keep site.css for 4 hours (Aaryan saw
+the old look). App: Ctrl+, (Cmd+,) opens Settings from anywhere; the update banner also shows "Downloading…" and
+"couldn't update" (Try again / Download from gostudybridge.com/download), and a desktop-shell install says it closes,
+installs and reopens. A shell update after 1.1.56 can look stuck when the app hides in the tray (keep in background):
+the installer can't replace a running app, so quit from the tray first.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
