@@ -7,8 +7,10 @@ import { appVersion, platformName } from './api.js';
 const sent = new Set();
 let installed = false;
 
-// Things that aren't bugs: no internet, a request cancelled, the browser's resize notice
-const IGNORE = /Failed to fetch|NetworkError|Load failed|network|offline|AbortError|aborted|ResizeObserver loop|Not signed in|JWT expired|timeout/i;
+// Things that aren't bugs: no internet, a request cancelled, the browser's resize notice, and "Script error." (all a
+// browser says when a script from another site fails, e.g. the visitor counter or a WhatsApp/Instagram in-app browser:
+// no file, no line, nothing to fix here)
+const IGNORE = /Failed to fetch|NetworkError|Load failed|network|offline|AbortError|aborted|ResizeObserver loop|Not signed in|JWT expired|timeout|^Script error\.?$/i;
 
 export function reportError(err, where = '') {
   try {
