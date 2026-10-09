@@ -605,3 +605,34 @@ h1 em { background: linear-gradient(90deg, var(--accent), var(--gold) 45%, var(-
 .plans.one { grid-template-columns: minmax(0, 460px); justify-content: center; }
 .plan .amount.word { font-size: 38px; }
 .plan .tag.soon-tag { background: var(--gold); color: #fff; }
+
+
+/* ---------- One flowing background for every page ----------
+   Four soft colour fields sit behind the whole page. As you scroll, each one fades in and out in turn (teal at the top,
+   then gold, then blue, then green at the bottom) and slides a little, so the colour flows from one to the next;
+   scrolling back up plays it backwards. site.js sets --p (how far down the page) and each field's --o. */
+:root { --a1: #B3DED3; --a2: #F0D7A6; --a3: #C3D7F2; --a4: #BDE8CF; --aurora: 1; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --a1: #12584F; --a2: #5C4317; --a3: #17426A; --a4: #13573C; --aurora: 1; } }
+:root[data-theme="dark"] { --a1: #12584F; --a2: #5C4317; --a3: #17426A; --a4: #13573C; --aurora: 1; }
+.aurora { position: fixed; inset: 0; z-index: -2; overflow: hidden; pointer-events: none; }
+.aurora i { position: absolute; width: 78vmax; height: 78vmax; border-radius: 50%; opacity: calc((.22 + var(--o, 0) * .78) * var(--aurora)); will-change: transform, opacity; transition: opacity .5s linear; animation: breathe 18s ease-in-out infinite alternate; }
+.aurora i:nth-child(1) { background: radial-gradient(closest-side, var(--a1), transparent); left: -22vmax; top: -30vmax; transform: translate3d(calc(var(--p, 0) * 28vw), calc(var(--p, 0) * 30vh), 0); }
+.aurora i:nth-child(2) { background: radial-gradient(closest-side, var(--a2), transparent); right: -26vmax; top: -6vmax; transform: translate3d(calc(var(--p, 0) * -26vw), calc(var(--p, 0) * 18vh), 0); animation-delay: -6s; }
+.aurora i:nth-child(3) { background: radial-gradient(closest-side, var(--a3), transparent); left: -18vmax; bottom: -34vmax; transform: translate3d(calc(var(--p, 0) * 30vw), calc(var(--p, 0) * -22vh), 0); animation-delay: -12s; }
+.aurora i:nth-child(4) { background: radial-gradient(closest-side, var(--a4), transparent); right: -20vmax; bottom: -30vmax; transform: translate3d(calc(var(--p, 0) * -24vw), calc(var(--p, 0) * -26vh), 0); animation-delay: -3s; }
+@keyframes breathe { to { scale: 1.12; } }
+
+/* The old per-section glows are replaced by the flowing background (one of them showed a hard edge) */
+.hero::before, .page-hero::before, .hero::after, .page-hero::after { content: none; }
+
+/* Banded sections fade in and out of the page instead of starting and stopping with a hard line */
+.who-sec, .subj-strip, .prof, .pricing-sec, .others, .devices, .fit {
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg-2) 55%, transparent) 16%, color-mix(in srgb, var(--bg-2) 55%, transparent) 84%, transparent);
+}
+
+/* Cards let a little of the colour through */
+:root { --card: rgba(255, 255, 255, .84); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --card: rgba(26, 34, 33, .82); } }
+:root[data-theme="dark"] { --card: rgba(26, 34, 33, .82); }
+select, input[type=date], input[type=email], input[type=text], input:not([type]), input[type=search], textarea { background: var(--bg); }
+.foot { background: color-mix(in srgb, var(--bg) 60%, transparent); }

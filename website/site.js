@@ -387,6 +387,25 @@
 
   $$('[data-year]').forEach(function (el) { el.textContent = new Date().getFullYear(); });
 
+  // ---------- The flowing background: colour fields fade one into the next as you scroll (and back as you scroll up) ----------
+  var aurora = $('.aurora');
+  if (aurora) {
+    var fields = $$('i', aurora), queued = false;
+    var peaks = [0, 0.34, 0.67, 1];
+    var paint = function () {
+      queued = false;
+      var max = Math.max(1, document.documentElement.scrollHeight - innerHeight);
+      var p = Math.min(1, Math.max(0, scrollY / max));
+      document.documentElement.style.setProperty('--p', p.toFixed(4));
+      fields.forEach(function (f, i) { f.style.setProperty('--o', Math.max(0, 1 - Math.abs(p - peaks[i]) / 0.42).toFixed(3)); });
+    };
+    paint();
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      addEventListener('scroll', function () { if (!queued) { queued = true; requestAnimationFrame(paint); } }, { passive: true });
+      addEventListener('resize', paint);
+    }
+  }
+
   // ---------- Life: cards that arrive in turn, light up under the pointer, numbers that count, a card that tilts ----------
   var calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
   $$('.pillars.reveal, .who-grid.reveal, .steps.reveal, .t-grid.reveal, .inside.reveal, .trust.reveal, .access-grid.reveal, .boards.reveal, .who-pick.reveal, .two-col.reveal, .dev-grid.reveal').forEach(function (g) {

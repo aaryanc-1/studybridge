@@ -66,7 +66,8 @@ export const PAGES = [
 // The header and footer every page shares; the current page is marked in the menu
 function header(c, file) {
   const links = PAGES.map(([f, name]) => `<a href="${f}"${f === file ? ' aria-current="page"' : ''}>${name}</a>`).join('');
-  return `<header class="top">
+  return `<div class="aurora" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<header class="top">
   <div class="wrap bar">
     <a class="brand" href="./" aria-label="${esc(c.brand)} home"><img src="logo-192.png" alt="" width="32" height="32"><span>${esc(c.brand)}</span></a>
     <nav class="links" aria-label="Main">${links}</nav>

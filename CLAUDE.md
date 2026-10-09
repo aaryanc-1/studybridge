@@ -128,6 +128,10 @@ Learner invites are 8-digit codes (`_new_invite_code()`, shown "4829 1375"); the
 a whole pasted message or the old SB1 token. A wrong code is counted in `invite_tries` and `accept_invite` returns no
 profile (an error would undo the count; api.acceptInvite turns it into "That code isn't right"); 10 wrong codes in an hour
 and that account waits. Parent invites are unchanged (P + 10 hex, SB1 message). test/walkthrough.mjs also runs on Windows.
+One flowing background on every page (9 Oct): `.aurora` (added by build-website.mjs's header) holds four soft colour
+fields; site.js sets `--p` (scroll progress) and each field's `--o`, so teal, gold, blue and green fade into one another
+as you scroll and back as you scroll up. The old per-section hero glows are off; banded sections fade in and out
+(gradient backgrounds) and cards are slightly see-through (`--card` is translucent on the website only).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
