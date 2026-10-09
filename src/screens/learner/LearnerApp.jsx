@@ -17,6 +17,8 @@ import Live from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import Study from './Study.jsx';
+import { SelfSetup, TrialOver } from './SelfStudy.jsx';
+import { studentAccess } from '../../lib/students.js';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -72,16 +74,26 @@ export default function LearnerApp() {
       </LookupsProvider>
     );
 
-  const nav = [
-    { to: '/', label: 'Today', icon: 'home' },
-    { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
-    { to: '/study', label: 'Study', icon: 'flame' },
-    { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
-    { to: '/progress', label: 'Progress', icon: 'chart' },
-    { to: '/messages', label: 'Messages', icon: 'message', count: unread },
-    { to: '/live', label: 'Live', icon: 'video' },
-  ];
-  const tabs = [nav[0], nav[1], nav[2], nav[5], nav[3]];
+  // A student on their own: no tutor to message or meet live; a setup first, and a free week before paying
+  const self = !!app.me.self_learner;
+  const nav = self
+    ? [
+        { to: '/', label: 'Today', icon: 'home', also: ['/setup'] },
+        { to: '/study', label: 'Study', icon: 'flame' },
+        { to: '/work', label: 'Practice', icon: 'clipboard', also: ['/results'] },
+        { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
+        { to: '/progress', label: 'Progress', icon: 'chart' },
+      ]
+    : [
+        { to: '/', label: 'Today', icon: 'home' },
+        { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
+        { to: '/study', label: 'Study', icon: 'flame' },
+        { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
+        { to: '/progress', label: 'Progress', icon: 'chart' },
+        { to: '/messages', label: 'Messages', icon: 'message', count: unread },
+        { to: '/live', label: 'Live', icon: 'video' },
+      ];
+  const tabs = self ? nav : [nav[0], nav[1], nav[2], nav[5], nav[3]];
 
   let page;
   if (!a) page = <Today />;
@@ -102,10 +114,15 @@ export default function LearnerApp() {
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'settings') page = <Settings />;
   else page = <Today />;
+  if (self && a !== 'settings') {
+    if (!app.me.setup_done) page = <SelfSetup />;
+    else if (a === 'setup') page = <SelfSetup again />;
+    if (!studentAccess(app.me).ok && a !== 'progress') page = <TrialOver />;
+  }
 
   return (
     <LookupsProvider>
-      <Shell nav={nav} tabs={tabs} roleLabel="Learner" notificationTarget={notificationTarget} theme="learner">
+      <Shell nav={nav} tabs={tabs} roleLabel={self ? 'Student' : 'Learner'} notificationTarget={notificationTarget} theme="learner">
         {page}
       </Shell>
     </LookupsProvider>

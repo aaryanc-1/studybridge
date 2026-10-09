@@ -10,6 +10,7 @@ import { TutorsPage, SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
 import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPage } from './AdminPages.jsx';
 import PapersAdmin from './PapersAdmin.jsx';
 import SellingPage from './Selling.jsx';
+import StudentsPage from './Students.jsx';
 import { useProfJobs } from '../tutor/Prof.jsx';
 
 function notificationTarget(n) {
@@ -36,6 +37,7 @@ export default function AdminApp() {
   const nav = [
     { to: '/', label: 'Overview', icon: 'home' },
     { to: '/tutors', label: 'Tutors', icon: 'users', count: waiting },
+    { to: '/students', label: 'Students', icon: 'book' },
     { to: '/inbox', label: 'Inbox', icon: 'message', count: o.feedback_open },
     { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
     { to: '/prof', label: 'Prof', icon: 'cap', tone: 'claude' },
@@ -51,6 +53,7 @@ export default function AdminApp() {
   let page;
   if (a === 'tutors' && b) page = <TutorPage id={b} />;
   else if (a === 'tutors') page = <TutorsPage />;
+  else if (a === 'students') page = <StudentsPage />;
   else if (a === 'inbox') page = <InboxPage />;
   else if (a === 'problems') page = <ProblemsPage />;
   else if (a === 'announcements') page = <AnnouncementsPage />;

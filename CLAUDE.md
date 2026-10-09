@@ -138,6 +138,20 @@ the old look). App: Ctrl+, (Cmd+,) opens Settings from anywhere; the update bann
 "couldn't update" (Try again / Download from gostudybridge.com/download), and a desktop-shell install says it closes,
 installs and reopens. A shell update after 1.1.56 can look stuck when the app hides in the tray (keep in background):
 the installer can't replace a running app, so quit from the tray first.
+Launch 1 part 1 (9 Oct 2026), students on their own: they are learners (`self_learner`) whose tutor is the content
+account (`profiles.is_studybridge`, a tutor account the Owner picks in Admin → Students with `admin_set_content_account`;
+its `_tutor_limit` is unlimited). Every catalogue subject (87, from site.config.json `boards[].levels`, keyed
+`board:level:code` in `src/lib/catalogue.js`) is a subject of that account (`subjects.catalogue/board/level/code/live`,
+added by `admin_seed_catalogue`); a subject opens to students when the content account ticks "Open to students"
+(Structure.jsx, `live`). "I'm a student" shows on the welcome screen (and `#start=student`) only when
+`app_config.students_open` (Admin switch, `public_settings().students_open`); `start_self_learner` needs grade 8+ (younger:
+a parent's account, part 3) and sets a 7-day `trial_until`. SelfStudy.jsx: `SelfSetup` (board → level, IB skips it →
+open subjects → exam session or own date → hours a week; `self_setup` sets learner_subjects, exam_date/label,
+study_goal_min, plan_start, setup_done; `/setup` runs it again) and `SelfPlan` on Today (topics spread week by week to the
+exams with `spreadEvenly`, last part for papers and a mock). `studentAccess` (src/lib/students.js): paid (`paid_until`,
+`paid_plan` monthly|pass) or trial, else `TrialOver` (Progress and Settings stay open). Admin → Students lists them,
+"Mark as paid" (Monthly = a month; Exam pass = about 60 days past the first exam), "+7 days free". The trial is enforced
+in the app only so far (tighten on the server in part 4). Aaranya's maths is 0607, the first subject to fill.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

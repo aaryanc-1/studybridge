@@ -285,6 +285,18 @@ export async function saveQuestionsToBank(qs, { subject_id = null, topicName = (
 export const isParentCode = (code) => /^P[0-9A-F]{10}$/i.test(String(code || '').trim());
 export const acceptParentInvite = (code, name) => run(sb().rpc('accept_parent_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
 export const joinWithCode = (code, name) => (isParentCode(code) ? acceptParentInvite(code, name) : acceptInvite(code, name));
+
+// Students on their own (launch 1): a 7-day trial, a guided setup, and the Owner's tools for them
+export const startSelfLearner = (name, grade, country) => run(sb().rpc('start_self_learner', { p_name: name, p_grade: grade, p_country: country, p_timezone: timezone() }));
+export const selfSetup = (o) =>
+  run(sb().rpc('self_setup', { p_board: o.board, p_level: o.level, p_subjects: o.subjects, p_exam_date: o.examDate, p_exam_label: o.examLabel || null, p_hours: o.hours }));
+export const setSubjectLive = (id, live) => run(sb().from('subjects').update({ live }).eq('id', id));
+export const adminStudents = () => run(sb().rpc('admin_students'));
+export const adminSetContentAccount = (email) => run(sb().rpc('admin_set_content_account', { p_email: email }));
+export const adminSeedCatalogue = (items) => run(sb().rpc('admin_seed_catalogue', { p_items: items }));
+export const adminStudentsOpen = (open) => run(sb().rpc('admin_students_open', { p_open: open }));
+export const adminSetStudentPaid = (id, plan, until) => run(sb().rpc('admin_set_student_paid', { p_user: id, p_plan: plan, p_until: until }));
+export const adminExtendTrial = (id, days = 7) => run(sb().rpc('admin_extend_trial', { p_user: id, p_days: days }));
 export const createParentInvite = (learnerId, name) => run(sb().rpc('create_parent_invite', { p_learner: learnerId, p_name: name || null }));
 export const revokeParentInvite = (id) => run(sb().rpc('revoke_parent_invite', { p_invite: id }));
 export const learnerParents = (learnerId = null) => run(sb().rpc('learner_parents', { p_learner: learnerId }));

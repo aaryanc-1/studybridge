@@ -1400,7 +1400,7 @@ test('teaching plans: the tutor’s own, per subject; learners and other tutors 
 test('selling basics: plan limits only once switched on; download my data; delete my own account', async () => {
   // what the app may know, even before signing in; no secrets
   const pub = await val(null, `select public_settings()`);
-  assert.deepEqual(Object.keys(pub).sort(), ['email_on', 'enforce_plans', 'google_on', 'payments_on']);
+  assert.deepEqual(Object.keys(pub).sort(), ['email_on', 'enforce_plans', 'google_on', 'payments_on', 'students_open']);
   assert.equal(pub.enforce_plans, false);
   await fails(as('TW', `select admin_set_selling(p_enforce => true)`), /admins only/);
   await fails(as('TW', `select _set_paid_plan($1, 'pro', 'month', 'cus_1', null)`, [U.TW]), /permission denied/);
@@ -1552,4 +1552,63 @@ test('learners join with an 8-digit code, typed with or without a space; 10 wron
   const p = await one('G', `select * from accept_invite($1, 'Guess')`, [`${code.slice(0, 4)} ${code.slice(4)}`]);
   assert.equal(p.role, 'learner');
   assert.equal(p.tutor_id, U.T);
+});
+
+test('students on their own: a content account with every subject, sign-up with a 7-day trial, a guided setup, and payments the Owner records', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  await mk('C', 'content@x.com');
+  await mk('S', 'student@x.com');
+  await mk('S2', 'young@x.com');
+  await one('C', `select * from become_tutor('StudyBridge', 'UTC')`);
+  // the Owner picks a separate tutor account for StudyBridge's own content
+  await fails(as('T', `select admin_set_content_account('content@x.com')`), /admins only/);
+  await fails(as('A', `select admin_set_content_account('tutor@x.com')`), /already teaches/);
+  await fails(as('A', `select admin_set_content_account('young@x.com')`), /isn’t a tutor account/);
+  await fails(as('A', `select admin_set_content_account('nobody-at-all@x.com')`), /No account with that email/);
+  assert.equal((await val('A', `select admin_set_content_account('content@x.com')`)).email, 'content@x.com');
+  // closed until the Owner opens it
+  await fails(as('S', `select start_self_learner('Sam', 10, 'Zambia')`), /isn’t open yet/);
+  assert.equal((await val(null, `select public_settings()`)).students_open, false);
+  // the catalogue goes in switched off; adding it again adds nothing
+  const items = [
+    { key: 'cambridge:igcse:0607', board: 'Cambridge', level: 'IGCSE', name: 'Cambridge IGCSE International Mathematics (0607)', code: '0607', exam: 'cie:0607' },
+    { key: 'ib:sl-and-hl:physics', board: 'IB Diploma', level: 'IB Diploma', name: 'IB Physics', code: '' },
+  ];
+  assert.deepEqual(await val('A', `select admin_seed_catalogue($1)`, [JSON.stringify(items)]), { added: 2, total: 2 });
+  assert.deepEqual(await val('A', `select admin_seed_catalogue($1)`, [JSON.stringify(items)]), { added: 0, total: 2 });
+  await as('A', `select admin_students_open(true)`);
+  assert.equal((await val(null, `select public_settings()`)).students_open, true);
+  // below grade 8, a parent comes first
+  await fails(as('S2', `select start_self_learner('Kid', 7, 'Zambia')`), /parent/);
+  const p = await one('S', `select * from start_self_learner('Sam', 10, 'Zambia', 'Africa/Lusaka')`);
+  assert.equal(p.role, 'learner');
+  assert.equal(p.self_learner, true);
+  assert.equal(p.tutor_id, U.C);
+  assert.ok(new Date(p.trial_until) - Date.now() > 6.9 * 864e5, 'a 7-day free trial');
+  await fails(as('S', `update profiles set paid_until = '2030-01-01' where id = auth.uid()`), /permission denied/);
+  // the setup only takes subjects that are open
+  const [maths, phys] = (await db.query(`select id from subjects where tutor_id = $1 order by position`, [U.C])).rows.map((r) => r.id);
+  await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, 'Cambridge May/June 2027', 4)`, [[maths]]), /Pick at least one/);
+  await as('C', `update subjects set live = true where id = $1`, [maths]);
+  await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, null, 4)`, [[maths, phys]]), /isn’t open yet/);
+  await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date, null, 4)`, [[maths]]), /when your exams are/);
+  assert.deepEqual(await val('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, 'Cambridge May/June 2027', 4)`, [[maths]]), { subjects: 1 });
+  const me = await one('S', `select * from profiles where id = auth.uid()`);
+  assert.equal(me.setup_done, true);
+  assert.equal(me.study_goal_min, 34, '4 hours a week is about 34 minutes a day');
+  assert.deepEqual((await as('S', `select subject_id from learner_subjects`)).map((x) => x.subject_id), [maths]);
+  await fails(as('L', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, null, 4)`, [[maths]]), /on their own/);
+  // the Owner sees the student and records a payment taken by hand
+  const st = await val('A', `select admin_students()`);
+  assert.equal(st.content.live, 1);
+  assert.deepEqual(st.students.find((x) => x.id === U.S).subjects, ['Cambridge IGCSE International Mathematics (0607)']);
+  await fails(as('T', `select admin_set_student_paid($1, 'monthly', current_date + 30)`, [U.S]), /admins only/);
+  await fails(as('A', `select admin_set_student_paid($1, 'yearly', current_date + 30)`, [U.S]), /monthly or an exam pass/);
+  await fails(as('A', `select admin_set_student_paid($1, 'monthly', current_date + 30)`, [U.L]), /isn’t a student/);
+  await as('A', `select admin_set_student_paid($1, 'pass', current_date + 200)`, [U.S]);
+  assert.equal((await one('S', `select paid_plan from profiles where id = auth.uid()`)).paid_plan, 'pass');
+  await as('A', `select admin_extend_trial($1, 7)`, [U.S]);
 });

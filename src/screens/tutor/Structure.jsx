@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, Modal, Page, useConfirm, useToast } from '../../ui/kit.jsx';
 import * as api from '../../lib/api.js';
@@ -7,6 +8,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import * as X from '../../lib/exams.js';
 
 export default function Structure() {
+  const app = useApp();
   const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
@@ -38,7 +40,11 @@ export default function Structure() {
   return (
     <Page
       title="Programmes & subjects"
-      subtitle="Name them however you like. Learners only see the subjects you give them."
+      subtitle={
+        app.me.is_studybridge
+          ? 'StudyBridge’s own subjects. Add each one’s syllabus, lessons and questions here, then open it to students when it’s ready.'
+          : 'Name them however you like. Learners only see the subjects you give them.'
+      }
       actions={
         <>
           <button className="btn" onClick={() => setEditProg({ name: '' })}>
@@ -99,6 +105,7 @@ export default function Structure() {
 }
 
 function SubjectRow({ s, onEdit, onDelete }) {
+  const app = useApp();
   const lk = useLookups();
   const toast = useToast();
   const [adding, setAdding] = useState('');
@@ -125,10 +132,29 @@ function SubjectRow({ s, onEdit, onDelete }) {
           <span className="strong" style={{ fontSize: 16 }}>{s.name}</span>
           {s.exam && <span className="pill">{X.syllabusLabel(...s.exam.split(':'))}</span>}
           <span className="muted small">
-            {learners} learner{learners === 1 ? '' : 's'}
+            {learners} {app.me.is_studybridge ? 'student' : 'learner'}
+            {learners === 1 ? '' : 's'}
           </span>
         </div>
         <div className="row">
+          {app.me.is_studybridge && s.catalogue && (
+            <label className="check small" title={topics.length ? '' : 'Add its syllabus first, so students get a plan'}>
+              <input
+                type="checkbox"
+                checked={!!s.live}
+                onChange={async (e) => {
+                  try {
+                    await api.setSubjectLive(s.id, e.target.checked);
+                    lk.reload();
+                    toast(e.target.checked ? `${s.name} is open to students` : `${s.name} is closed to new students`);
+                  } catch (x) {
+                    toast({ title: 'Couldn’t change that', body: x.message, tone: 'bad' });
+                  }
+                }}
+              />
+              Open to students
+            </label>
+          )}
           <button className="btn sm ghost" onClick={onEdit} aria-label={`Edit ${s.name}`}>
             <Icon name="pen" size={16} />
           </button>

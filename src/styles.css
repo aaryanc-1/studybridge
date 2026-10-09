@@ -901,3 +901,33 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .invite-code { display: grid; justify-items: center; gap: 2px; padding: 16px; margin-bottom: 12px; border-radius: 14px; background: var(--accent-tint, var(--sunk)); }
 .invite-code b { font: 600 34px var(--serif, inherit); letter-spacing: .12em; font-variant-numeric: tabular-nums; color: var(--ink); }
 .input.code-in { font-size: 24px; letter-spacing: .14em; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* Students on their own: the guided setup and their plan on Today */
+.setup-steps { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0 0 16px; counter-reset: step; }
+.setup-steps li { counter-increment: step; font-size: 13px; font-weight: 600; color: var(--muted); padding: 6px 12px 6px 8px; border-radius: 99px; background: var(--sunk); display: inline-flex; align-items: center; gap: 6px; }
+.setup-steps li::before { content: counter(step); display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--card); font-size: 12px; }
+.setup-steps li.now { background: var(--accent-tint); color: var(--accent-ink); }
+.setup-steps li.now::before { background: var(--accent); color: #fff; }
+.setup-steps li.done { color: var(--ink); }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.pick { display: grid; gap: 4px; text-align: left; padding: 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s; }
+.pick:hover { border-color: var(--accent); transform: translateY(-1px); }
+.pick b { font-family: var(--serif); font-size: 18px; }
+.pick span { font-size: 13.5px; color: var(--muted); }
+.pick.on { border: 2px solid var(--accent); background: var(--accent-tint); }
+.chips-pick { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-pick { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: 500 14.5px var(--sans, inherit); cursor: pointer; }
+.chip-pick small { color: var(--muted); font-size: 12px; }
+.chip-pick.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip-pick.on small { color: rgba(255, 255, 255, .8); }
+.chip-pick.soon { opacity: .55; cursor: default; border-style: dashed; }
+.self-plan .weeks-left { text-align: right; line-height: 1.05; }
+.self-plan .weeks-left b { display: block; font: 600 36px var(--serif); color: var(--accent); }
+.self-plan .weeks-left span { font-size: 12px; color: var(--muted); }
+.self-plan .plan-row .meta b { color: var(--accent-ink); margin-right: 4px; }
+.self-plan .plan-row .meta { display: block; }
+.self-plan .plan-row .name { white-space: normal; }
+.plan-bar { display: block; height: 5px; border-radius: 3px; background: var(--sunk); margin-top: 6px; overflow: hidden; max-width: 320px; }
+.plan-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.student-row { align-items: flex-start; }
+.student-row .grow { gap: 4px; }

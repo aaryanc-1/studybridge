@@ -1,5 +1,6 @@
 import { useApp } from '../../App.jsx';
 import { StudyNudge } from './Study.jsx';
+import { SelfPlan, TrialNote } from './SelfStudy.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
@@ -80,6 +81,8 @@ export default function Today() {
         </div>
       </div>
 
+      <TrialNote />
+      <SelfPlan />
       <StudyNudge />
 
       {nextSession && new Date(nextSession.starts_at).getTime() - Date.now() < 30 * 60000 && (
@@ -164,7 +167,7 @@ export default function Today() {
             <Link to="/work?tab=practice" className="card tint row">
               <Icon name="target" style={{ color: 'var(--accent)' }} />
               <span className="grow">
-                <span className="strong">New practice from your tutor</span>
+                <span className="strong">{app.me.self_learner ? 'New practice' : 'New practice from your tutor'}</span>
                 <span className="small muted"> · {practiceNew.map((a) => a.title).join(', ')}. Marked straight away; do it as often as you like.</span>
               </span>
               <Icon name="right" />
@@ -247,7 +250,7 @@ export default function Today() {
               </div>
             </div>
           )}
-          {!tutor && <div className="note small">You’re not connected to a tutor any more.</div>}
+          {!tutor && !app.me.self_learner && <div className="note small">You’re not connected to a tutor any more.</div>}
         </div>
       </div>
     </div>

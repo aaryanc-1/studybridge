@@ -5003,6 +5003,219 @@ begin
   return coalesce((select jsonb_agg(to_jsonb(e) order by e.created_at desc) from public.early_access e), '[]'::jsonb);
 end $$;
 
+-- ---------------------------------------------------------------------
+-- Self-learners (launch 1, part 1): students on their own
+-- ---------------------------------------------------------------------
+-- One tutor account holds StudyBridge's own content; the Owner picks it in Admin → Students. Its subjects are the
+-- catalogue (every board, level and subject on the website), each opened to students when its content is ready.
+-- A self-learner is a learner whose "tutor" is that account, so everything learners already have works for them.
+alter table public.profiles add column if not exists is_studybridge boolean not null default false;
+create unique index if not exists one_studybridge_account on public.profiles (is_studybridge) where is_studybridge;
+alter table public.subjects add column if not exists catalogue text;   -- e.g. 'cambridge:igcse:0607'
+alter table public.subjects add column if not exists board text;       -- 'Cambridge'
+alter table public.subjects add column if not exists level text;       -- 'IGCSE'
+alter table public.subjects add column if not exists code text;        -- '0607'
+alter table public.subjects add column if not exists live boolean not null default false; -- students can choose it
+create unique index if not exists subjects_catalogue on public.subjects (tutor_id, catalogue) where catalogue is not null;
+alter table public.profiles add column if not exists self_learner boolean not null default false;
+alter table public.profiles add column if not exists grade int;            -- 6–12, 13 = finished school
+alter table public.profiles add column if not exists country text;
+alter table public.profiles add column if not exists trial_until timestamptz;
+alter table public.profiles add column if not exists paid_until date;      -- set by the Owner when they've paid
+alter table public.profiles add column if not exists paid_plan text;       -- 'monthly' or 'pass'
+alter table public.profiles add column if not exists exam_date date;
+alter table public.profiles add column if not exists exam_label text;      -- 'Cambridge May/June 2027'
+alter table public.profiles add column if not exists study_board text;
+alter table public.profiles add column if not exists study_level text;
+alter table public.profiles add column if not exists study_hours int;      -- hours a week
+alter table public.profiles add column if not exists plan_start date;
+alter table public.profiles add column if not exists setup_done boolean not null default false;
+do $$ begin
+  alter table public.profiles add constraint profiles_paid_plan_check check (paid_plan is null or paid_plan in ('monthly', 'pass'));
+exception when duplicate_object then null; end $$;
+alter table public.app_config add column if not exists students_open boolean not null default false;
+
+create or replace function public._studybridge_account() returns uuid
+language sql stable security definer set search_path = public as $$
+  select id from public.profiles where is_studybridge and role = 'tutor' limit 1
+$$;
+
+-- The content account never runs out of room for students
+create or replace function public._tutor_limit(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select case when p.is_studybridge then 1000000 else case p.plan
+    when 'custom' then greatest(coalesce(p.plan_learners, 1), 1)
+    when 'complimentary' then case when p.plan_until is null or p.plan_until >= current_date then 25 else 1 end
+    else public._plan_learners(p.plan) end end
+  from public.profiles p where p.id = p_tutor
+$$;
+
+-- What the app may know before signing in: now also whether students can sign up on their own
+create or replace function public.public_settings() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'enforce_plans', c.enforce_plans,
+    'google_on', c.google_on,
+    'payments_on', s.stripe_secret is not null and c.stripe_prices <> '{}'::jsonb,
+    'email_on', s.resend_key is not null and c.email_from is not null,
+    'students_open', c.students_open and public._studybridge_account() is not null)
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
+$$;
+grant execute on function public.public_settings() to anon;
+
+-- The Owner picks the tutor account (signed up for this) that holds StudyBridge's own content
+create or replace function public.admin_set_content_account(p_email text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v public.profiles;
+begin
+  perform public._admin();
+  select * into v from public.profiles where lower(email) = lower(trim(coalesce(p_email, '')));
+  if v.id is null then raise exception 'No account with that email. Sign up a tutor account for StudyBridge’s content first.'; end if;
+  if v.role is distinct from 'tutor' then raise exception 'That isn’t a tutor account. Sign up a new tutor account for StudyBridge’s content.'; end if;
+  if exists (select 1 from public.profiles where tutor_id = v.id and role = 'learner' and not self_learner) then
+    raise exception 'That tutor already teaches their own learners. Use a separate account for StudyBridge’s content.';
+  end if;
+  update public.profiles set is_studybridge = false where is_studybridge and id <> v.id;
+  update public.profiles set is_studybridge = true, status = 'active' where id = v.id;
+  perform public._admin_log('content_account', v.id, jsonb_build_object('email', v.email));
+  return jsonb_build_object('id', v.id, 'email', v.email, 'name', v.display_name);
+end $$;
+
+-- Every subject from the catalogue (the app sends the website's list) goes into the content account, switched off
+create or replace function public.admin_seed_catalogue(p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._studybridge_account();
+  i jsonb;
+  n int := 0;
+  pos int;
+begin
+  perform public._admin();
+  if c is null then raise exception 'Choose the StudyBridge content account first.'; end if;
+  select coalesce(max(position), 0) into pos from public.subjects where tutor_id = c;
+  for i in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) loop
+    continue when coalesce(i ->> 'key', '') = '' or coalesce(i ->> 'name', '') = '';
+    if not exists (select 1 from public.subjects where tutor_id = c and catalogue = i ->> 'key') then
+      pos := pos + 1;
+      insert into public.subjects (tutor_id, name, catalogue, board, level, code, exam, position)
+      values (c, left(i ->> 'name', 200), left(i ->> 'key', 120), left(i ->> 'board', 60), left(i ->> 'level', 60),
+              nullif(left(coalesce(i ->> 'code', ''), 20), ''),
+              case when coalesce(i ->> 'exam', '') ~ '^(cie|ib):[a-z0-9-]{2,40}$' then i ->> 'exam' end, pos);
+      n := n + 1;
+    end if;
+  end loop;
+  return jsonb_build_object('added', n, 'total', (select count(*) from public.subjects where tutor_id = c and catalogue is not null));
+end $$;
+
+create or replace function public.admin_students_open(p_open boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_open and public._studybridge_account() is null then raise exception 'Choose the StudyBridge content account first.'; end if;
+  update public.app_config set students_open = coalesce(p_open, false) where id = 1;
+end $$;
+
+-- A new account becomes a student studying on their own, with a 7-day free trial
+create or replace function public.start_self_learner(p_name text, p_grade int, p_country text, p_timezone text default 'UTC')
+returns public.profiles language plpgsql security definer set search_path = public as $$
+declare
+  v public.profiles;
+  c uuid := public._studybridge_account();
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select * into v from public.profiles where id = auth.uid();
+  if v.role is not null then
+    if v.self_learner then return v; end if;
+    raise exception 'This account is already set up for something else. Use a new email for your student account.';
+  end if;
+  if c is null or not (select students_open from public.app_config where id = 1) then
+    raise exception 'StudyBridge for students isn’t open yet. Join the early-access list on gostudybridge.com and we’ll tell you when it opens.';
+  end if;
+  if p_grade is null or p_grade < 8 then
+    raise exception 'Below grade 8, a parent sets up your account with you. That’s coming soon: ask a parent to join the early-access list on gostudybridge.com.';
+  end if;
+  update public.profiles
+     set role = 'learner', tutor_id = c, self_learner = true,
+         display_name = coalesce(nullif(trim(coalesce(p_name, '')), ''), display_name),
+         timezone = coalesce(nullif(p_timezone, ''), timezone),
+         grade = least(p_grade, 13), country = nullif(left(trim(coalesce(p_country, '')), 60), ''),
+         trial_until = now() + interval '7 days'
+   where id = auth.uid() returning * into v;
+  return v;
+end $$;
+
+-- The guided setup: subjects (only ones open to students), when the exams are, and hours a week
+create or replace function public.self_setup(p_board text, p_level text, p_subjects uuid[], p_exam_date date, p_exam_label text, p_hours int)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v public.profiles;
+  c uuid := public._studybridge_account();
+  n int;
+  h int := greatest(1, least(coalesce(p_hours, 4), 40));
+begin
+  select * into v from public.profiles where id = auth.uid();
+  if v.id is null or not v.self_learner then raise exception 'This is for students studying on their own.'; end if;
+  select count(*) into n from public.subjects where id = any(coalesce(p_subjects, '{}')) and tutor_id = c and live;
+  if n = 0 then raise exception 'Pick at least one subject.'; end if;
+  if n <> (select count(distinct s) from unnest(p_subjects) s) then raise exception 'One of those subjects isn’t open yet.'; end if;
+  if p_exam_date is null or p_exam_date <= current_date then raise exception 'Pick when your exams are.'; end if;
+  delete from public.learner_subjects where learner_id = auth.uid();
+  insert into public.learner_subjects (learner_id, subject_id, tutor_id)
+    select distinct auth.uid(), s, c from unnest(p_subjects) s;
+  update public.profiles
+     set study_board = left(p_board, 60), study_level = left(p_level, 60), exam_date = p_exam_date,
+         exam_label = nullif(left(coalesce(p_exam_label, ''), 80), ''), study_hours = h,
+         study_goal_min = greatest(10, least(240, round(h * 60.0 / 7)::int)),
+         plan_start = current_date, setup_done = true
+   where id = auth.uid();
+  return jsonb_build_object('subjects', n);
+end $$;
+
+-- Admin → Students: the content account, the catalogue, and every student with their trial or payment
+create or replace function public.admin_students() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return jsonb_build_object(
+    'open', (select students_open from public.app_config where id = 1),
+    'content', (select jsonb_build_object('id', p.id, 'email', p.email, 'name', p.display_name,
+                  'subjects', (select count(*) from public.subjects s where s.tutor_id = p.id and s.catalogue is not null),
+                  'live', (select count(*) from public.subjects s where s.tutor_id = p.id and s.live))
+                from public.profiles p where p.is_studybridge and p.role = 'tutor' limit 1),
+    'students', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', p.id, 'name', p.display_name, 'email', p.email, 'grade', p.grade, 'country', p.country,
+        'joined', p.created_at, 'trial_until', p.trial_until, 'paid_until', p.paid_until, 'paid_plan', p.paid_plan,
+        'exam_date', p.exam_date, 'exam_label', p.exam_label, 'setup_done', p.setup_done, 'last_seen_at', p.last_seen_at,
+        'subjects', (select coalesce(jsonb_agg(s.name order by s.position), '[]'::jsonb)
+                       from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = p.id))
+      order by p.created_at desc) from public.profiles p where p.self_learner), '[]'::jsonb));
+end $$;
+
+-- The Owner records a payment taken by hand (monthly, or an exam pass), or takes it away
+create or replace function public.admin_set_student_paid(p_user uuid, p_plan text, p_until date) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_plan is not null and p_plan not in ('monthly', 'pass') then raise exception 'Choose monthly or an exam pass.'; end if;
+  if p_plan is not null and (p_until is null or p_until < current_date) then raise exception 'Pick the day they’ve paid until.'; end if;
+  update public.profiles set paid_plan = p_plan, paid_until = case when p_plan is null then null else p_until end
+   where id = p_user and self_learner;
+  if not found then raise exception 'That isn’t a student account.'; end if;
+  perform public._admin_log(case when p_plan is null then 'student_unpaid' else 'student_paid' end, p_user,
+    jsonb_build_object('plan', p_plan, 'until', p_until));
+end $$;
+
+create or replace function public.admin_extend_trial(p_user uuid, p_days int default 7) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.profiles
+     set trial_until = greatest(coalesce(trial_until, now()), now()) + make_interval(days => greatest(1, least(coalesce(p_days, 7), 60)))
+   where id = p_user and self_learner;
+  if not found then raise exception 'That isn’t a student account.'; end if;
+  perform public._admin_log('student_trial', p_user, jsonb_build_object('days', p_days));
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -5016,6 +5229,7 @@ begin
 end $$;
 grant execute on all functions in schema public to service_role;
 revoke execute on function public._admin_log(text, uuid, jsonb) from public, anon, authenticated;
+revoke execute on function public._studybridge_account() from public, anon, authenticated;
 revoke execute on function public._storage_bytes(uuid) from public, anon, authenticated;
 revoke execute on function public._learner_topics(uuid, boolean, uuid) from public, anon, authenticated;
 revoke execute on function public._assignment_visible_to(public.assignments, uuid) from public, anon, authenticated;

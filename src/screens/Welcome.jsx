@@ -5,6 +5,7 @@ import { Field, useToast, copyText } from '../ui/kit.jsx';
 import { decodeInvite, validateServer, normaliseUrl, getServer, desktop, builtInServer } from '../lib/config.js';
 import { sb, friendly } from '../lib/supabase.js';
 import * as api from '../lib/api.js';
+import { GRADES } from '../lib/students.js';
 import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
@@ -13,7 +14,7 @@ export default function Welcome() {
   // from a tutor's message: #join=48291375 (the code is filled in)
   const [linked] = useState(() => {
     const h = location.hash || '';
-    const m = h.match(/start=(tutor|invite|parent|signin)/);
+    const m = h.match(/start=(tutor|invite|parent|signin|student)/);
     const j = h.match(/join=(\d{8})/);
     if (m || j) history.replaceState(null, '', location.pathname + location.search);
     if (j) sessionStorage.setItem('sb.joinCode', j[1]);
@@ -22,11 +23,17 @@ export default function Welcome() {
   // First time on this device: choose tutor / learner / sign in. After that: straight to sign in.
   const [step, setStep] = useState(() => {
     if (linked === 'tutor') return app.server ? 'account' : 'server';
+    if (linked === 'student' && app.server) return 'account';
     if (linked === 'invite' || linked === 'parent') return 'invite';
     if (linked === 'signin' && app.server) return 'signin';
     return app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start';
   });
-  const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : null);
+  const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : linked === 'student' ? 'student' : null);
+  // Students on their own can sign up once the Owner opens it (Admin → Students)
+  const [studentsOpen, setStudentsOpen] = useState(false);
+  useEffect(() => {
+    if (app.server) api.publicSettings().then((s) => setStudentsOpen(!!s?.students_open));
+  }, [app.server]);
 
   return (
     <div className="welcome">
@@ -47,6 +54,18 @@ export default function Welcome() {
         </div>
         {step === 'start' && (
           <div className="stack">
+            {studentsOpen && (
+              <button className="choice" onClick={() => (setRole('student'), setStep('account'))}>
+                <span className="ic">
+                  <Icon name="target" size={24} />
+                </span>
+                <span className="grow">
+                  <div className="t">I’m a student</div>
+                  <div className="s">Study on my own: a plan to my exams, lessons, practice papers and mocks. 7 days free.</div>
+                </span>
+                <Icon name="right" />
+              </button>
+            )}
             <button className="choice" onClick={() => (setRole('tutor'), setStep(app.server ? 'account' : 'server'))}>
               <span className="ic">
                 <Icon name="pen" size={24} />
@@ -86,7 +105,7 @@ export default function Welcome() {
         )}
         {step === 'server' && <ServerSetup onBack={() => setStep('start')} onDone={() => setStep('account')} />}
         {step === 'invite' && <InviteStep parent={role === 'parent'} onBack={() => setStep('start')} onDone={() => setStep('account')} />}
-        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : 'invite')} />}
+        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : role === 'student' ? 'start' : 'invite')} />}
         {step === 'signin' && (
           <SignIn
             onNewLearner={() => (setRole('learner'), setStep('invite'))}
@@ -254,6 +273,7 @@ function Account({ role, onBack }) {
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [about, setAbout] = useState({ subjects: '', country: '', learners: '' });
+  const [student, setStudent] = useState({ grade: '', country: '' });
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -262,12 +282,16 @@ function Account({ role, onBack }) {
     setErr('');
     if (mode === 'new' && !name.trim()) return setErr('Add your name.');
     if (pw.length < 6) return setErr('Use a password of at least 6 characters.');
+    if (role === 'student' && mode === 'new' && !student.grade) return setErr('Choose your grade.');
+    if (role === 'student' && mode === 'new' && Number(student.grade) < 8) return setErr('Below grade 8, a parent sets up your account with you. That’s coming soon: ask a parent to join the early-access list on gostudybridge.com.');
     setBusy(true);
     try {
       const d = mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
       const user = d.user || d.session?.user;
       if (role === 'tutor') {
         await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0], mode === 'new' ? about : null);
+      } else if (role === 'student') {
+        if (mode === 'new') await api.startSelfLearner(name.trim(), Number(student.grade), student.country.trim());
       } else {
         const inv = decodeInvite(sessionStorage.getItem('sb.pendingInvite'));
         if (inv) await api.joinWithCode(inv.code, name.trim());
@@ -284,7 +308,8 @@ function Account({ role, onBack }) {
 
   return (
     <form className="card" onSubmit={go}>
-      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : 'Your account'}</h2>
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : role === 'student' ? 'Your student account' : 'Your account'}</h2>
+      {role === 'student' && mode === 'new' && <div className="note small">Everything is free for 7 days. Then it’s $12 a month, or an exam pass that lasts until your exams.</div>}
       {role === 'tutor' && mode === 'new' && <div className="note small">New tutor accounts are checked and approved by StudyBridge. You can set up your subjects straight away; you can invite learners once you’re approved.</div>}
       <div className="seg">
         <button type="button" aria-pressed={mode === 'new'} onClick={() => setMode('new')}>
@@ -295,7 +320,7 @@ function Account({ role, onBack }) {
         </button>
       </div>
       {mode === 'new' && (
-        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : role === 'parent' ? 'Your child and their tutor see this name.' : 'Your tutor sees this name.'}>
+        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : role === 'parent' ? 'Your child and their tutor see this name.' : role === 'student' ? 'Your first name is enough.' : 'Your tutor sees this name.'}>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" autoFocus />
         </Field>
       )}
@@ -305,6 +330,23 @@ function Account({ role, onBack }) {
       <Field label="Password" hint={mode === 'new' ? 'At least 6 characters.' : null}>
         <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete={mode === 'new' ? 'new-password' : 'current-password'} required />
       </Field>
+      {role === 'student' && mode === 'new' && (
+        <div className="grid g2" style={{ gap: 12 }}>
+          <Field label="Your grade">
+            <select className="select" value={student.grade} onChange={(e) => setStudent({ ...student, grade: e.target.value })}>
+              <option value="">Choose…</option>
+              {GRADES.map(([g, label]) => (
+                <option key={g} value={g}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Country">
+            <input className="input" value={student.country} onChange={(e) => setStudent({ ...student, country: e.target.value })} autoComplete="country-name" />
+          </Field>
+        </div>
+      )}
       {role === 'tutor' && mode === 'new' && (
         <>
           <Field label="What do you teach?" hint="Optional. Helps StudyBridge approve you quickly.">
