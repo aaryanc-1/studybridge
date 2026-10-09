@@ -15,7 +15,7 @@ StudyBridge is a paid service for private tutors: each tutor brings their own le
 | First real user | Aaryan tutoring his sister (Cambridge IGCSE International Maths 0607, Lusaka) from NYC |
 | Admin | Aaryan is the StudyBridge admin, on a separate admin account: approves tutors, manages accounts and access, never sees content |
 | Business model | Monthly or yearly subscription per tutor (Free: 1 learner; Starter: 5 learners, $15; Pro: 25 learners, $29; yearly = 2 months free; parents free), no commission. Free for everyone until paid plans are switched on; StudyBridge pays the AI and video costs |
-| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026; on gostudybridge.com since 7 Oct 2026; fixes and polish 8 Oct 2026 (app 1.1.56); account menu fix and Discard 8 Oct 2026 (app 1.1.57) |
+| Version | 1.5 (app 1.1.30), live since 1 Oct 2026; updates install themselves; 1.6 part 5 out 6 Oct 2026 (app 1.1.49); 2.0 website and the 6 Oct fixes out 7 Oct 2026; on gostudybridge.com since 7 Oct 2026; fixes and polish 8 Oct 2026 (app 1.1.56); account menu fix and Discard 8 Oct 2026 (app 1.1.57); new prices and self-learners-first plan on the website 8 Oct 2026 (app 1.1.58) |
 
 **Rules StudyBridge lives by**
 
@@ -102,7 +102,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.57 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.58 |
 | Website | Published with every release next to the phone version; its early-access form saves to the server (Admin → Selling shows the list) | Live at gostudybridge.com (app at gostudybridge.com/app/), served by Cloudflare Pages (project gostudybridge) from the releases repo's gh-pages branch; old github.io links redirect |
 | Admin → Selling | Plan limits, Stripe (secret key, webhook secret, four price IDs), Resend email (sender and key), Google sign-in | Nothing set; all off |
 | Domain gostudybridge.com (Cloudflare) | The website and the phone/web version; Cloudflare Pages serves them free and fast worldwide. Later: email from the domain (Resend) and hello@ forwarding (Cloudflare Email Routing) | Live 7 Oct 2026; Supabase Site URL set to gostudybridge.com/app/ (8 Oct 2026); Cloudflare Web Analytics on |
@@ -124,7 +124,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 
 ## Costs and pricing
 
-A tutor costs StudyBridge roughly $2–12 a month in AI plus a dollar or two of shared services. Prices were set on 6 Oct 2026 (raised slightly from the draft); StudyBridge stays free until paid plans are switched on.
+A tutor costs StudyBridge roughly $2–12 a month in AI plus a dollar or two of shared services. Prices were agreed on 8 Oct 2026 (the full working is in the price sheet doc). During early access Aaryan takes payment himself and sets each plan in Admin; online checkout comes last.
 
 **What Prof costs per task** (Claude Sonnet 5.5: $2 per million tokens in, $10 out)
 
@@ -138,16 +138,18 @@ A tutor costs StudyBridge roughly $2–12 a month in AI plus a dollar or two of 
 
 **Running costs:** Supabase free now, Pro $25/month when files pass 1 GB or the database 500 MB; LiveKit free tier, then pay per video minute; card fees about 3% + 30¢ per payment; a domain about $10–15 a year when email is added.
 
-**Prices** (charged in US dollars; the website shows kwacha and rupees at 1 USD = 19.69 kwacha = 96.22 rupees, Wise, 1 Oct 2026; yearly = 10 months, 2 free)
+**Prices** (agreed 8 Oct 2026; one price in US dollars, shown in the visitor's currency; every paid plan starts with a 7-day free trial; no discounts)
 
-| Plan | Learners | USD month / year | About in kwacha | About in rupees |
-| --- | --- | --- | --- | --- |
-| Free | 1 | $0 | K0 | ₹0 |
-| Starter | up to 5 | $15 / $150 | K295 / K2,950 | ₹1,445 / ₹14,450 |
-| Pro | up to 25 | $29 / $290 | K570 / K5,700 | ₹2,790 / ₹27,900 |
-| Parent accounts | any | free | free | free |
+| Who | How they pay | Monthly | Yearly or pass |
+| --- | --- | --- | --- |
+| Tutor, Essentials (no Prof) | Per learner, in steps | $5 each for learners 1–10, $4 for 11–30, $3 after 30 | 11 months' price for 12 (1 month free) |
+| Tutor, Plus (unlimited Prof, mocks with grades, exam camera, StudyBridge content) | Per learner, in steps | $9, $7, $5 | 11 months' price for 12 |
+| Self-learner | Every subject at their level | $12 | Exam pass: $10 a month, paid once, until their exams |
+| A tutor's learner, parents | Free | Free | Free |
 
-Open questions: ask 3–5 tutors what they would pay; mobile money for Zambia (Flutterwave or DPO Pay), UPI for India (Razorpay); see the competitor comparison doc for how these compare.
+Examples: 5 learners cost $25 (Essentials) or $45 (Plus) a month; 25 learners $110 or $195. A self-learner 8 months from their exams pays $80 with a pass. Prof has no limit on Plus; Admin gets an alert if one tutor's Prof costs more than they pay.
+
+Payments: during early access, by arrangement with Aaryan. Online checkout later: Stripe for cards (Adaptive Pricing charges in local currency), mobile money through Flutterwave or DPO, tax through Stripe Tax.
 
 ## 1.6 plan
 
@@ -163,7 +165,7 @@ Open questions: ask 3–5 tutors what they would pay; mobile money for Zambia (F
 
 ## 2.0 plan: open to every learner
 
-Agreed with Aaryan on 7 Oct 2026; nothing is built yet. StudyBridge grows from "a tutor and their learners" into a learning resource for anyone in education: a student on their own, a tutor and their learners, tuition centres, then schools. A student without a tutor gets Prof as their guide, with content made and checked ahead of time. The big goal is to be the most complete and trustworthy place to prepare for an exam, better than studybridge.tech (an AI-first South African platform with the same name).
+Agreed with Aaryan on 7 Oct 2026 and updated on 8 Oct. StudyBridge grows from "a tutor and their learners" into one whole education platform: what ManageBac, Canvas and Google Classroom give, plus lockdown exams, for a student on their own, a tutor and their learners, tuition centres, then schools. Students never chat with AI: a student without a tutor gets lessons, hints and worked solutions made and checked ahead of time. The big goal is to be the most complete and trustworthy place to prepare for an exam, better than studybridge.tech (an AI-first South African platform with the same name).
 
 **Who uses it**
 
@@ -192,7 +194,7 @@ A self-learner who later joins a tutor keeps their history and their own study s
 2. **Exam countdown plan**: every topic spread over the weeks left, weak topics first, the last weeks for practice papers and a full mock; it re-plans itself when days are missed.
 3. **Ready-made lessons** per syllabus point: a short explanation, a worked example, practice and a quick check, with "say it more simply" and "explain it another way".
 4. **Practice and papers**: the question bank, instant marking, flashcards, past papers opened from the official site, three original practice papers per paper type, and timed mocks with estimated grade boundaries.
-5. **Bring your own course**: anyone not covered (grade 7, a university module, a national exam) uploads a syllabus or course outline and Prof builds the plan and practice, with the same checks.
+5. **Bring your own course** (later, to decide): anyone not covered uploads a syllabus and gets a plan and practice. It would need Prof to work for a student directly, so it waits.
 6. **Accessibility**: screen reader and keyboard support, colour-blind-safe charts, focus mode, reading mode, read-aloud, voice answers, dyslexia-friendly font, text size and contrast, extra time on timed tests. Languages: English, French, Spanish, Portuguese, Hindi and Arabic (the app first, then lessons).
 
 **Curricula at launch** (the common international-school subjects; anything else by "Request a subject")
@@ -215,21 +217,17 @@ A self-learner who later joins a tutor keeps their history and their own study s
 - A public page per syllabus (for example "IGCSE Physics 0625: 12-week revision plan"), so students find StudyBridge from Google.
 - Later: university student ambassadors, and self-learners finding a tutor on StudyBridge.
 
-**Build order**
+**Build order** (changed on 8 Oct 2026: self-learners launch first; the launch priorities doc has the full checklist)
 
 | Step | What | Status |
 | --- | --- | --- |
-| 0 | Plan written into this doc and the repo's rules | Done 7 Oct 2026 |
-| 1 | Choose the new name and buy the domain (Aaryan) | Next |
-| 2 | Website 2.0 (name kept as StudyBridge for now): students first ("exam in 9 weeks? get your plan"), a switcher for students, parents, tutors, centres and schools, curricula and subjects, accessibility, how Prof works and its rules, an early-access list for the student version | Done 7 Oct 2026 (app 1.1.51) |
-| 3 | Fixes from 6 Oct (test vs exam wording, a panel that stays in view when marking, return marks without a redo, Prof's line breaks, blank drawings, plans chosen from a list) | Done 7 Oct 2026 (app 1.1.54) |
-| 4 | Foundations: account types (Owner, Admin, Reviewer, self-learner), the curriculum catalogue (boards, subjects, levels, paper formats), Owner-only content tools in the Claude Desktop connector, removing the connector from tutors | Planned |
-| 5 | Content: practice papers, lessons, questions and flashcards made on the Owner's Claude subscription, the automatic checks, the report button and the review queue. Hundreds of paper types, so this runs as steady batches over weeks, most-taken subjects first | Planned |
-| 6 | The student experience: guided setup, starting check, exam countdown plan, daily "today" screen, practice and mocks, browser vs desktop, parent approval by grade and country | Planned |
-| 7 | Accessibility pack, then languages | Planned |
-| 8 | Growth: free tools, referral discount, progress card, syllabus pages | Planned |
-| 9 | Prices and payments (website), email from the domain, WhatsApp | With the domain |
-| 10 | Tuition centres and schools (an organisation layer), university ambassadors, finding a tutor | Later |
+| Done | Name and domain (StudyBridge, gostudybridge.com); website 2.0; the 6 Oct fixes; fixes and polish | Done 7–8 Oct 2026 (apps 1.1.51–1.1.57) |
+| Now | The website and docs match the new plan: prices, the two tutor levels, the trial, no AI chat for students, terms and privacy | Done 8 Oct 2026 (app 1.1.58) |
+| Launch 1 | Self-learners on the web and phones: accounts in StudyBridge's own organisation, guided setup, starting check, countdown plan, Today, exam conditions (full screen and a timer), Owner-only content tools with automatic checks and a report button, subjects switching on as their content is ready (every subject), parent approval for young learners, manual billing in Admin, accessibility basics, privacy pack | Next, on Aaryan's go |
+| Launch 2 | Tutors: organisations and classes, the new Home and shorter menu, Essentials and Plus, watched mode, pausing a learner, "change this part" with Prof, cheaper Prof behind the scenes, the connector removed for tutors, signed Windows and Mac apps | After launch 1 |
+| Checkout | Online payment: Stripe for cards, mobile money, tax | When everything is ready |
+| iPad | The iPad app with Apple's exam mode | After the Apple account |
+| Waves | Classroom (stream, rubrics, gradebook, school sign-in, exam-room view); running a school (planners, IB criteria, report cards, attendance, timetable, CAS/EE/TOK, Chromebook extension); reach (six languages, school systems, analytics, growth) | After the launches |
 
 ## Update 1.2: library, question bank and parent reports
 
@@ -300,6 +298,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Date | Change |
 | --- | --- |
 | 8 Oct 2026 | Fixes and polish (app 1.1.56): handed-in work drops off tutor Home's Coming up; the desktop app keeps the running version during updates and offers a restart if part of the app can't load (the exam-camera error); the lockdown box says test or quiz; an account menu on every screen with Sign out; parents get four big tabs and a child picker; text size per device; the welcome screen matches the website with a link back; the website shows Open my StudyBridge when signed in; a Contact page; hello@ (website) and support@ (in the app) set up, and website messages, early access and Contact StudyBridge are emailed once Resend is set up; weekly report replies go to the tutor |
+| 8 Oct 2026 | New prices and plan (app 1.1.58): the website shows per-learner tutor pricing on Essentials and Plus (1 month free yearly, 7-day trial) and self-learner prices ($12 a month or an exam pass); students never chat with AI (hints and worked solutions written ahead, on the students page, home, parents, terms and privacy); Settings and Admin describe the same plans; the plan now launches self-learners first |
 | 8 Oct 2026 | Account menu and Discard (app 1.1.57): the account menu at the bottom of the sidebar opens again (it was opening but hidden), with Settings, Switch account and Sign out; Prof's drafts can be discarded straight from Waiting for you or inside the draft |
 | 7 Oct 2026 | Moved to gostudybridge.com (app 1.1.55): the domain was bought on Cloudflare; Cloudflare Pages serves the website and the app at /app/; invites, parent invites, password-reset links, Stripe returns and the QR code use it; old github.io links redirect (signed-in phone users get a note first). The backend stays on Supabase (decided: not GoDaddy shared hosting, which can't run it safely) |
 | 7 Oct 2026 | 2.0 step 3, the 6 Oct fixes (app 1.1.54): lockdown alerts say test, quiz or exam as it is; the marking total and buttons stay in view (a bar on narrow screens); "Return marks" is always there and final, "Return marks and ask to redo N" only when you tick redo, "Save, return later" never releases; Prof no longer ticks redo; feedback with "
