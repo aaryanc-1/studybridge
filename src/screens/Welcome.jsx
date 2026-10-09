@@ -9,11 +9,15 @@ import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
   const app = useApp();
-  // From the website: #start=tutor (sign up), #start=invite / parent (I have an invite), #start=signin
+  // From the website: #start=tutor (sign up), #start=invite / parent (I have an invite), #start=signin;
+  // from a tutor's message: #join=48291375 (the code is filled in)
   const [linked] = useState(() => {
-    const m = (location.hash || '').match(/start=(tutor|invite|parent|signin)/);
-    if (m) history.replaceState(null, '', location.pathname + location.search);
-    return m?.[1] || null;
+    const h = location.hash || '';
+    const m = h.match(/start=(tutor|invite|parent|signin)/);
+    const j = h.match(/join=(\d{8})/);
+    if (m || j) history.replaceState(null, '', location.pathname + location.search);
+    if (j) sessionStorage.setItem('sb.joinCode', j[1]);
+    return j ? 'invite' : m?.[1] || null;
   });
   // First time on this device: choose tutor / learner / sign in. After that: straight to sign in.
   const [step, setStep] = useState(() => {
@@ -59,7 +63,7 @@ export default function Welcome() {
               </span>
               <span className="grow">
                 <div className="t">I’m a learner</div>
-                <div className="s">Join with the invite your tutor sent you.</div>
+                <div className="s">Join with the code your tutor sent you.</div>
               </span>
               <Icon name="right" />
             </button>
@@ -202,14 +206,18 @@ function ServerSetup({ onBack, onDone }) {
 
 function InviteStep({ parent = false, onBack, onDone }) {
   const app = useApp();
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => {
+    const c = parent ? '' : sessionStorage.getItem('sb.joinCode') || '';
+    sessionStorage.removeItem('sb.joinCode');
+    return c ? `${c.slice(0, 4)} ${c.slice(4)}` : '';
+  });
   const [err, setErr] = useState('');
 
   function next(e) {
     e.preventDefault();
     const inv = decodeInvite(text);
-    if (!inv) return setErr('That doesn’t look like a StudyBridge invite. Paste the whole message your tutor sent.');
-    if (!inv.url && !app.server) return setErr('That’s just the code. Paste the whole invite message (it starts with SB1-).');
+    if (!inv) return setErr(parent ? 'That doesn’t look like a parent invite. Paste the whole message the tutor sent.' : 'That doesn’t look like a code from your tutor. It’s 8 digits, like 4829 1375.');
+    if (!inv.url && !app.server) return setErr('Paste the whole message your tutor sent (it starts with SB1-).');
     if (inv.url) app.setServer({ url: inv.url, key: inv.key });
     sessionStorage.setItem('sb.pendingInvite', text.trim());
     onDone();
@@ -219,9 +227,15 @@ function InviteStep({ parent = false, onBack, onDone }) {
     <form className="card" onSubmit={next}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{parent ? 'Follow your child’s progress' : 'Join your tutor'}</h2>
       {parent && <div className="note small">A parent account is read-only: you see your child’s weekly reports, lessons, due dates and marks once they’re given back. Never their messages or working.</div>}
-      <Field label={parent ? 'Your parent invite' : 'Your invite'} hint={`Paste the whole invite ${parent ? 'your child’s tutor' : 'your tutor'} sent you. It starts with SB1-`}>
-        <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-eyJ1Ijoi…" spellCheck={false} />
-      </Field>
+      {parent ? (
+        <Field label="Your parent invite" hint="Paste the whole invite your child’s tutor sent you.">
+          <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-eyJ1Ijoi…" spellCheck={false} />
+        </Field>
+      ) : (
+        <Field label="Your code" hint="The 8-digit code from your tutor, like 4829 1375. You can also paste their whole message.">
+          <input className="input code-in" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="4829 1375" inputMode="numeric" autoComplete="one-time-code" spellCheck={false} />
+        </Field>
+      )}
       {err && <div className="error">{err}</div>}
       <div className="row between">
         <button type="button" className="btn ghost" onClick={onBack}>

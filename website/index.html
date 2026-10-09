@@ -26,14 +26,14 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <span class="pill">For students, tutors, parents and schools</span>
+        <span class="pill">Made for <span class="rotator" aria-hidden="true"><b>students</b><b>tutors</b><b>parents</b><b>schools</b></span><span class="sr-only">students, tutors, parents and schools</span></span>
         <h1>Learning that gets you<br><em>exam-ready.</em></h1>
         <p class="lead">{{brand}} brings everything for your exams into one place: a plan for the weeks you have, lessons that make sense, practice papers in the real format, timed mocks and marking. For IGCSE, A-Level and IB. Learn with a tutor, or on your own.</p>
         <div class="cta">
           <a class="btn primary big" href="students.html">I’m a student</a>
           <a class="btn big" href="tutors.html">I’m a tutor</a>
         </div>
-        <p class="fine">Parent? <a href="parents.html">See what you get</a>. School or tuition centre? <a href="schools.html">Find out more</a>. Have an invite from your tutor? <a href="{{app}}#start=invite">Join here</a>.</p>
+        <p class="fine">Parent? <a href="parents.html">See what you get</a>. School or tuition centre? <a href="schools.html">Find out more</a>. Got a code from your tutor? <a href="{{app}}#start=invite">Join here</a>.</p>
       </div>
       <div class="hero-art" aria-hidden="true">
         <div class="plan-card">
@@ -55,6 +55,8 @@
           <div class="fc-label">Mock grade</div>
           <div class="fc-grade">B <small>→ A in 6 marks</small></div>
         </div>
+        <div class="chip-float c1"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5 0 2 1 3 2 3 0-3-1-5.5 1-8.5Z" fill="currentColor"/></svg> 5-day streak</div>
+        <div class="chip-float c2"><span class="tick">✓</span> Quiz marked · 18 / 20</div>
       </div>
     </div>
   </section>
@@ -75,7 +77,7 @@
   </section>
 
   <!-- Who it's for -->
-  <section class="who" id="who">
+  <section class="who-sec" id="who">
     <div class="wrap">
       <h2 class="reveal">Made for everyone around the learner</h2>
       <p class="sub reveal">Pick what sounds like you.</p>
@@ -112,8 +114,10 @@
   <!-- Subjects -->
   <section class="subj-strip">
     <div class="wrap">
-      <h2 class="reveal">{{subjectCount}} subjects to start</h2>
+      <h2 class="reveal"><span data-count="{{subjectCount}}">{{subjectCount}}</span> subjects to start</h2>
       <p class="sub reveal">The subjects international schools teach most, with more on request.</p>
+      <div class="marquee" aria-hidden="true"><div class="mq-track">{{marqueeA}}</div></div>
+      <div class="marquee rev" aria-hidden="true"><div class="mq-track">{{marqueeB}}</div></div>
       <div class="boards reveal">
         <a href="subjects.html" class="board-card"><b>Cambridge</b><span>IGCSE · International AS &amp; A Level</span></a>
         <a href="subjects.html" class="board-card"><b>Pearson Edexcel</b><span>International GCSE · International A Level</span></a>

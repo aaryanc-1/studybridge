@@ -66,7 +66,7 @@ test('tutor setup, programmes, subjects, invites', async () => {
   assert.equal(await val('T', `select admin_to_move()`), false, 'the tutor account lost admin');
   assert.equal(await val('A', `select is_platform_admin()`), true);
   assert.equal((await one('A', `select * from become_tutor('Sneaky')`)).role, 'admin', 'the admin account can’t become a tutor');
-  await fails(as('A', `select * from accept_invite('XXXX', 'x')`), /not valid/);
+  assert.equal((await one('A', `select * from accept_invite('XXXX', 'x')`)).id, null, 'a wrong code joins nobody');
   await fails(as('A', `select make_admin('x@x.com')`), /permission denied/, 'make_admin is for the SQL editor only');
   // Anyone else can sign up as a tutor, but waits for the admin
   const p2 = await one('T2', `select * from become_tutor('Other tutor')`);
@@ -93,7 +93,7 @@ test('tutor setup, programmes, subjects, invites', async () => {
   S.geo = await val('T', `insert into topics (subject_id, name) values ($1, 'Geometry') returning id`, [S.math]);
   const inv = await one('T', `insert into invites (name, programme_id, subject_ids) values ('Sister', $1, $2) returning code`, [S.prog, [S.math, S.phys]]);
   S.code = inv.code;
-  assert.match(S.code, /^[0-9A-F]{10}$/);
+  assert.match(S.code, /^\d{8}$/, 'learner invites are 8-digit codes');
   // Another tutor sees none of it
   assert.equal((await as('T2', `select * from subjects`)).length, 0);
   assert.equal((await as('T2', `select * from invites`)).length, 0);
@@ -108,7 +108,7 @@ test('learner joins with an invite code', async () => {
   assert.equal(p.display_name, 'Sis');
   assert.equal((await as('L', `select * from learner_subjects`)).length, 2);
   await fails(as('L2', `select accept_invite($1, 'x')`, [S.code]), /already been used/);
-  await fails(as('L2', `select accept_invite('NOPE', 'x')`), /not valid/);
+  assert.equal((await one('L2', `select * from accept_invite('NOPE', 'x')`)).id, null);
   await fails(as('T2', `select accept_invite($1, 'x')`, [S.code]));
   // second learner gets Physics only, via a fresh invite
   const code2 = await val('T', `insert into invites (name, subject_ids) values ('Other', $1) returning code`, [[S.phys]]);
@@ -1536,4 +1536,20 @@ test('Contact page and emails to hello@ / support@: anyone can write; the emails
   assert.ok(Number(st.waiting) >= 3);
   assert.equal(st.contact_email, 'hello@gostudybridge.com');
   assert.equal(st.support_email, 'support@gostudybridge.com');
+});
+
+test('learners join with an 8-digit code, typed with or without a space; 10 wrong codes in an hour and that account waits', async () => {
+  const code = await val('T', `insert into invites (name) values ('Digits') returning code`);
+  assert.match(code, /^\d{8}$/, 'new invites get an 8-digit code');
+  const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ('guess@x.com', '{"name":"G"}') returning id`);
+  U.G = r.rows[0].id;
+  for (let i = 0; i < 10; i++) assert.equal((await one('G', `select * from accept_invite($1, 'x')`, [String(10000000 + i)])).id, null);
+  // the 11th try within the hour is refused, even with the right code
+  await fails(as('G', `select accept_invite($1, 'x')`, [code]), /Too many wrong codes/);
+  await fails(as('G', `select * from invite_tries`), /permission denied/);
+  // an hour later the account can try again, and "4829 1375" with a space works
+  await db.query(`update invite_tries set at = now() - interval '2 hours' where user_id = $1`, [U.G]);
+  const p = await one('G', `select * from accept_invite($1, 'Guess')`, [`${code.slice(0, 4)} ${code.slice(4)}`]);
+  assert.equal(p.role, 'learner');
+  assert.equal(p.tutor_id, U.T);
 });

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing · {{brand}}</title>
+<meta name="description" content="{{brand}} pricing: students ${{studentMonth}} a month or an exam pass, tutors from ${{tutorFrom}} per learner, parents free. Every paid plan starts with a {{trialDays}}-day free trial.">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap narrow center">
+      <span class="pill">Pricing</span>
+      <h1>Simple prices,<br><em class="shine">for everyone.</em></h1>
+      <p class="lead">Pick who you are. Every paid plan starts with a {{trialDays}}-day free trial, and parents are always free.</p>
+    </div>
+  </section>
+
+  <section class="pricing-page">
+    <div class="wrap">
+      <div class="who-pick reveal" role="tablist" aria-label="Who is it for?">
+        <button role="tab" id="pt-students" aria-controls="pp-students" aria-selected="true" data-hash="students">{{icStudent}}<b>Student</b><small>Learning on my own</small></button>
+        <button role="tab" id="pt-tutors" aria-controls="pp-tutors" aria-selected="false" tabindex="-1" data-hash="tutors">{{icTutor}}<b>Tutor</b><small>I teach learners</small></button>
+        <button role="tab" id="pt-parents" aria-controls="pp-parents" aria-selected="false" tabindex="-1" data-hash="parents">{{icParent}}<b>Parent</b><small>Following my child</small></button>
+        <button role="tab" id="pt-schools" aria-controls="pp-schools" aria-selected="false" tabindex="-1" data-hash="schools">{{icSchool}}<b>School or centre</b><small>Many teachers</small></button>
+      </div>
+      <p class="cur-line reveal"><label class="cur">Prices in <select id="currency">{{currencyOptions}}</select></label></p>
+
+      <div class="who-panel" role="tabpanel" id="pp-students" aria-labelledby="pt-students">
+        <div class="plans two">
+          <article class="plan">
+            <h3>Monthly</h3>
+            <div class="blurb">Pay as you go. Cancel any time.</div>
+            <div><span class="amount" data-usd="{{studentMonth}}">${{studentMonth}}</span><span class="per">a month</span></div>
+            <div class="equiv"></div>
+            <ul><li>Every subject at your level</li><li>Your plan to exam day</li><li>Lessons, practice papers and timed mocks</li><li>Hints and worked solutions</li><li>A free parent account for your family</li></ul>
+            <a class="btn" href="students.html#early">Join early access</a>
+          </article>
+          <article class="plan popular">
+            <span class="tag">Best value</span>
+            <h3>Exam pass</h3>
+            <div class="blurb">Pay once. It lasts until your exams, then stops by itself.</div>
+            <div><span class="amount" data-usd="{{studentPass}}">${{studentPass}}</span><span class="per">a month, paid once</span></div>
+            <div class="equiv">{{studentExampleMonths}} months to your exams: <span data-usd="{{studentExample}}">${{studentExample}}</span> once</div>
+            <ul><li>Everything in Monthly</li><li>No renewals to remember</li><li>Less than paying monthly</li></ul>
+            <a class="btn primary" href="students.html#early">Join early access</a>
+          </article>
+        </div>
+        <p class="fine center">Every subject at your level is included, with a {{trialDays}}-day free trial. A parent can pay for their child. The student version opens soon.</p>
+      </div>
+
+      <div class="who-panel" role="tabpanel" id="pp-tutors" aria-labelledby="pt-tutors" hidden>
+        <div class="price-controls">
+          <div class="seg" role="group" aria-label="Billing">
+            <button type="button" data-period="month" aria-pressed="true">Monthly</button>
+            <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{yearlyFree}}</small></button>
+          </div>
+        </div>
+        <div class="plans two">{{levels}}</div>
+        <div class="calc">
+          <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
+          <input type="range" id="learners" min="1" max="60" value="5">
+          <div class="calc-out" id="calc-out" aria-live="polite"></div>
+        </div>
+        <p class="fine center">You pay for each learner you teach, and the price per learner drops as you grow. Your learners’ and their parents’ accounts are free. {{earlyAccessPayment}}</p>
+      </div>
+
+      <div class="who-panel" role="tabpanel" id="pp-parents" aria-labelledby="pt-parents" hidden>
+        <div class="plans one">
+          <article class="plan popular">
+            <span class="tag">Always free</span>
+            <h3>Parent account</h3>
+            <div class="blurb">See how your child is really doing, on your phone or computer.</div>
+            <div><span class="amount">Free</span><span class="per">for every parent</span></div>
+            <div class="equiv"></div>
+            <ul><li>Weekly reports, once the tutor approves them</li><li>Lessons, due dates and the exam countdown</li><li>Marks and mock grades once they’re given back</li><li>Every child in one place</li></ul>
+            <a class="btn primary" href="parents.html">How it works for parents</a>
+          </article>
+        </div>
+        <p class="fine center">Paying for your child’s student plan? It’s the student price: <span data-usd="{{studentMonth}}">${{studentMonth}}</span> a month, or an exam pass at <span data-usd="{{studentPass}}">${{studentPass}}</span> a month.</p>
+      </div>
+
+      <div class="who-panel" role="tabpanel" id="pp-schools" aria-labelledby="pt-schools" hidden>
+        <div class="plans one">
+          <article class="plan">
+            <span class="tag soon-tag">Coming soon</span>
+            <h3>Schools and tuition centres</h3>
+            <div class="blurb">A price per learner for the year, set up with you.</div>
+            <div><span class="amount word">Let’s talk</span></div>
+            <div class="equiv"></div>
+            <ul><li>Teachers, classes, learners and parents in one place</li><li>Locked-down mocks and exam prep built in</li><li>One bill, paid by invoice</li><li>A pilot term to start</li></ul>
+            <a class="btn primary" href="contact.html">Tell us about yours</a>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="faq">
+    <div class="wrap narrow">
+      <h2 class="reveal">Questions about pricing</h2>
+      <details class="reveal"><summary>How does the free trial work?</summary><p>You get everything free for {{trialDays}} days, with no card needed. Tutors get Plus, so they can see what Prof does. Then you choose a plan. If you don’t, your account turns read-only: nothing is deleted, and you can still see and download everything.</p></details>
+      <details class="reveal"><summary>What’s the exam pass?</summary><p>One payment that lasts until your exams, then stops by itself, so there’s nothing to cancel. It costs less each month than paying monthly. With no exam date yet, it lasts 12 months.</p></details>
+      <details class="reveal"><summary>What’s the difference between Essentials and Plus?</summary><p>Essentials has everything a tutor needs to run their tutoring: work, marking, past papers, live lessons, parent reports and locked-down exams. Plus adds Prof with no limit (it makes work, drafts marking and plans with you), mocks with grades, the exam camera and {{brand}}’s own practice papers and self-study for your learners.</p></details>
+      <details class="reveal"><summary>Is there a limit on Prof?</summary><p>No. On Plus, Prof makes as many papers and quizzes as you need and changes them as often as you like. You can always edit anything it makes yourself, too.</p></details>
+      <details class="reveal"><summary>Can I cancel?</summary><p>Yes. Monthly plans cancel any time and keep working to the end of the month you’ve paid for. Yearly plans and exam passes run to their end date. You can have a full refund within 7 days of your first payment.</p></details>
+      <details class="reveal"><summary>Which currency do I pay in?</summary><p>Prices are set in US dollars, and you see and pay them in your own currency.</p></details>
+      <details class="reveal"><summary>How do I pay?</summary><p>{{earlyAccessPayment}}</p></details>
+      <details class="reveal"><summary>Are there discounts?</summary><p>No: one fair price for everyone. Tutors who pay yearly get {{yearlyFree}}, and the exam pass costs less than paying monthly.</p></details>
+    </div>
+  </section>
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

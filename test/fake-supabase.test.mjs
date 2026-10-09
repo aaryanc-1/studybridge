@@ -47,7 +47,8 @@ test('supabase-js works against the fake server', async () => {
   assert.equal(acc.error, null);
   assert.equal(acc.data.role, 'learner');
   const bad = await l.rpc('accept_invite', { p_code: 'NOPE', p_name: 'x' });
-  assert.match(bad.error.message, /not valid/);
+  assert.equal(bad.error, null);
+  assert.equal(bad.data?.id ?? null, null, 'a wrong code joins nobody (the app says so)');
 
   // storage
   const bytes = new TextEncoder().encode('%PDF-1.4 fake');

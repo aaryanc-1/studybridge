@@ -80,8 +80,15 @@ export function decodeInvite(text) {
     } catch {}
     return null;
   }
+  // a tutor's 8-digit code: typed (with or without a space), in a link (#join=…), or inside their whole message
+  const link = t.match(/join=(\d{8})\b/);
+  if (link) return { code: link[1] };
+  const digits = t.replace(/[\s-]+/g, '');
+  if (/^\d{8}$/.test(digits)) return { code: digits };
   const code = t.replace(/\s+/g, '').toUpperCase();
   if (/^P?[0-9A-F]{10}$/.test(code)) return { code };
+  const inText = t.match(/(?:^|\D)(\d{4})[\s-]?(\d{4})(?!\d)/);
+  if (inText) return { code: inText[1] + inText[2] };
   return null;
 }
 

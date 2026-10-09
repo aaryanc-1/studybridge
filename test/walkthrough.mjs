@@ -5,11 +5,12 @@
 import http from 'node:http';
 import { readFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { chromium, devices } from 'playwright';
 import { startFakeSupabase } from './fake-supabase.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SHOTS = process.env.SHOTS || join(ROOT, 'test', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 const PDF = join(ROOT, 'test', 'fixtures', 'algebra-chapter-3.pdf');
@@ -122,7 +123,7 @@ try {
   step('Learner pastes the invite and creates an account');
   await L.goto(web.url);
   await L.getByText('I’m a learner').click();
-  await L.getByLabel('Your invite').fill(inviteText);
+  await L.getByLabel('Your code').fill(inviteText);
   await shot(L, 'learner-invite');
   await L.getByRole('button', { name: 'Next' }).click();
   await L.getByLabel('Your name').fill('Anaya');

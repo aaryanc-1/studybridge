@@ -26,7 +26,7 @@
       <p class="lead">Set work in minutes, mark faster with Prof drafting and you deciding, teach live, run mocks that feel real and send weekly reports parents actually read.</p>
       <div class="cta center">
         <a class="btn primary big" href="{{app}}#start=tutor">Start your free trial</a>
-        <a class="btn big" href="#pricing">See pricing</a>
+        <a class="btn big" href="pricing.html#tutors">See pricing</a>
       </div>
       <p class="fine">{{trialDays}} days free, no card needed. Already teaching on {{brand}}? <a href="{{app}}#start=signin">Sign in</a>.</p>
     </div>
@@ -87,24 +87,16 @@
     </div>
   </section>
 
-  <section class="pricing-sec" id="pricing">
+  <section class="band-wrap">
     <div class="wrap">
-      <h2 class="reveal">Pay per learner</h2>
-      <p class="sub reveal">You pay for each learner you teach, and the price per learner drops as you grow. Your learners’ and their parents’ accounts are free. Try everything free for {{trialDays}} days, and pay yearly to get {{yearlyFree}}.</p>
-      <div class="price-controls reveal">
-        <div class="seg" role="group" aria-label="Billing">
-          <button type="button" data-period="month" aria-pressed="true">Monthly</button>
-          <button type="button" data-period="year" aria-pressed="false">Yearly <small>{{yearlyFree}}</small></button>
+      <a class="band reveal" href="pricing.html#tutors">
+        <div>
+          <span class="eyebrow left">Pricing</span>
+          <h2 class="left">From <span data-usd="{{tutorFrom}}">${{tutorFrom}}</span> per learner a month</h2>
+          <p>Pay only for the learners you teach, less as you grow. Essentials, or Plus with Prof. {{trialDays}} days free.</p>
         </div>
-        <label class="cur">Prices in <select id="currency">{{currencyOptions}}</select></label>
-      </div>
-      <div class="plans two reveal">{{levels}}</div>
-      <div class="calc reveal">
-        <label for="learners">How many learners do you teach? <output id="n-out" for="learners">5</output></label>
-        <input type="range" id="learners" min="1" max="60" value="5">
-        <div class="calc-out" id="calc-out" aria-live="polite"></div>
-      </div>
-      <p class="fine center">Prices are in US dollars, shown in your currency. {{earlyAccessPayment}} A centre with several teachers? <a href="schools.html">See schools and centres</a>.</p>
+        <span class="btn primary big">See tutor pricing</span>
+      </a>
     </div>
   </section>
 
@@ -123,10 +115,7 @@
   <section class="faq">
     <div class="wrap narrow">
       <h2 class="reveal">Questions from tutors</h2>
-      <details class="reveal"><summary>How does the free trial work?</summary><p>You get everything, Plus included, free for {{trialDays}} days, with no card needed. Then you choose Essentials or Plus, monthly or yearly. If you don’t, your account turns read-only: nothing is deleted, and you can still see and download everything.</p></details>
-      <details class="reveal"><summary>What’s the difference between Essentials and Plus?</summary><p>Essentials has everything you need to run your tutoring: work, marking, past papers, live lessons, parent reports and locked-down exams. Plus adds Prof, with no limit, to make work, draft marking and plan with you, plus mocks with grades, the exam camera and {{brand}}’s own practice papers and self-study for your learners.</p></details>
-      <details class="reveal"><summary>Is there a limit on Prof?</summary><p>No. On Plus, Prof makes as many papers and quizzes as you need and changes them as often as you like. You can always edit anything it makes yourself, too.</p></details>
-      <details class="reveal"><summary>How do I pay?</summary><p>{{earlyAccessPayment}} Prices are in US dollars, and you can pay in your own currency.</p></details>
+      <details class="reveal"><summary>What does it cost?</summary><p>You pay for each learner you teach, from ${{tutorFrom}} a month, on Essentials or on Plus with Prof. Try everything free for {{trialDays}} days first. <a href="pricing.html#tutors">See tutor pricing</a>.</p></details>
       <details class="reveal"><summary>Do my learners use AI?</summary><p>No. Prof works only for you. Nothing it drafts reaches a learner or parent until you’ve checked and approved it.</p></details>
       <details class="reveal"><summary>Can I use my own past papers and books?</summary><p>Yes. Import a whole folder: papers are filed, paired with their mark schemes and kept private to you. {{brand}} never shares exam-board papers.</p></details>
       <details class="reveal"><summary>My learners live in another time zone.</summary><p>Weekly lessons keep your clock time and show each learner their own, with reminders a day and 15 minutes before.</p></details>

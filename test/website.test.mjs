@@ -37,25 +37,32 @@ test('website: every page builds with nothing left unfilled', async () => {
     assert.match(students, /id="cd-session"/);
     assert.match(students, /data-default-role="student"/);
     // tutors: plans and the calculator; parents and schools: their own early-access forms; downloads
-    for (const l of c.tutorLevels) assert.match(read('tutors.html'), new RegExp(`data-level="${l.id}"`));
-    assert.match(students, new RegExp(`data-usd="${c.selfLearner.month}"`), 'students see their price');
+    // pricing: its own page, one panel per kind of user, opened by the address (pricing.html#tutors)
+    const pricing = read('pricing.html');
+    for (const l of c.tutorLevels) assert.match(pricing, new RegExp(`data-level="${l.id}"`));
+    assert.match(pricing, new RegExp(`data-usd="${c.selfLearner.month}"`), 'students see their price');
+    for (const who of ['students', 'tutors', 'parents', 'schools']) assert.ok(pricing.includes(`data-hash="${who}"`) && pricing.includes(`id="pp-${who}"`), who);
+    assert.match(read('tutors.html'), /href="pricing\.html#tutors"/);
+    assert.match(students, /href="pricing\.html#students"/);
+    for (const f of pages) assert.doesNotMatch(read(f), /tutors\.html#pricing/, `${f}: pricing lives on its own page`);
     // students never chat with AI: the website doesn't promise it
     for (const f of pages) assert.doesNotMatch(read(f), /Prof as (your|their) guide|Prof guides (you|them|students)/, `${f}: no AI chat for students`);
     assert.match(read('parents.html'), /#start=parent/);
     assert.match(read('parents.html'), /data-default-role="parent"/);
     assert.match(read('schools.html'), /data-default-role="centre"/);
     assert.match(read('download.html'), /data-dl="windows"/);
-    // contact: the form, hello@ on every page (footer), never support@ (that one is for inside the app)
+    // contact: the form and hello@ on the contact page, a Contact link on every page, never support@ (that one is for inside the app)
     assert.match(read('contact.html'), /id="contact-form"/);
+    assert.ok(read('contact.html').includes(c.contactEmail));
     for (const f of pages) {
-      assert.ok(read(f).includes(c.contactEmail) && read(f).includes('href="contact.html"'), `${f}: contact`);
+      assert.ok(read(f).includes('href="contact.html"'), `${f}: contact`);
       assert.ok(!read(f).includes('support@'), `${f}: support@ stays inside the app`);
     }
     assert.match(read('privacy.html'), /Cloudflare Web Analytics/);
     // the subjects page lists every subject in the config, searchable
     const subjects = readFileSync(join(out, 'subjects.html'), 'utf8');
     assert.equal((subjects.match(/<li data-s=/g) || []).length, subjectCount(c));
-    assert.match(subjects, new RegExp(`${subjectCount(c)} subjects`));
+    assert.match(subjects, new RegExp(`data-count="${subjectCount(c)}">${subjectCount(c)}</span> subjects`));
     assert.match(subjects, /data-s="physics 0625 cambridge igcse"/);
     // the early-access form talks to the server only through its public address and key
     const pub = readFileSync(join(out, 'config.js'), 'utf8');

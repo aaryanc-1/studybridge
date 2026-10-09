@@ -904,15 +904,49 @@ begin
   update public.app_config set tutor_signups_open = p_allow, allow_new_tutors = p_allow where id = 1;
 end $$;
 
+-- Learners join with an 8-digit code (4829 1375) instead of a long pasted invite. A short code is easier to guess, so
+-- every wrong code is counted, and 10 wrong codes in an hour make that account wait. (A wrong code returns no profile
+-- instead of raising an error, because an error would also undo the count.)
+create table if not exists public.invite_tries (
+  user_id uuid not null,
+  at timestamptz not null default now()
+);
+create index if not exists invite_tries_user on public.invite_tries (user_id, at);
+alter table public.invite_tries enable row level security;
+revoke all on public.invite_tries from anon, authenticated;
+
+create or replace function public._new_invite_code() returns text
+language plpgsql volatile security definer set search_path = public as $$
+declare
+  b bytea;
+  c text;
+begin
+  loop
+    b := extensions.gen_random_bytes(4);
+    c := lpad(((get_byte(b, 0)::bigint * 16777216 + get_byte(b, 1) * 65536 + get_byte(b, 2) * 256 + get_byte(b, 3)) % 100000000)::text, 8, '0');
+    exit when not exists (select 1 from public.invites where code = c);
+  end loop;
+  return c;
+end $$;
+alter table public.invites alter column code set default public._new_invite_code();
+
 create or replace function public.accept_invite(p_code text, p_name text, p_timezone text default 'UTC')
 returns public.profiles language plpgsql security definer set search_path = public as $$
 declare
   inv public.invites;
   v public.profiles;
+  c text := upper(regexp_replace(coalesce(p_code, ''), '[^0-9A-Za-z]', '', 'g'));
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
-  select * into inv from public.invites where code = upper(trim(p_code)) and not revoked for update;
-  if inv.id is null then raise exception 'That invite code is not valid.'; end if;
+  if (select count(*) from public.invite_tries where user_id = auth.uid() and at > now() - interval '1 hour') >= 10 then
+    raise exception 'Too many wrong codes. Wait an hour, or ask your tutor to send the code again.';
+  end if;
+  select * into inv from public.invites where code = c and not revoked for update;
+  if inv.id is null then
+    insert into public.invite_tries (user_id) values (auth.uid());
+    delete from public.invite_tries where at < now() - interval '1 day';
+    return null;
+  end if;
   if inv.accepted_by is not null and inv.accepted_by <> auth.uid() then raise exception 'That invite has already been used.'; end if;
   select * into v from public.profiles where id = auth.uid();
   if v.role in ('tutor', 'admin') then raise exception 'Tutor and admin accounts cannot join as learners.'; end if;

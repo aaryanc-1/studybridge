@@ -22,7 +22,7 @@ function levelCards(c) {
       return `<article class="plan${l.tag ? ' popular' : ''}" data-level="${esc(l.id)}">
           ${l.tag ? `<span class="tag">${esc(l.tag)}</span>` : ''}
           <h3>${esc(l.name)}</h3>
-          <div class="who">${esc(l.blurb)}</div>
+          <div class="blurb">${esc(l.blurb)}</div>
           <div><span class="amount" data-usd="${first.price}" data-scale>$${first.price}</span><span class="per" data-per>per learner a month</span></div>
           <div class="equiv steps-line">For learners 1\u2013${first.upTo}. Then ${then}.</div>
           <ul>${l.includes.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
@@ -30,6 +30,22 @@ function levelCards(c) {
         </article>`;
     })
     .join('\n        ');
+}
+
+// Small line icons for each kind of user (the who-it's-for cards and the pricing picker)
+const icon = (d) => `<svg class="ic" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICONS = {
+  student: icon('<path d="M3 9l9-4 9 4-9 4-9-4Z"/><path d="M7 11v4c0 1.5 2.5 3 5 3s5-1.5 5-3v-4"/><path d="M21 9v5"/>'),
+  tutor: icon('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20l4-4 4 4"/><path d="M7 9h6M7 12h4"/>'),
+  parent: icon('<circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M14.5 20c.2-2.4 1.6-4 3.5-4s3 1.6 3 4"/>'),
+  school: icon('<path d="M3 21h18"/><path d="M5 21V10l7-5 7 5v11"/><path d="M10 21v-5h4v5"/><path d="M12 10h.01"/>'),
+};
+// Every subject as a chip, for the rows that drift across the home page (each row twice, so it loops)
+const levelShort = (b, l) => (b.id === 'ib' ? 'IB' : /A Level/.test(l.name) ? 'A Level' : 'IGCSE');
+function marquee(c, half) {
+  const all = c.boards.flatMap((b) => b.levels.flatMap((l) => l.subjects.map(([n]) => `<span>${esc(n)}<small>${levelShort(b, l)}</small></span>`)));
+  const row = half ? all.filter((_, i) => i % 2) : all.filter((_, i) => !(i % 2));
+  return row.join('') + row.join('');
 }
 
 const statusClass = (s) => ({ 'Available now': 'now', Free: 'free', 'Early access': 'early' })[s] || '';
@@ -42,6 +58,7 @@ export const PAGES = [
   ['tutors.html', 'Tutors'],
   ['parents.html', 'Parents'],
   ['schools.html', 'Schools'],
+  ['pricing.html', 'Pricing'],
   ['subjects.html', 'Subjects'],
   ['download.html', 'Get the app'],
 ];
@@ -67,11 +84,11 @@ function footer(c, year) {
   return `<footer class="foot">
   <div class="wrap">
     <div class="foot-grid">
-      <div><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p><p class="fine"><a href="mailto:${esc(c.contactEmail)}">${esc(c.contactEmail)}</a></p></div>
+      <div class="foot-brand"><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p></div>
       <nav aria-label="For students"><b>Students</b><a href="students.html">How it works</a><a href="students.html#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="students.html#early">Early access</a></nav>
-      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="tutors.html#pricing">Pricing</a><a href="${esc(c.appPath)}#start=tutor">Free trial</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
-      <nav aria-label="Parents and schools"><b>Families and schools</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
-      <nav aria-label="About"><b>About</b><a href="./">Home</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="${esc(c.appPath)}#start=tutor">Free trial</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
+      <nav aria-label="For families and schools"><b>Families</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
+      <nav aria-label="About"><b>${esc(c.brand)}</b><a href="./">Home</a><a href="pricing.html">Pricing</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
     </div>
     <p class="legal-line">© ${year} ${esc(c.brand)}. Cambridge, Pearson Edexcel and IB are trademarks of their owners. ${esc(c.brand)} is not affiliated with or endorsed by them, and its practice papers are original.</p>
   </div>
@@ -102,6 +119,13 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     year: String(today.getFullYear()),
     updated: today.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
     yearlyFree: `${c.yearlyMonthsFree} month${c.yearlyMonthsFree === 1 ? '' : 's'} free`,
+    tutorFrom: String(c.tutorLevels[0].steps[0].price),
+    icStudent: ICONS.student,
+    icTutor: ICONS.tutor,
+    icParent: ICONS.parent,
+    icSchool: ICONS.school,
+    marqueeA: marquee(c, 0),
+    marqueeB: marquee(c, 1),
     trialDays: String(c.trialDays),
     earlyAccessPayment: esc(c.earlyAccessPayment),
     levels: levelCards(c),
@@ -113,7 +137,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
     subjectCount: String(subjectCount(c)),
     languages: c.languages.map((l, i) => `<i${i ? ' class="soon"' : ''}>${esc(l)}</i>`).join(''),
     audienceCards: c.audiences
-      .map((a) => `<a class="fit-card" href="${esc(a.href)}"><span class="status ${statusClass(a.status)}">${esc(a.status)}</span><b>${esc(a.name)}</b><p>${esc(a.line)}</p><span class="go">${esc(a.go || 'Show me')} →</span></a>`)
+      .map((a) => `<a class="fit-card" href="${esc(a.href)}"><span class="fc-top"><span class="fc-ic">${ICONS[a.id] || ''}</span><span class="status ${statusClass(a.status)}">${esc(a.status)}</span></span><b>${esc(a.name)}</b><p>${esc(a.line)}</p><span class="go">${esc(a.go || 'Show me')} <i aria-hidden="true">→</i></span></a>`)
       .join(''),
     boardButtons: c.boards.map((b, i) => `<button type="button" data-board="${esc(b.id)}" aria-pressed="${i === 0}">${esc(b.name)}</button>`).join(''),
     boardTabs: c.boards

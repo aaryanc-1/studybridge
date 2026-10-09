@@ -28,7 +28,7 @@
         <a class="btn primary big" href="#countdown">Get my plan</a>
         <a class="btn big" href="#early">Join early access</a>
       </div>
-      <p class="fine">Already have a tutor on {{brand}}? <a href="{{app}}#start=invite">Join with your invite</a> or <a href="{{app}}#start=signin">sign in</a>.</p>
+      <p class="fine">Already have a tutor on {{brand}}? <a href="{{app}}#start=invite">Join with your tutor’s code</a> or <a href="{{app}}#start=signin">sign in</a>.</p>
     </div>
   </section>
 
@@ -116,30 +116,16 @@
     </div>
   </section>
 
-  <section class="pricing-sec" id="pricing">
+  <section class="band-wrap">
     <div class="wrap">
-      <h2 class="reveal">What it costs</h2>
-      <p class="sub reveal">Every subject at your level, for one price. Try it free for {{trialDays}} days. Parent accounts are free.</p>
-      <div class="plans two reveal">
-        <article class="plan">
-          <h3>Monthly</h3>
-          <div class="who">Pay as you go. Cancel any time.</div>
-          <div><span class="amount" data-usd="{{studentMonth}}">${{studentMonth}}</span><span class="per">a month</span></div>
-          <div class="equiv"></div>
-          <ul><li>Every subject at your level</li><li>Your plan to exam day</li><li>Lessons, practice papers and timed mocks</li><li>Hints and worked solutions</li></ul>
-          <a class="btn" href="#early">Join early access</a>
-        </article>
-        <article class="plan popular">
-          <span class="tag">Best value</span>
-          <h3>Exam pass</h3>
-          <div class="who">Pay once. It lasts until your exams, then stops by itself.</div>
-          <div><span class="amount" data-usd="{{studentPass}}">${{studentPass}}</span><span class="per">a month, paid once</span></div>
-          <div class="equiv">{{studentExampleMonths}} months to your exams: <span data-usd="{{studentExample}}">${{studentExample}}</span> once</div>
-          <ul><li>Everything in Monthly</li><li>No renewals to remember</li><li>Less than paying monthly</li></ul>
-          <a class="btn primary" href="#early">Join early access</a>
-        </article>
-      </div>
-      <p class="fine center">Shown in your currency. A parent can pay for their child. The student version opens soon; join early access to be first.</p>
+      <a class="band reveal" href="pricing.html#students">
+        <div>
+          <span class="eyebrow left">Pricing</span>
+          <h2 class="left">Every subject, <span data-usd="{{studentMonth}}">${{studentMonth}}</span> a month</h2>
+          <p>Or an exam pass at <span data-usd="{{studentPass}}">${{studentPass}}</span> a month, paid once, until your exams. {{trialDays}} days free.</p>
+        </div>
+        <span class="btn primary big">See student pricing</span>
+      </a>
     </div>
   </section>
 
@@ -151,7 +137,7 @@
       <details class="reveal"><summary>Are the practice papers real past papers?</summary><p>No. They are original papers written to match each real paper’s format: sections, timing, marks and style. Real past papers open from the exam board’s own website. {{brand}} is not affiliated with or endorsed by Cambridge, Pearson Edexcel or the IB.</p></details>
       <details class="reveal"><summary>My subject or exam isn’t listed.</summary><p>Ask for it on the <a href="subjects.html">subjects page</a>. The most-requested come next. You’ll also be able to upload your own syllabus or course outline, from grade 7 to university, and get a plan from it.</p></details>
       <details class="reveal"><summary>How old do I need to be?</summary><p>From grade 8 you can start on your own. Below grade 8, a parent sets up or approves the account. In some countries the law asks a parent to confirm for anyone under 18, and the app handles that for you.</p></details>
-      <details class="reveal"><summary>How much does it cost?</summary><p>${{studentMonth}} a month, or an exam pass at ${{studentPass}} a month paid once, lasting until your exams. Every subject at your level is included, and you can try it free for {{trialDays}} days. Parent accounts are free, and a parent can pay for you. Joining the early-access list is free.</p></details>
+      <details class="reveal"><summary>How much does it cost?</summary><p>${{studentMonth}} a month, or an exam pass at ${{studentPass}} a month paid once, lasting until your exams. Every subject at your level is included, and you can try it free for {{trialDays}} days. <a href="pricing.html#students">See student pricing</a>.</p></details>
     </div>
   </section>
 

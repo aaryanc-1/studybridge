@@ -33,7 +33,11 @@ export async function session() {
 }
 export const getProfile = (id) => run(sb().from('profiles').select('*').eq('id', id).maybeSingle());
 export const becomeTutor = (name, signup = null) => run(sb().rpc('become_tutor', { p_name: name, p_timezone: timezone(), p_signup: signup }));
-export const acceptInvite = (code, name) => run(sb().rpc('accept_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
+export async function acceptInvite(code, name) {
+  const p = await run(sb().rpc('accept_invite', { p_code: code, p_name: name, p_timezone: timezone() }));
+  if (!p?.id) throw new Error('That code isn’t right. Check it with your tutor and try again.');
+  return p;
+}
 export const updateProfile = (patch) => run(sb().from('profiles').update(patch).eq('id', uid()).select().maybeSingle());
 export const changePassword = (password) => run(sb().auth.updateUser({ password }));
 // Where links in StudyBridge's emails open (the phone/web version; set as Supabase's Site URL too)

@@ -116,6 +116,18 @@ Account menu fix (8 Oct): its classes are `acct-side`/`acct-top` (the old `side`
 styles and clipped the menu); in the sidebar it floats (fixed) above the button. Drafts (Prof's work, copied papers,
 lesson notes) can be discarded from Prof → "Waiting for you" or inside the draft (`useDiscardDraft` in ClaudeInbox.jsx).
 test/product.mjs runs on Windows too: `CHROMIUM` = Edge's path (no Playwright browsers installed on Aaryan's PC).
+Website 3 (9 Oct 2026): a separate Pricing page (website/pricing.html; a who-are-you picker whose tabs open from the
+address, pricing.html#students|tutors|parents|schools; the tutors and students pages link to it instead of showing prices);
+Pricing in the menu (`PAGES`); the footer has no email (the Contact link and contact.html carry hello@) and even columns;
+livelier pages: drifting colour behind each opening, shimmering italic headline words, rotating "Made for …", a tilting plan
+card with floating chips, cards that light up under the pointer (`.spot`), grids that arrive one by one (`.stagger`, set by
+site.js), numbers that count up (`data-count`), two rows of subjects drifting past (`marqueeA/B`); all off with reduced
+motion. A `.who` class used to leak the section background into the price cards (now `.who-sec` and `.plan .blurb`).
+Learner invites are 8-digit codes (`_new_invite_code()`, shown "4829 1375"); the tutor's message has a link
+`app/#join=<code>` that fills the code in (Welcome.jsx), or the learner types it; `decodeInvite` accepts the code, the link,
+a whole pasted message or the old SB1 token. A wrong code is counted in `invite_tries` and `accept_invite` returns no
+profile (an error would undo the count; api.acceptInvite turns it into "That code isn't right"); 10 wrong codes in an hour
+and that account waits. Parent invites are unchanged (P + 10 hex, SB1 message). test/walkthrough.mjs also runs on Windows.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

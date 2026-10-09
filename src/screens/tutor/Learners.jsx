@@ -4,7 +4,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { encodeInvite } from '../../lib/config.js';
+import { builtInServer, encodeInvite } from '../../lib/config.js';
 import { ago, dur, kindLabel, pct, weekRange, ymd, when } from '../../lib/format.js';
 import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
@@ -83,7 +83,7 @@ export default function Learners() {
                 <span className="grow">
                   <span className="name">{i.name || 'Unnamed invite'}</span>
                   <span className="meta">
-                    Code {i.code} · created {ago(i.created_at)}
+                    Code {prettyCode(i.code)} · created {ago(i.created_at)}
                   </span>
                 </span>
                 <button className="btn sm" onClick={() => setShown(i)}>
@@ -328,19 +328,26 @@ ${app.me.display_name}`;
   );
 }
 
+// 48291375 → "4829 1375", easy to read out and type
+export const prettyCode = (c) => (/^\d{8}$/.test(c || '') ? `${c.slice(0, 4)} ${c.slice(4)}` : c);
+
 function InviteShow({ invite, onClose }) {
   const app = useApp();
   const toast = useToast();
+  // The app knows the server, so the code is all a learner needs: a link that fills it in, or the 8 digits to type
+  const short = !!builtInServer && /^\d{8}$/.test(invite.code);
   const token = encodeInvite({ url: app.server.url, key: app.server.key, code: invite.code });
-  const message = `Hi ${invite.name || 'there'}! Join me on StudyBridge.\n\n1. Install the StudyBridge app I sent you and open it.\n2. Choose “I’m a learner” and paste this invite:\n\n${token}\n\nSee you there,\n${app.me.display_name}`;
+  const message = short
+    ? `Hi ${invite.name || 'there'}! Join me on StudyBridge.\n\nTap this link to join: ${api.WEB_APP}#join=${invite.code}\n\nOr open the StudyBridge app, choose “I’m a learner” and type the code ${prettyCode(invite.code)}.\n\nSee you there,\n${app.me.display_name}`
+    : `Hi ${invite.name || 'there'}! Join me on StudyBridge.\n\n1. Install the StudyBridge app I sent you and open it.\n2. Choose “I’m a learner” and paste this invite:\n\n${token}\n\nSee you there,\n${app.me.display_name}`;
   return (
     <Modal
       title={`Invite for ${invite.name || 'your learner'}`}
       onClose={onClose}
       foot={
         <>
-          <button className="btn" onClick={() => (copyText(token), toast('Invite copied'))}>
-            <Icon name="copy" size={16} /> Copy invite only
+          <button className="btn" onClick={() => (copyText(short ? invite.code : token), toast(short ? 'Code copied' : 'Invite copied'))}>
+            <Icon name="copy" size={16} /> {short ? 'Copy code only' : 'Copy invite only'}
           </button>
           <button className="btn primary" onClick={() => (copyText(message), toast({ title: 'Message copied', body: 'Paste it into WhatsApp, email or a text.' }))}>
             <Icon name="copy" size={16} /> Copy message
@@ -348,12 +355,15 @@ function InviteShow({ invite, onClose }) {
         </>
       }
     >
-      <p className="muted">Send this to your learner. It works once, and it already includes everything their app needs to connect to your StudyBridge.</p>
+      {short && (
+        <div className="invite-code">
+          <span className="tiny muted">{invite.name ? `${invite.name.split(' ')[0]}’s code` : 'Their code'}</span>
+          <b>{prettyCode(invite.code)}</b>
+        </div>
+      )}
+      <p className="muted">Send this to your learner. The code works once.</p>
       <div className="code-box" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text', fontFamily: 'var(--sans)', fontSize: 14 }}>
         {message}
-      </div>
-      <div className="note small">
-        Short code: <b className="big-code" style={{ fontSize: 16 }}>{invite.code}</b> (works on a device already connected to your StudyBridge).
       </div>
     </Modal>
   );

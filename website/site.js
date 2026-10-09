@@ -49,7 +49,7 @@
   // Tabs (each tablist on its own; arrow keys move between tabs)
   $$('[role=tablist]').forEach(function (list) {
     var tabs = $$('[role=tab]', list);
-    function pick(tab, focus) {
+    function pick(tab, focus, quiet) {
       tabs.forEach(function (t) {
         var on = t === tab;
         t.setAttribute('aria-selected', String(on));
@@ -58,7 +58,15 @@
         if (p) p.hidden = !on;
       });
       if (focus) tab.focus();
+      // pricing.html#tutors and friends: the address says which tab is open, so it can be shared
+      if (tab.dataset.hash && !quiet && history.replaceState) history.replaceState(null, '', '#' + tab.dataset.hash);
     }
+    function fromHash() {
+      var t = tabs.filter(function (x) { return x.dataset.hash && '#' + x.dataset.hash === location.hash; })[0];
+      if (t) pick(t, false, true);
+    }
+    fromHash();
+    addEventListener('hashchange', fromHash);
     tabs.forEach(function (t, i) {
       t.addEventListener('click', function () { pick(t); });
       t.addEventListener('keydown', function (e) {
@@ -378,4 +386,44 @@
   }
 
   $$('[data-year]').forEach(function (el) { el.textContent = new Date().getFullYear(); });
+
+  // ---------- Life: cards that arrive in turn, light up under the pointer, numbers that count, a card that tilts ----------
+  var calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $$('.pillars.reveal, .who-grid.reveal, .steps.reveal, .t-grid.reveal, .inside.reveal, .trust.reveal, .access-grid.reveal, .boards.reveal, .who-pick.reveal, .two-col.reveal, .dev-grid.reveal').forEach(function (g) {
+    g.classList.add('stagger');
+    Array.prototype.forEach.call(g.children, function (c, i) { c.style.setProperty('--i', i); });
+  });
+  if (!calm && matchMedia('(hover: hover)').matches) {
+    $$('.fit-card, .plan, .t-grid article, .steps li, .board-card, .side-card, .access-grid li, .who-pick [role=tab], .dev-grid article, .split, .band, .pillars article').forEach(function (c) {
+      c.classList.add('spot');
+      c.addEventListener('pointermove', function (e) {
+        var r = c.getBoundingClientRect();
+        c.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+        c.style.setProperty('--my', (e.clientY - r.top) + 'px');
+      });
+    });
+    var art = $('.hero-art'), card = $('.plan-card');
+    if (art && card) {
+      art.addEventListener('pointermove', function (e) {
+        var r = art.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+        card.style.transform = 'perspective(900px) rotateY(' + (x * 9).toFixed(2) + 'deg) rotateX(' + (-y * 9).toFixed(2) + 'deg)';
+      });
+      art.addEventListener('pointerleave', function () { card.style.transform = ''; });
+    }
+  }
+  if (!calm && 'IntersectionObserver' in window) {
+    var counter = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        counter.unobserve(e.target);
+        var el = e.target, to = +el.dataset.count, t0 = performance.now();
+        (function step(t) {
+          var k = Math.min(1, (t - t0) / 1300);
+          el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3)));
+          if (k < 1) requestAnimationFrame(step);
+        })(t0);
+      });
+    }, { threshold: 0.6 });
+    $$('[data-count]').forEach(function (el) { el.textContent = '0'; counter.observe(el); });
+  }
 })();

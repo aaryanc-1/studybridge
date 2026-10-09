@@ -673,6 +673,30 @@ try {
   await ADM.getByRole('heading', { name: 'Your notes' }).waitFor();
   await shot(ADM, 'admin-tutor');
 
+  step('A learner joins with an 8-digit code: the tutor’s message has a link that fills it in');
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Invite a learner' }).first().click();
+  await A.getByLabel('Learner’s name').fill('Zara');
+  await A.getByRole('button', { name: 'Create invite' }).click();
+  await A.locator('.invite-code b').waitFor();
+  const zcode = (await A.locator('.invite-code b').innerText()).replace(/\s/g, '');
+  assert.match(zcode, /^\d{8}$/, 'the tutor sees an 8-digit code');
+  const zmsg = await A.locator('.code-box').first().innerText();
+  assert.ok(zmsg.includes(`#join=${zcode}`) && !/SB1-/.test(zmsg), 'the message has a link and the code, no long invite');
+  await shot(A, 'learner-code');
+  await A.keyboard.press('Escape');
+  const Z = await (await browser.newContext({ viewport: { width: 390, height: 800 }, isMobile: true, hasTouch: true })).newPage();
+  watch(Z, 'learner (code)');
+  await Z.goto(web.url + '#join=' + zcode);
+  assert.equal((await Z.getByLabel('Your code').inputValue()).replace(/\s/g, ''), zcode, 'the link fills in the code');
+  await shot(Z, 'learner-code-filled');
+  await Z.getByRole('button', { name: 'Next' }).click();
+  await Z.getByLabel('Your name').fill('Zara');
+  await Z.getByLabel('Email').fill('zara@example.com');
+  await Z.getByLabel('Password').fill('secret123');
+  await Z.getByRole('button', { name: 'Create account' }).click();
+  await Z.getByText(/, Zara!/).waitFor();
+
   step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
   await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();
