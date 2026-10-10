@@ -33,8 +33,7 @@ export default function Settings() {
       {(isTutor || isLearner) && <CalendarLink />}
       {isTutor && <PhoneAlerts />}
       {isTutor && <PhoneApp />}
-      {isTutor && <LiveKeys />}
-      {isTutor && <ClaudeConnector />}
+      {isTutor && app.me.is_studybridge && <ClaudeConnector />}
       {isStudent && <StudentPlan />}
       {(isTutor || isStudent) && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
@@ -264,103 +263,17 @@ function PhoneApp() {
   );
 }
 
-function LiveKeys() {
-  const toast = useToast();
-  const s = useQuery('settings', api.getSettings);
-  const status = useQuery('live-status', api.liveStatus);
-  const [url, setUrl] = useState('');
-  const [key, setKey] = useState('');
-  const [secret, setSecret] = useState('');
-  useEffect(() => {
-    if (s.data?.livekit_url && !url) setUrl(s.data.livekit_url);
-  }, [s.data]); // eslint-disable-line react-hooks/exhaustive-deps
-  const ok = status.data?.configured;
-  const shared = status.data?.shared && !status.data?.own;
-  return (
-    <Section id="live" icon="video" title="Live video" sub="Powers live lessons and exam cameras.">
-      <div className="row">
-        <span className={'dot ' + (ok ? '' : 'warn')} />
-        <span className="strong">{shared ? 'Ready: StudyBridge provides it' : ok ? 'Switched on (your own LiveKit)' : 'Not set up yet'}</span>
-      </div>
-      {shared && <div className="small muted">Nothing to do. If you’d rather use your own LiveKit Cloud project, add its keys below.</div>}
-      {status.data?.own && (
-        <div className="row wrap small">
-          <span className="muted">You’re using your own LiveKit keys{status.data?.shared ? ', not StudyBridge’s shared ones' : ''}.</span>
-          <button
-            className="btn sm"
-            onClick={async () => {
-              try {
-                await api.saveSettings({ livekit_url: null });
-                setUrl('');
-                invalidate('settings', 'live-status');
-                toast(status.data?.shared ? 'Now using StudyBridge’s live video' : 'Your LiveKit keys are removed');
-              } catch (e) {
-                toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
-              }
-            }}
-          >
-            {status.data?.shared ? 'Use StudyBridge’s live video instead' : 'Remove my keys'}
-          </button>
-        </div>
-      )}
-      <ol className="steps-guide">
-        <li>
-          <div>
-            Sign in at{' '}
-            <a href="https://cloud.livekit.io" target="_blank" rel="noreferrer">
-              cloud.livekit.io
-            </a>{' '}
-            (GitHub works) and open your project.
-          </div>
-        </li>
-        <li>
-          <div>
-            Go to <b>Settings → API keys</b> and create a key. Copy the <b>WebSocket URL</b>, <b>API key</b> and <b>API secret</b> into the boxes below.
-          </div>
-        </li>
-      </ol>
-      <div className="note small">These go straight into your own database, where only StudyBridge’s sign-in function can read the secret. Never paste them into a chat.</div>
-      <Field label="WebSocket URL">
-        <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="wss://your-project.livekit.cloud" spellCheck={false} />
-      </Field>
-      <div className="grid g2" style={{ gap: 12 }}>
-        <Field label="API key">
-          <input className="input" value={key} onChange={(e) => setKey(e.target.value)} placeholder={ok ? 'Saved (enter to replace)' : 'APIxxxxxxxx'} spellCheck={false} autoComplete="off" />
-        </Field>
-        <Field label="API secret">
-          <input className="input" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={ok ? 'Saved (enter to replace)' : ''} autoComplete="off" />
-        </Field>
-      </div>
-      <div>
-        <button
-          className="btn primary"
-          onClick={async () => {
-            if (!/^wss:\/\//.test(url.trim())) return toast({ title: 'The URL should start with wss://', tone: 'bad' });
-            if (!key.trim() || (!ok && !secret.trim())) return toast({ title: 'Add the API key and secret', tone: 'bad' });
-            try {
-              await api.setLiveKeys(url.trim(), key.trim(), secret.trim());
-              setKey('');
-              setSecret('');
-              invalidate('settings', 'live-status');
-              toast('Live video switched on');
-            } catch (e) {
-              toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
-            }
-          }}
-        >
-          Save
-        </button>
-      </div>
-    </Section>
-  );
-}
-
 function ClaudeConnector() {
   const app = useApp();
   const toast = useToast();
   const [showKey, setShowKey] = useState(false);
   return (
-    <Section id="claude" icon="spark" title="Claude Desktop (optional)" sub="Prof is built in. If you also use Claude Desktop, connect it here so Claude can read your StudyBridge and draft work too. Everything it makes waits in Prof for your approval. Learners never use it.">
+    <Section
+      id="claude"
+      icon="spark"
+      title="Claude Desktop (StudyBridge content)"
+      sub="This account holds StudyBridge’s own content. Connect Claude Desktop here to make lessons, practice questions, flashcards and papers for students. Every question is checked again before students see it. Only this account can use the connector."
+    >
       <ol className="steps-guide">
         <li>
           <div className="stack sm">
@@ -387,7 +300,7 @@ function ClaudeConnector() {
         </li>
         <li>
           <div className="stack sm">
-            <div>When Claude asks for settings, paste these (and your StudyBridge email and password):</div>
+            <div>When Claude asks for settings, paste these (and this account’s email and password):</div>
             <div className="stack sm small">
               <div className="row">
                 <span className="muted" style={{ width: 110 }}>Server URL</span>
@@ -411,7 +324,7 @@ function ClaudeConnector() {
         </li>
         <li>
           <div>
-            Try it: in Claude, ask <i>“Using StudyBridge, what have my learners handed in this week?”</i>
+            Try it: in Claude, use the prompt <i>“Make StudyBridge content for a subject”</i>. Then check the questions in a new chat with <i>“Check waiting questions”</i>.
           </div>
         </li>
       </ol>

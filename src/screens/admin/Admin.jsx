@@ -554,7 +554,7 @@ function PlatformSettings({ s }) {
       <h3 className="row">
         <Icon name="video" style={{ color: 'var(--accent)' }} /> Live video for every tutor
       </h3>
-      <div className="small muted">Tutors who haven’t added their own LiveKit keys use these. {s.livekit_set ? 'Saved.' : 'Not set up.'}</div>
+      <div className="small muted">Every tutor’s live lessons and exam cameras use these (from cloud.livekit.io → Settings → API keys). {s.livekit_set ? 'Saved.' : 'Not set up.'}</div>
       <Field label="LiveKit WebSocket URL">
         <input className="input" value={lk.url} onChange={(e) => setLk({ ...lk, url: e.target.value })} placeholder="wss://your-project.livekit.cloud" />
       </Field>

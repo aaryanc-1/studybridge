@@ -1,10 +1,10 @@
 {
   "name": "studybridge-connector",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "server/index.js",
-  "description": "StudyBridge for Claude: lets the tutor's Claude Desktop read learners' work and draft assignments and marking.",
+  "description": "StudyBridge for Claude: the Owner's Claude Desktop makes StudyBridge's own content for students.",
   "license": "UNLICENSED",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",

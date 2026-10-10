@@ -129,7 +129,8 @@ function AccountMenu({ place }) {
       document.removeEventListener('keydown', esc);
     };
   }, [open]);
-  const others = canSwitch() ? otherAccounts(app.me.id) : [];
+  const switching = canSwitch();
+  const others = switching ? otherAccounts(app.me.id) : [];
   const pick = (f) => () => {
     setOpen(false);
     f();
@@ -164,6 +165,11 @@ function AccountMenu({ place }) {
               <Icon name="users" size={18} /> Switch to {a.name || a.email} <span className="tiny muted">{ROLE_NAME[a.role] || a.role}</span>
             </button>
           ))}
+          {switching && (
+            <button role="menuitem" onClick={pick(() => addAccount(app.me.id))}>
+              <Icon name="plus" size={18} /> Add another account
+            </button>
+          )}
           <button
             role="menuitem"
             className="danger"

@@ -839,6 +839,37 @@ try {
   await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).click();
   assert.ok(await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).last().isDisabled(), 'nothing is deleted until DELETE is typed');
 
+  step('The Owner’s laptop: switch between accounts; signing out of the admin account keeps switching there; tutors see no live-video keys or Claude Desktop, the content account sees Claude Desktop');
+  const menu = async (pg) => {
+    await pg.locator('.acct-side .me').click();
+    return pg.getByRole('menu');
+  };
+  const signInHere = async (pg, email) => {
+    await pg.getByText(/already have an account|Sign in/).first().click().catch(() => {});
+    await pg.getByLabel('Email').fill(email);
+    await pg.getByLabel('Password').fill('secret123');
+    await pg.getByRole('button', { name: 'Sign in' }).click();
+  };
+  await (await menu(ADM)).getByRole('menuitem', { name: 'Add another account' }).click();
+  await signInHere(ADM, 'content@example.com');
+  await ADM.goto(web.url + '#/settings');
+  await ADM.getByRole('heading', { name: 'Claude Desktop (StudyBridge content)' }).waitFor();
+  assert.equal(await ADM.getByRole('heading', { name: 'Live video' }).count(), 0, 'no live-video keys to set up');
+  await (await menu(ADM)).getByRole('menuitem', { name: /Switch to Aaryan \(admin\)/ }).click();
+  await nav(ADM, 'Students').waitFor();
+  // signing out of the admin account doesn't take switching away on this laptop
+  await (await menu(ADM)).getByRole('menuitem', { name: 'Sign out' }).click();
+  await ADM.getByRole('dialog').getByRole('button', { name: 'Sign out' }).click();
+  await signInHere(ADM, 'content@example.com');
+  await nav(ADM, 'Home').waitFor();
+  await (await menu(ADM)).getByRole('menuitem', { name: 'Add another account' }).waitFor();
+  await ADM.keyboard.press('Escape');
+  // an ordinary tutor's Settings: no live-video keys, no Claude Desktop
+  await A.goto(web.url + '#/settings');
+  await A.locator('#set-data').waitFor();
+  assert.equal(await A.getByRole('heading', { name: /Claude Desktop/ }).count(), 0, 'tutors use Prof, not Claude Desktop');
+  assert.equal(await A.getByRole('heading', { name: 'Live video' }).count(), 0, 'StudyBridge provides live video');
+
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');
 } catch (e) {

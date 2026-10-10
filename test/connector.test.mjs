@@ -1,4 +1,5 @@
-// The tutor's Claude connector, driven through a real MCP client against the fake server.
+// The Owner's Claude connector (StudyBridge's own content), driven through a real MCP client against the fake server.
+// It signs in only as the content account: tutors use Prof inside StudyBridge.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -8,154 +9,29 @@ import { InMemoryTransport } from '../connector/node_modules/@modelcontextprotoc
 import { createStudyBridgeServer } from '../connector/server/tools.js';
 import { startFakeSupabase } from './fake-supabase.mjs';
 
-let srv, tutor, learner, mcp, learnerId;
+let srv, mcp;
 const sb = () => createClient(srv.url, srv.anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const call = async (name, args = {}) => {
-  const r = await mcp.callTool({ name, arguments: args });
+async function connect(email, password) {
+  const server = createStudyBridgeServer({ url: srv.url, key: srv.anonKey, email, password });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  const c = new Client({ name: 'test', version: '1' });
+  await c.connect(b);
+  return c;
+}
+// a tool's reply as text; a tool error becomes a thrown error
+const use = async (name, args = {}, client = mcp) => {
+  const r = await client.callTool({ name, arguments: args });
   if (r.isError) throw new Error(r.content[0].text);
-  return r;
+  return r.content[0].text;
 };
-const data = (r) => JSON.parse(r.content[0].text);
 
 test.before(async () => {
   srv = await startFakeSupabase();
-  tutor = sb();
+  const tutor = sb();
   await tutor.auth.signUp({ email: 'tutor@example.com', password: 'secret123' });
   await tutor.rpc('become_tutor', { p_name: 'Aaryan' });
-  const s = (await tutor.from('subjects').insert({ name: 'Mathematics' }).select().single()).data;
-  await tutor.from('topics').insert([{ subject_id: s.id, name: 'Algebra' }]);
-  const inv = (await tutor.from('invites').insert({ name: 'Anaya', subject_ids: [s.id] }).select().single()).data;
-  learner = sb();
-  await learner.auth.signUp({ email: 'anaya@example.com', password: 'secret123' });
-  learnerId = (await learner.rpc('accept_invite', { p_code: inv.code, p_name: 'Anaya' })).data.id;
-  const tu = (await tutor.auth.getUser()).data.user;
-  await tutor.storage.from('library').upload(`${tu.id}/files/ch3.pdf`, readFileSync(new URL('./fixtures/algebra-chapter-3.pdf', import.meta.url)), { contentType: 'application/pdf' });
-  await tutor.from('files').insert({ name: 'Algebra chapter 3.pdf', storage_path: `${tu.id}/files/ch3.pdf`, mime: 'application/pdf' });
-
-  const server = createStudyBridgeServer({ url: srv.url, key: srv.anonKey, email: 'tutor@example.com', password: 'secret123' });
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  await server.connect(a);
-  mcp = new Client({ name: 'test', version: '1' });
-  await mcp.connect(b);
-});
-test.after(async () => {
-  await mcp?.close();
-  await srv.close();
-});
-
-test('lists its tools', async () => {
-  const { tools } = await mcp.listTools();
-  const names = tools.map((t) => t.name);
-  for (const n of ['overview', 'get_submission', 'create_assignment_draft', 'draft_marking', 'read_pdf']) assert.ok(names.includes(n), n);
-});
-
-test('refuses learner accounts and bad passwords', async () => {
-  for (const [email, password, re] of [
-    ['anaya@example.com', 'secret123', /isn’t a tutor/],
-    ['tutor@example.com', 'wrong', /Couldn’t sign in/],
-  ]) {
-    const s = createStudyBridgeServer({ url: srv.url, key: srv.anonKey, email, password });
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    await s.connect(a);
-    const c = new Client({ name: 't', version: '1' });
-    await c.connect(b);
-    const r = await c.callTool({ name: 'overview', arguments: {} });
-    assert.ok(r.isError);
-    assert.match(r.content[0].text, re);
-    await c.close();
-  }
-});
-
-test('reads a PDF from the library', async () => {
-  const r = await call('read_pdf', { file: 'chapter 3' });
-  assert.match(r.content[0].text, /2 pages/);
-  assert.match(r.content[0].text, /subtract 3 from both sides/);
-});
-
-test('drafts an assignment the learner cannot see until approved', async () => {
-  const r = await call('create_assignment_draft', {
-    title: 'Linear equations quiz',
-    kind: 'quiz',
-    subject: 'maths',
-    topic: 'algebra',
-    questions: [
-      { type: 'mcq', prompt: 'Solve $x+5=9$', options: ['3', '4', '5'], correct: [1] },
-      { type: 'numeric', prompt: 'Solve $4x=50$', answer: '12.5', tolerance: 0 },
-      { type: 'steps', prompt: 'Solve $3x-1=11$', answer: 'x=4', marks: 3, mark_scheme: 'M1 add 1, A1 x=4' },
-    ],
-  });
-  assert.match(r.content[0].text, /Draft saved/);
-  assert.equal((await learner.from('assignments').select('*')).data.length, 0, 'drafts hidden from learners');
-  const a = data(await call('get_assignment', { assignment: 'Linear equations quiz' }));
-  assert.equal(a.draft, true);
-  assert.equal(a.kind, 'quiz');
-  assert.equal(a.questions.length, 3);
-  assert.deepEqual(a.questions[0].key.answer, { choice: '1' });
-  assert.equal(a.questions[2].key.answer.final, 'x=4');
-  // Tutor approves in the app
-  await tutor.from('assignments').update({ draft: false }).eq('id', a.id);
-  assert.equal((await learner.from('assignments').select('*')).data.length, 1);
-});
-
-test('reads a submission (with photos) and drafts marking the tutor applies', async () => {
-  const a = (await learner.from('assignments').select('*')).data[0];
-  const qs = (await learner.from('questions').select('*').eq('assignment_id', a.id).order('position')).data;
-  const t = (await learner.rpc('start_attempt', { p_assignment: a.id, p_client: 'web' })).data;
-  const photo = `${learnerId}/${t.id}/${qs[2].id}-p.png`;
-  await learner.storage.from('work').upload(photo, readFileSync(new URL('../build/icon.png', import.meta.url)), { contentType: 'image/png' });
-  await learner.rpc('save_response', { p_attempt: t.id, p_question: qs[0].id, p_answer: { choice: '1' } });
-  await learner.rpc('save_response', { p_attempt: t.id, p_question: qs[1].id, p_answer: { value: '12' } });
-  await learner.rpc('save_response', { p_attempt: t.id, p_question: qs[2].id, p_answer: { steps: ['3x-1=11', '3x=10', 'x=10/3'], files: [{ path: photo }] } });
-  await learner.rpc('submit_attempt', { p_attempt: t.id });
-
-  const o = data(await call('overview'));
-  assert.equal(o.waiting_to_mark.length, 1);
-  const subs = data(await call('list_submissions'));
-  assert.equal(subs[0].learner, 'Anaya');
-  const r = await call('get_submission', { attempt_id: subs[0].attempt_id });
-  const s = data(r);
-  assert.deepEqual(s.questions[2].learner_answer.working_lines_latex, ['3x-1=11', '3x=10', 'x=10/3']);
-  assert.equal(s.questions[0].auto_marks, 1);
-  assert.equal(s.questions[2].mark_scheme, 'M1 add 1, A1 x=4');
-  assert.ok(r.content.some((c) => c.type === 'image' && c.data.length > 100), 'photo of work included');
-
-  await call('draft_marking', {
-    attempt_id: t.id,
-    summary: 'Arithmetic slip in Q3',
-    overall_feedback: 'Good start. Check your adding.',
-    questions: [
-      { number: 2, marks: 0, feedback: '$50 \\div 4 = 12.5$', mistake: 'Rounded too early' },
-      { number: 3, marks: 1, feedback: '$11 + 1 = 12$, not 10', mistake: 'Arithmetic slip', correct_steps: [true, false, false], redo: true },
-    ],
-  });
-  assert.equal((await learner.from('claude_drafts').select('*')).data.length, 0, 'learner never sees drafts');
-  const d = (await tutor.from('claude_drafts').select('*').eq('status', 'pending')).data[0];
-  assert.equal(d.payload.marks.length, 2);
-  await tutor.rpc('apply_draft', { p_draft: d.id });
-  const back = (await tutor.rpc('attempt_detail', { p_attempt: t.id })).data;
-  const r3 = back.responses.find((x) => x.question_id === qs[2].id);
-  assert.equal(Number(r3.marks), 1);
-  assert.equal(r3.mistake, 'Arithmetic slip');
-  assert.equal(r3.redo, true);
-  assert.deepEqual(r3.step_marks, [{ ok: true }, { ok: false }, { ok: false }]);
-});
-
-test('progress, messages and lessons', async () => {
-  const p = data(await call('learner_progress'));
-  assert.equal(p.learner, 'Anaya');
-  assert.ok(p.this_week.assignments.length >= 1);
-  await call('draft_message', { message: 'Nice work this week!' });
-  const d = (await tutor.from('claude_drafts').select('*').eq('kind', 'message')).data[0];
-  assert.equal(d.payload.body, 'Nice work this week!');
-  await call('create_lesson', { title: 'Balancing equations', body: 'Do the same to both sides: $2x=8 \\Rightarrow x=4$', subject: 'Mathematics' });
-  const l = (await tutor.from('lessons').select('*')).data[0];
-  assert.equal(l.visibility, 'hidden');
-  assert.equal((await learner.from('lessons').select('*')).data.length, 0);
-  await assert.rejects(call('draft_message', { learner: 'Nobody', message: 'x' }), /No learner called/);
-});
-
-test('StudyBridge content tools: only the content account; made, checked without seeing the answers, then up for students', async () => {
-  await assert.rejects(call('content_overview'), /only for StudyBridge’s own content account/);
+  // StudyBridge's content account, with two catalogue subjects and a syllabus PDF in its library
   const cc = sb();
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
   await cc.rpc('become_tutor', { p_name: 'StudyBridge' });
@@ -167,19 +43,46 @@ test('StudyBridge content tools: only the content account; made, checked without
        ($1, 'Cambridge IGCSE Mathematics (0580)', 'cambridge:igcse:0580', 'Cambridge', 'IGCSE', '0580', 2)`,
     [cid],
   );
-  const server = createStudyBridgeServer({ url: srv.url, key: srv.anonKey, email: 'content@example.com', password: 'secret123' });
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  await server.connect(a);
-  const mc = new Client({ name: 'content', version: '1' });
-  await mc.connect(b);
-  const use = async (name, args = {}) => {
-    const r = await mc.callTool({ name, arguments: args });
-    if (r.isError) throw new Error(r.content[0].text);
-    return r.content[0].text;
-  };
-  const prompts = (await mc.listPrompts()).prompts.map((p) => p.name);
-  assert.ok(prompts.includes('make_subject') && prompts.includes('check_waiting'));
+  await cc.storage.from('library').upload(`${cid}/files/ch3.pdf`, readFileSync(new URL('./fixtures/algebra-chapter-3.pdf', import.meta.url)), { contentType: 'application/pdf' });
+  await cc.from('files').insert({ name: 'Algebra chapter 3.pdf', storage_path: `${cid}/files/ch3.pdf`, mime: 'application/pdf' });
+  mcp = await connect('content@example.com', 'secret123');
+});
+test.after(async () => {
+  await mcp?.close();
+  await srv.close();
+});
 
+test('has only the content tools: nothing that reads learners’ work or drafts for tutors', async () => {
+  const names = (await mcp.listTools()).tools.map((t) => t.name);
+  for (const n of ['content_overview', 'set_syllabus', 'add_questions', 'add_lesson', 'add_flashcards', 'add_practice_paper', 'questions_to_check', 'submit_checks', 'confirm_checks', 'read_pdf']) {
+    assert.ok(names.includes(n), n);
+  }
+  for (const n of ['overview', 'get_submission', 'draft_marking', 'create_assignment_draft', 'draft_message', 'learner_progress']) assert.ok(!names.includes(n), n);
+  const prompts = (await mcp.listPrompts()).prompts.map((p) => p.name);
+  assert.deepEqual(prompts.sort(), ['check_waiting', 'make_subject']);
+});
+
+test('signs in only as the content account: tutors, other accounts and wrong passwords are refused', async () => {
+  const someone = sb();
+  await someone.auth.signUp({ email: 'someone@example.com', password: 'secret123' });
+  for (const [email, password, re] of [
+    ['tutor@example.com', 'secret123', /only for StudyBridge’s own content account. Tutors use Prof/],
+    ['someone@example.com', 'secret123', /only for StudyBridge’s own content account/],
+    ['content@example.com', 'wrong', /Couldn’t sign in/],
+  ]) {
+    const c = await connect(email, password);
+    await assert.rejects(use('content_overview', {}, c), re);
+    await c.close();
+  }
+});
+
+test('reads a syllabus PDF from the content account’s library', async () => {
+  const t = await use('read_pdf', { file: 'chapter 3' });
+  assert.match(t, /2 pages/);
+  assert.match(t, /subtract 3 from both sides/);
+});
+
+test('makes a subject’s content; each question is checked without seeing its answer, then it’s up for students', async () => {
   assert.equal(JSON.parse(await use('content_overview')).not_started_yet, 2);
   await assert.rejects(use('set_syllabus', { subject: 'Mathematics', topics: [{ name: 'Number' }] }), /could be/);
   assert.match(await use('set_syllabus', { subject: '0607', topics: [{ name: 'Number', code: 'C1', subtopics: ['Fractions'] }, { name: 'Algebra', code: 'C2' }] }), /2 topics \(2 new\)/);
@@ -213,12 +116,11 @@ test('StudyBridge content tools: only the content account; made, checked without
       minutes: 45,
       questions: [{ type: 'numeric', prompt: 'Work out $9 \\times 6$.', answer: '54', solution: '$9 \\times 6 = 54$', mark_scheme: 'B1 54' }],
     }),
-    /Saved “Practice paper 1 · Set A”.*1 wait/s,
+    /Saved “Practice paper 1 · Set A”.*\(1 question\).*1 wait/s,
   );
   const paperQ = JSON.parse(await use('questions_to_check')).questions[0];
   assert.equal(paperQ.kind, 'paper');
   assert.match(await use('submit_checks', { answers: [{ id: paperQ.id, kind: 'paper', value: '54' }] }), /1 passed/);
   assert.equal(JSON.parse(await use('content_overview', { subject: '0607' })).subjects[0].papers_live, 1);
   assert.equal(await use('questions_to_check'), 'Nothing is waiting for its check.');
-  await mc.close();
 });

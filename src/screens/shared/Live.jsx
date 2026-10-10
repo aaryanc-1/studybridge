@@ -174,11 +174,11 @@ export default function Live({ sessionId }) {
             <Icon name="info" />
             <div className="stack sm">
               <div className="strong">Live video isn’t switched on yet</div>
-              <div className="small">{isTutor ? 'Add your free LiveKit keys in Settings → Live video. It takes two minutes.' : 'Your tutor needs to switch it on first.'}</div>
+              <div className="small">{isTutor ? 'StudyBridge is switching it on. If you need it now, tell StudyBridge.' : 'Your tutor will tell you when it’s ready.'}</div>
               {isTutor && (
                 <div>
-                  <button className="btn sm" onClick={() => go('/settings?s=live')}>
-                    Open settings
+                  <button className="btn sm" onClick={() => go('/settings?s=contact')}>
+                    Contact StudyBridge
                   </button>
                 </div>
               )}
@@ -744,6 +744,6 @@ export function Watch({ attemptId }) {
 function liveError(e) {
   const m = String(e?.message || e || '');
   if (/invalid API key|invalid token|signature|unauthorized|401/i.test(m))
-    return 'Live video couldn’t sign in: the LiveKit keys don’t match. Tutor: check Settings → Live video (or, for the shared setup, Admin → Live video for every tutor) and paste the current key, secret and URL from cloud.livekit.io.';
+    return 'Live video couldn’t connect. Try again in a minute; if it keeps happening, tell StudyBridge (Settings → Contact StudyBridge).';
   return m || 'Couldn’t connect to the live session.';
 }

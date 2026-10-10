@@ -593,6 +593,9 @@ test('StudyBridge admin: accounts and access, never anyone’s work', async () =
   const ls2 = await val('T2', `select live_status()`);
   assert.equal(ls2.configured && ls2.shared && !ls2.own, true);
   assert.equal(ls2.url, 'wss://shared.livekit.cloud');
+  // StudyBridge's live video comes first, even for a tutor who added their own keys before
+  const ses2 = await val('T', `select id from sessions limit 1`);
+  assert.equal((await val('T', `select live_pass($1)`, [`session-${ses2}`])).url, 'wss://shared.livekit.cloud');
   // Prof key is write-only
   await fails(as('A', `select admin_set_prof('not-a-key')`), /Claude API key/);
   await as('A', `select admin_set_prof('sk-ant-test-key', 'claude-sonnet-5-5', 500)`);

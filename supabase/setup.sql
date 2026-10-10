@@ -1583,15 +1583,15 @@ begin
     select tutor_id into v_tutor from public.attempts where id = v_id and (tutor_id = auth.uid() or learner_id = auth.uid());
   end if;
   if v_tutor is null then raise exception 'You are not part of this room.'; end if;
-  select s.livekit_url, k.livekit_api_key, k.livekit_api_secret into v_url, v_key, v_secret
-    from public.tutor_settings s left join public.tutor_secrets k on k.tutor_id = s.tutor_id where s.tutor_id = v_tutor;
+  -- StudyBridge provides live video for every tutor (9 Oct 2026); a tutor's own keys from before only if it isn't set up
+  select c.livekit_url, ps.livekit_api_key, ps.livekit_api_secret into v_url, v_key, v_secret
+    from public.app_config c, public.platform_secrets ps where c.id = 1 and ps.id = 1;
   if v_url is null or v_key is null or v_secret is null then
-    -- the tutor hasn't added their own: use StudyBridge's shared live video, if the admin set it up
-    select c.livekit_url, ps.livekit_api_key, ps.livekit_api_secret into v_url, v_key, v_secret
-      from public.app_config c, public.platform_secrets ps where c.id = 1 and ps.id = 1;
+    select s.livekit_url, k.livekit_api_key, k.livekit_api_secret into v_url, v_key, v_secret
+      from public.tutor_settings s left join public.tutor_secrets k on k.tutor_id = s.tutor_id where s.tutor_id = v_tutor;
   end if;
   if v_url is null or v_key is null or v_secret is null then
-    raise exception 'Live video is not set up yet. The tutor adds the LiveKit keys in Settings.';
+    raise exception 'Live video isn’t switched on yet. StudyBridge is setting it up.';
   end if;
   select display_name into v_name from public.profiles where id = auth.uid();
   return jsonb_build_object('url', v_url, 'token', public._jwt_hs256(jsonb_build_object(
@@ -1606,7 +1606,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'configured', own or shared,
     'own', own,
     'shared', shared,
-    'url', coalesce((select livekit_url from public.tutor_settings where tutor_id = public.my_tutor()), (select livekit_url from public.app_config where id = 1)))
+    'url', coalesce((select livekit_url from public.app_config where id = 1), (select livekit_url from public.tutor_settings where tutor_id = public.my_tutor())))
   from (select
     exists (select 1 from public.tutor_settings s join public.tutor_secrets k on k.tutor_id = s.tutor_id
              where s.tutor_id = public.my_tutor() and s.livekit_url is not null and k.livekit_api_key is not null and k.livekit_api_secret is not null) as own,

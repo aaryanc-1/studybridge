@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "studybridge",
   "display_name": "StudyBridge",
-  "version": "1.1.0",
-  "description": "For tutors: Claude reads your learners’ work and progress in StudyBridge and drafts assignments, marking and messages for you to approve. For StudyBridge’s own content account: make and check content for students.",
-  "long_description": "StudyBridge is a private tutoring portal. With this connector, Claude can see your learners, their submissions (including maths working and photos of their work), their progress, and the PDFs in your library. Claude can draft assignments, suggested marking with explanations, lessons and messages. Everything Claude makes is saved as a draft in StudyBridge → Prof, and reaches a learner only after you approve it. Learners never use Claude.",
+  "version": "1.2.0",
+  "description": "For StudyBridge’s own content account only: Claude makes and checks lessons, practice questions, flashcards and practice papers for students studying on their own.",
+  "long_description": "StudyBridge’s Owner uses this connector to make StudyBridge’s own content for students studying on their own: each subject’s syllabus, lessons, practice questions with hints and worked solutions, flashcards and original practice papers. Every question is checked a second time, in a new chat that never sees the answer, before students see it; anything that disagrees waits for the Owner in Admin → Content. It signs in only with StudyBridge’s content account. Tutors use Prof inside StudyBridge; students never use AI.",
   "author": {
     "name": "StudyBridge"
   },
@@ -41,13 +41,13 @@
     },
     "email": {
       "type": "string",
-      "title": "Your StudyBridge email",
-      "description": "The email you sign in to StudyBridge with (tutor account).",
+      "title": "Content account email",
+      "description": "The email of StudyBridge’s content account.",
       "required": true
     },
     "password": {
       "type": "string",
-      "title": "Your StudyBridge password",
+      "title": "Content account password",
       "description": "Stored securely by Claude Desktop on this computer.",
       "required": true,
       "sensitive": true
@@ -55,84 +55,36 @@
   },
   "tools": [
     {
-      "name": "overview",
-      "description": "Learners, work to mark, unread notes, what’s due."
-    },
-    {
-      "name": "list_subjects",
-      "description": "Programmes, subjects and topics."
-    },
-    {
-      "name": "learner_progress",
-      "description": "Topic strengths, time, mistakes, weekly and monthly summaries."
-    },
-    {
-      "name": "list_assignments",
-      "description": "Assignments and submission counts."
-    },
-    {
-      "name": "get_assignment",
-      "description": "Questions, answers and mark schemes."
-    },
-    {
-      "name": "list_submissions",
-      "description": "Submitted work (to mark, marked, returned)."
-    },
-    {
-      "name": "get_submission",
-      "description": "One submission with answers, working and photos."
-    },
-    {
       "name": "list_library",
-      "description": "Files and lessons."
+      "description": "Files (for example a syllabus PDF) and lessons in the content account’s library."
     },
     {
       "name": "read_pdf",
-      "description": "Text of a PDF in the library."
-    },
-    {
-      "name": "list_notes",
-      "description": "Notes and messages with a learner."
-    },
-    {
-      "name": "create_assignment_draft",
-      "description": "Draft an assignment for the tutor to approve."
-    },
-    {
-      "name": "draft_marking",
-      "description": "Suggest marks and explanations for the tutor to approve."
-    },
-    {
-      "name": "draft_message",
-      "description": "Draft a message to a learner."
-    },
-    {
-      "name": "create_lesson",
-      "description": "Write a hidden lesson into the library."
+      "description": "Text of a PDF in the content account’s library."
     },
     {
       "name": "content_overview",
-      "description": "StudyBridge content: what each subject has so far (content account only)."
+      "description": "StudyBridge content: what each subject has so far."
     },
     {
       "name": "set_syllabus",
-      "description": "Set a subject’s topics in order (content account only)."
+      "description": "Set a subject’s topics in order."
     },
     {
       "name": "add_questions",
-      "description": "Practice questions with hints and worked solutions (content account only)."
+      "description": "Practice questions with hints and worked solutions."
     },
     {
       "name": "add_lesson",
-      "description": "A lesson for one topic (content account only)."
+      "description": "A lesson for one topic."
     },
     {
       "name": "add_flashcards",
-      "description": "Flashcards for a subject (content account only)."
+      "description": "Flashcards for a subject."
     },
     {
       "name": "add_practice_paper",
-      "description": "An original practice paper (content account only)."
+      "description": "An original practice paper."
     },
     {
       "name": "questions_to_check",
@@ -149,16 +101,6 @@
   ],
   "prompts": [
     {
-      "name": "mark_latest",
-      "description": "Mark everything waiting in StudyBridge",
-      "text": "Using StudyBridge, look at the submissions waiting to be marked. For each one, read it carefully, then draft marks with clear explanations of any mistakes, and flag questions worth a redo."
-    },
-    {
-      "name": "weekly_report",
-      "description": "Weekly report on each learner",
-      "text": "Using StudyBridge, write me a short weekly report on each learner: time studied, work handed in, scores, strengths, topics that need work, and what to set next."
-    },
-    {
       "name": "make_subject",
       "description": "Make StudyBridge content for a subject",
       "text": "Using StudyBridge’s content tools, help me make content for one subject. Start with content_overview and ask me which subject. Then: set its syllabus (the board’s topic names, in order, with codes and subtopics), write a lesson for each topic, about 10 practice questions per topic (mostly multiple choice and numbers, each with a hint and a worked solution), 10 flashcards per topic, and one original practice paper per paper of the real exam. Everything must be original: the same format, style and difficulty as the real exam, but never copied, reworded or adapted from a real past paper or a textbook."
@@ -171,10 +113,10 @@
   ],
   "keywords": [
     "education",
-    "tutoring",
-    "marking",
     "igcse",
-    "ib"
+    "ib",
+    "a-level",
+    "content"
   ],
   "license": "UNLICENSED",
   "compatibility": {

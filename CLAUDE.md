@@ -176,6 +176,13 @@ Payment Links in Admin → Students (`admin_set_pay_links`, `student_pay_links`)
 `client_reference_id=<account id>`; the exam pass link uses quantity = months to the exams. Students can now use Contact
 StudyBridge (`send_feedback` allows self-learners); Settings has "Your plan" for them; their wording no longer says "your
 tutor". Practice papers and the Study page's practice can be opened from the plan (`/study?subject=&topic=`).
+Later on 9 Oct (Aaryan): no Claude Desktop for tutors and no live-video keys for them. The connector (1.2.0) has only the
+content tools plus list_library/read_pdf and signs in only as the content account (tutor tools and the mark_latest /
+weekly_report prompts are gone); Settings → Claude Desktop shows only on the content account (`me.is_studybridge`);
+Marking has no "mark with Claude Desktop". Settings has no Live video section: `live_pass` uses StudyBridge's shared
+LiveKit (Admin → StudyBridge settings) first and a tutor's old keys only if that isn't set. Account switching: the
+device remembers the admin account used it (`sb.adminDevice` = server URL), so signing out of admin no longer hides
+switching; the account menu has "Add another account".
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
@@ -185,8 +192,8 @@ tutor". Practice papers and the Study page's practice can be opened from the pla
 - Practice papers are original (same format as the real paper, never copied or reworded) and say "not affiliated with
   or endorsed by" the board. Aaryan said on 7 Oct that his lawyer OK'd copying IB papers question by question; Claude
   declined (copyright, and it breaks the rule above). Don't copy or reword real exam papers.
-- Payment only on the website. The Claude Desktop connector is Owner-only (content on his subscription); remove it for
-  tutors.
+- Payment only on the website. The Claude Desktop connector is Owner-only (content on his subscription); removed for
+  tutors on 9 Oct 2026 (connector 1.2.0).
 - Vision (8 Oct 2026): one whole education platform (what ManageBac + Canvas + Google Classroom give, plus lockdown).
 - Order (8 Oct 2026, replaces the 7 Oct order): **launch 1 = self-learners** (web and phone; they sit in StudyBridge's own
   organisation; every subject, IGCSE/A-Level/IB, switching on one by one as its content is ready), then **launch 2 = tutors**

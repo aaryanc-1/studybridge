@@ -5,6 +5,9 @@ import { getServer } from './config.js';
 
 const KEY = 'sb.accounts';
 const AUTH = 'sb.auth'; // where the sign-in is kept (see supabase.js)
+// The admin account has used this device (for this server). It stays after signing out of the admin account, so
+// switching never disappears on the Owner's own laptop; "Add another account" signs the admin back in.
+const DEVICE = 'sb.adminDevice';
 
 function read() {
   try {
@@ -28,12 +31,26 @@ function currentSession() {
   }
 }
 const here = () => getServer()?.url || '';
+function adminDevice() {
+  try {
+    return localStorage.getItem(DEVICE) === here() || read().some((a) => a.role === 'admin' && a.server === here());
+  } catch {
+    return false;
+  }
+}
 
 // After signing in: remember this account if the admin account uses this device
 export function rememberAccount(p) {
   if (!p?.id || !p.role) return;
   const list = read();
-  if (p.role !== 'admin' && !list.some((a) => a.role === 'admin' && a.server === here())) return;
+  if (p.role === 'admin') {
+    try {
+      localStorage.setItem(DEVICE, here());
+    } catch {
+      /* storage blocked: switching just isn't offered */
+    }
+  }
+  if (p.role !== 'admin' && !adminDevice()) return;
   const session = currentSession();
   if (!session?.refresh_token) return;
   const next = [{ id: p.id, email: p.email || session.user?.email || '', name: p.display_name || '', role: p.role, server: here(), session }, ...list.filter((a) => a.id !== p.id)];
@@ -47,7 +64,7 @@ function saveCurrent(currentId) {
 }
 
 export const otherAccounts = (currentId) => read().filter((a) => a.server === here() && a.id !== currentId);
-export const canSwitch = () => read().some((a) => a.role === 'admin' && a.server === here());
+export const canSwitch = () => adminDevice();
 export const forgetAccount = (id) => write(read().filter((a) => a.id !== id));
 
 export function switchTo(currentId, id) {

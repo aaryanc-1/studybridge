@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Toggle, copyText, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Toggle, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import DrawingPad, { drawStrokes } from '../../ui/DrawingPad.jsx';
 import { useBlob } from '../../ui/media.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
@@ -207,7 +207,6 @@ export function MarkAttempt({ id }) {
     }
   }
 
-  const claudePrompt = `Using StudyBridge, mark ${learner?.display_name || 'my learner'}’s “${a.title}” (attempt ${id.slice(0, 8)}). Show what was wrong with explanations and draft marks for me to review.`;
 
   return (
     <Page
@@ -315,15 +314,6 @@ export function MarkAttempt({ id }) {
               if (fresh) setFeedback(fresh.attempt.feedback_md || '');
             }}
           />
-          <details className="small">
-            <summary className="linkbtn small">Or mark with Claude Desktop</summary>
-            <div className="stack sm" style={{ marginTop: 8 }}>
-              <div className="code-box" style={{ fontFamily: 'var(--sans)', fontSize: 13, userSelect: 'text', wordBreak: 'normal' }}>{claudePrompt}</div>
-              <button className="btn sm" onClick={() => (copyText(claudePrompt), toast('Copied. Paste it into Claude.'))}>
-                <Icon name="copy" size={14} /> Copy
-              </button>
-            </div>
-          </details>
         </div>
       </div>
       {annotating && (
