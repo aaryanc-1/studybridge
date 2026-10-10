@@ -5,10 +5,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Markdown, Page, go, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Markdown, Page, go, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { useLookups } from '../shared/lookups.jsx';
+import { ReportProblem } from './SelfStudy.jsx';
 
 const NEW_PER_DAY = 20;
 
@@ -237,6 +238,7 @@ function Review({ onDone }) {
   }, []);
   useEffect(() => {
     const h = (e) => {
+      if (e.target.closest?.('input, textarea, select, [contenteditable="true"], .modal')) return; // typing a report, not grading
       if (e.key === ' ' && !flipped) (e.preventDefault(), setFlipped(true));
       else if (flipped && ['1', '2', '3', '4'].includes(e.key)) grade(Number(e.key) - 1);
     };
@@ -306,18 +308,30 @@ function Review({ onDone }) {
           ))}
         </div>
       )}
+      {flipped && !card.learner_id && (
+        <div>
+          <ReportProblem kind="card" id={card.id} label="Report a problem with this card" />
+        </div>
+      )}
     </Page>
   );
 }
 
 // ---------------------------------------------------------------------------
 function Practice() {
+  const app = useApp();
   const lk = useLookups();
   const toast = useToast();
+  const route = useRoute();
   const q = useQuery('practice-topics', api.practiceTopics);
   const topics = q.data || [];
-  const [subject, setSubject] = useState('');
-  const [topic, setTopic] = useState('');
+  // the plan on Today links here with this week's subject and topic
+  const [subject, setSubject] = useState(() => route.query.get('subject') || '');
+  const [topic, setTopic] = useState(() => route.query.get('topic') || '');
+  const card = useRef(null);
+  useEffect(() => {
+    if (route.query.get('topic')) card.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [minutes, setMinutes] = useState(10);
   const [busy, setBusy] = useState('');
   const subjects = lk.mySubjects.filter((s) => topics.some((t) => t.subject_id === s.id));
@@ -326,6 +340,7 @@ function Practice() {
   }, [subjects.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const here = topics.filter((t) => t.subject_id === subject);
   const pick = here.find((t) => t.topic === topic);
+  const none = !!topic && !!q.data && !pick;
   async function start(mode, opts) {
     setBusy(mode);
     try {
@@ -339,12 +354,14 @@ function Practice() {
     }
   }
   return (
-    <div className="card">
+    <div className="card" id="practice" ref={card}>
       <h2 className="row" style={{ margin: 0 }}>
         <Icon name="target" style={{ color: 'var(--accent)' }} /> Practice
       </h2>
       {q.data && !topics.length ? (
-        <div className="small muted">Practice questions appear here once your tutor adds some to their question bank.</div>
+        <div className="small muted">
+          {app.me.self_learner ? 'Practice questions appear here as StudyBridge adds them for your subjects, topic by topic.' : 'Practice questions appear here once your tutor adds some to their question bank.'}
+        </div>
       ) : (
         <>
           <div className="row wrap">
@@ -363,7 +380,7 @@ function Practice() {
                 ))}
               </select>
             )}
-            <select className="select" style={{ width: 'auto' }} value={topic} onChange={(e) => setTopic(e.target.value)} aria-label="Topic">
+            <select className="select" style={{ width: 'auto' }} value={none ? '' : topic} onChange={(e) => setTopic(e.target.value)} aria-label="Topic">
               <option value="">Choose a topic…</option>
               {here.map((t) => (
                 <option key={t.topic} value={t.topic}>
@@ -372,7 +389,8 @@ function Practice() {
               ))}
             </select>
           </div>
-          {topic && (
+          {none && <div className="small muted">There aren’t practice questions on {topic} yet. Pick another topic, or try the daily quiz.</div>}
+          {topic && !none && (
             <div className="row wrap">
               <button className="btn" disabled={!!busy} onClick={() => start('topic', { subject, topic, count: 6 })}>
                 Practise this topic

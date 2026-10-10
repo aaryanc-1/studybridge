@@ -752,6 +752,78 @@ try {
   await srow.getByText(/Exam pass, paid until/).waitFor();
   await shot(ADM, 'admin-students');
 
+  step('StudyBridge content: made and checked twice (the calls Claude Desktop makes); the student practises with a hint and reports a problem; the Owner sorts it in Admin → Content and adds pay-by-card links');
+  // what Claude Desktop does through the connector, signed in as the content account
+  const sbMade = (
+    await cc.rpc('content_add_questions', {
+      p_subject: sub0607.id,
+      p_items: [
+        { topic: 'Number', type: 'numeric', prompt: 'Work out $6 \\times 7$.', answer: { value: '42', tolerance: '0' }, hint: 'Six lots of seven.', solution: '$6 \\times 7 = 42$' },
+        { topic: 'Number', type: 'numeric', prompt: 'Work out $9 \\times 8$.', answer: { value: '71', tolerance: '0' }, hint: 'Nine lots of eight.', solution: '$9 \\times 8 = 72$' },
+      ],
+    })
+  ).data;
+  assert.equal(sbMade.waiting_for_check, 2);
+  const sbWaiting = (await cc.rpc('content_to_check', { p_limit: 10 })).data.questions;
+  assert.ok(!JSON.stringify(sbWaiting).includes('lots of'), 'the check never sees hints or answers');
+  const sixSeven = sbWaiting.find((x) => /6 \\times 7/.test(x.prompt));
+  const nineEight = sbWaiting.find((x) => /9 \\times 8/.test(x.prompt));
+  const checked = (
+    await cc.rpc('content_submit_checks', {
+      p_items: [
+        { kind: 'question', id: sixSeven.id, answer: { value: '42' } },
+        { kind: 'question', id: nineEight.id, answer: { value: '72' } },
+      ],
+    })
+  ).data;
+  assert.deepEqual([checked.passed, checked.failed], [1, 1], 'the wrong answer key is caught');
+  await cc.rpc('content_add_lesson', { p_subject: sub0607.id, p_topic: 'Number', p_title: 'Times tables', p_body: 'Multiplying is adding the same number again and again. '.repeat(6) + 'So $6 \\times 7 = 42$.' });
+  // the student practises this week's topic from the plan: a hint, and a report about the question
+  await SL.locator('.plan-row').getByRole('link', { name: 'Practise Number' }).click();
+  await SL.getByRole('button', { name: 'Practise this topic' }).click();
+  await SL.getByRole('button', { name: 'Start', exact: true }).click();
+  await SL.getByRole('button', { name: 'Show a hint' }).click();
+  await SL.getByText('Six lots of seven.').waitFor();
+  assert.equal(await SL.getByText('Leave a note for your tutor').count(), 0, 'students on their own have no tutor to write to');
+  await SL.getByRole('button', { name: 'Report a problem' }).click();
+  await SL.getByRole('dialog', { name: 'Report a problem' }).getByLabel('What’s wrong').fill('I think the answer to this one is wrong');
+  await SL.getByRole('dialog', { name: 'Report a problem' }).getByRole('button', { name: 'Send' }).click();
+  await SL.getByText('Thanks for telling us').waitFor();
+  await shot(SL, 'student-hint-report');
+  await SL.getByLabel('Your answer').first().fill('42');
+  await SL.getByRole('button', { name: 'Hand in', exact: true }).first().click();
+  await SL.getByRole('dialog', { name: 'Hand in now?' }).getByRole('button', { name: 'Hand in' }).click();
+  await SL.getByText('1 / 1 · 100%').waitFor({ timeout: 20000 });
+  await SL.evaluate(() => (location.hash = '#/library'));
+  await SL.getByRole('link', { name: /^Times tables/ }).click();
+  await SL.getByRole('button', { name: 'Report a problem with this lesson' }).waitFor();
+  // the Owner: the report (it stays up for the student) and the question whose check disagreed
+  await nav(ADM, 'Content').click();
+  const report = ADM.locator('.content-row', { hasText: 'I think the answer to this one is wrong' });
+  await report.getByLabel('Reply to the student').fill('Thanks! It’s right: 6 × 7 = 42.');
+  await report.getByRole('button', { name: 'Mark as sorted' }).click();
+  await ADM.getByText('Sorted, and your reply was sent').waitFor();
+  const flagged = ADM.locator('.content-row', { hasText: 'Second check’s answer' });
+  await flagged.getByText('The second solve got a different answer.').waitFor();
+  await shot(ADM, 'admin-content');
+  await flagged.getByRole('button', { name: 'Fix' }).click();
+  await flagged.getByLabel('Answer', { exact: true }).fill('72');
+  await flagged.getByRole('button', { name: 'Save and put it up' }).click();
+  await ADM.getByText('Fixed. It’s up for students now.').waitFor();
+  await ADM.getByRole('heading', { name: 'Didn’t pass its checks (0)' }).waitFor();
+  // paying by card: the Owner's Stripe links show on the student's plan
+  await nav(ADM, 'Students').click();
+  await ADM.getByLabel('Monthly link').fill('https://buy.stripe.com/test_monthly');
+  await ADM.getByLabel('Exam pass link').fill('https://buy.stripe.com/test_pass');
+  await ADM.getByRole('button', { name: 'Save links' }).click();
+  await ADM.getByText('Payment links saved').waitFor();
+  await SL.evaluate(() => (location.hash = '#/settings?s=plan'));
+  await SL.getByRole('button', { name: 'Pay $12 a month by card' }).waitFor();
+  await SL.getByText(/^Exam pass: paid until/).waitFor(); // the payment the Owner recorded shows straight away
+  await SL.getByRole('button', { name: /^Exam pass by card: \$\d+ for \d+ months?$/ }).waitFor();
+  await SL.getByRole('heading', { name: 'Contact StudyBridge' }).waitFor();
+  await shot(SL, 'student-pay');
+
   step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
   await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();

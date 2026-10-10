@@ -2944,6 +2944,7 @@ begin
      limit n) bq;
   if not exists (select 1 from _picked) then
     raise exception '%', case when p_mode = 'learn' then 'There aren’t enough questions on this topic yet for “you try”.'
+                              when me.self_learner then 'There aren’t practice questions for this yet. StudyBridge is adding them topic by topic.'
                               else 'There aren’t any practice questions for this yet. Ask your tutor to add some to the question bank.' end;
   end if;
   if v_subject is null then
@@ -2961,10 +2962,10 @@ begin
      'on_submit', true, case when p_mode = 'drill' then greatest(1, least(coalesce(p_minutes, 10), 180)) end, false, false, true, 'self', v_instr)
   returning id into v_id;
   for b in select bq.* from public.bank_questions bq join _picked p on p.bid = bq.id order by p.ord loop
-    insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+    insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id, hint_md, bank_id)
     values (v_id, me.tutor_id, i, b.type, b.prompt_md, b.options, b.marks,
             (select t.id from public.topics t where t.tutor_id = me.tutor_id and lower(t.name) = lower(b.topic)
-               and (t.subject_id = v_subject or v_subject is null) limit 1))
+               and (t.subject_id = v_subject or v_subject is null) limit 1), b.hint_md, b.id)
     returning id into qid;
     insert into public.question_keys (question_id, tutor_id, answer, mark_scheme_md, solution_md)
     values (qid, me.tutor_id, b.answer, b.mark_scheme_md, b.solution_md);
@@ -3539,7 +3540,9 @@ declare
   a uuid;
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
-  if public.my_role() is distinct from 'tutor' then raise exception 'Only tutors can send these.'; end if;
+  if public.my_role() is distinct from 'tutor' and not coalesce((select self_learner from public.profiles where id = auth.uid()), false) then
+    raise exception 'Only tutors and students can send these.';
+  end if;
   if (select count(*) from public.feedback where user_id = auth.uid() and created_at > now() - interval '1 day') >= 20 then
     raise exception 'That’s a lot of messages today. Try again tomorrow.';
   end if;
@@ -3549,8 +3552,8 @@ begin
   for a in select user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
     perform public.notify_user(a, 'feedback', coalesce(who, 'Someone') || ' wrote to StudyBridge', left(trim(p_body), 200), jsonb_build_object('feedback_id', v));
   end loop;
-  perform public._email_us('support', initcap(coalesce(p_kind, 'question')) || ' from ' || coalesce(who, 'a tutor'),
-    'From: ' || coalesce(who, 'a tutor') || ' <' || coalesce((select email::text from auth.users where id = auth.uid()), '') || '>'
+  perform public._email_us('support', initcap(coalesce(p_kind, 'question')) || ' from ' || coalesce(who, 'a ' || public.my_role()),
+    'From: ' || coalesce(who, 'a tutor') || case when public.my_role() = 'learner' then ' (a student)' else '' end || ' <' || coalesce((select email::text from auth.users where id = auth.uid()), '') || '>'
       || coalesce(E'\nApp version: ' || nullif(p_version, ''), '') || E'\n\n' || trim(p_body)
       || E'\n\n(Reply to this email to answer them, or answer in Admin → Inbox.)',
     (select email::text from auth.users where id = auth.uid()));
@@ -5178,6 +5181,7 @@ begin
   perform public._admin();
   return jsonb_build_object(
     'open', (select students_open from public.app_config where id = 1),
+    'pay_links', (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1),
     'content', (select jsonb_build_object('id', p.id, 'email', p.email, 'name', p.display_name,
                   'subjects', (select count(*) from public.subjects s where s.tutor_id = p.id and s.catalogue is not null),
                   'live', (select count(*) from public.subjects s where s.tutor_id = p.id and s.live))
@@ -5216,6 +5220,789 @@ begin
   perform public._admin_log('student_trial', p_user, jsonb_build_object('days', p_days));
 end $$;
 
+-- ---------------------------------------------------------------------
+-- StudyBridge's own content (launch 1, part 2): made by the Owner, checked twice, reported, reviewed
+-- ---------------------------------------------------------------------
+-- The Owner makes content in Claude Desktop, signed in to the content account. Before a student sees a question it
+-- passes plain checks here (complete, the maths well formed, the answer fits its type) and a second solve in a fresh
+-- chat that never sees the answer. Anything that fails waits in Admin → Content. Students can report anything; a
+-- report leaves the item up and alerts the Owner (hiding it could make a student think it was fixed).
+alter table public.bank_questions add column if not exists hint_md text;
+alter table public.questions add column if not exists hint_md text;
+alter table public.questions add column if not exists bank_id uuid references public.bank_questions (id) on delete set null;
+alter table public.question_keys add column if not exists check_result jsonb;
+alter table public.lessons add column if not exists check_result jsonb;
+alter table public.app_config add column if not exists pay_link_monthly text;
+alter table public.app_config add column if not exists pay_link_pass text;
+
+-- Only the content account may use the content tools
+create or replace function public._content_me() returns uuid
+language plpgsql stable security definer set search_path = public as $$
+declare c uuid := public._studybridge_account();
+begin
+  if c is null or auth.uid() is distinct from c then
+    raise exception 'These tools are only for StudyBridge’s own content account. Sign the connector in with that account.';
+  end if;
+  return c;
+end $$;
+
+-- A topic of one of the content account's subjects, by name or code ("Algebra", "C2.1")
+create or replace function public._content_topic(p_subject uuid, p_topic text) returns public.topics
+language plpgsql stable security definer set search_path = public as $$
+declare
+  t public.topics;
+  names text;
+begin
+  select * into t from public.topics
+   where subject_id = p_subject and (lower(name) = lower(btrim(coalesce(p_topic, ''))) or lower(code) = lower(btrim(coalesce(p_topic, ''))))
+   order by position limit 1;
+  if t.id is null then
+    select string_agg(name, ', ' order by position) into names from (select name, position from public.topics where subject_id = p_subject order by position limit 60) z;
+    if names is null then raise exception 'This subject has no syllabus yet. Set its topics first (set_syllabus).'; end if;
+    raise exception 'There’s no topic “%” in this subject. Its topics are: %', left(coalesce(p_topic, ''), 80), names;
+  end if;
+  return t;
+end $$;
+
+-- Plain checks, no AI: is it complete, does the maths open and close, does the answer fit the question type?
+create or replace function public._content_problems(p_type text, p_prompt text, p_options jsonb, p_answer jsonb,
+  p_solution text, p_hint text, p_scheme text, p_marks numeric, p_need_hint boolean) returns text[]
+language plpgsql immutable set search_path = public as $$
+declare
+  out text[] := '{}';
+  txt text := coalesce(p_prompt, '') || ' ' || coalesce(p_solution, '') || ' ' || coalesce(p_hint, '') || ' ' || coalesce(p_scheme, '');
+  plain text;
+  opts jsonb := case when jsonb_typeof(p_options) = 'object' then coalesce(p_options -> 'items', '[]') else coalesce(p_options, '[]') end;
+  n int;
+  c text;
+begin
+  if length(btrim(coalesce(p_prompt, ''))) < 5 then out := out || 'The question is empty or too short.'::text; end if;
+  if coalesce(p_marks, 0) <= 0 then out := out || 'It needs at least 1 mark.'::text; end if;
+  if length(btrim(coalesce(p_solution, ''))) < 5 then out := out || 'It needs a worked solution.'::text; end if;
+  if p_need_hint and length(btrim(coalesce(p_hint, ''))) < 5 then out := out || 'It needs a hint.'::text; end if;
+  -- maths in $...$ must open and close (\$ is a dollar sign); braces must pair up
+  plain := replace(txt, '\$', '');
+  if (length(plain) - length(replace(plain, '$', ''))) % 2 = 1 then out := out || 'A $ in the maths isn’t closed.'::text; end if;
+  if length(txt) - length(replace(txt, '{', '')) <> length(txt) - length(replace(txt, '}', '')) then
+    out := out || 'The maths has a { without a matching }.'::text;
+  end if;
+  if txt ~* '(©|\mUCLES\M|all rights reserved)' then
+    out := out || 'It mentions © or UCLES, which suggests it came from a real paper. StudyBridge only uses original questions.'::text;
+  end if;
+  if p_type = 'mcq' then
+    n := jsonb_array_length(case when jsonb_typeof(opts) = 'array' then opts else '[]' end);
+    if n < 2 then out := out || 'A multiple-choice question needs at least 2 options.'::text;
+    elsif exists (select 1 from jsonb_array_elements_text(opts) o where btrim(o) = '') then out := out || 'One of the options is empty.'::text;
+    elsif (select count(distinct lower(btrim(o))) from jsonb_array_elements_text(opts) o) < n then out := out || 'Two options are the same.'::text;
+    end if;
+    if p_answer ? 'choices' then
+      if jsonb_typeof(p_answer -> 'choices') <> 'array' or jsonb_array_length(p_answer -> 'choices') = 0
+         or exists (select 1 from jsonb_array_elements_text(p_answer -> 'choices') x where x !~ '^\d+$' or x::int >= n) then
+        out := out || 'The correct options don’t match the list of options.'::text;
+      end if;
+    else
+      c := p_answer ->> 'choice';
+      if c is null or c !~ '^\d+$' or c::int >= n then out := out || 'The correct option doesn’t match the list of options.'::text; end if;
+    end if;
+  elsif p_type = 'numeric' then
+    if coalesce(p_answer ->> 'value', '') !~ '^\s*-?\d+(\.\d+)?([eE][-+]?\d+)?\s*$' then out := out || 'A number question needs its answer as a number.'::text; end if;
+    if coalesce(p_answer ->> 'tolerance', '0') !~ '^\s*\d+(\.\d+)?\s*$' then out := out || 'The allowed margin must be a number.'::text; end if;
+  elsif p_type = 'steps' then
+    if length(btrim(coalesce(p_answer ->> 'final', ''))) = 0 then out := out || 'A working question needs its final line, for example x = 4.'::text; end if;
+  elsif p_type in ('short', 'upload', 'drawing') then
+    if length(btrim(coalesce(p_answer ->> 'text', ''))) = 0 and length(btrim(coalesce(p_scheme, ''))) < 5 then
+      out := out || 'It needs a model answer or a mark scheme.'::text;
+    end if;
+  else
+    out := out || 'Unknown question type.'::text;
+  end if;
+  return out;
+end $$;
+
+-- Does a second, separate answer agree with the answer key? 'same', 'different', or 'compare' (written answers:
+-- the checker is shown both and says honestly whether they mean the same)
+create or replace function public._content_compare(p_type text, p_key jsonb, p_second jsonb) returns text
+language plpgsql immutable set search_path = public as $$
+declare
+  a numeric;
+  b numeric;
+  tol numeric;
+  k text[];
+  s text[];
+  norm_k text;
+  norm_s text;
+begin
+  if p_second is null or p_second = '{}'::jsonb then return 'different'; end if;
+  if p_type = 'mcq' then
+    k := case when p_key ? 'choices' then array(select x from jsonb_array_elements_text(p_key -> 'choices') x order by x) else array[p_key ->> 'choice'] end;
+    s := case when p_second ? 'choices' then array(select x from jsonb_array_elements_text(p_second -> 'choices') x order by x) else array[p_second ->> 'choice'] end;
+    return case when k = s then 'same' else 'different' end;
+  elsif p_type = 'numeric' then
+    begin
+      a := btrim(p_key ->> 'value')::numeric;
+      b := btrim(p_second ->> 'value')::numeric;
+    exception when others then return 'different';
+    end;
+    if b is null then return 'different'; end if;
+    tol := coalesce(nullif(btrim(coalesce(p_key ->> 'tolerance', '')), '')::numeric, 0);
+    -- within the margin, or the same to about 3 significant figures
+    return case when abs(a - b) <= greatest(tol, abs(a) * 0.005, 0.000000001) then 'same' else 'different' end;
+  elsif p_type = 'steps' then
+    norm_k := lower(regexp_replace(regexp_replace(coalesce(p_key ->> 'final', ''), '\\(left|right|,|;|!|quad)', '', 'g'), '[\s.]', '', 'g'));
+    norm_s := lower(regexp_replace(regexp_replace(coalesce(p_second ->> 'final', p_second ->> 'text', ''), '\\(left|right|,|;|!|quad)', '', 'g'), '[\s.]', '', 'g'));
+    norm_k := replace(replace(norm_k, '\times', '*'), '\cdot', '*');
+    norm_s := replace(replace(norm_s, '\times', '*'), '\cdot', '*');
+    return case when norm_k <> '' and norm_k = norm_s then 'same' else 'compare' end;
+  end if;
+  return 'compare';
+end $$;
+
+-- A paper goes live once every one of its questions has passed (or the Owner approved it)
+create or replace function public._content_paper_ready(p_paper uuid) returns boolean
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.questions q join public.question_keys k on k.question_id = q.id
+              where q.assignment_id = p_paper and coalesce(k.check_result ->> 'state', '') not in ('passed', 'approved')) then
+    return false;
+  end if;
+  update public.assignments set draft = false, visibility = 'visible', updated_at = now()
+   where id = p_paper and draft and source = 'studybridge';
+  return true;
+end $$;
+
+-- Tell the Owner (Admin) something needs them
+create or replace function public._content_alert(p_kind text, p_title text, p_body text, p_ref jsonb default '{}') returns void
+language plpgsql security definer set search_path = public as $$
+declare a uuid;
+begin
+  for a in select pa.user_id from public.platform_admins pa join public.profiles p on p.id = pa.user_id where p.role = 'admin' loop
+    perform public.notify_user(a, p_kind, p_title, left(coalesce(p_body, ''), 200), coalesce(p_ref, '{}'));
+  end loop;
+end $$;
+
+-- ---------------- the Owner's tools (Claude Desktop, signed in as the content account) ----------------
+-- Where each subject is: topics, questions live / waiting / needing the Owner, lessons, flashcards, papers
+create or replace function public.content_status(p_subject uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c uuid := public._content_me();
+begin
+  return coalesce((select jsonb_agg(jsonb_build_object(
+      'id', s.id, 'name', s.name, 'board', s.board, 'level', s.level, 'code', s.code, 'open_to_students', s.live,
+      'topics', (select count(*) from public.topics t where t.subject_id = s.id),
+      'questions_live', (select count(*) from public.bank_questions b where b.subject_id = s.id and b.owner_id = c and b.status = 'approved'),
+      'questions_waiting_for_check', (select count(*) from public.bank_questions b where b.subject_id = s.id and b.owner_id = c and b.status = 'review'
+                                        and b.check_result ->> 'state' = 'waiting'),
+      'questions_needing_owner', (select count(*) from public.bank_questions b where b.subject_id = s.id and b.owner_id = c and b.status = 'review'
+                                    and coalesce(b.check_result ->> 'state', '') <> 'waiting'),
+      'lessons', (select count(*) from public.lessons l where l.subject_id = s.id and l.tutor_id = c and l.visibility = 'visible' and not l.draft),
+      'flashcards', (select count(*) from public.cards k where k.subject_id = s.id and k.tutor_id = c and k.learner_id is null),
+      'papers_live', (select count(*) from public.assignments a where a.subject_id = s.id and a.tutor_id = c and a.source = 'studybridge' and not a.draft),
+      'papers_waiting', (select count(*) from public.assignments a where a.subject_id = s.id and a.tutor_id = c and a.source = 'studybridge' and a.draft))
+    order by s.position)
+    from public.subjects s where s.tutor_id = c and s.catalogue is not null and (p_subject is null or s.id = p_subject)), '[]'::jsonb);
+end $$;
+
+-- The syllabus in order: topics are matched by name (kept, renumbered, details updated) or added; others move to the end
+create or replace function public.content_set_syllabus(p_subject uuid, p_topics jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  s public.subjects;
+  i jsonb;
+  t public.topics;
+  pos int := 0;
+  added int := 0;
+  v_name text;
+begin
+  select * into s from public.subjects where id = p_subject and tutor_id = c;
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if jsonb_typeof(p_topics) <> 'array' or jsonb_array_length(p_topics) = 0 then raise exception 'Send the topics in order.'; end if;
+  if jsonb_array_length(p_topics) > 200 then raise exception 'That’s more than 200 topics. Group them into main topics with details.'; end if;
+  update public.topics set position = position + 10000 where subject_id = s.id;
+  for i in select * from jsonb_array_elements(p_topics) loop
+    v_name := left(btrim(coalesce(i ->> 'name', '')), 200);
+    continue when v_name = '';
+    pos := pos + 1;
+    select * into t from public.topics where subject_id = s.id and lower(name) = lower(v_name) limit 1;
+    if t.id is null then
+      insert into public.topics (tutor_id, subject_id, name, position, code, details)
+      values (c, s.id, v_name, pos, nullif(left(btrim(coalesce(i ->> 'code', '')), 20), ''),
+              coalesce(array(select left(btrim(x), 300) from jsonb_array_elements_text(coalesce(i -> 'details', '[]')) x where btrim(x) <> ''), '{}'));
+      added := added + 1;
+    else
+      update public.topics set position = pos, code = coalesce(nullif(left(btrim(coalesce(i ->> 'code', '')), 20), ''), code),
+             details = case when jsonb_typeof(i -> 'details') = 'array'
+                            then array(select left(btrim(x), 300) from jsonb_array_elements_text(i -> 'details') x where btrim(x) <> '') else details end
+       where id = t.id;
+    end if;
+  end loop;
+  -- topics not in the list keep their order after the new ones
+  update public.topics set position = pos + (position - 10000) where subject_id = s.id and position > 10000;
+  return jsonb_build_object('topics', (select count(*) from public.topics where subject_id = s.id), 'added', added);
+end $$;
+
+-- Practice questions (with a hint and a worked solution) into the subject's question bank. Each waits for its check.
+create or replace function public.content_add_questions(p_subject uuid, p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  s public.subjects;
+  i jsonb;
+  t public.topics;
+  probs text[];
+  k int := 0;
+  w int := 0;
+  bad jsonb := '[]'::jsonb;
+  v_type text;
+  v_marks numeric;
+begin
+  select * into s from public.subjects where id = p_subject and tutor_id = c;
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then raise exception 'Send at least one question.'; end if;
+  if jsonb_array_length(p_items) > 50 then raise exception 'Send up to 50 questions at a time.'; end if;
+  -- every topic must be in the syllabus, so practice and the plan line up (checked first: nothing half-saves)
+  for i in select * from jsonb_array_elements(p_items) loop
+    perform public._content_topic(s.id, i ->> 'topic');
+  end loop;
+  for i in select * from jsonb_array_elements(p_items) loop
+    k := k + 1;
+    t := public._content_topic(s.id, i ->> 'topic');
+    v_type := coalesce(i ->> 'type', '');
+    v_marks := case when coalesce(i ->> 'marks', '') ~ '^\d+(\.\d+)?$' then (i ->> 'marks')::numeric else 1 end;
+    probs := public._content_problems(v_type, i ->> 'prompt', coalesce(i -> 'options', '[]'), coalesce(i -> 'answer', '{}'),
+               i ->> 'solution', i ->> 'hint', i ->> 'mark_scheme', v_marks, true);
+    if v_type not in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing') then v_type := 'short'; end if;
+    insert into public.bank_questions (owner_id, status, exam_board, subject_id, topic, difficulty, type, prompt_md, options, marks,
+       answer, mark_scheme_md, solution_md, hint_md, source, check_result)
+    values (c, 'review', s.board, s.id, t.name,
+       case when coalesce(i ->> 'difficulty', '') ~ '^[123]$' then (i ->> 'difficulty')::int end,
+       v_type, coalesce(i ->> 'prompt', ''), coalesce(i -> 'options', '[]'), v_marks, coalesce(i -> 'answer', '{}'),
+       nullif(i ->> 'mark_scheme', ''), nullif(i ->> 'solution', ''), nullif(i ->> 'hint', ''), 'studybridge',
+       jsonb_build_object('state', case when cardinality(probs) > 0 then 'problems' else 'waiting' end, 'problems', to_jsonb(probs), 'at', now()));
+    if cardinality(probs) > 0 then bad := bad || jsonb_build_object('number', k, 'problems', to_jsonb(probs)); else w := w + 1; end if;
+  end loop;
+  return jsonb_build_object('added', k, 'waiting_for_check', w, 'with_problems', bad);
+end $$;
+
+-- A lesson for one topic. Sending the same title again replaces it (fix one lesson without touching the rest).
+create or replace function public.content_add_lesson(p_subject uuid, p_topic text, p_title text, p_body text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  s public.subjects;
+  t public.topics;
+  probs text[] := '{}';
+  txt text := coalesce(p_title, '') || ' ' || coalesce(p_body, '');
+  plain text;
+  v_id uuid;
+  v_replaced boolean := false;
+begin
+  select * into s from public.subjects where id = p_subject and tutor_id = c;
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  t := public._content_topic(s.id, p_topic);
+  if length(btrim(coalesce(p_title, ''))) < 3 then raise exception 'Give the lesson a title.'; end if;
+  if length(btrim(coalesce(p_body, ''))) < 200 then probs := probs || 'The lesson is very short.'::text; end if;
+  plain := replace(txt, '\$', '');
+  if (length(plain) - length(replace(plain, '$', ''))) % 2 = 1 then probs := probs || 'A $ in the maths isn’t closed.'::text; end if;
+  if length(txt) - length(replace(txt, '{', '')) <> length(txt) - length(replace(txt, '}', '')) then probs := probs || 'The maths has a { without a matching }.'::text; end if;
+  if txt ~* '(©|\mUCLES\M|all rights reserved)' then probs := probs || 'It mentions © or UCLES, which suggests copied material.'::text; end if;
+  select id into v_id from public.lessons where tutor_id = c and subject_id = s.id and lower(title) = lower(btrim(p_title)) limit 1;
+  if v_id is not null then
+    update public.lessons set body_md = p_body, topic_id = t.id, draft = false, source = 'studybridge', updated_at = now(),
+           visibility = case when cardinality(probs) > 0 then 'hidden' else 'visible' end,
+           check_result = jsonb_build_object('state', case when cardinality(probs) > 0 then 'problems' else 'passed' end, 'problems', to_jsonb(probs), 'at', now())
+     where id = v_id;
+    v_replaced := true;
+  else
+    insert into public.lessons (tutor_id, title, body_md, subject_id, topic_id, draft, source, visibility, check_result)
+    values (c, left(btrim(p_title), 200), p_body, s.id, t.id, false, 'studybridge',
+            case when cardinality(probs) > 0 then 'hidden' else 'visible' end,
+            jsonb_build_object('state', case when cardinality(probs) > 0 then 'problems' else 'passed' end, 'problems', to_jsonb(probs), 'at', now()))
+    returning id into v_id;
+  end if;
+  return jsonb_build_object('id', v_id, 'live', cardinality(probs) = 0, 'replaced', v_replaced, 'problems', to_jsonb(probs));
+end $$;
+
+-- Flashcards for the subject's students. Cards with problems are left out and listed back; repeats are skipped.
+create or replace function public.content_add_cards(p_subject uuid, p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  s public.subjects;
+  i jsonb;
+  t public.topics;
+  k int := 0;
+  n int := 0;
+  bad jsonb := '[]'::jsonb;
+  probs text[];
+  txt text;
+  plain text;
+begin
+  select * into s from public.subjects where id = p_subject and tutor_id = c;
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then raise exception 'Send at least one card.'; end if;
+  if jsonb_array_length(p_items) > 100 then raise exception 'Send up to 100 cards at a time.'; end if;
+  for i in select * from jsonb_array_elements(p_items) loop
+    perform public._content_topic(s.id, i ->> 'topic');
+  end loop;
+  for i in select * from jsonb_array_elements(p_items) loop
+    k := k + 1;
+    t := public._content_topic(s.id, i ->> 'topic');
+    probs := '{}';
+    txt := coalesce(i ->> 'front', '') || ' ' || coalesce(i ->> 'back', '');
+    plain := replace(txt, '\$', '');
+    if length(btrim(coalesce(i ->> 'front', ''))) < 2 then probs := probs || 'The front is empty.'::text; end if;
+    if length(btrim(coalesce(i ->> 'back', ''))) < 1 then probs := probs || 'The back is empty.'::text; end if;
+    if length(coalesce(i ->> 'front', '')) > 4000 or length(coalesce(i ->> 'back', '')) > 8000 then probs := probs || 'It’s too long for a card.'::text; end if;
+    if (length(plain) - length(replace(plain, '$', ''))) % 2 = 1 then probs := probs || 'A $ in the maths isn’t closed.'::text; end if;
+    if cardinality(probs) > 0 then
+      bad := bad || jsonb_build_object('number', k, 'problems', to_jsonb(probs));
+    elsif not exists (select 1 from public.cards where tutor_id = c and subject_id = s.id and learner_id is null and lower(front_md) = lower(btrim(i ->> 'front'))) then
+      insert into public.cards (tutor_id, subject_id, topic_id, front_md, back_md, source, created_by)
+      values (c, s.id, t.id, btrim(i ->> 'front'), btrim(i ->> 'back'), 'tutor', c);
+      n := n + 1;
+    end if;
+  end loop;
+  return jsonb_build_object('added', n, 'left_out', bad);
+end $$;
+
+-- An original practice paper in the exam's format. Students mark it themselves with the mark scheme afterwards.
+-- It goes live once every question has passed its check.
+create or replace function public.content_add_paper(p_subject uuid, p_title text, p_minutes int, p_instructions text, p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  s public.subjects;
+  i jsonb;
+  t public.topics;
+  probs text[];
+  k int := 0;
+  w int := 0;
+  bad jsonb := '[]'::jsonb;
+  v_id uuid;
+  qid uuid;
+  v_type text;
+  v_marks numeric;
+begin
+  select * into s from public.subjects where id = p_subject and tutor_id = c;
+  if s.id is null then raise exception 'Unknown subject.'; end if;
+  if length(btrim(coalesce(p_title, ''))) < 3 then raise exception 'Give the paper a title.'; end if;
+  if jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then raise exception 'A paper needs questions.'; end if;
+  if jsonb_array_length(p_items) > 60 then raise exception 'Up to 60 questions in a paper.'; end if;
+  if exists (select 1 from public.assignments where tutor_id = c and subject_id = s.id and source = 'studybridge' and lower(title) = lower(btrim(p_title))) then
+    raise exception 'There’s already a paper called “%” in this subject. Use a new title.', btrim(p_title);
+  end if;
+  for i in select * from jsonb_array_elements(p_items) loop
+    if nullif(btrim(coalesce(i ->> 'topic', '')), '') is not null then perform public._content_topic(s.id, i ->> 'topic'); end if;
+  end loop;
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, visibility, draft, source, self_mark, max_attempts,
+     release_mode, show_answers, time_limit_min, lockdown, camera, allow_notes)
+  values (c, 'test', left(btrim(p_title), 200),
+     coalesce(nullif(btrim(coalesce(p_instructions, '')), '') || E'\n\n', '')
+       || '*An original practice paper written by StudyBridge in the style of ' || s.name || '. Not affiliated with or endorsed by '
+       || coalesce(nullif(s.board, ''), 'the exam board') || '. When you hand it in, mark it yourself with the mark scheme.*',
+     s.id, 'hidden', true, 'studybridge', true, 1, 'on_submit', true,
+     case when coalesce(p_minutes, 0) between 1 and 300 then p_minutes end, false, false, false)
+  returning id into v_id;
+  for i in select * from jsonb_array_elements(p_items) loop
+    k := k + 1;
+    t := case when nullif(btrim(coalesce(i ->> 'topic', '')), '') is not null then public._content_topic(s.id, i ->> 'topic') end;
+    v_type := coalesce(i ->> 'type', '');
+    v_marks := case when coalesce(i ->> 'marks', '') ~ '^\d+(\.\d+)?$' then (i ->> 'marks')::numeric else 1 end;
+    probs := public._content_problems(v_type, i ->> 'prompt', coalesce(i -> 'options', '[]'), coalesce(i -> 'answer', '{}'),
+               i ->> 'solution', null, i ->> 'mark_scheme', v_marks, false);
+    if v_type not in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing') then v_type := 'short'; end if;
+    insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+    values (v_id, c, k - 1, v_type, coalesce(i ->> 'prompt', ''), coalesce(i -> 'options', '[]'), v_marks, t.id)
+    returning id into qid;
+    insert into public.question_keys (question_id, tutor_id, answer, mark_scheme_md, solution_md, check_result)
+    values (qid, c, coalesce(i -> 'answer', '{}'), nullif(i ->> 'mark_scheme', ''), nullif(i ->> 'solution', ''),
+            jsonb_build_object('state', case when cardinality(probs) > 0 then 'problems' else 'waiting' end, 'problems', to_jsonb(probs), 'at', now()));
+    if cardinality(probs) > 0 then bad := bad || jsonb_build_object('number', k, 'problems', to_jsonb(probs)); else w := w + 1; end if;
+  end loop;
+  return jsonb_build_object('id', v_id, 'questions', k, 'waiting_for_check', w, 'with_problems', bad);
+end $$;
+
+-- The questions waiting for their second check: never the answer, hint, solution or mark scheme
+create or replace function public.content_to_check(p_limit int default 10) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c uuid := public._content_me();
+begin
+  return jsonb_build_object(
+    'waiting', (select count(*) from public.bank_questions b where b.owner_id = c and b.status = 'review' and b.check_result ->> 'state' = 'waiting')
+             + (select count(*) from public.question_keys k join public.questions q on q.id = k.question_id join public.assignments a on a.id = q.assignment_id
+                 where a.tutor_id = c and a.source = 'studybridge' and k.check_result ->> 'state' = 'waiting'),
+    'questions', coalesce((select jsonb_agg(to_jsonb(z) - 'created_at' order by z.created_at) from (
+        select 'question' as kind, b.id, b.type, s.name as subject, b.topic, b.prompt_md as prompt,
+               case when b.type = 'mcq' then b.options end as options, b.answer ->> 'unit' as unit, b.marks, b.created_at
+          from public.bank_questions b left join public.subjects s on s.id = b.subject_id
+         where b.owner_id = c and b.status = 'review' and b.check_result ->> 'state' = 'waiting'
+        union all
+        select 'paper', q.id, q.type, s.name, tp.name, q.prompt_md, case when q.type = 'mcq' then q.options end, k.answer ->> 'unit', q.marks, q.created_at
+          from public.questions q join public.question_keys k on k.question_id = q.id join public.assignments a on a.id = q.assignment_id
+          left join public.subjects s on s.id = a.subject_id left join public.topics tp on tp.id = q.topic_id
+         where a.tutor_id = c and a.source = 'studybridge' and k.check_result ->> 'state' = 'waiting'
+         order by created_at limit greatest(1, least(coalesce(p_limit, 10), 30))) z), '[]'::jsonb));
+end $$;
+
+-- Save the outcome of a check on one question (bank or paper)
+create or replace function public._content_mark(p_kind text, p_id uuid, p_state text, p_detail jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_paper uuid;
+begin
+  if p_kind = 'paper' then
+    update public.question_keys set check_result = coalesce(check_result, '{}') || jsonb_build_object('state', p_state, 'at', now()) || coalesce(p_detail, '{}')
+     where question_id = p_id;
+    if p_state in ('passed', 'approved') then
+      select assignment_id into v_paper from public.questions where id = p_id;
+      perform public._content_paper_ready(v_paper);
+    end if;
+  else
+    update public.bank_questions
+       set status = case when p_state in ('passed', 'approved') then 'approved' else status end, updated_at = now(),
+           check_result = coalesce(check_result, '{}') || jsonb_build_object('state', p_state, 'at', now()) || coalesce(p_detail, '{}')
+     where id = p_id;
+  end if;
+end $$;
+
+-- The second solve's answers. Choices and numbers are compared here; written answers come back to compare by meaning.
+create or replace function public.content_submit_checks(p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  i jsonb;
+  v_kind text;
+  v_id uuid;
+  v_type text;
+  v_key jsonb;
+  v_scheme text;
+  v_solution text;
+  v_prompt text;
+  v_state text;
+  v_res text;
+  passed int := 0;
+  failed int := 0;
+  cmp jsonb := '[]'::jsonb;
+begin
+  if jsonb_typeof(p_items) <> 'array' then raise exception 'Send a list of answers.'; end if;
+  for i in select * from jsonb_array_elements(p_items) loop
+    v_kind := coalesce(i ->> 'kind', 'question');
+    begin v_id := (i ->> 'id')::uuid; exception when others then continue; end;
+    v_state := null;
+    if v_kind = 'paper' then
+      select q.type, k.answer, k.mark_scheme_md, k.solution_md, q.prompt_md, k.check_result ->> 'state'
+        into v_type, v_key, v_scheme, v_solution, v_prompt, v_state
+        from public.questions q join public.question_keys k on k.question_id = q.id join public.assignments a on a.id = q.assignment_id
+       where q.id = v_id and a.tutor_id = c and a.source = 'studybridge';
+    else
+      v_kind := 'question';
+      select b.type, b.answer, b.mark_scheme_md, b.solution_md, b.prompt_md, b.check_result ->> 'state'
+        into v_type, v_key, v_scheme, v_solution, v_prompt, v_state
+        from public.bank_questions b where b.id = v_id and b.owner_id = c;
+    end if;
+    continue when v_state is distinct from 'waiting';
+    v_res := public._content_compare(v_type, v_key, coalesce(i -> 'answer', '{}'));
+    if v_res = 'same' then
+      perform public._content_mark(v_kind, v_id, 'passed', jsonb_build_object('second', i -> 'answer'));
+      passed := passed + 1;
+    elsif v_res = 'different' then
+      perform public._content_mark(v_kind, v_id, 'failed', jsonb_build_object('second', i -> 'answer', 'second_working', left(i ->> 'working', 4000),
+        'reason', 'The second solve got a different answer.'));
+      failed := failed + 1;
+    else
+      perform public._content_mark(v_kind, v_id, 'compare', jsonb_build_object('second', i -> 'answer', 'second_working', left(i ->> 'working', 4000)));
+      cmp := cmp || jsonb_build_object('kind', v_kind, 'id', v_id, 'question', v_prompt, 'your_answer', i -> 'answer',
+        'answer_key', v_key, 'mark_scheme', v_scheme, 'worked_solution', v_solution);
+    end if;
+  end loop;
+  if failed > 0 then
+    perform public._content_alert('content_check', failed || case when failed = 1 then ' StudyBridge question needs you' else ' StudyBridge questions need you' end,
+      'The second check got a different answer. See Admin → Content.', '{}');
+  end if;
+  return jsonb_build_object('passed', passed, 'failed', failed, 'compare_these', cmp);
+end $$;
+
+-- For written answers: does the second answer mean the same as the answer key? (Said honestly by the checker.)
+create or replace function public.content_confirm_checks(p_items jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._content_me();
+  i jsonb;
+  v_kind text;
+  v_id uuid;
+  v_state text;
+  passed int := 0;
+  failed int := 0;
+begin
+  if jsonb_typeof(p_items) <> 'array' then raise exception 'Send a list of results.'; end if;
+  for i in select * from jsonb_array_elements(p_items) loop
+    v_kind := case when i ->> 'kind' = 'paper' then 'paper' else 'question' end;
+    begin v_id := (i ->> 'id')::uuid; exception when others then continue; end;
+    v_state := null;
+    if v_kind = 'paper' then
+      select k.check_result ->> 'state' into v_state from public.question_keys k join public.questions q on q.id = k.question_id
+        join public.assignments a on a.id = q.assignment_id where q.id = v_id and a.tutor_id = c and a.source = 'studybridge';
+    else
+      select b.check_result ->> 'state' into v_state from public.bank_questions b where b.id = v_id and b.owner_id = c;
+    end if;
+    continue when v_state is distinct from 'compare';
+    if coalesce((i ->> 'same')::boolean, false) then
+      perform public._content_mark(v_kind, v_id, 'passed', jsonb_build_object('note', left(i ->> 'note', 1000)));
+      passed := passed + 1;
+    else
+      perform public._content_mark(v_kind, v_id, 'failed', jsonb_build_object('note', left(i ->> 'note', 1000),
+        'reason', 'The second solve’s answer means something different.'));
+      failed := failed + 1;
+    end if;
+  end loop;
+  if failed > 0 then
+    perform public._content_alert('content_check', failed || case when failed = 1 then ' StudyBridge question needs you' else ' StudyBridge questions need you' end,
+      'The second check disagreed with the answer. See Admin → Content.', '{}');
+  end if;
+  return jsonb_build_object('passed', passed, 'failed', failed);
+end $$;
+
+-- ---------------- students report a problem ----------------
+create table if not exists public.content_reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null check (kind in ('question', 'paper', 'lesson', 'card')),  -- paper = a question in a practice paper
+  item_id uuid not null,      -- the bank question, paper question, lesson or card
+  question_id uuid,           -- the copy of the question the student saw
+  message text not null check (length(message) between 2 and 2000),
+  created_at timestamptz not null default now(),
+  done_at timestamptz,
+  reply text
+);
+create index if not exists idx_content_reports_open on public.content_reports (created_at) where done_at is null;
+alter table public.content_reports enable row level security;
+revoke all on public.content_reports from anon, authenticated;
+
+create or replace function public.report_content(p_kind text, p_id uuid, p_message text) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  c uuid := public._studybridge_account();
+  v_kind text;
+  v_item uuid;
+  v_q uuid;
+  v_what text;
+  v_subject text;
+  v_msg text := btrim(coalesce(p_message, ''));
+  a public.assignments;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null or not me.self_learner or c is null or me.tutor_id is distinct from c then
+    raise exception 'Reports are for StudyBridge’s own lessons and questions.';
+  end if;
+  if length(v_msg) < 2 then raise exception 'Say what’s wrong.'; end if;
+  if (select count(*) from public.content_reports where reporter_id = me.id and created_at > now() - interval '1 day') >= 20 then
+    raise exception 'That’s a lot of reports today. Try again tomorrow.';
+  end if;
+  if p_kind = 'question' then
+    select a2.* into a from public.questions q join public.assignments a2 on a2.id = q.assignment_id where q.id = p_id and a2.tutor_id = c;
+    if a.id is null or not (public._assignment_visible_to(a, me.id) or me.id = any (coalesce(a.learner_ids, '{}'))) then
+      raise exception 'Question not found.';
+    end if;
+    select q.id, q.bank_id, left(q.prompt_md, 140) into v_q, v_item, v_what from public.questions q where q.id = p_id;
+    v_kind := case when v_item is null then 'paper' else 'question' end;
+    v_item := coalesce(v_item, v_q);
+    select name into v_subject from public.subjects where id = a.subject_id;
+  elsif p_kind = 'lesson' then
+    select l.id, l.title, s.name into v_item, v_what, v_subject from public.lessons l left join public.subjects s on s.id = l.subject_id
+     where l.id = p_id and l.tutor_id = c and not l.draft and public.can_learner_see(l.tutor_id, l.learner_ids, l.subject_id, l.visibility, l.visible_from);
+    if v_item is null then raise exception 'Lesson not found.'; end if;
+    v_kind := 'lesson';
+  elsif p_kind = 'card' then
+    select k.id, left(k.front_md, 140), s.name into v_item, v_what, v_subject from public.cards k left join public.subjects s on s.id = k.subject_id
+     where k.id = p_id and k.tutor_id = c and k.learner_id is null
+       and (k.subject_id is null or exists (select 1 from public.learner_subjects ls where ls.learner_id = me.id and ls.subject_id = k.subject_id));
+    if v_item is null then raise exception 'Card not found.'; end if;
+    v_kind := 'card';
+  else
+    raise exception 'Unknown kind of report.';
+  end if;
+  insert into public.content_reports (reporter_id, kind, item_id, question_id, message)
+  values (me.id, v_kind, v_item, v_q, left(v_msg, 2000));
+  perform public._content_alert('content_report', coalesce(me.display_name, 'A student') || ' reported a problem',
+    coalesce(v_subject || ': ', '') || v_msg, '{}');
+  perform public._email_us('support', 'Report from ' || coalesce(me.display_name, 'a student') || coalesce(': ' || v_subject, ''),
+    'From: ' || coalesce(me.display_name, 'a student') || ' <' || coalesce((select email::text from auth.users where id = me.id), me.email, '') || '>'
+      || E'\nAbout ' || case v_kind when 'lesson' then 'the lesson' when 'card' then 'the flashcard' else 'the question' end
+      || coalesce(' in ' || v_subject, '') || ': ' || coalesce(v_what, '') || E'\n\n' || v_msg
+      || E'\n\n(It stays up for students. Sort it in Admin → Content.)',
+    (select email::text from auth.users where id = me.id));
+end $$;
+
+-- ---------------- Admin → Content: what needs the Owner ----------------
+create or replace function public.admin_content_review() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c uuid := public._studybridge_account();
+begin
+  perform public._admin();
+  return jsonb_build_object(
+    'waiting', (select count(*) from public.bank_questions b where b.owner_id = c and b.status = 'review' and b.check_result ->> 'state' = 'waiting')
+             + (select count(*) from public.question_keys k join public.questions q on q.id = k.question_id join public.assignments a on a.id = q.assignment_id
+                 where a.tutor_id = c and a.source = 'studybridge' and k.check_result ->> 'state' = 'waiting'),
+    'questions', coalesce((select jsonb_agg(jsonb_build_object('kind', 'question', 'id', b.id, 'subject', s.name, 'topic', b.topic, 'type', b.type,
+        'prompt', b.prompt_md, 'options', b.options, 'marks', b.marks, 'answer', b.answer, 'hint', b.hint_md, 'solution', b.solution_md,
+        'mark_scheme', b.mark_scheme_md, 'check', b.check_result, 'created_at', b.created_at) order by b.created_at)
+      from public.bank_questions b left join public.subjects s on s.id = b.subject_id
+     where c is not null and b.owner_id = c and b.status = 'review' and coalesce(b.check_result ->> 'state', '') <> 'waiting'), '[]'::jsonb)
+      || coalesce((select jsonb_agg(jsonb_build_object('kind', 'paper', 'id', q.id, 'paper', a.title, 'paper_id', a.id, 'number', q.position + 1,
+        'subject', s.name, 'topic', tp.name, 'type', q.type, 'prompt', q.prompt_md, 'options', q.options, 'marks', q.marks, 'answer', k.answer,
+        'solution', k.solution_md, 'mark_scheme', k.mark_scheme_md, 'check', k.check_result, 'created_at', q.created_at) order by a.created_at, q.position)
+      from public.questions q join public.question_keys k on k.question_id = q.id join public.assignments a on a.id = q.assignment_id
+      left join public.subjects s on s.id = a.subject_id left join public.topics tp on tp.id = q.topic_id
+     where c is not null and a.tutor_id = c and a.source = 'studybridge' and k.check_result ->> 'state' in ('problems', 'failed', 'compare')), '[]'::jsonb),
+    'lessons', coalesce((select jsonb_agg(jsonb_build_object('kind', 'lesson', 'id', l.id, 'subject', s.name, 'title', l.title, 'body', l.body_md,
+        'check', l.check_result) order by l.created_at)
+      from public.lessons l left join public.subjects s on s.id = l.subject_id
+     where c is not null and l.tutor_id = c and l.check_result ->> 'state' = 'problems'), '[]'::jsonb),
+    'reports', coalesce((select jsonb_agg(jsonb_build_object('id', r.id, 'kind', r.kind, 'item_id', r.item_id, 'message', r.message,
+        'created_at', r.created_at, 'student', p.display_name, 'email', p.email,
+        'item', case r.kind
+          when 'question' then (select jsonb_build_object('subject', s.name, 'topic', b.topic, 'type', b.type, 'prompt', b.prompt_md, 'options', b.options,
+                                 'answer', b.answer, 'hint', b.hint_md, 'solution', b.solution_md, 'status', b.status)
+                                from public.bank_questions b left join public.subjects s on s.id = b.subject_id where b.id = r.item_id)
+          when 'paper' then (select jsonb_build_object('subject', s.name, 'paper', a.title, 'number', q.position + 1, 'type', q.type, 'prompt', q.prompt_md,
+                                 'options', q.options, 'answer', k.answer, 'solution', k.solution_md, 'mark_scheme', k.mark_scheme_md)
+                                from public.questions q join public.question_keys k on k.question_id = q.id join public.assignments a on a.id = q.assignment_id
+                                left join public.subjects s on s.id = a.subject_id where q.id = r.item_id)
+          when 'lesson' then (select jsonb_build_object('subject', s.name, 'title', l.title, 'body', l.body_md, 'visible', l.visibility = 'visible')
+                                from public.lessons l left join public.subjects s on s.id = l.subject_id where l.id = r.item_id)
+          else (select jsonb_build_object('subject', s.name, 'front', k.front_md, 'back', k.back_md)
+                  from public.cards k left join public.subjects s on s.id = k.subject_id where k.id = r.item_id) end)
+      order by r.created_at)
+      from public.content_reports r join public.profiles p on p.id = r.reporter_id where r.done_at is null), '[]'::jsonb),
+    'done', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'kind', z.kind, 'message', z.message, 'student', z.display_name,
+        'done_at', z.done_at, 'reply', z.reply) order by z.done_at desc)
+      from (select r.*, p.display_name from public.content_reports r join public.profiles p on p.id = r.reporter_id
+             where r.done_at is not null order by r.done_at desc limit 20) z), '[]'::jsonb));
+end $$;
+
+-- The Owner decides: approve as it is, fix it (then it's live), hide it, or remove it
+create or replace function public.admin_content_decide(p_kind text, p_id uuid, p_action text, p_fix jsonb default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public._studybridge_account();
+  b public.bank_questions;
+  q public.questions;
+  k public.question_keys;
+  probs text[];
+  f jsonb := coalesce(p_fix, '{}'::jsonb);
+  v_paper uuid;
+begin
+  perform public._admin();
+  if p_action not in ('approve', 'fix', 'hide', 'remove') then raise exception 'Unknown action.'; end if;
+  if p_kind = 'question' then
+    select * into b from public.bank_questions where id = p_id and (owner_id = c or owner_id is null);
+    if b.id is null then raise exception 'Question not found.'; end if;
+    if p_action = 'fix' then
+      b.prompt_md := coalesce(f ->> 'prompt', b.prompt_md);
+      b.options := coalesce(f -> 'options', b.options);
+      b.answer := coalesce(f -> 'answer', b.answer);
+      b.hint_md := coalesce(f ->> 'hint', b.hint_md);
+      b.solution_md := coalesce(f ->> 'solution', b.solution_md);
+      b.mark_scheme_md := coalesce(f ->> 'mark_scheme', b.mark_scheme_md);
+      probs := public._content_problems(b.type, b.prompt_md, b.options, b.answer, b.solution_md, b.hint_md, b.mark_scheme_md, b.marks, b.owner_id is not null);
+      if cardinality(probs) > 0 then raise exception '%', array_to_string(probs, ' '); end if;
+      update public.bank_questions set prompt_md = b.prompt_md, options = b.options, answer = b.answer, hint_md = b.hint_md,
+             solution_md = b.solution_md, mark_scheme_md = b.mark_scheme_md, updated_at = now() where id = b.id;
+    end if;
+    if p_action in ('approve', 'fix') then
+      update public.bank_questions set status = 'approved', updated_at = now(),
+             check_result = coalesce(check_result, '{}') || jsonb_build_object('state', 'approved', 'by_owner', now())
+       where id = b.id;
+    else
+      update public.bank_questions set status = 'rejected', updated_at = now(),
+             check_result = coalesce(check_result, '{}') || jsonb_build_object('state', 'removed', 'by_owner', now())
+       where id = b.id;
+    end if;
+  elsif p_kind = 'paper' then
+    select q2.* into q from public.questions q2 join public.assignments a on a.id = q2.assignment_id
+     where q2.id = p_id and a.tutor_id = c and a.source = 'studybridge';
+    if q.id is null then raise exception 'Question not found.'; end if;
+    select * into k from public.question_keys where question_id = q.id;
+    v_paper := q.assignment_id;
+    if p_action in ('hide', 'remove') then
+      if exists (select 1 from public.attempts where assignment_id = v_paper) then
+        raise exception 'Students have already taken this paper. Fix the question instead.';
+      end if;
+      delete from public.questions where id = q.id;
+      perform public._content_paper_ready(v_paper);
+    else
+      if p_action = 'fix' then
+        q.prompt_md := coalesce(f ->> 'prompt', q.prompt_md);
+        q.options := coalesce(f -> 'options', q.options);
+        k.answer := coalesce(f -> 'answer', k.answer);
+        k.solution_md := coalesce(f ->> 'solution', k.solution_md);
+        k.mark_scheme_md := coalesce(f ->> 'mark_scheme', k.mark_scheme_md);
+        probs := public._content_problems(q.type, q.prompt_md, q.options, k.answer, k.solution_md, null, k.mark_scheme_md, q.marks, false);
+        if cardinality(probs) > 0 then raise exception '%', array_to_string(probs, ' '); end if;
+        update public.questions set prompt_md = q.prompt_md, options = q.options where id = q.id;
+        update public.question_keys set answer = k.answer, solution_md = k.solution_md, mark_scheme_md = k.mark_scheme_md where question_id = q.id;
+      end if;
+      perform public._content_mark('paper', q.id, 'approved', jsonb_build_object('by_owner', now()));
+    end if;
+  elsif p_kind = 'lesson' then
+    if not exists (select 1 from public.lessons where id = p_id and tutor_id = c) then raise exception 'Lesson not found.'; end if;
+    if p_action = 'remove' then
+      delete from public.lessons where id = p_id;
+    elsif p_action = 'hide' then
+      update public.lessons set visibility = 'hidden', updated_at = now() where id = p_id;
+    else
+      update public.lessons
+         set title = coalesce(nullif(btrim(f ->> 'title'), ''), title), body_md = coalesce(f ->> 'body', body_md),
+             visibility = 'visible', draft = false, updated_at = now(),
+             check_result = coalesce(check_result, '{}') || jsonb_build_object('state', 'approved', 'by_owner', now())
+       where id = p_id;
+    end if;
+  elsif p_kind = 'card' then
+    if not exists (select 1 from public.cards where id = p_id and tutor_id = c) then raise exception 'Card not found.'; end if;
+    if p_action in ('hide', 'remove') then
+      delete from public.cards where id = p_id;
+    elsif p_action = 'fix' then
+      update public.cards set front_md = coalesce(nullif(btrim(f ->> 'front'), ''), front_md), back_md = coalesce(f ->> 'back', back_md) where id = p_id;
+    end if;
+  else
+    raise exception 'Unknown kind.';
+  end if;
+  perform public._admin_log('content_' || p_action, c, jsonb_build_object('kind', p_kind, 'id', p_id));
+end $$;
+
+-- A report is sorted; an optional reply goes to the student as a notification
+create or replace function public.admin_report_done(p_report uuid, p_reply text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare r public.content_reports;
+begin
+  perform public._admin();
+  update public.content_reports set done_at = now(), reply = nullif(btrim(coalesce(p_reply, '')), '')
+   where id = p_report and done_at is null returning * into r;
+  if r.id is null then raise exception 'That report is already sorted.'; end if;
+  if r.reply is not null then
+    perform public.notify_user(r.reporter_id, 'report_reply', 'StudyBridge looked at your report', left(r.reply, 200), jsonb_build_object('report_id', r.id));
+  end if;
+end $$;
+
+-- ---------------- paying by card (Stripe Payment Links the Owner makes) ----------------
+create or replace function public.admin_set_pay_links(p_monthly text, p_pass text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if coalesce(btrim(p_monthly), '') <> '' and btrim(p_monthly) !~ '^https://\S+$' then raise exception 'The monthly link must start with https://'; end if;
+  if coalesce(btrim(p_pass), '') <> '' and btrim(p_pass) !~ '^https://\S+$' then raise exception 'The exam pass link must start with https://'; end if;
+  update public.app_config set pay_link_monthly = nullif(btrim(coalesce(p_monthly, '')), ''), pay_link_pass = nullif(btrim(coalesce(p_pass, '')), '')
+   where id = 1;
+end $$;
+
+create or replace function public.student_pay_links() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not coalesce((select self_learner from public.profiles where id = auth.uid()), false) then return '{}'::jsonb; end if;
+  return (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1);
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -5230,6 +6017,11 @@ end $$;
 grant execute on all functions in schema public to service_role;
 revoke execute on function public._admin_log(text, uuid, jsonb) from public, anon, authenticated;
 revoke execute on function public._studybridge_account() from public, anon, authenticated;
+revoke execute on function public._content_me() from public, anon, authenticated;
+revoke execute on function public._content_topic(uuid, text) from public, anon, authenticated;
+revoke execute on function public._content_paper_ready(uuid) from public, anon, authenticated;
+revoke execute on function public._content_mark(text, uuid, text, jsonb) from public, anon, authenticated;
+revoke execute on function public._content_alert(text, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public._storage_bytes(uuid) from public, anon, authenticated;
 revoke execute on function public._learner_topics(uuid, boolean, uuid) from public, anon, authenticated;
 revoke execute on function public._assignment_visible_to(public.assignments, uuid) from public, anon, authenticated;

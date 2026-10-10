@@ -9,6 +9,7 @@ import { dur, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { Thread } from '../shared/Messages.jsx';
 import { MockResultCard } from '../shared/MockHistory.jsx';
+import { ReportProblem } from './SelfStudy.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -156,20 +157,25 @@ export default function Results({ id }) {
                 </div>
               </details>
             )}
+            <ReportProblem kind="question" id={q.id} />
           </div>
         );
       })}
       {questions.length === 0 && <Empty>No questions.</Empty>}
-      <div className="card">
-        <h3>Questions about this?</h3>
-        <Thread learnerId={app.me.id} all={comments} assignments={[a]} assignmentId={a.id} compact />
-      </div>
+      {!app.me.self_learner && (
+        <div className="card">
+          <h3>Questions about this?</h3>
+          <Thread learnerId={app.me.id} all={comments} assignments={[a]} assignmentId={a.id} compact />
+        </div>
+      )}
     </Page>
   );
 }
 
 // Self-marked work: after handing in, the learner marks it against the mark scheme; the tutor checks it
 function SelfMark({ d, questions, keys, byQ }) {
+  const app = useApp();
+  const self = !!app.me.self_learner; // on their own: nobody checks, the marks are for them
   const toast = useToast();
   const [marks, setMarks] = useState(() => Object.fromEntries(questions.map((q) => [q.id, byQ[q.id]?.self_marks ?? ''])));
   const [busy, setBusy] = useState(false);
@@ -179,8 +185,11 @@ function SelfMark({ d, questions, keys, byQ }) {
   return (
     <div className="card tint stack">
       <div>
-        <div className="strong">{done ? 'You marked your work. Your tutor is checking it.' : 'Now mark your own work'}</div>
-        <div className="small muted">Read each mark scheme, compare it with your answer, and give yourself the marks you earned. Be honest: your tutor checks them.</div>
+        <div className="strong">{done ? (self ? 'You marked your work.' : 'You marked your work. Your tutor is checking it.') : 'Now mark your own work'}</div>
+        <div className="small muted">
+          Read each mark scheme, compare it with your answer, and give yourself the marks you earned.{' '}
+          {self ? 'Be honest with yourself: it shows you what to work on next.' : 'Be honest: your tutor checks them.'}
+        </div>
       </div>
       {questions.map((q, i) => {
         const k = keys[q.id];
@@ -233,7 +242,7 @@ function SelfMark({ d, questions, keys, byQ }) {
             try {
               await api.saveSelfMarks(d.attempt.id, marks);
               invalidate(`attempt:${d.attempt.id}`);
-              toast('Marks sent to your tutor');
+              toast(self ? 'Marks saved' : 'Marks sent to your tutor');
             } catch (e) {
               toast({ title: 'Couldn’t save them', body: e.message, tone: 'bad' });
             } finally {

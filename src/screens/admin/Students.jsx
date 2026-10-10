@@ -8,6 +8,9 @@ import * as api from '../../lib/api.js';
 import { CATALOGUE } from '../../lib/catalogue.js';
 import { ago } from '../../lib/format.js';
 import { studentAccess, GRADES } from '../../lib/students.js';
+import site from '../../../website/site.config.json';
+
+const PRICE = site.selfLearner;
 
 const day = (s) => (s ? new Date(String(s).slice(0, 10) + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 const plus = (months) => {
@@ -90,6 +93,8 @@ export default function StudentsPage() {
         </form>
       </div>
 
+      <PayLinks links={d.pay_links || {}} run={run} busy={busy} />
+
       <div className="card">
         <Toggle
           checked={!!d.open}
@@ -115,6 +120,41 @@ export default function StudentsPage() {
         )}
       </div>
     </Page>
+  );
+}
+
+// Paying by card: two Stripe Payment Links the Owner makes; students see "Pay by card" buttons
+function PayLinks({ links, run, busy }) {
+  const [monthly, setMonthly] = useState(links.monthly || '');
+  const [pass, setPass] = useState(links.pass || '');
+  return (
+    <div className="card stack">
+      <h2>Paying by card</h2>
+      <div className="small muted">
+        In Stripe, make two Payment Links: <b>Monthly</b> at ${PRICE.month} a month (repeating), and <b>Exam pass</b> at ${PRICE.passMonth} with “Let customers adjust
+        quantity” switched on (one for each month until their exams). Paste them here and students see “Pay by card” buttons. When Stripe emails you about a
+        payment, mark that student as paid below. The payment shows their StudyBridge account id as the client reference.
+      </div>
+      <form
+        className="stack sm"
+        onSubmit={(e) => {
+          e.preventDefault();
+          run('links', () => api.adminSetPayLinks(monthly.trim(), pass.trim()), 'Payment links saved');
+        }}
+      >
+        <Field label="Monthly link">
+          <input className="input" type="url" value={monthly} onChange={(e) => setMonthly(e.target.value)} placeholder="https://buy.stripe.com/…" />
+        </Field>
+        <Field label="Exam pass link">
+          <input className="input" type="url" value={pass} onChange={(e) => setPass(e.target.value)} placeholder="https://buy.stripe.com/…" />
+        </Field>
+        <div>
+          <button className="btn" disabled={!!busy}>
+            Save links
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 

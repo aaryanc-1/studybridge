@@ -153,3 +153,72 @@ test('progress, messages and lessons', async () => {
   assert.equal((await learner.from('lessons').select('*')).data.length, 0);
   await assert.rejects(call('draft_message', { learner: 'Nobody', message: 'x' }), /No learner called/);
 });
+
+test('StudyBridge content tools: only the content account; made, checked without seeing the answers, then up for students', async () => {
+  await assert.rejects(call('content_overview'), /only for StudyBridge’s own content account/);
+  const cc = sb();
+  await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
+  await cc.rpc('become_tutor', { p_name: 'StudyBridge' });
+  const cid = (await cc.auth.getUser()).data.user.id;
+  await srv.db.query(`update profiles set is_studybridge = true where id = $1`, [cid]);
+  await srv.db.query(
+    `insert into subjects (tutor_id, name, catalogue, board, level, code, position) values
+       ($1, 'Cambridge IGCSE International Mathematics (0607)', 'cambridge:igcse:0607', 'Cambridge', 'IGCSE', '0607', 1),
+       ($1, 'Cambridge IGCSE Mathematics (0580)', 'cambridge:igcse:0580', 'Cambridge', 'IGCSE', '0580', 2)`,
+    [cid],
+  );
+  const server = createStudyBridgeServer({ url: srv.url, key: srv.anonKey, email: 'content@example.com', password: 'secret123' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  const mc = new Client({ name: 'content', version: '1' });
+  await mc.connect(b);
+  const use = async (name, args = {}) => {
+    const r = await mc.callTool({ name, arguments: args });
+    if (r.isError) throw new Error(r.content[0].text);
+    return r.content[0].text;
+  };
+  const prompts = (await mc.listPrompts()).prompts.map((p) => p.name);
+  assert.ok(prompts.includes('make_subject') && prompts.includes('check_waiting'));
+
+  assert.equal(JSON.parse(await use('content_overview')).not_started_yet, 2);
+  await assert.rejects(use('set_syllabus', { subject: 'Mathematics', topics: [{ name: 'Number' }] }), /could be/);
+  assert.match(await use('set_syllabus', { subject: '0607', topics: [{ name: 'Number', code: 'C1', subtopics: ['Fractions'] }, { name: 'Algebra', code: 'C2' }] }), /2 topics \(2 new\)/);
+  const added = await use('add_questions', {
+    subject: '0607',
+    questions: [
+      { topic: 'Number', type: 'numeric', prompt: 'Work out $3 \\times 7$.', answer: '21', hint: 'Count in threes.', solution: '$3 \\times 7 = 21$' },
+      { topic: 'C2', type: 'mcq', prompt: 'Which is equal to $2x$ when $x = 3$?', options: ['5', '6', '8'], correct: [1], hint: 'Replace x with 3.', solution: '$2 \\times 3 = 6$' },
+      { topic: 'Algebra', type: 'mcq', prompt: 'Pick the even number.', options: ['3', '4'], hint: 'Even numbers end in 0, 2, 4, 6 or 8.', solution: '4 is even.' },
+    ],
+  });
+  assert.match(added, /Saved 3 questions/);
+  assert.match(added, /2 wait for their check.*NEW chat/s);
+  assert.match(added, /3: The correct option doesn’t match/);
+  // the check never sees answers
+  const waiting = JSON.parse(await use('questions_to_check'));
+  assert.equal(waiting.questions.length, 2);
+  assert.ok(!/Count in threes|21\$|Replace x/.test(JSON.stringify(waiting.questions)));
+  const ans = waiting.questions.map((x) => (x.type === 'mcq' ? { id: x.id, kind: x.kind, choice: 1 } : { id: x.id, kind: x.kind, value: 21 }));
+  assert.match(await use('submit_checks', { answers: ans }), /2 passed/);
+  const ov = JSON.parse(await use('content_overview', { subject: '0607' }));
+  assert.equal(ov.subjects[0].questions_live, 2);
+  assert.equal(ov.needing_the_owner, 1);
+  const body = 'Fractions show parts of a whole. '.repeat(10) + 'For example $\\frac{1}{2} + \\frac{1}{4} = \\frac{3}{4}$.';
+  assert.match(await use('add_lesson', { subject: '0607', topic: 'Number', title: 'Adding fractions', body }), /is up for/);
+  assert.match(await use('add_flashcards', { subject: '0607', cards: [{ topic: 'Number', front: 'What is a fraction?', back: 'Part of a whole.' }] }), /Added 1 flashcard/);
+  assert.match(
+    await use('add_practice_paper', {
+      subject: '0607',
+      title: 'Practice paper 1 · Set A',
+      minutes: 45,
+      questions: [{ type: 'numeric', prompt: 'Work out $9 \\times 6$.', answer: '54', solution: '$9 \\times 6 = 54$', mark_scheme: 'B1 54' }],
+    }),
+    /Saved “Practice paper 1 · Set A”.*1 wait/s,
+  );
+  const paperQ = JSON.parse(await use('questions_to_check')).questions[0];
+  assert.equal(paperQ.kind, 'paper');
+  assert.match(await use('submit_checks', { answers: [{ id: paperQ.id, kind: 'paper', value: '54' }] }), /1 passed/);
+  assert.equal(JSON.parse(await use('content_overview', { subject: '0607' })).subjects[0].papers_live, 1);
+  assert.equal(await use('questions_to_check'), 'Nothing is waiting for its check.');
+  await mc.close();
+});

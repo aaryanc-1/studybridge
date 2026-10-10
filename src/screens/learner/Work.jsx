@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Markdown, Modal, Page, Seg, go, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
@@ -11,6 +12,7 @@ import { workState, needsAction } from './workState.js';
 import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
 
 export default function Work() {
+  const app = useApp();
   const lk = useLookups();
   const assignments = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('myattempts', () => api.myAttempts()).data || [];
@@ -40,7 +42,11 @@ export default function Work() {
           ...(practice.length ? [{ value: 'practice', label: `Practice (${practice.length})` }] : []),
         ]}
       />
-      {tab === 'practice' && <div className="note small">Extra practice from your tutor. Do it as often as you like: it’s marked straight away and shows you the answers.</div>}
+      {tab === 'practice' && (
+        <div className="note small">
+          {app.me.self_learner ? 'Practice you started from Study.' : 'Extra practice from your tutor.'} Do it as often as you like: it’s marked straight away and shows you the answers.
+        </div>
+      )}
       {!assignments.data ? (
         <Loading />
       ) : list.length === 0 ? (

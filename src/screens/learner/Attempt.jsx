@@ -14,6 +14,7 @@ import { Thread } from '../shared/Messages.jsx';
 import { FileBody } from '../shared/FileView.jsx';
 import { joinRoom } from '../shared/Live.jsx';
 import AnswerInput from './AnswerInputs.jsx';
+import { Hint, ReportProblem } from './SelfStudy.jsx';
 import { strokesPicture } from '../../ui/DrawingPad.jsx';
 import { confetti } from '../../ui/confetti.js';
 
@@ -286,10 +287,18 @@ export default function Attempt({ id }) {
         icon="trophy"
         medal={!done.why}
         title={done.why === 'left' ? `Handed in: you tried to leave the ${kindLabel[a?.kind]?.toLowerCase() || 'exam'}` : done.auto ? 'Handed in' : 'Handed in. Well done!'}
-        body={done.queued ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.' : 'Your tutor has been told. You’ll get a notification when it’s marked.'}
+        body={
+          done.queued
+            ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.'
+            : app.me.self_learner
+              ? a?.self_mark
+                ? 'Now mark it yourself with the mark scheme: that’s where you learn the most.'
+                : 'See how you did, and look at the worked solutions for anything you missed.'
+              : 'Your tutor has been told. You’ll get a notification when it’s marked.'
+        }
         action={
           <button className="btn primary big" onClick={() => go(done.queued ? '/work' : `/results/${id}`)}>
-            {done.queued ? 'Back to my work' : 'See what I handed in'}
+            {done.queued ? 'Back to my work' : app.me.self_learner && a?.self_mark ? 'Mark it now' : 'See what I handed in'}
           </button>
         }
       />
@@ -397,8 +406,13 @@ export default function Attempt({ id }) {
                     </span>
                   </div>
                   <QuestionPrompt q={q} />
+                  {a.practice && <Hint md={q.hint_md} />}
                   <AnswerInput q={q} value={answers[q.id] || {}} onChange={(v) => change(q.id, v)} attemptId={id} disabled={!can} />
-                  {a.allow_notes && (
+                  {app.me.self_learner ? (
+                    <div>
+                      <ReportProblem kind="question" id={q.id} />
+                    </div>
+                  ) : a.allow_notes && (
                     <div className="stack sm">
                       {noteFor === q.id || notes.length ? (
                         <div className="card" style={{ background: 'var(--sunk)', padding: 14 }}>

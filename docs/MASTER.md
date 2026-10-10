@@ -103,7 +103,7 @@ The apps, the update page, the phone version and Prof are running; every push to
 | Claude API key (Admin → Prof) | Prof's AI, Sonnet 5.5; default allowance $2 per tutor per month | Saved |
 | LiveKit Cloud (Admin → Live video) | Video for every tutor's live lessons and exam cameras | Saved; check it works after the key mix-up |
 | GitHub repo `studybridge` | Code; every push tests, builds and publishes | Running; publicly readable (see Known issues) |
-| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.62 |
+| GitHub repo `studybridge-releases` (public) | Download page, the updates apps check, and the phone version on GitHub Pages | Running; latest release 1.1.63 |
 | Website | Published with every release next to the phone version; its early-access form saves to the server (Admin → Selling shows the list) | Live at gostudybridge.com (app at gostudybridge.com/app/), served by Cloudflare Pages (project gostudybridge) from the releases repo's gh-pages branch; old github.io links redirect |
 | Admin → Students | The content account (a tutor account just for StudyBridge's own subjects), every subject added to it, and the Students can sign up switch | To do: sign up the content account, approve it, set it here, add every subject; fill 0607 first and tick Open to students; then switch sign-up on |
 | Admin → Selling | Plan limits, Stripe (secret key, webhook secret, four price IDs), Resend email (sender and key), Google sign-in | Nothing set; all off |

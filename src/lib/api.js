@@ -297,6 +297,13 @@ export const adminSeedCatalogue = (items) => run(sb().rpc('admin_seed_catalogue'
 export const adminStudentsOpen = (open) => run(sb().rpc('admin_students_open', { p_open: open }));
 export const adminSetStudentPaid = (id, plan, until) => run(sb().rpc('admin_set_student_paid', { p_user: id, p_plan: plan, p_until: until }));
 export const adminExtendTrial = (id, days = 7) => run(sb().rpc('admin_extend_trial', { p_user: id, p_days: days }));
+// StudyBridge's own content: students report problems, the Owner sorts them (Admin → Content), pay-by-card links
+export const reportContent = (kind, id, message) => run(sb().rpc('report_content', { p_kind: kind, p_id: id, p_message: message }));
+export const adminContentReview = () => run(sb().rpc('admin_content_review'));
+export const adminContentDecide = (kind, id, action, fix = null) => run(sb().rpc('admin_content_decide', { p_kind: kind, p_id: id, p_action: action, p_fix: fix }));
+export const adminReportDone = (id, reply = null) => run(sb().rpc('admin_report_done', { p_report: id, p_reply: reply }));
+export const adminSetPayLinks = (monthly, pass) => run(sb().rpc('admin_set_pay_links', { p_monthly: monthly, p_pass: pass }));
+export const studentPayLinks = () => run(sb().rpc('student_pay_links'));
 export const createParentInvite = (learnerId, name) => run(sb().rpc('create_parent_invite', { p_learner: learnerId, p_name: name || null }));
 export const revokeParentInvite = (id) => run(sb().rpc('revoke_parent_invite', { p_invite: id }));
 export const learnerParents = (learnerId = null) => run(sb().rpc('learner_parents', { p_learner: learnerId }));

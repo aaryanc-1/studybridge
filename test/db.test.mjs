@@ -1612,3 +1612,145 @@ test('students on their own: a content account with every subject, sign-up with 
   assert.equal((await one('S', `select paid_plan from profiles where id = auth.uid()`)).paid_plan, 'pass');
   await as('A', `select admin_extend_trial($1, 7)`, [U.S]);
 });
+
+test('StudyBridge content: made by the content account, checked twice before students see it, reported by students, sorted in Admin', async () => {
+  const maths = (await db.query(`select id from subjects where tutor_id = $1 and catalogue = 'cambridge:igcse:0607'`, [U.C])).rows[0].id;
+  // only the content account can use the content tools
+  await fails(as('T', `select content_status()`), /only for StudyBridge’s own content account/);
+  await fails(as('S', `select content_add_questions($1, '[]')`, [maths]), /only for StudyBridge’s own content account/);
+  const q1 = { topic: 'Number', type: 'numeric', prompt: 'What is $2 + 2$?', answer: { value: '4' }, hint: 'Count on two.', solution: '$2 + 2 = 4$' };
+  await fails(as('C', `select content_add_questions($1, $2)`, [maths, JSON.stringify([q1])]), /no syllabus yet/);
+  // the syllabus in order; sending it again reorders and keeps what's there
+  assert.deepEqual(
+    await val('C', `select content_set_syllabus($1, $2)`, [maths, JSON.stringify([{ name: 'Number', code: 'C1', details: ['Fractions', 'Percentages'] }, { name: 'Algebra', code: 'C2' }])]),
+    { topics: 2, added: 2 },
+  );
+  assert.deepEqual(await val('C', `select content_set_syllabus($1, $2)`, [maths, JSON.stringify([{ name: 'algebra' }, { name: 'Number' }, { name: 'Geometry' }])]), { topics: 3, added: 1 });
+  const tops = await as('C', `select name, code, details from topics where subject_id = $1 order by position`, [maths]);
+  assert.deepEqual(tops.map((t) => t.name), ['Algebra', 'Number', 'Geometry']);
+  assert.deepEqual(tops[1].details, ['Fractions', 'Percentages']);
+  await fails(as('C', `select content_add_questions($1, $2)`, [maths, JSON.stringify([{ ...q1, topic: 'Trigonometry' }])]), /no topic “Trigonometry”.*Algebra, Number, Geometry/);
+
+  // questions: plain checks first, then each waits for a second solve
+  const qs = [
+    { topic: 'Number', type: 'numeric', prompt: 'Work out $15\\%$ of 80.', answer: { value: '12', tolerance: '0' }, hint: 'Find 10% and 5% first.', solution: '$0.15 \\times 80 = 12$' },
+    { topic: 'C1', type: 'mcq', prompt: 'Which of these is prime?', options: ['4', '6', '7', '9'], answer: { choice: '2' }, hint: 'Only two factors.', solution: '7 has only the factors 1 and 7.' },
+    { topic: 'Algebra', type: 'numeric', prompt: 'Solve $2x + 3 = 11$.', answer: { value: '5' }, hint: 'Take 3 from both sides.', solution: '$2x = 8$, so $x = 4$.' },
+    { topic: 'Algebra', type: 'short', prompt: 'Explain what a variable is.', answer: { text: 'A letter that stands for a number that can change.' }, hint: 'Think of x.', solution: 'A letter standing for an unknown or changing number.' },
+    { topic: 'Number', type: 'numeric', prompt: 'Work out $3 + 4', answer: { value: 'seven' }, hint: '', solution: '' },
+  ];
+  const add = await val('C', `select content_add_questions($1, $2)`, [maths, JSON.stringify(qs)]);
+  assert.equal(add.added, 5);
+  assert.equal(add.waiting_for_check, 4);
+  assert.equal(add.with_problems[0].number, 5);
+  for (const re of [/isn’t closed/, /as a number/, /needs a hint/, /worked solution/]) assert.ok(add.with_problems[0].problems.some((p) => re.test(p)), String(re));
+  assert.equal((await val('S', `select practice_topics()`)).length, 0, 'nothing reaches students before its check');
+  // the checker sees the questions, never the answers, hints or solutions
+  const tc = await val('C', `select content_to_check(10)`);
+  assert.equal(tc.waiting, 4);
+  assert.equal(tc.questions.length, 4);
+  const raw = JSON.stringify(tc.questions);
+  for (const secret of ['Find 10%', '0.15', 'only the factors', 'stands for', 'Take 3']) assert.ok(!raw.includes(secret), secret);
+  assert.deepEqual(tc.questions.find((x) => x.type === 'mcq').options, ['4', '6', '7', '9']);
+  const id = (re) => tc.questions.find((x) => re.test(x.prompt)).id;
+  const sub = await val('C', `select content_submit_checks($1)`, [
+    JSON.stringify([
+      { kind: 'question', id: id(/15/), answer: { value: '12.0' } },
+      { kind: 'question', id: id(/prime/), answer: { choice: 2 } },
+      { kind: 'question', id: id(/Solve/), answer: { value: '4' }, working: '2x = 8, x = 4' },
+      { kind: 'question', id: id(/variable/), answer: { text: 'A symbol for a number we do not know yet.' } },
+    ]),
+  ]);
+  assert.equal(sub.passed, 2);
+  assert.equal(sub.failed, 1);
+  assert.equal(sub.compare_these.length, 1);
+  assert.match(sub.compare_these[0].answer_key.text, /letter that stands/);
+  assert.equal((await val('C', `select content_submit_checks($1)`, [JSON.stringify([{ kind: 'question', id: id(/15/), answer: { value: '99' } }])])).failed, 0, 'a checked question isn’t checked again');
+  assert.deepEqual(await val('C', `select content_confirm_checks($1)`, [JSON.stringify([{ kind: 'question', id: id(/variable/), same: true }])]), { passed: 1, failed: 0 });
+  assert.ok((await as('A', `select title from notifications where user_id = auth.uid() and kind = 'content_check'`)).length >= 1, 'the Owner hears about the failed one');
+  // checked questions are practice for the student, with their hints
+  assert.deepEqual((await val('S', `select practice_topics()`)).map((t) => [t.topic, t.questions]), [['Number', 2]]);
+  const pr = await val('S', `select start_practice('topic', $1, 'Number', 6)`, [maths]);
+  const pq = await as('S', `select id, hint_md, bank_id, prompt_md from questions where assignment_id = $1 order by position`, [pr.assignment_id]);
+  assert.equal(pq.length, 2);
+  assert.ok(pq.every((x) => x.hint_md && x.bank_id));
+
+  // Admin → Content: the failed question and the one with problems wait for the Owner
+  await fails(as('T', `select admin_content_review()`), /admins only/);
+  const rv = await val('A', `select admin_content_review()`);
+  assert.equal(rv.waiting, 0);
+  assert.equal(rv.questions.length, 2);
+  const failedQ = rv.questions.find((x) => x.check.state === 'failed');
+  assert.equal(failedQ.check.second.value, '4');
+  await fails(as('A', `select admin_content_decide('question', $1, 'fix', $2)`, [failedQ.id, JSON.stringify({ answer: { value: 'four' } })]), /as a number/);
+  await as('A', `select admin_content_decide('question', $1, 'fix', $2)`, [failedQ.id, JSON.stringify({ answer: { value: '4' } })]);
+  await as('A', `select admin_content_decide('question', $1, 'remove')`, [rv.questions.find((x) => x.check.state === 'problems').id]);
+  assert.equal((await val('A', `select admin_content_review()`)).questions.length, 0);
+  assert.equal(await val('C', `select status from bank_questions where id = $1`, [failedQ.id]), 'approved');
+
+  // lessons go up when they pass; the same title replaces one; problems keep it hidden
+  const body = 'A percentage is a number out of 100. '.repeat(8) + 'So $15\\%$ of 80 is $0.15 \\times 80 = 12$.';
+  assert.equal((await val('C', `select content_add_lesson($1, 'Number', 'Percentages', $2)`, [maths, body])).live, true);
+  assert.equal((await val('C', `select content_add_lesson($1, 'Number', 'percentages', $2)`, [maths, body + ' More.'])).replaced, true);
+  assert.equal((await val('C', `select content_add_lesson($1, 'Algebra', 'Short one', 'Too short $x')`, [maths])).live, false);
+  assert.deepEqual((await as('S', `select title from lessons`)).map((l) => l.title), ['Percentages']);
+  assert.equal((await val('A', `select admin_content_review()`)).lessons.length, 1);
+  // flashcards: repeats skipped, broken ones listed back
+  const cards = await val('C', `select content_add_cards($1, $2)`, [
+    maths,
+    JSON.stringify([
+      { topic: 'Number', front: 'What is a prime number?', back: 'A number with exactly two factors.' },
+      { topic: 'Number', front: 'What is a prime number?', back: 'again' },
+      { topic: 'Algebra', front: 'Solve $x + 1 = 2', back: '1' },
+    ]),
+  ]);
+  assert.equal(cards.added, 1);
+  assert.equal(cards.left_out[0].number, 3);
+  // an original practice paper goes live once every question passes; students mark it themselves
+  const items = [
+    { type: 'numeric', prompt: 'Work out $7 \\times 8$.', answer: { value: '56' }, solution: '$7 \\times 8 = 56$', mark_scheme: 'B1 56', marks: 1 },
+    { topic: 'Algebra', type: 'steps', prompt: 'Solve $3x - 2 = 10$, showing your working.', answer: { final: 'x = 4' }, solution: '$3x = 12$ so $x = 4$', mark_scheme: 'M1 add 2, A1 x = 4', marks: 2 },
+  ];
+  const paper = await val('C', `select content_add_paper($1, 'Practice paper 1', 45, null, $2)`, [maths, JSON.stringify(items)]);
+  assert.equal(paper.waiting_for_check, 2);
+  assert.equal((await as('S', `select id from assignments where id = $1`, [paper.id])).length, 0, 'not live before its check');
+  await fails(as('C', `select content_add_paper($1, 'practice paper 1', 45, null, $2)`, [maths, JSON.stringify(items)]), /already a paper/);
+  const tc2 = await val('C', `select content_to_check(10)`);
+  assert.ok(tc2.questions.length === 2 && tc2.questions.every((x) => x.kind === 'paper'));
+  const r2 = await val('C', `select content_submit_checks($1)`, [JSON.stringify(tc2.questions.map((x) => ({ kind: 'paper', id: x.id, answer: x.type === 'numeric' ? { value: '56' } : { final: 'x=4' } })))]);
+  assert.equal(r2.passed, 2);
+  const live = await one('S', `select instructions_md, self_mark, time_limit_min from assignments where id = $1`, [paper.id]);
+  assert.match(live.instructions_md, /Not affiliated with or endorsed by Cambridge/);
+  assert.equal(live.self_mark, true);
+  assert.equal(live.time_limit_min, 45);
+  assert.equal((await val('C', `select content_status($1)`, [maths]))[0].papers_live, 1);
+
+  // students report a problem: it stays up, the Owner is told, and can reply
+  await fails(as('S', `select report_content('question', $1, 'x')`, [pq[0].id]), /what’s wrong/);
+  await as('S', `select report_content('question', $1, 'The answer should be 12.5')`, [pq.find((x) => /15/.test(x.prompt_md)).id]);
+  const lessonId = await val('S', `select id from lessons limit 1`);
+  await as('S', `select report_content('lesson', $1, 'Typo in the second line')`, [lessonId]);
+  await as('S', `select start_attempt($1, 'web')`, [paper.id]); // a timed paper's questions open once it's started
+  await as('S', `select report_content('question', $1, 'Unclear wording')`, [await val('S', `select id from questions where assignment_id = $1 order by position limit 1`, [paper.id])]);
+  await fails(as('L', `select report_content('lesson', $1, 'Not mine')`, [lessonId]), /StudyBridge’s own/);
+  const rr = await val('A', `select admin_content_review()`);
+  assert.deepEqual(rr.reports.map((r) => r.kind).sort(), ['lesson', 'paper', 'question']);
+  const qr = rr.reports.find((r) => r.kind === 'question');
+  assert.match(qr.item.prompt, /15/);
+  assert.equal(qr.student, 'Sam');
+  assert.equal(await val('S', `select count(*)::int from lessons`), 1, 'a reported lesson stays up');
+  assert.ok((await db.query(`select 1 from outgoing_emails where subject like 'Report from Sam%'`)).rows.length >= 1, 'emailed to support@');
+  await as('A', `select admin_report_done($1, 'Thanks, it’s fixed now.')`, [qr.id]);
+  assert.equal((await as('S', `select title from notifications where user_id = auth.uid() and kind = 'report_reply'`)).length, 1);
+  await fails(as('A', `select admin_report_done($1, null)`, [qr.id]), /already sorted/);
+
+  // paying by card: the Owner's Stripe links reach students only
+  await fails(as('A', `select admin_set_pay_links('http://example.com', null)`), /https/);
+  await as('A', `select admin_set_pay_links('https://buy.stripe.com/test_m', 'https://buy.stripe.com/test_p')`);
+  assert.deepEqual(await val('S', `select student_pay_links()`), { monthly: 'https://buy.stripe.com/test_m', pass: 'https://buy.stripe.com/test_p' });
+  assert.deepEqual(await val('L', `select student_pay_links()`), {});
+  assert.equal((await val('A', `select admin_students()`)).pay_links.pass, 'https://buy.stripe.com/test_p');
+  // students can write to StudyBridge (they have no tutor to ask); a tutor's learner still can't
+  await as('S', `select send_feedback('question', 'How do I pay?')`);
+  await fails(as('L', `select send_feedback('question', 'hi')`), /Only tutors and students/);
+});

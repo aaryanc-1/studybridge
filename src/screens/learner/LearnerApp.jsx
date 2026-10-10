@@ -26,6 +26,7 @@ function notificationTarget(n) {
   if ((n.kind === 'marked' || n.kind === 'auto_submitted') && r.attempt_id) return `/results/${r.attempt_id}`;
   if (n.kind === 'attempt_cancelled') return '/work';
   if (n.kind === 'cards') return '/study';
+  if (n.kind === 'feedback_reply') return '/settings?s=contact';
   if (n.kind === 'message') return '/messages';
   if (n.kind === 'session') return '/live';
   if (n.kind === 'assignment' && r.assignment_id) return `/work/${r.assignment_id}`;

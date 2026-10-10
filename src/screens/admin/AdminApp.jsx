@@ -11,6 +11,7 @@ import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPa
 import PapersAdmin from './PapersAdmin.jsx';
 import SellingPage from './Selling.jsx';
 import StudentsPage from './Students.jsx';
+import ContentPage from './Content.jsx';
 import { useProfJobs } from '../tutor/Prof.jsx';
 
 function notificationTarget(n) {
@@ -22,6 +23,7 @@ function notificationTarget(n) {
   if (n.kind === 'problem') return '/problems';
   if (n.kind === 'feedback') return '/inbox';
   if (n.kind === 'prof' && r.paper_id) return '/papers';
+  if (n.kind === 'content_report' || n.kind === 'content_check') return '/content';
   return '/';
 }
 
@@ -30,6 +32,8 @@ export default function AdminApp() {
   const tutors = useQuery('admin-tutors', api.adminTutors, { poll: 60000 });
   const bank = useQuery('bank', api.listBank, { poll: 120000 });
   const overview = useQuery('admin-overview', api.adminOverview, { poll: 60000 });
+  const content = useQuery('admin-content', api.adminContentReview, { poll: 120000 }).data;
+  const contentOpen = content ? content.questions.length + content.lessons.length + content.reports.length : 0;
   useProfJobs(); // keeps Prof's shared-question jobs moving
   const waiting = (tutors.data || []).filter((t) => t.status === 'pending').length;
   const toReview = (bank.data || []).filter((b) => b.owner_id === null && b.status === 'review').length;
@@ -38,6 +42,7 @@ export default function AdminApp() {
     { to: '/', label: 'Overview', icon: 'home' },
     { to: '/tutors', label: 'Tutors', icon: 'users', count: waiting },
     { to: '/students', label: 'Students', icon: 'book' },
+    { to: '/content', label: 'Content', icon: 'layers', count: contentOpen },
     { to: '/inbox', label: 'Inbox', icon: 'message', count: o.feedback_open },
     { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
     { to: '/prof', label: 'Prof', icon: 'cap', tone: 'claude' },
@@ -54,6 +59,7 @@ export default function AdminApp() {
   if (a === 'tutors' && b) page = <TutorPage id={b} />;
   else if (a === 'tutors') page = <TutorsPage />;
   else if (a === 'students') page = <StudentsPage />;
+  else if (a === 'content') page = <ContentPage />;
   else if (a === 'inbox') page = <InboxPage />;
   else if (a === 'problems') page = <ProblemsPage />;
   else if (a === 'announcements') page = <AnnouncementsPage />;

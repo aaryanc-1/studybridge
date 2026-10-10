@@ -95,7 +95,7 @@ export default function Icon({ name, size = 20, stroke = 1.8, className, style, 
 
 // The StudyBridge logo: a tutor helping a learner up onto an open book (brand/; icons: npm run icons)
 export function Logo({ size = 30, className = 'logo' }) {
-  return <img className={className} src={markUrl} alt="" aria-hidden="true" width={Math.round(size * 1.4)} height={size} style={{ objectFit: 'contain' }} />;
+  return <img className={className} src={markUrl} alt="" aria-hidden="true" width={Math.round(size * 1.62)} height={size} style={{ objectFit: 'contain' }} />;
 }
 export function Wordmark({ height = 48, className = 'wordmark' }) {
   return <img className={className} src={wordUrl} alt="StudyBridge" height={height} width={Math.round(height * 4.4)} style={{ objectFit: 'contain' }} />;

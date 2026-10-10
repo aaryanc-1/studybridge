@@ -14,12 +14,15 @@ import ReportCard from './ReportCard.jsx';
 import { dataZip } from '../../lib/zip.js';
 import { bytes } from '../../lib/format.js';
 import { setTheme, useTheme, setTextSize, useTextSize, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
+import { studentAccess } from '../../lib/students.js';
+import { PayOptions } from '../learner/SelfStudy.jsx';
 
 export default function Settings() {
   const app = useApp();
   const route = useRoute();
   const isTutor = app.me.role === 'tutor';
   const isLearner = app.me.role === 'learner';
+  const isStudent = isLearner && !!app.me.self_learner; // studying on their own: no tutor, StudyBridge is who they talk to
   const focus = route.query.get('s');
   useEffect(() => {
     if (focus) document.getElementById('set-' + focus)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -32,14 +35,15 @@ export default function Settings() {
       {isTutor && <PhoneApp />}
       {isTutor && <LiveKeys />}
       {isTutor && <ClaudeConnector />}
-      {isTutor && <ContactStudyBridge />}
+      {isStudent && <StudentPlan />}
+      {(isTutor || isStudent) && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
-      {isLearner && <LinkedParents />}
-      {isLearner && <ParentReportsSetting />}
+      {isLearner && !isStudent && <LinkedParents />}
+      {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <LearnerPhoneAlerts />}
       {isTutor && <YourPlan />}
-      {!isTutor && app.me.role !== 'admin' && <Help learner={isLearner} />}
+      {!isTutor && !isStudent && app.me.role !== 'admin' && <Help learner={isLearner} />}
       <Device />
       <YourData />
       <About />
@@ -460,6 +464,29 @@ function CalendarLink() {
           </div>
         </>
       )}
+    </Section>
+  );
+}
+
+// A student on their own: their free week or what they've paid, and how to pay
+function StudentPlan() {
+  const app = useApp();
+  useEffect(() => {
+    app.refreshMe(); // a payment the Owner just recorded shows straight away
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const a = studentAccess(app.me);
+  const day = (d) => new Date(String(d).slice(0, 10) + 'T12:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+  return (
+    <Section id="plan" icon="star" title="Your plan">
+      <div className="strong">
+        {a.paid
+          ? `${a.plan === 'pass' ? 'Exam pass' : 'Monthly'}: paid until ${day(a.until)}`
+          : a.trial
+            ? `Free trial: ${a.daysLeft} day${a.daysLeft === 1 ? '' : 's'} left`
+            : 'Your free week is over'}
+      </div>
+      <div className="small muted">Everything you do is kept, whatever happens with paying.</div>
+      <PayOptions />
     </Section>
   );
 }

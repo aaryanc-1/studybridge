@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Page, Seg } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
@@ -7,8 +8,10 @@ import { ago, bytes } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { LessonBody } from '../tutor/Library.jsx';
 import { useReadingTime } from '../shared/FileView.jsx';
+import { ReportProblem } from './SelfStudy.jsx';
 
 export default function LearnerLibrary() {
+  const app = useApp();
   const lk = useLookups();
   const files = useQuery('files', api.listFiles);
   const lessons = useQuery('lessons', api.listLessons);
@@ -18,7 +21,14 @@ export default function LearnerLibrary() {
   const l = (lessons.data || []).filter((x) => !subject || x.subject_id === subject);
 
   return (
-    <Page title="Library" subtitle="Lesson notes and books from your tutor. Anything you open is kept on this device for offline use.">
+    <Page
+      title="Library"
+      subtitle={
+        app.me.self_learner
+          ? 'Lessons for your subjects, topic by topic. New ones appear as StudyBridge adds them. Anything you open is kept on this device for offline use.'
+          : 'Lesson notes and books from your tutor. Anything you open is kept on this device for offline use.'
+      }
+    >
       <div className="row wrap between">
         <Seg
           value={tab}
@@ -112,6 +122,9 @@ export function LessonView({ id }) {
     >
       <div className="card" style={{ fontSize: 16 }}>
         <LessonBody md={x.body_md} />
+      </div>
+      <div>
+        <ReportProblem kind="lesson" id={x.id} label="Report a problem with this lesson" />
       </div>
       {attached.length > 0 && (
         <div className="card">

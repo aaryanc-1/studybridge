@@ -151,7 +151,31 @@ study_goal_min, plan_start, setup_done; `/setup` runs it again) and `SelfPlan` o
 exams with `spreadEvenly`, last part for papers and a mock). `studentAccess` (src/lib/students.js): paid (`paid_until`,
 `paid_plan` monthly|pass) or trial, else `TrialOver` (Progress and Settings stay open). Admin → Students lists them,
 "Mark as paid" (Monthly = a month; Exam pass = about 60 days past the first exam), "+7 days free". The trial is enforced
-in the app only so far (tighten on the server in part 4). Aaranya's maths is 0607, the first subject to fill.
+in the app only so far (tighten on the server in part 4). Aranya's maths is 0607, the first subject to fill.
+New logo (9 Oct 2026, waiting for the next build): brighter teal figures, a yellow head, a three-page book and a navy
+"StudyBridge". Aaryan's files came on a solid black background; brand/logo-mark.png and brand/logo-wordmark.png are
+transparent copies (alpha from brightness, the text as solid navy), then `npm run icons` (on Windows:
+`python scripts/make-icons.py`). The mark is wider, so `Logo` is 1.62× its height wide. The update that ships it
+reinstalls the desktop shell once (build/icon.png is in its fingerprint).
+Launch 1 part 2 (9 Oct 2026), StudyBridge's own content: the Owner makes it in Claude Desktop with the connector (1.1.0)
+signed in as the content account; content tools refuse any other account (`_content_me()`). Tools → RPCs: content_overview
+(`content_status`), set_syllabus (`content_set_syllabus`, topics by name, `details` = subtopics), add_questions
+(`content_add_questions` → bank_questions owner = content account, `status 'review'`, `hint_md`, `check_result.state`
+'waiting' or 'problems'), add_lesson (`content_add_lesson`, same title replaces, visible when it passes), add_flashcards
+(`content_add_cards`), add_practice_paper (`content_add_paper`: a self-marked 'test', draft until every question passes,
+says "Not affiliated with or endorsed by"). Plain checks in `_content_problems` (complete, $ and { pair up, answer fits the
+type, ©/UCLES flagged). The second check runs in a NEW chat (prompt `check_waiting`): questions_to_check
+(`content_to_check`, never answers/hints/solutions) → submit_checks (`content_submit_checks`; `_content_compare`: choices
+and numbers (±0.5%) compared, steps by normalised final line, written answers come back as `compare_these`) →
+confirm_checks. Passed → approved/live (`_content_mark`, `_content_paper_ready`); failed → Admin → Content
+(`admin_content_review`, `admin_content_decide` approve/fix/hide/remove, badge in the admin menu). Students on their own
+see practice with "Show a hint" (`questions.hint_md`, `questions.bank_id` copied by start_practice), and "Report a
+problem" on questions, lessons and flashcards (`report_content` → `content_reports`, admin notification + email to
+support@; the item stays up, Aaryan's choice; `admin_report_done` with an optional reply). Pay by card: two Stripe
+Payment Links in Admin → Students (`admin_set_pay_links`, `student_pay_links`); `PayOptions` adds
+`client_reference_id=<account id>`; the exam pass link uses quantity = months to the exams. Students can now use Contact
+StudyBridge (`send_feedback` allows self-learners); Settings has "Your plan" for them; their wording no longer says "your
+tutor". Practice papers and the Study page's practice can be opened from the plan (`/study?subject=&topic=`).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
@@ -175,6 +199,9 @@ in the app only so far (tighten on the server in part 4). Aaranya's maths is 060
   (and later charged) in local currency. Parents and a tutor's learners are free. test/website.test.mjs checks the app's
   Settings says the same. Prof has no limit on Plus (Admin gets an alert, nothing stops); "change this part" should redo
   only that part.
+- Reports on StudyBridge's own content (9 Oct 2026): the item stays up and the Owner gets an alert; nothing hides
+  itself (hiding could make a student think it was fixed). Students pay by Stripe or straight to Aaryan for now; he
+  records it in Admin → Students.
 - Students never chat with AI: self-learners get hints and worked solutions written ahead and checked. The website must
   not promise "Prof as your guide" (a website test checks).
 - Plans live in three Claude Docs: launch priorities https://claude.ai/code/artifact/75865270-1c1c-453a-8eda-128170b852bd,
