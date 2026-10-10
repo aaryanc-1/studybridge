@@ -24,8 +24,8 @@ export default function Study() {
       <Goal />
       <Cards onReview={() => setReviewing(true)} />
       <Practice />
-      <Plan />
       <FormulaSheets />
+      <Plan />
     </Page>
   );
 }
@@ -137,7 +137,7 @@ function Cards({ onReview }) {
             {mistakes ? ` · ${mistakes} from your mistakes` : ''}
             {own ? ` · ${own} you made` : ''}
           </div>
-          <div className="small muted">Cards you know come back less often; ones you find hard come back sooner.</div>
+          <div className="small muted">Cards you know come back less often; ones you find hard come back sooner. Questions you get wrong become cards too (cards from your mistakes), so they come back until you’ve got them.</div>
           <div>
             <button className="btn primary" disabled={!d.queue.length} onClick={onReview}>
               {d.queue.length ? `Start (${d.queue.length})` : 'All done for now'}
@@ -587,6 +587,13 @@ function FormulaSheets() {
         </div>
       </div>
       <div className="small muted">Write the formulas, facts and methods you need, in your own words. Your tutor can see it. Maths goes between $ signs, e.g. $a^2 + b^2 = c^2$.</div>
+      {!view && !value.trim() && lk.topicsOf(subject).length > 0 && (
+        <div>
+          <button className="btn sm" onClick={() => setText(lk.topicsOf(subject).map((t) => `## ${t.name}\n- \n`).join('\n'))}>
+            <Icon name="plus" size={14} /> Start with my topics
+          </button>
+        </div>
+      )}
       {view ? (
         <div className="formula-preview">{value.trim() ? <Markdown src={value} /> : <Empty>Nothing yet.</Empty>}</div>
       ) : (
@@ -647,7 +654,7 @@ export function StudyForTutor({ learnerId }) {
         </div>
         <div className="stat">
           <div className="n">{s.mistakes}</div>
-          <div className="l">Mistake cards</div>
+          <div className="l">Cards from mistakes</div>
         </div>
       </div>
       <div className="card">
@@ -658,9 +665,10 @@ export function StudyForTutor({ learnerId }) {
           ))}
         </div>
       </div>
+      <MistakeCards learnerId={learnerId} count={s.mistakes} />
       <div className="card">
         <h3>Formula sheets</h3>
-        {!notes.length && <div className="small muted">Nothing written yet.</div>}
+        {!notes.length && <div className="small muted">Nothing written yet. Learners write their own in Study → My formula sheet, one for each subject, and you can read them here.</div>}
         {notes.map((n) => (
           <div key={n.subject_id} className="stack sm">
             <div className="strong">{lk.subject(n.subject_id)?.name || 'Subject'}</div>
@@ -670,6 +678,36 @@ export function StudyForTutor({ learnerId }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// For the tutor: the flashcards StudyBridge made from a learner's wrong answers (they come back until they get them right)
+function MistakeCards({ learnerId, count }) {
+  const [open, setOpen] = useState(false);
+  const q = useQuery(open ? `mistake-cards:${learnerId}` : null, () => api.learnerMistakeCards(learnerId));
+  return (
+    <div className="card stack sm">
+      <div className="row between wrap">
+        <h3 style={{ margin: 0 }}>Cards from mistakes ({count})</h3>
+        {count > 0 && (
+          <button className="btn sm" onClick={() => setOpen((x) => !x)} aria-expanded={open}>
+            {open ? 'Hide them' : 'See them'}
+          </button>
+        )}
+      </div>
+      <div className="small muted">When your learner gets a question wrong, StudyBridge turns it into a flashcard: the question on the front, the right answer and worked solution on the back. It keeps coming back in their flashcards until they get it right.</div>
+      {open && (
+        <div className="list">
+          {(q.data || []).map((c) => (
+            <div key={c.id} className="item">
+              <span className="grow">
+                <Markdown src={c.front_md} />
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

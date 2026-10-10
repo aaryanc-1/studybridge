@@ -775,3 +775,7 @@ h2 { font-size: clamp(28px, 4vw, 44px); margin-bottom: .35em; }
 .pill { margin-bottom: 16px; }
 .cta { margin: 22px 0 10px; }
 @media (max-width: 640px) { .hero { padding: 28px 0 40px; } .page-hero { padding: 32px 0 4px; } .hero-grid, .prof-grid { gap: 28px; } }
+
+/* The "With Prof" badge links to Meet Prof */
+a.tag { text-decoration: none; cursor: pointer; }
+a.tag:hover { text-decoration: underline; }

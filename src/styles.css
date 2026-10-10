@@ -239,6 +239,22 @@ button.item:hover .name, a.item:hover .name { color: var(--accent); }
 .cols .c { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; min-width: 0; }
 .cols .c span.b { width: 100%; max-width: 34px; background: var(--accent); border-radius: 6px 6px 2px 2px; min-height: 2px; }
 .cols .c .x { font-size: 11px; color: var(--muted); }
+/* Time each day: a scale, the time on each bar, and the day's details on hover or tap */
+.day-chart { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 6px; margin: 8px 0 4px; }
+.dc-scale { display: flex; flex-direction: column; justify-content: space-between; height: 140px; font-size: 11px; color: var(--muted); text-align: right; line-height: 1; }
+.dc-bars { position: relative; height: 140px; display: flex; align-items: flex-end; gap: 6px; border-bottom: 1px solid var(--line); background: linear-gradient(to bottom, var(--line-soft) 1px, transparent 1px) 0 0 / 100% 50%; }
+.dc-col { flex: 1; position: relative; height: 100%; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: default; }
+.dc-b { width: 100%; max-width: 34px; background: var(--accent); border-radius: 6px 6px 2px 2px; min-height: 2px; transition: background .15s; }
+.dc-col:hover .dc-b, .dc-col:focus-visible .dc-b { background: var(--accent-hover); }
+.dc-v { font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 3px; white-space: nowrap; }
+.dc-tip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translate(-50%, -6px); z-index: 5; min-width: 150px; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--card); font-size: 12px; line-height: 1.35; text-align: left; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); pointer-events: none; }
+.dc-tip b, .dc-tip span { display: block; }
+.dc-tip .dc-sub { opacity: .8; }
+.dc-col:first-child .dc-tip { left: 0; transform: translate(0, -6px); }
+.dc-col:last-child .dc-tip { left: auto; right: 0; transform: translate(0, -6px); }
+.dc-col:hover .dc-tip, .dc-col:focus .dc-tip { display: block; }
+.dc-x { display: flex; gap: 6px; }
+.dc-x span { flex: 1; min-width: 0; text-align: center; font-size: 11px; color: var(--muted); }
 
 /* ---------------- modal, toast, menu ---------------- */
 .overlay { position: fixed; inset: 0; background: rgba(28, 31, 35, 0.38); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; animation: fade 0.12s; }

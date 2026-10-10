@@ -310,6 +310,8 @@ export const skipReport = (id) => run(sb().rpc('skip_report', { p_report: id }))
 export const withdrawReport = (id) => run(sb().rpc('withdraw_report', { p_report: id }));
 export const hideMyPractice = (ids) => run(sb().rpc('hide_my_practice', { p_ids: ids }));
 export const parentUnlink = (learnerId) => run(sb().rpc('parent_unlink', { p_learner: learnerId }));
+export const learnerMistakeCards = (learnerId) =>
+  run(sb().from('cards').select('id,front_md,created_at').eq('learner_id', learnerId).eq('source', 'mistake').order('created_at', { ascending: false }).limit(60));
 export const createParentInvite = (learnerId, name) => run(sb().rpc('create_parent_invite', { p_learner: learnerId, p_name: name || null }));
 export const revokeParentInvite = (id) => run(sb().rpc('revoke_parent_invite', { p_invite: id }));
 export const learnerParents = (learnerId = null) => run(sb().rpc('learner_parents', { p_learner: learnerId }));

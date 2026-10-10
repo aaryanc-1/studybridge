@@ -767,7 +767,7 @@ function YourPlan() {
         </div>
       ) : (
         <div className="small muted">
-          Plans are priced per learner: Essentials from $5 and Plus from $9 per learner a month (Plus adds Prof). Try everything free for 7 days. During early access, StudyBridge arranges payment with you directly.
+          Plans are priced per learner: Essentials from $5 and Plus from $8 per learner a month (Plus adds Prof). Try everything free for 7 days. During early access, StudyBridge arranges payment with you directly.
         </div>
       )}
     </Section>

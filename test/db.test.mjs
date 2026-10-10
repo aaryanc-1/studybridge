@@ -1572,8 +1572,8 @@ test('students on their own: a content account with every subject, sign-up with 
   await fails(as('A', `select admin_set_content_account('young@x.com')`), /isn’t a tutor account/);
   await fails(as('A', `select admin_set_content_account('nobody-at-all@x.com')`), /No account with that email/);
   assert.equal((await val('A', `select admin_set_content_account('content@x.com')`)).email, 'content@x.com');
-  // closed until the Owner opens it
-  await fails(as('S', `select start_self_learner('Sam', 10, 'Zambia')`), /isn’t open yet/);
+  // closed until a subject is open to students
+  await fails(as('S', `select start_self_learner('Sam', 10, 'Zambia')`), /isn’t open right now/);
   assert.equal((await val(null, `select public_settings()`)).students_open, false);
   // the catalogue goes in switched off; adding it again adds nothing
   const items = [
@@ -1582,8 +1582,15 @@ test('students on their own: a content account with every subject, sign-up with 
   ];
   assert.deepEqual(await val('A', `select admin_seed_catalogue($1)`, [JSON.stringify(items)]), { added: 2, total: 2 });
   assert.deepEqual(await val('A', `select admin_seed_catalogue($1)`, [JSON.stringify(items)]), { added: 0, total: 2 });
+  const [maths, phys] = (await db.query(`select id from subjects where tutor_id = $1 order by position`, [U.C])).rows.map((r) => r.id);
+  assert.equal((await val(null, `select public_settings()`)).students_open, false, 'no subject is open to students yet');
+  await as('C', `update subjects set live = true where id = $1`, [maths]);
+  assert.equal((await val(null, `select public_settings()`)).students_open, true, 'open as soon as a subject is');
+  // the Owner can pause new sign-ups
+  await as('A', `select admin_students_open(false)`);
+  assert.equal((await val(null, `select public_settings()`)).students_open, false);
+  await fails(as('S', `select start_self_learner('Sam', 10, 'Zambia')`), /isn’t open right now/);
   await as('A', `select admin_students_open(true)`);
-  assert.equal((await val(null, `select public_settings()`)).students_open, true);
   // below grade 8, a parent comes first
   await fails(as('S2', `select start_self_learner('Kid', 7, 'Zambia')`), /parent/);
   const p = await one('S', `select * from start_self_learner('Sam', 10, 'Zambia', 'Africa/Lusaka')`);
@@ -1593,9 +1600,7 @@ test('students on their own: a content account with every subject, sign-up with 
   assert.ok(new Date(p.trial_until) - Date.now() > 6.9 * 864e5, 'a 7-day free trial');
   await fails(as('S', `update profiles set paid_until = '2030-01-01' where id = auth.uid()`), /permission denied/);
   // the setup only takes subjects that are open
-  const [maths, phys] = (await db.query(`select id from subjects where tutor_id = $1 order by position`, [U.C])).rows.map((r) => r.id);
-  await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, 'Cambridge May/June 2027', 4)`, [[maths]]), /Pick at least one/);
-  await as('C', `update subjects set live = true where id = $1`, [maths]);
+  await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, 'Cambridge May/June 2027', 4)`, [[phys]]), /Pick at least one/);
   await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, null, 4)`, [[maths, phys]]), /isn’t open yet/);
   await fails(as('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date, null, 4)`, [[maths]]), /when your exams are/);
   assert.deepEqual(await val('S', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, 'Cambridge May/June 2027', 4)`, [[maths]]), { subjects: 1 });

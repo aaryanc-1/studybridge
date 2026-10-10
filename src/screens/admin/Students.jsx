@@ -99,9 +99,9 @@ export default function StudentsPage() {
         <Toggle
           checked={!!d.open}
           disabled={!c || !!busy}
-          onChange={(v) => run('open', () => api.adminStudentsOpen(v), v ? 'Students can sign up now' : 'Student sign-up is closed')}
+          onChange={(v) => run('open', () => api.adminStudentsOpen(v), v ? 'Students can sign up' : 'New student sign-ups are paused')}
           title="Students can sign up"
-          sub="When on, “I’m a student” appears in the app. Keep it off until the first subjects are open."
+          sub="On: “I’m studying on my own” shows in the app as soon as a subject is open to students. Turn it off to pause new sign-ups."
         />
       </div>
 

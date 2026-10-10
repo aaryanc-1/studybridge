@@ -728,8 +728,8 @@ try {
   await ADM.getByText('Content account set').waitFor();
   await ADM.getByRole('button', { name: /Add every subject/ }).click();
   await ADM.getByText(/^Added \d+ subjects$/).waitFor();
-  await ADM.getByRole('switch', { name: 'Students can sign up' }).click();
-  await ADM.getByText('Students can sign up now').waitFor();
+  // students can sign up as soon as a subject is open; the switch only pauses it
+  assert.equal(await ADM.getByRole('switch', { name: 'Students can sign up' }).getAttribute('aria-checked'), 'true');
   // the content account opens 0607 and sets out its syllabus
   const sub0607 = (await cc.from('subjects').select('id').eq('catalogue', 'cambridge:igcse:0607').single()).data;
   assert.ok(sub0607, 'every subject is in the content account');
@@ -738,7 +738,7 @@ try {
   const SL = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'Africa/Lusaka' })).newPage();
   watch(SL, 'student');
   await SL.goto(web.url);
-  await SL.getByText('I’m a student').click();
+  await SL.getByText('I’m studying on my own').click();
   await SL.getByLabel('Your name').fill('Tendai');
   await SL.getByLabel('Email').fill('tendai@example.com');
   await SL.getByLabel('Password').fill('secret123');
@@ -748,7 +748,7 @@ try {
   await SL.getByText('Let’s set up your plan').waitFor();
   await SL.getByRole('button', { name: /^Cambridge/ }).click();
   await SL.getByRole('button', { name: /^IGCSE/ }).click();
-  assert.ok(await SL.getByRole('button', { name: /Physics/ }).first().isDisabled(), 'subjects not open yet can’t be picked');
+  assert.equal(await SL.getByRole('button', { name: /Physics/ }).count(), 0, 'only subjects open to students are shown');
   await SL.getByRole('button', { name: /International Mathematics/ }).click();
   await shot(SL, 'student-subjects');
   await SL.getByRole('button', { name: 'Next' }).click();
@@ -839,7 +839,7 @@ try {
   await ADM.getByRole('button', { name: 'Save links' }).click();
   await ADM.getByText('Payment links saved').waitFor();
   await SL.evaluate(() => (location.hash = '#/settings?s=plan'));
-  await SL.getByRole('button', { name: 'Pay $12 a month by card' }).waitFor();
+  await SL.getByRole('button', { name: 'Pay $11 a month by card' }).waitFor();
   await SL.getByText(/^Exam pass: paid until/).waitFor(); // the payment the Owner recorded shows straight away
   await SL.getByRole('button', { name: /^Exam pass by card: \$\d+ for \d+ months?$/ }).waitFor();
   await SL.getByRole('heading', { name: 'Contact StudyBridge' }).waitFor();
@@ -852,7 +852,7 @@ try {
   await shot(ADM, 'admin-selling');
   await A.goto(web.url + '#/settings');
   const plan = A.locator('#set-plan');
-  await plan.getByText(/Essentials from \$5 and Plus from \$9 per learner/).waitFor();
+  await plan.getByText(/Essentials from \$5 and Plus from \$8 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
   const [zip] = await Promise.all([A.waitForEvent('download'), A.locator('#set-data').getByRole('button', { name: /Download my data/ }).click()]);
   assert.match(zip.suggestedFilename(), /^studybridge-data-\d{4}-\d{2}-\d{2}\.zip$/);

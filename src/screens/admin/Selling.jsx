@@ -37,7 +37,7 @@ export default function SellingPage() {
       <div className="card">
         <h2>Plans</h2>
         <div className="small muted">
-          New prices (on the website): tutors pay per learner on Essentials or Plus, after a 7-day free trial; self-learners pay $12 a month or an exam pass. Until online checkout opens, you take payment yourself, then set the tutor’s plan on their page: Custom (the learners they’ve paid for, until the date they’ve paid to) or Complimentary. Essentials and Plus arrive with the tutor launch. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
+          New prices (on the website): tutors pay per learner on Essentials or Plus, after a 7-day free trial; self-learners pay $11 a month or an exam pass at $9 a month. Until online checkout opens, you take payment yourself, then set the tutor’s plan on their page: Custom (the learners they’ve paid for, until the date they’ve paid to) or Complimentary. Essentials and Plus arrive with the tutor launch. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
         </div>
         <Toggle
           checked={s.enforce_plans}

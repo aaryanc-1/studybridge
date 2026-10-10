@@ -1449,9 +1449,15 @@ begin
   return jsonb_build_object(
     'from', p_from, 'to', p_to,
     'seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and created_at >= p_from and created_at < p_to), 0),
-    'by_day', coalesce((select jsonb_agg(jsonb_build_object('day', day, 'seconds', s) order by day)
-                        from (select day, sum(seconds) s from public.activity where learner_id = p_learner
-                               and created_at >= p_from and created_at < p_to group by day) d), '[]'),
+    'by_day', coalesce((select jsonb_agg(jsonb_build_object('day', d.day, 'seconds', d.s, 'subjects', d.subj) order by d.day)
+                        from (select a.day, sum(a.seconds) s,
+                                     (select coalesce(jsonb_agg(jsonb_build_object('subject', coalesce(sb.name, 'Other'), 'seconds', x.s) order by x.s desc), '[]')
+                                        from (select a2.subject_id, sum(a2.seconds) s from public.activity a2
+                                               where a2.learner_id = p_learner and a2.day = a.day and a2.created_at >= p_from and a2.created_at < p_to
+                                               group by a2.subject_id) x
+                                        left join public.subjects sb on sb.id = x.subject_id) subj
+                                from public.activity a where a.learner_id = p_learner
+                               and a.created_at >= p_from and a.created_at < p_to group by a.day) d), '[]'),
     'by_subject', coalesce((select jsonb_agg(jsonb_build_object('subject', coalesce(sb.name, 'Other'), 'seconds', s))
                             from (select subject_id, sum(seconds) s from public.activity where learner_id = p_learner
                                    and created_at >= p_from and created_at < p_to group by subject_id) d
@@ -5037,7 +5043,9 @@ alter table public.profiles add column if not exists setup_done boolean not null
 do $$ begin
   alter table public.profiles add constraint profiles_paid_plan_check check (paid_plan is null or paid_plan in ('monthly', 'pass'));
 exception when duplicate_object then null; end $$;
-alter table public.app_config add column if not exists students_open boolean not null default false;
+alter table public.app_config add column if not exists students_open boolean not null default false;  -- no longer used (10 Oct 2026)
+-- Students can sign up as soon as a subject is open to them; the Owner can pause new sign-ups (Admin → Students)
+alter table public.app_config add column if not exists students_paused boolean not null default false;
 
 create or replace function public._studybridge_account() returns uuid
 language sql stable security definer set search_path = public as $$
@@ -5062,7 +5070,8 @@ language sql stable security definer set search_path = public as $$
     'google_on', c.google_on,
     'payments_on', s.stripe_secret is not null and c.stripe_prices <> '{}'::jsonb,
     'email_on', s.resend_key is not null and c.email_from is not null,
-    'students_open', c.students_open and public._studybridge_account() is not null)
+    'students_open', not c.students_paused and public._studybridge_account() is not null
+                     and exists (select 1 from public.subjects s where s.tutor_id = public._studybridge_account() and s.live))
     from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
 $$;
 grant execute on function public.public_settings() to anon;
@@ -5111,12 +5120,13 @@ begin
   return jsonb_build_object('added', n, 'total', (select count(*) from public.subjects where tutor_id = c and catalogue is not null));
 end $$;
 
+-- On: students can sign up whenever a subject is open to them. Off: new sign-ups are paused.
 create or replace function public.admin_students_open(p_open boolean) returns void
 language plpgsql security definer set search_path = public as $$
 begin
   perform public._admin();
   if p_open and public._studybridge_account() is null then raise exception 'Choose the StudyBridge content account first.'; end if;
-  update public.app_config set students_open = coalesce(p_open, false) where id = 1;
+  update public.app_config set students_paused = not coalesce(p_open, false) where id = 1;
 end $$;
 
 -- A new account becomes a student studying on their own, with a 7-day free trial
@@ -5132,11 +5142,12 @@ begin
     if v.self_learner then return v; end if;
     raise exception 'This account is already set up for something else. Use a new email for your student account.';
   end if;
-  if c is null or not (select students_open from public.app_config where id = 1) then
-    raise exception 'StudyBridge for students isn’t open yet. Join the early-access list on gostudybridge.com and we’ll tell you when it opens.';
+  if c is null or (select students_paused from public.app_config where id = 1)
+     or not exists (select 1 from public.subjects where tutor_id = c and live) then
+    raise exception 'Student sign-up isn’t open right now. Please try again later.';
   end if;
   if p_grade is null or p_grade < 8 then
-    raise exception 'Below grade 8, a parent sets up your account with you. That’s coming soon: ask a parent to join the early-access list on gostudybridge.com.';
+    raise exception 'Below grade 8, a parent needs to set up your account with you. Ask a parent to contact us at hello@gostudybridge.com.';
   end if;
   update public.profiles
      set role = 'learner', tutor_id = c, self_learner = true,
@@ -5181,7 +5192,7 @@ language plpgsql stable security definer set search_path = public as $$
 begin
   perform public._admin();
   return jsonb_build_object(
-    'open', (select students_open from public.app_config where id = 1),
+    'open', not (select students_paused from public.app_config where id = 1),
     'pay_links', (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1),
     'content', (select jsonb_build_object('id', p.id, 'email', p.email, 'name', p.display_name,
                   'subjects', (select count(*) from public.subjects s where s.tutor_id = p.id and s.catalogue is not null),

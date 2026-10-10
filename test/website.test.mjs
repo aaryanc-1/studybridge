@@ -10,7 +10,7 @@ test('website: every page builds with nothing left unfilled', async () => {
   const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
   try {
     await buildWebsite(out, '1.1.99', { url: 'https://example.supabase.co/', key: 'anon-key' });
-    const pages = ['index.html', ...PAGES.map(([f]) => f), 'contact.html', 'terms.html', 'privacy.html'];
+    const pages = ['index.html', ...PAGES.map(([f]) => f), 'download.html', 'contact.html', 'terms.html', 'privacy.html'];
     for (const f of [...pages, 'site.css', 'site.js', 'config.js', 'app-qr.svg', 'logo-192.png', 'favicon.png', 'release.json']) {
       assert.ok(existsSync(join(out, f)), f);
     }

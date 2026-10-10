@@ -122,7 +122,7 @@ try {
   // ---------------- learner joins ----------------
   step('Learner pastes the invite and creates an account');
   await L.goto(web.url);
-  await L.getByText('I’m a learner').click();
+  await L.getByText('I have a code from my tutor').click();
   await L.getByLabel('Your code').fill(inviteText);
   await shot(L, 'learner-invite');
   await L.getByRole('button', { name: 'Next' }).click();

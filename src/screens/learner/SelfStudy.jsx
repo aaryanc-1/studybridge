@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Link, Markdown, Modal, Page, go, useToast } from '../../ui/kit.jsx';
+import { Link, Markdown, Modal, Page, go, useToast } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import site from '../../../website/site.config.json';
@@ -29,13 +29,17 @@ export function SelfSetup({ again = false }) {
   const [hours, setHours] = useState(me.study_hours || 4);
   const [busy, setBusy] = useState(false);
 
-  const board = BOARDS.find((b) => b.id === boardId);
+  // only what students can take now: subjects open to them, and the boards and levels that have one
+  const open = new Set(lk.subjects.filter((s) => s.live && s.catalogue).map((s) => s.catalogue));
+  const hasOpen = (subjects) => subjects.some((c) => open.has(c.key));
+  const boards = BOARDS.filter((b) => b.levels.some((l) => hasOpen(l.subjects)));
+  const board = boards.find((b) => b.id === boardId);
   // IB students choose from the Diploma subjects and the core together
-  const levels = board ? (board.id === 'ib' ? [{ id: 'ib:all', name: 'IB Diploma', subjects: board.levels.flatMap((l) => l.subjects) }] : board.levels) : [];
+  const levels = board ? (board.id === 'ib' ? [{ id: 'ib:all', name: 'IB Diploma', subjects: board.levels.flatMap((l) => l.subjects) }] : board.levels).filter((l) => hasOpen(l.subjects)) : [];
   const level = levels.find((l) => l.id === levelId) || (levels.length === 1 ? levels[0] : null);
   // the catalogue entries, matched to the content account's subjects (only open ones can be chosen)
   const rows = useMemo(
-    () => (level ? level.subjects.map((c) => ({ c, s: lk.subjects.find((x) => x.catalogue === c.key) })).sort((a, b) => !!b.s?.live - !!a.s?.live) : []),
+    () => (level ? level.subjects.map((c) => ({ c, s: lk.subjects.find((x) => x.catalogue === c.key) })).filter((r) => r.s?.live) : []),
     [level, lk.subjects],
   );
   const sessions = board ? upcomingSessions(board.id) : [];
@@ -70,10 +74,10 @@ export function SelfSetup({ again = false }) {
         <div className="card stack">
           <h2>Which exam board?</h2>
           <div className="pick-grid">
-            {BOARDS.map((b) => (
+            {boards.map((b) => (
               <button key={b.id} className={'pick' + (b.id === boardId ? ' on' : '')} onClick={() => (setBoardId(b.id), setLevelId(''), setPicked([]), setExam({ date: '', label: '' }), setStep(b.id === 'ib' ? 2 : 1))}>
                 <b>{b.name}</b>
-                <span>{b.levels.map((l) => l.name).join(' · ')}</span>
+                <span>{b.levels.filter((l) => hasOpen(l.subjects)).map((l) => l.name).join(' · ')}</span>
               </button>
             ))}
           </div>
@@ -87,7 +91,9 @@ export function SelfSetup({ again = false }) {
             {levels.map((l) => (
               <button key={l.id} className={'pick' + (l.id === levelId ? ' on' : '')} onClick={() => (setLevelId(l.id), setPicked([]), setStep(2))}>
                 <b>{l.name}</b>
-                <span>{l.subjects.length} subjects</span>
+                <span>
+                  {l.subjects.filter((c) => open.has(c.key)).length} subject{l.subjects.filter((c) => open.has(c.key)).length === 1 ? '' : 's'}
+                </span>
               </button>
             ))}
           </div>
@@ -100,24 +106,20 @@ export function SelfSetup({ again = false }) {
       {step === 2 && level && (
         <div className="card stack">
           <h2>Your subjects</h2>
-          <div className="muted small">Pick every subject you’re taking. New subjects open one by one; the rest say “coming soon”.</div>
-          {!rows.some((r) => r.s?.live) && <Empty>None of these are open yet. We’re adding subjects one by one, so check back soon.</Empty>}
+          <div className="muted small">Pick every subject you’re taking.</div>
           <div className="chips-pick">
             {rows.map(({ c, s }) => {
-              const open = !!s?.live;
-              const on = open && picked.includes(s.id);
+              const on = picked.includes(s.id);
               return (
                 <button
                   key={c.key}
-                  className={'chip-pick' + (on ? ' on' : '') + (open ? '' : ' soon')}
-                  disabled={!open}
+                  className={'chip-pick' + (on ? ' on' : '')}
                   aria-pressed={on}
                   onClick={() => setPicked((p) => (on ? p.filter((x) => x !== s.id) : [...p, s.id]))}
                 >
                   {on && <Icon name="check" size={14} />}
                   {c.subject}
                   {c.code && <small>{c.code}</small>}
-                  {!open && <small>coming soon</small>}
                 </button>
               );
             })}
@@ -205,7 +207,7 @@ export function SelfPlan() {
   const mine = lk.subjects.filter((s) => lk.learnerSubjects.some((k) => k.subject_id === s.id && k.learner_id === me.id));
   const rows = mine.map((s) => {
     const topics = lk.topicsOf(s.id);
-    if (!topics.length) return { s, text: 'The syllabus for this subject is being added.', soon: true };
+    if (!topics.length) return { s, text: 'Your plan for this subject appears here once its topics are set.' };
     const items = spreadEvenly(topics, 'week', start, me.exam_date);
     const i = items.findIndex((x) => x.starts_on <= t && t <= x.ends_on);
     if (i >= 0) return { s, week: `Week ${i + 1} of ${items.length}`, text: items[i].topics.join(' · '), topic: items[i].topics[0], pct: ((i + 1) / items.length) * 100 };

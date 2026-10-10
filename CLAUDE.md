@@ -205,6 +205,18 @@ finds nothing newer than the pending one and sets 'up-to-date', which hid the re
 Fixed in the app, not the shell (a shell change forces everyone to reinstall): `restartWaiting(st)` in Shell.jsx (status still
 has kind 'restart' and the waiting version, newer than `current`) shows the bar and Settings' "Restart now" (`desktop.restart()`).
 Next time electron/ changes anyway, make updater.cjs's check() keep 'ready' when `s.pending` is newer than `status.current`.
+From Aaryan's testing (10 Oct 2026): "Time each day" (Progress.jsx) has a scale with round halves, the time on each bar
+(a week), and a hover/tap card with the day's subjects (`learner_summary` by_day now carries `subjects`); the formula sheet sits
+under Practice on Study with "Start with my topics"; "Mistake cards" are "Cards from mistakes", explained, and the tutor can
+see them (`MistakeCards` in Study.jsx, `api.learnerMistakeCards`). Welcome choices: I'm studying on my own (students), I have a
+code from my tutor, I'm a tutor, I'm a parent. Student sign-up opens by itself once a subject is open to students; the Admin
+switch only pauses it (`app_config.students_paused`; `students_open` is no longer used). The student setup lists only boards,
+levels and subjects that are open. Nothing says "coming soon" (Aaryan: we launch when it's ready), on the website or in the app.
+Prices B (10 Oct 2026): Essentials $5/$4/$3 (unchanged), Plus $8/$6/$4, students $11 a month or an exam pass at $9 a month.
+Website: features.html (Prof first, as "Meet Prof": StudyBridge's AI teaching assistant for tutors; never says Claude; the
+privacy page still names Anthropic as the AI provider, as privacy law needs); the menu is Students, Tutors, Parents, Schools,
+Features, Pricing, Subjects (Get the app is in the footer and the phone menu); the "With Prof" badge links to features.html#prof;
+student plan buttons start the free week in the app.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
@@ -223,8 +235,8 @@ Next time electron/ changes anyway, make updater.cjs's check() keep 'ready' when
   (Stripe + mobile money via Flutterwave/DPO), then classroom, school running, reach. Until checkout, Aaryan takes payment
   himself and sets plans in Admin (Custom/Complimentary); tutors stay in free early access with a 7-day trial.
 - Prices (8 Oct 2026) live in website/site.config.json: `tutorLevels` (per learner, graduated: Essentials $5/$4/$3, Plus
-  $9/$7/$5 with unlimited Prof, mocks with grades, exam camera, StudyBridge content), `yearlyMonthsFree` 1, `trialDays` 7,
-  `selfLearner` ($12 a month, or an exam pass at $10 a month paid once until the exams). No discounts; one US price shown
+  $8/$6/$4 since 10 Oct, with unlimited Prof, mocks with grades, exam camera, StudyBridge content), `yearlyMonthsFree` 1,
+  `trialDays` 7, `selfLearner` ($11 a month, or an exam pass at $9 a month paid once until the exams). No discounts; one US price shown
   (and later charged) in local currency. Parents and a tutor's learners are free. test/website.test.mjs checks the app's
   Settings says the same. Prof has no limit on Plus (Admin gets an alert, nothing stops); "change this part" should redo
   only that part.

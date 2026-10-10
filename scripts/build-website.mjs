@@ -21,7 +21,7 @@ function levelCards(c) {
       const [first, ...rest] = l.steps;
       const then = rest.map((s, i) => `<span data-usd="${s.price}" data-scale>$${s.price}</span> each for learners ${stepRange(s, i + 1, l.steps)}`).join(', and ');
       return `<article class="plan${l.tag ? ' popular' : ''}" data-level="${esc(l.id)}">
-          ${l.tag ? `<span class="tag">${esc(l.tag)}</span>` : ''}
+          ${l.tag ? `<a class="tag" href="features.html#prof" title="What is Prof?">${esc(l.tag)}</a>` : ''}
           <h3>${esc(l.name)}</h3>
           <div class="blurb">${esc(l.blurb)}</div>
           <div><span class="amount" data-usd="${first.price}" data-scale>$${first.price}</span><span class="per" data-per>per learner a month</span></div>
@@ -59,9 +59,9 @@ export const PAGES = [
   ['tutors.html', 'Tutors'],
   ['parents.html', 'Parents'],
   ['schools.html', 'Schools'],
+  ['features.html', 'Features'],
   ['pricing.html', 'Pricing'],
   ['subjects.html', 'Subjects'],
-  ['download.html', 'Get the app'],
 ];
 
 // The header and footer every page shares; the current page is marked in the menu
@@ -79,7 +79,7 @@ function header(c, file) {
       <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Menu" aria-expanded="false" aria-controls="mobile-nav"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
   </div>
-  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden><a href="./">Home</a>${links}<a href="${esc(c.appPath)}#start=signin">Sign in</a><button type="button" class="nav-theme" data-theme-toggle>Switch light or dark</button></nav>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Main" hidden><a href="./">Home</a>${links}<a href="download.html">Get the app</a><a href="${esc(c.appPath)}#start=signin">Sign in</a><button type="button" class="nav-theme" data-theme-toggle>Switch light or dark</button></nav>
 </header>`;
 }
 function footer(c, year) {
@@ -88,9 +88,9 @@ function footer(c, year) {
     <div class="foot-grid">
       <div class="foot-brand"><a class="brand" href="./"><img src="logo-192.png" alt="" width="28" height="28"><span>${esc(c.brand)}</span></a><p class="fine">${esc(c.tagline)}</p></div>
       <nav aria-label="For students"><b>Students</b><a href="students.html">How it works</a><a href="students.html#countdown">Exam countdown</a><a href="subjects.html">Subjects</a><a href="students.html#early">Early access</a></nav>
-      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">Features</a><a href="${esc(c.appPath)}#start=tutor">Free trial</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
+      <nav aria-label="For tutors"><b>Tutors</b><a href="tutors.html">For tutors</a><a href="features.html#prof">Meet Prof</a><a href="${esc(c.appPath)}#start=tutor">Free trial</a><a href="${esc(c.appPath)}#start=signin">Sign in</a></nav>
       <nav aria-label="For families and schools"><b>Families</b><a href="parents.html">Parents</a><a href="schools.html">Schools and centres</a><a href="download.html">Get the app</a></nav>
-      <nav aria-label="About"><b>${esc(c.brand)}</b><a href="./">Home</a><a href="pricing.html">Pricing</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
+      <nav aria-label="About"><b>${esc(c.brand)}</b><a href="./">Home</a><a href="features.html">Features</a><a href="pricing.html">Pricing</a><a href="contact.html">Contact</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
     </div>
     <p class="legal-line">© ${year} ${esc(c.brand)}. Cambridge, Pearson Edexcel and IB are trademarks of their owners. ${esc(c.brand)} is not affiliated with or endorsed by them, and its practice papers are original.</p>
   </div>

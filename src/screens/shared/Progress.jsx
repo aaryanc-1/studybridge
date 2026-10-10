@@ -17,6 +17,14 @@ const PERIODS = {
 const tone = { strong: 'good', developing: 'warn', weak: 'bad', none: '' };
 const label = { strong: 'Strong', developing: 'Developing', weak: 'Needs work', none: '—' };
 
+// Short times for the chart: "45m", "1h 10m", "2h"
+function short(sec) {
+  const m = Math.round((sec || 0) / 60);
+  if (sec > 0 && m < 1) return '<1m';
+  if (m < 60) return `${m}m`;
+  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m / 60}h`;
+}
+
 export default function ProgressView({ learnerId, name }) {
   const app = useApp();
   const toast = useToast();
@@ -36,9 +44,12 @@ export default function ProgressView({ learnerId, name }) {
   for (let d = new Date(from); d < to && days.length < 31; d = new Date(d.getTime() + 86400000)) {
     const key = ymd(d);
     const hit = (s?.by_day || []).find((x) => x.day === key);
-    days.push({ key, d, seconds: hit ? hit.seconds : 0 });
+    days.push({ key, d, seconds: hit ? hit.seconds : 0, subjects: hit?.subjects || [] });
   }
   const maxDay = Math.max(1, ...days.map((d) => d.seconds));
+  // the scale tops out at a round number of minutes just above the busiest day
+  const top = [10, 20, 30, 60, 90, 120, 180, 240, 300, 360, 480, 600, 720].map((m) => m * 60).find((x) => x >= maxDay) || maxDay; // halves are round too
+  const studied = days.filter((d) => d.seconds > 0).length;
 
   function summaryText() {
     const lines = [
@@ -102,13 +113,39 @@ export default function ProgressView({ learnerId, name }) {
           <div className="split even">
             <div className="card">
               <h2>Time each day</h2>
-              <div className="cols" aria-label="Minutes studied each day">
-                {days.map((d) => (
-                  <div className="c" key={d.key} title={`${day(d.d)}: ${dur(d.seconds)}`}>
-                    <span className="b" style={{ height: `${Math.round((d.seconds / maxDay) * 100)}%` }} />
-                    <span className="x">{days.length <= 7 ? d.d.toLocaleDateString(undefined, { weekday: 'short' }) : d.d.getDate()}</span>
-                  </div>
-                ))}
+              <div className="day-chart">
+                <div className="dc-scale" aria-hidden="true">
+                  <span>{short(top)}</span>
+                  <span>{short(top / 2)}</span>
+                  <span>0</span>
+                </div>
+                <div className="dc-bars" role="list" aria-label="Time studied each day">
+                  {days.map((d) => (
+                    <button key={d.key} type="button" className="dc-col" role="listitem" aria-label={`${day(d.d)}: ${d.seconds ? dur(d.seconds) : 'nothing'}`}>
+                      {days.length <= 7 && d.seconds > 0 && <span className="dc-v">{short(d.seconds)}</span>}
+                      <span className="dc-b" style={{ height: `${Math.round((d.seconds / top) * 100)}%` }} />
+                      <span className="dc-tip" role="tooltip">
+                        <b>{d.d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })}</b>
+                        <span>{d.seconds ? dur(d.seconds) : 'No study'}</span>
+                        {d.subjects.map((x) => (
+                          <span key={x.subject} className="dc-sub">
+                            {x.subject}: {dur(x.seconds)}
+                          </span>
+                        ))}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <span />
+                <div className="dc-x" aria-hidden="true">
+                  {days.map((d) => (
+                    <span key={d.key}>{days.length <= 7 ? d.d.toLocaleDateString(undefined, { weekday: 'short' }) : d.d.getDate()}</span>
+                  ))}
+                </div>
+              </div>
+              <div className="small muted">
+                {s?.seconds ? `${dur(s.seconds)} in all, on ${studied} day${studied === 1 ? '' : 's'} · about ${dur(Math.round(s.seconds / Math.max(1, studied)))} on a day they studied` : 'No study time yet in this period.'}
+                {days.length > 7 ? ' Tap or hover a bar for that day.' : ''}
               </div>
               {(s.by_subject || []).length > 0 && (
                 <div className="stack sm">

@@ -6,6 +6,7 @@ import { decodeInvite, validateServer, normaliseUrl, getServer, desktop, builtIn
 import { sb, friendly } from '../lib/supabase.js';
 import * as api from '../lib/api.js';
 import { GRADES } from '../lib/students.js';
+import site from '../../website/site.config.json';
 import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
@@ -29,7 +30,7 @@ export default function Welcome() {
     return app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start';
   });
   const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : linked === 'student' ? 'student' : null);
-  // Students on their own can sign up once the Owner opens it (Admin → Students)
+  // Students on their own can sign up once a subject is open to them (and the Owner hasn't paused sign-ups)
   const [studentsOpen, setStudentsOpen] = useState(false);
   useEffect(() => {
     if (app.server) api.publicSettings().then((s) => setStudentsOpen(!!s?.students_open));
@@ -60,12 +61,22 @@ export default function Welcome() {
                   <Icon name="target" size={24} />
                 </span>
                 <span className="grow">
-                  <div className="t">I’m a student</div>
-                  <div className="s">Study on my own: a plan to my exams, lessons, practice papers and mocks. 7 days free.</div>
+                  <div className="t">I’m studying on my own</div>
+                  <div className="s">A plan to my exams, lessons, practice papers and mocks. {site.trialDays} days free.</div>
                 </span>
                 <Icon name="right" />
               </button>
             )}
+            <button className="choice" onClick={() => (setRole('learner'), setStep('invite'))}>
+              <span className="ic">
+                <Icon name="book" size={24} />
+              </span>
+              <span className="grow">
+                <div className="t">I have a code from my tutor</div>
+                <div className="s">Join your tutor with the 8-digit code or link they sent you.</div>
+              </span>
+              <Icon name="right" />
+            </button>
             <button className="choice" onClick={() => (setRole('tutor'), setStep(app.server ? 'account' : 'server'))}>
               <span className="ic">
                 <Icon name="pen" size={24} />
@@ -73,16 +84,6 @@ export default function Welcome() {
               <span className="grow">
                 <div className="t">I’m a tutor</div>
                 <div className="s">Teach on StudyBridge: add your subjects and invite your learners.</div>
-              </span>
-              <Icon name="right" />
-            </button>
-            <button className="choice" onClick={() => (setRole('learner'), setStep('invite'))}>
-              <span className="ic">
-                <Icon name="book" size={24} />
-              </span>
-              <span className="grow">
-                <div className="t">I’m a learner</div>
-                <div className="s">Join with the code your tutor sent you.</div>
               </span>
               <Icon name="right" />
             </button>
@@ -283,7 +284,7 @@ function Account({ role, onBack }) {
     if (mode === 'new' && !name.trim()) return setErr('Add your name.');
     if (pw.length < 6) return setErr('Use a password of at least 6 characters.');
     if (role === 'student' && mode === 'new' && !student.grade) return setErr('Choose your grade.');
-    if (role === 'student' && mode === 'new' && Number(student.grade) < 8) return setErr('Below grade 8, a parent sets up your account with you. That’s coming soon: ask a parent to join the early-access list on gostudybridge.com.');
+    if (role === 'student' && mode === 'new' && Number(student.grade) < 8) return setErr('Below grade 8, a parent needs to set up your account with you. Ask a parent to contact us at hello@gostudybridge.com.');
     setBusy(true);
     try {
       const d = mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
@@ -309,7 +310,11 @@ function Account({ role, onBack }) {
   return (
     <form className="card" onSubmit={go}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : role === 'student' ? 'Your student account' : 'Your account'}</h2>
-      {role === 'student' && mode === 'new' && <div className="note small">Everything is free for 7 days. Then it’s $12 a month, or an exam pass that lasts until your exams.</div>}
+      {role === 'student' && mode === 'new' && (
+        <div className="note small">
+          Everything is free for {site.trialDays} days. Then it’s ${site.selfLearner.month} a month, or an exam pass at ${site.selfLearner.passMonth} a month that lasts until your exams.
+        </div>
+      )}
       {role === 'tutor' && mode === 'new' && <div className="note small">New tutor accounts are checked and approved by StudyBridge. You can set up your subjects straight away; you can invite learners once you’re approved.</div>}
       <div className="seg">
         <button type="button" aria-pressed={mode === 'new'} onClick={() => setMode('new')}>

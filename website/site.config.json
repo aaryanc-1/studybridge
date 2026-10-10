@@ -17,11 +17,11 @@
     },
     {
       "id": "plus", "name": "Plus", "tag": "With Prof", "blurb": "Everything in Essentials, plus Prof and the exam extras.",
-      "steps": [{ "upTo": 10, "price": 9 }, { "upTo": 30, "price": 7 }, { "upTo": null, "price": 5 }],
+      "steps": [{ "upTo": 10, "price": 8 }, { "upTo": 30, "price": 6 }, { "upTo": null, "price": 4 }],
       "includes": ["Everything in Essentials", "Prof with no limit: makes work, drafts marking, plans", "Mocks with grade boundaries and grades", "The exam camera, watched live", "StudyBridge practice papers and self-study for your learners"]
     }
   ],
-  "selfLearner": { "month": 12, "passMonth": 10, "exampleMonths": 8 },
+  "selfLearner": { "month": 11, "passMonth": 9, "exampleMonths": 8 },
   "currencies": [
     { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
     { "code": "ZMW", "symbol": "K", "rate": 19.69, "label": "Zambian kwacha" },
