@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon, { Logo } from '../../ui/Icon.jsx';
-import { Avatar, ErrorBoundary, go, Link, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, ErrorBoundary, go, hasUnsaved, Link, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useOnline, useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as outbox from '../../lib/outbox.js';
 import { ago } from '../../lib/format.js';
 import { desktop } from '../../lib/config.js';
 import { startLiveUpdates } from '../../lib/live-updates.js';
+import { AWAY, CHECK_EVERY, IDLE, RECHECK_ON_RETURN, busyNow, idleFor, pageChanged, restartDesktop, webHasUpdate } from '../../lib/autoupdate.js';
 import { addAccount, canSwitch, otherAccounts, switchTo } from '../../lib/accounts.js';
 import { applyTextSize, dataSaver, setDataSaver, slowConnection } from '../../lib/device.js';
 
@@ -84,7 +85,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
         {banner}
         {app.me.role !== 'admin' && <Announcements />}
         <SlowConnectionTip />
-        <UpdateBanner />
+        <UpdateBanner pending={pending} />
         <div className="content">
           <ErrorBoundary key={route.path}>{children}</ErrorBoundary>
         </div>
@@ -471,11 +472,150 @@ export const restartWaiting = (st) => !!st && st.kind === 'restart' && st.state 
 // The website's download page: the way to update by hand if the app can't update itself
 const DOWNLOAD_PAGE = 'https://gostudybridge.com/download';
 
-function UpdateBanner() {
+// A downloaded version that only needs a restart (most updates: new screens, not a new desktop app)
+const canSwap = (st) => !!st && ((st.state === 'ready' && st.kind === 'restart') || restartWaiting(st));
+// Errors from the checks the app makes by itself stay quiet (it tries again in 15 minutes); "Try again" shows them
+let quietErrors = false;
+
+// Look for a new version often and switch to it when it's safe (the rules are in lib/autoupdate.js)
+function useAutoUpdate(st, pending) {
+  const route = useRoute();
+  const [switching, setSwitching] = useState(false);
+  const [webReady, setWebReady] = useState(false);
+  const now = useRef({});
+  now.current = { st, busy: () => busyNow({ path: route.path, unsaved: hasUnsaved(), pending }) };
+  useEffect(() => pageChanged(), [route.path]);
+
+  // Desktop app: the shell downloads; this decides when to look and when to restart into the new version
+  useEffect(() => {
+    if (!desktop?.updatesOn) return;
+    let awayAt = document.visibilityState === 'hidden' || !document.hasFocus() ? Date.now() : 0;
+    let wasHidden = document.visibilityState === 'hidden';
+    let going = false;
+    const swap = async () => {
+      if (going) return;
+      going = true;
+      setSwitching(true);
+      await new Promise((r) => setTimeout(r, 700)); // let "Updating StudyBridge…" show first
+      const r = await restartDesktop().catch((e) => ({ error: e.message }));
+      if (r?.error) {
+        going = false;
+        setSwitching(false);
+      }
+    };
+    const check = (since) => {
+      const s = now.current.st;
+      // a downloaded desktop installer waits as it is (checking again would download it again)
+      if (navigator.onLine === false || !s || ['checking', 'downloading', 'ready'].includes(s.state)) return;
+      if (s.checkedAt && Date.now() - s.checkedAt < since) return;
+      quietErrors = true;
+      desktop.updates.check().catch(() => {});
+    };
+    // back from the tray, a minimised window or another app: the moment to switch, or at least to look
+    const back = () => {
+      const hidden = wasHidden;
+      const away = awayAt ? Date.now() - awayAt : 0;
+      awayAt = 0;
+      wasHidden = false;
+      if (canSwap(now.current.st) && (hidden || away >= AWAY) && !now.current.busy()) return swap();
+      check(RECHECK_ON_RETURN);
+    };
+    const leave = () => {
+      if (!awayAt) awayAt = Date.now();
+      if (document.visibilityState === 'hidden') wasHidden = true;
+    };
+    const vis = () => (document.visibilityState === 'hidden' ? leave() : document.hasFocus() && back());
+    addEventListener('focus', back);
+    addEventListener('blur', leave);
+    document.addEventListener('visibilitychange', vis);
+    const t = setInterval(() => {
+      check(CHECK_EVERY);
+      // left open and untouched for a while: switch now, so it's new when they come back
+      if (canSwap(now.current.st) && document.visibilityState === 'visible' && document.hasFocus() && idleFor() >= IDLE && !now.current.busy()) swap();
+    }, 60 * 1000);
+    return () => {
+      removeEventListener('focus', back);
+      removeEventListener('blur', leave);
+      document.removeEventListener('visibilitychange', vis);
+      clearInterval(t);
+    };
+  }, []);
+
+  // Phone / browser: look on the server; reload in the background, as you come back, or after a while untouched
+  useEffect(() => {
+    if (desktop || import.meta.env.DEV || !location.protocol.startsWith('http')) return;
+    let last = Date.now();
+    let backAt = 0;
+    let ready = false;
+    let looking = false;
+    const reload = () => !now.current.busy() && location.reload();
+    const look = async () => {
+      if (ready || looking || navigator.onLine === false) return;
+      looking = true;
+      last = Date.now();
+      try {
+        ready = await webHasUpdate();
+      } catch {
+        /* offline or the server is busy: look again later */
+      }
+      looking = false;
+      if (ready) {
+        setWebReady(true);
+        // in the background, or the app was only just opened again (phones mostly look then): switch now
+        if (document.visibilityState === 'hidden' || Date.now() - backAt < 15 * 1000) reload();
+      }
+    };
+    const vis = () => {
+      if (ready) return reload();
+      if (document.visibilityState !== 'visible') return;
+      backAt = Date.now();
+      if (Date.now() - last >= RECHECK_ON_RETURN) look();
+    };
+    document.addEventListener('visibilitychange', vis);
+    const t = setInterval(() => {
+      if (Date.now() - last >= CHECK_EVERY) look();
+      if (ready && idleFor() >= IDLE) reload();
+    }, 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', vis);
+      clearInterval(t);
+    };
+  }, []);
+  return { switching, webReady };
+}
+
+function UpdateBanner({ pending = 0 }) {
   const st = useUpdateStatus();
+  const { switching, webReady } = useAutoUpdate(st, pending);
   const toast = useToast();
   const [hidden, setHidden] = useState(false);
   const [hiddenState, setHiddenState] = useState('');
+  if (switching) {
+    return (
+      <div className="updating-cover" role="status">
+        <Logo size={44} />
+        <b>Updating StudyBridge…</b>
+        <span>It opens again in a moment, on this page.</span>
+      </div>
+    );
+  }
+  const hide = (
+    <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHidden(true)} aria-label="Later">
+      <Icon name="x" size={16} />
+    </button>
+  );
+  if (webReady && !hidden) {
+    return (
+      <div className="banner update-banner" role="status">
+        <Icon name="download" size={18} />
+        <span className="grow">A new version of StudyBridge is ready.</span>
+        <button className="btn sm" onClick={() => location.reload()}>
+          Reload
+        </button>
+        {hide}
+      </div>
+    );
+  }
   if (!st || hidden) return null;
   // A new desktop app (not just new screens) is downloading: it's big, so say so, rather than look stuck
   if (st.state === 'downloading' && hiddenState !== 'downloading') {
@@ -489,12 +629,18 @@ function UpdateBanner() {
       </div>
     );
   }
-  if (st.state === 'error' && hiddenState !== 'error') {
+  if (st.state === 'error' && !quietErrors && hiddenState !== 'error') {
     return (
       <div className="banner update-banner" role="status">
         <Icon name="alert" size={18} />
         <span className="grow">StudyBridge couldn’t update itself just now. It tries again later, or you can get the newest version from the website.</span>
-        <button className="btn sm" onClick={() => desktop?.updates.check().catch(() => {})}>
+        <button
+          className="btn sm"
+          onClick={() => {
+            quietErrors = false;
+            desktop?.updates.check().catch(() => {});
+          }}
+        >
           Try again
         </button>
         <a className="btn sm" href={DOWNLOAD_PAGE} target="_blank" rel="noreferrer">
@@ -518,21 +664,19 @@ function UpdateBanner() {
           ? 'A new version of StudyBridge has downloaded. Open it and drag StudyBridge into Applications (replace the old one).'
           : install
             ? 'A new version of StudyBridge is ready. It closes, installs (about a minute) and opens again by itself.'
-            : 'A new version of StudyBridge is ready.'}
+            : 'A new version of StudyBridge is ready. It switches by itself when you’re not in the middle of something.'}
       </span>
       <button
         className="btn sm"
         onClick={async () => {
-          const r = waiting ? await desktop.restart() : await desktop.updates.apply();
+          const r = mac || install ? await desktop.updates.apply() : await restartDesktop();
           if (r?.error) toast({ title: r.error, tone: 'bad' });
           if (mac) setHidden(true);
         }}
       >
         {mac ? 'Open it' : install ? 'Install now' : 'Restart now'}
       </button>
-      <button className="btn ghost icon sm" style={{ background: 'transparent', color: '#fff', borderColor: 'transparent' }} onClick={() => setHidden(true)} aria-label="Later">
-        <Icon name="x" size={16} />
-      </button>
+      {hide}
     </div>
   );
 }

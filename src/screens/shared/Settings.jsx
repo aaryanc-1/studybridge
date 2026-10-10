@@ -9,7 +9,8 @@ import * as store from '../../lib/store.js';
 import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone, SUPPORT_EMAIL } from '../../lib/config.js';
 import { useUpdateStatus, AccountSwitcher, restartWaiting } from './Shell.jsx';
-import { palette } from '../../lib/format.js';
+import { ago, palette } from '../../lib/format.js';
+import { restartDesktop } from '../../lib/autoupdate.js';
 import ReportCard from './ReportCard.jsx';
 import { dataZip } from '../../lib/zip.js';
 import { bytes } from '../../lib/format.js';
@@ -998,11 +999,11 @@ function About() {
                 : st.state === 'error'
                   ? 'Couldn’t update just now. Try again, or get it from gostudybridge.com/download.'
                   : st.state === 'up-to-date'
-                    ? 'You have the latest version.'
+                    ? `You have the latest version${st.checkedAt ? ` (checked ${ago(st.checkedAt)})` : ''}. It looks again every 15 minutes.`
                     : 'Updates install by themselves.'}
           </span>
           {restartWaiting(st) && (
-            <button className="linkbtn small" onClick={() => desktop.restart()}>
+            <button className="linkbtn small" onClick={() => restartDesktop()}>
               Restart now
             </button>
           )}

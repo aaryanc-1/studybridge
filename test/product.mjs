@@ -497,7 +497,7 @@ try {
   await A.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await A.getByRole('dialog', { name: /^Delete “/ }).getByRole('button', { name: 'Delete' }).click();
   await A.getByText('Deleted', { exact: true }).waitFor();
-  assert.equal(await A.locator('section .work-card', { hasText: `${firstTitle} (copy)` }).count(), 0);
+  await A.locator('section .work-card', { hasText: `${firstTitle} (copy)` }).waitFor({ state: 'detached' });
   // marking shows who hasn't handed in yet
   await A.goto(web.url + '#/marking');
   await A.getByRole('button', { name: /^Not handed in \(\d+\)$/ }).click();
@@ -890,6 +890,108 @@ try {
   await A.locator('#set-data').waitFor();
   assert.equal(await A.getByRole('heading', { name: /Claude Desktop/ }).count(), 0, 'tutors use Prof, not Claude Desktop');
   assert.equal(await A.getByRole('heading', { name: 'Live video' }).count(), 0, 'StudyBridge provides live video');
+
+  step('A new version on the server: an open tab notices, and reloads itself, but never while something is typed');
+  await A.route(/\?fresh=/, (r) => r.fulfill({ contentType: 'text/html', body: '<!doctype html><script type="module" crossorigin src="./assets/index-NEW.js"></script>' }));
+  // something typed in Settings; the tutor comes back to the tab six minutes later: the bar shows, no reload
+  await A.locator('.content input[type="text"]:visible, .content input:not([type]):visible').first().fill('Half a sentence');
+  await A.evaluate(() => {
+    const real = Date.now.bind(Date);
+    Date.now = () => real() + 6 * 60 * 1000;
+    window.sameTab = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await A.getByText('A new version of StudyBridge is ready.').waitFor();
+  // putting the tab in the background doesn't reload it either
+  await A.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await A.waitForTimeout(1000);
+  assert.equal(await A.evaluate(() => window.sameTab), true, 'no reload while something is typed');
+  // on another page with nothing typed, it reloads by itself and stays on that page
+  const reloaded = A.waitForEvent('load');
+  await A.evaluate(() => (location.hash = '#/learners'));
+  await A.waitForTimeout(300);
+  await A.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await reloaded;
+  assert.equal(await A.evaluate(() => window.sameTab), undefined, 'the tab reloaded');
+  assert.match(A.url(), /#\/learners/);
+  await A.unroute(/\?fresh=/);
+
+  step('The desktop app: it looks for updates as you come back, and restarts into a new one when that’s safe, on the same page');
+  // the desktop shell, played by the page: it "downloads" 1.1.71 when asked to check, and counts restarts
+  const D = await (await browser.newContext({ viewport: { width: 1300, height: 860 } })).newPage();
+  watch(D, 'desktop');
+  await D.addInitScript(() => {
+    const u = (window.upd = { st: { state: 'up-to-date', current: '1.1.70', checkedAt: Date.now() - 20 * 60 * 1000 }, subs: [], checks: 0, restarts: 0, next: null });
+    const tell = () => u.subs.forEach((f) => f(u.st));
+    const known = {
+      version: '1.1.0',
+      platform: 'win32',
+      desktop: true,
+      updatesOn: true,
+      restart: async () => (u.restarts++, { ok: true }),
+      updates: {
+        get: async () => u.st,
+        check: async () => {
+          u.checks++;
+          u.st = u.next ? { ...u.st, state: 'ready', kind: 'restart', version: u.next, checkedAt: Date.now() } : { ...u.st, state: 'up-to-date', checkedAt: Date.now() };
+          tell();
+          return u.st;
+        },
+        apply: async () => ({ ok: true }),
+        ok: async () => {},
+        onStatus: (cb) => (u.subs.push(cb), () => {}),
+      },
+      lockdown: { enter: async () => true, exit: async () => true, onEvent: () => () => {} },
+    };
+    window.studybridge = new Proxy(known, { get: (t, k) => (k in t || typeof k === 'symbol' || k === 'then' ? t[k] : async () => null) });
+    // the window going to the tray and coming back
+    window.vis = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.vis });
+    document.hasFocus = () => window.vis === 'visible';
+    window.trayAndBack = () => {
+      window.vis = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.vis = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+  });
+  await D.goto(web.url);
+  await D.getByText(/already have an account|Sign in/).first().click().catch(() => {});
+  await D.getByLabel('Email').fill('aaryan@example.com');
+  await D.getByLabel('Password').fill('secret123');
+  await D.getByRole('button', { name: 'Sign in' }).click();
+  await nav(D, 'Learners').click();
+  await D.waitForFunction(() => location.hash === '#/learners');
+  // 1.1.71 is out; coming back to the app looks for it (last look was 20 minutes ago)
+  await D.evaluate(() => {
+    window.upd.next = '1.1.71';
+    window.trayAndBack();
+  });
+  await D.getByText('A new version of StudyBridge is ready. It switches by itself').waitFor();
+  await shot(D, 'desktop-update-ready');
+  assert.ok((await D.evaluate(() => window.upd.checks)) >= 1);
+  // something typed in Settings: to the tray and back doesn't restart
+  await D.evaluate(() => (location.hash = '#/settings'));
+  await D.locator('#set-data').waitFor();
+  await D.locator('.content input[type="text"]:visible, .content input:not([type]):visible, .content textarea:visible').first().fill('Half a sentence');
+  await D.evaluate(() => window.trayAndBack());
+  await D.waitForTimeout(1500);
+  assert.equal(await D.evaluate(() => window.upd.restarts), 0, 'no restart while something is typed');
+  // another page, nothing typed: back from the tray, it restarts by itself
+  await nav(D, 'Assignments').click();
+  await D.getByRole('heading', { name: 'Assignments' }).waitFor();
+  await D.evaluate(() => window.trayAndBack());
+  await D.getByText('Updating StudyBridge…').waitFor();
+  await shot(D, 'desktop-updating');
+  await D.waitForFunction(() => window.upd.restarts === 1);
+  // the new version opens on the same page
+  await D.goto(web.url);
+  await D.getByRole('heading', { name: 'Assignments' }).waitFor();
+  assert.match(D.url(), /#\/assignments/);
+  await D.close();
 
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');

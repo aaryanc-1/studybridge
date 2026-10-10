@@ -14,6 +14,8 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  // the app asking the server whether there's a new version: never answer from (or keep) an offline copy
+  if (url.searchParams.has('fresh')) return;
 
   if (req.mode === 'navigate') {
     // Fresh page when online, cached page when not

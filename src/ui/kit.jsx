@@ -15,6 +15,8 @@ const routeSubs = new Set();
 // A page with unsaved changes asks before you leave it (see useLeaveGuard)
 let leaveGuard = null;
 const mayLeave = () => !leaveGuard || leaveGuard();
+// for updates that arrive by themselves: never while a page has unsaved changes
+export const hasUnsaved = () => !!leaveGuard;
 window.addEventListener('hashchange', () => {
   if (!mayLeave()) {
     history.pushState(null, '', lastHash || '#/'); // stay on the page (the back button was pressed)

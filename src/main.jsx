@@ -1,3 +1,4 @@
+import { restartDesktop } from './lib/autoupdate.js'; // first: after an update's restart it reopens the page you were on
 import { createRoot } from 'react-dom/client';
 import 'mathlive/fonts.css';
 import 'mathlive/static.css';
@@ -20,7 +21,7 @@ function updatedBar() {
   text.textContent = 'StudyBridge was updated. Restart it to carry on where you were.';
   const btn = document.createElement('button');
   btn.textContent = window.studybridge ? 'Restart StudyBridge' : 'Reload';
-  btn.onclick = () => (window.studybridge?.restart ? window.studybridge.restart() : location.reload());
+  btn.onclick = () => (window.studybridge?.restart ? restartDesktop() : location.reload());
   bar.append(text, btn);
   document.body.appendChild(bar);
 }

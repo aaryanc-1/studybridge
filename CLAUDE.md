@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (78)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (81)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -217,6 +217,18 @@ Website: features.html (Prof first, as "Meet Prof": StudyBridge's AI teaching as
 privacy page still names Anthropic as the AI provider, as privacy law needs); the menu is Students, Tutors, Parents, Schools,
 Features, Pricing, Subjects (Get the app is in the footer and the phone menu); the "With Prof" badge links to features.html#prof;
 student plan buttons start the free week in the app.
+Updates by themselves (10 Oct 2026, Aaryan: the bar only showed after Check for updates, because the shell checks 15 s after
+opening and then every 3 hours, and the app lives in the tray). No shell change: `src/lib/autoupdate.js` holds the rules and
+`useAutoUpdate` in Shell.jsx (inside `UpdateBanner`) runs them. Desktop: asks the shell to check every 15 minutes and on coming
+back (5+ minutes since the last check), never while a desktop installer is ready (it would download it again); it restarts into
+a downloaded bundle as you come back from the tray or a minimised window (or after 2+ minutes in another app), or after 10
+minutes untouched, showing "Updating StudyBridge…". `busyNow` blocks it: attempt/live/watch pages, anything typed or drawn on
+the page (`pageChanged` resets on a new page), unsaved changes (`hasUnsaved` in kit.jsx), an open dialog, playing video/audio,
+full screen, anything waiting to send. `restartDesktop()` saves the page in `sb.resume` (autoupdate.js is imported first in
+main.jsx and reopens it). Web/phone: `webHasUpdate()` compares the main script's name in a fresh index.html (`?fresh=` skips
+the service worker), every 15 minutes and on coming back; reloads in the background, as you come back or after 10 minutes
+untouched, else "A new version of StudyBridge is ready. Reload". Errors from automatic checks stay quiet. Settings → About
+says when it last checked. product.mjs tests both (the desktop shell is played by the page).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
