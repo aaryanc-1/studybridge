@@ -39,7 +39,7 @@ export default function Home() {
         : lk.learners.map((l) => l.id);
   const handedIn = (a, lid) => attempts.some((t) => t.assignment_id === a.id && t.learner_id === lid && t.status !== 'in_progress');
   const soon = assignments
-    .filter((a) => !a.draft && a.due_at && new Date(a.due_at) > new Date() && new Date(a.due_at) < new Date(Date.now() + 8 * 86400000))
+    .filter((a) => !a.draft && a.visibility !== 'hidden' && a.source !== 'self' && a.due_at && new Date(a.due_at) > new Date() && new Date(a.due_at) < new Date(Date.now() + 8 * 86400000))
     .map((a) => {
       const who = forWhom(a);
       return { ...a, who: who.length, done: who.filter((lid) => handedIn(a, lid)).length };

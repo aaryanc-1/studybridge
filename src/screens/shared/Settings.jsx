@@ -37,6 +37,7 @@ export default function Settings() {
       {isStudent && <StudentPlan />}
       {(isTutor || isStudent) && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
+      {app.me.role === 'parent' && <MyChildren />}
       {isLearner && !isStudent && <LinkedParents />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
@@ -377,6 +378,43 @@ function CalendarLink() {
           </div>
         </>
       )}
+    </Section>
+  );
+}
+
+// A parent's children: stop following one (their tutor is told)
+function MyChildren() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const kids = useQuery('parent-children', api.parentChildren).data || [];
+  if (!kids.length) return null;
+  return (
+    <Section id="children" icon="users" title="Your children" sub="Whose progress you follow. To follow another child, ask their tutor for a parent code.">
+      <div className="list">
+        {kids.map((k) => (
+          <div key={k.id} className="item">
+            <span className="grow">
+              <span className="name">{k.name}</span>
+              <span className="meta">Tutor: {k.tutor}</span>
+            </span>
+            <button
+              className="btn sm ghost"
+              onClick={async () => {
+                if (!(await confirm({ title: `Stop following ${k.name}?`, body: 'You won’t see their reports or progress any more. Their tutor can give you a new code if you change your mind.', ok: 'Stop following', danger: true }))) return;
+                try {
+                  await api.parentUnlink(k.id);
+                  invalidate('parent-children');
+                  toast(`You no longer follow ${k.name}`);
+                } catch (e) {
+                  toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+                }
+              }}
+            >
+              Stop following
+            </button>
+          </div>
+        ))}
+      </div>
     </Section>
   );
 }

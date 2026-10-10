@@ -408,6 +408,8 @@ try {
   await picker.getByRole('button', { name: /Add 2/ }).click();
   await A.getByText('Added 2 questions from the bank').waitFor();
   await shot(A, 'bank-in-editor');
+  await A.getByRole('button', { name: 'Save draft' }).click(); // leaving with unsaved changes would ask first
+  await A.getByText('Saved', { exact: true }).waitFor();
 
   step('Practice: the tutor gives the learner bank questions; she practises on her phone and it marks itself');
   await nav(A, 'Library').click();
@@ -481,6 +483,25 @@ try {
   await nav(A, 'Assignments').click();
   await A.getByRole('heading', { name: 'Assignments' }).waitFor();
   assert.equal(await A.getByText(/Daily quiz ·/).count(), 0, 'her own practice isn’t in the tutor’s list');
+  // tapping an assignment offers edit, post or hide, hand-ins, duplicate and delete
+  const firstCard = A.locator('section .work-card').first();
+  const firstTitle = (await firstCard.locator('.strong').first().textContent()).trim();
+  await firstCard.click();
+  for (const b of ['Edit', 'Duplicate', 'Delete']) await A.getByRole('dialog').getByRole('button', { name: b, exact: true }).waitFor();
+  await A.getByRole('dialog').getByRole('button', { name: 'Duplicate' }).click();
+  await A.getByRole('heading', { name: `${firstTitle} (copy)` }).waitFor();
+  await nav(A, 'Assignments').click();
+  await A.getByRole('heading', { name: /Not posted yet/ }).waitFor();
+  await A.locator('section .work-card', { hasText: `${firstTitle} (copy)` }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Post now' }).waitFor();
+  await A.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+  await A.getByRole('dialog', { name: /^Delete “/ }).getByRole('button', { name: 'Delete' }).click();
+  await A.getByText('Deleted', { exact: true }).waitFor();
+  assert.equal(await A.locator('section .work-card', { hasText: `${firstTitle} (copy)` }).count(), 0);
+  // marking shows who hasn't handed in yet
+  await A.goto(web.url + '#/marking');
+  await A.getByRole('button', { name: /^Not handed in \(\d+\)$/ }).click();
+  await A.getByText(/Everyone has handed in|Not started|Started|Overdue/).first().waitFor();
   await A.goto(web.url + `#/learners/${(await lc.auth.getUser()).data.user.id}/study`);
   await A.getByText('Area of a circle').waitFor();
   await shot(A, 'tutor-learner-study');

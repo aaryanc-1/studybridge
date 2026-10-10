@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Modal, Page, Seg, VisibilityPill, go, useRoute } from '../../ui/kit.jsx';
+import { Empty, Field, Modal, Page, Seg, VisibilityPill, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { due, kindLabel } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { MockCards, NewMock } from './Mocks.jsx';
+import { quickPost } from './AssignmentEditor.jsx';
+import { useDiscardDraft } from './ClaudeInbox.jsx';
+
+// Not posted yet: a draft, hidden, or waiting for its date
+const notPosted = (a) => a.draft || a.visibility === 'hidden' || (a.visibility === 'scheduled' && a.visible_from && new Date(a.visible_from) > new Date());
 
 export const KIND_DEFAULTS = {
   homework: { lockdown: false, camera: false, time_limit_min: null, max_attempts: 1, release_mode: 'manual', allow_notes: true },
@@ -22,6 +27,7 @@ export default function Assignments() {
   const route = useRoute();
   const [filter, setFilter] = useState(route.query.get('show') || 'all');
   const [creating, setCreating] = useState(false);
+  const [open, setOpen] = useState(null); // the assignment whose options are showing
   // practice a learner started themselves (Study) isn't listed here; it shows in their progress
   const list = (q.data || [])
     .filter((a) => a.source !== 'self')
@@ -82,14 +88,38 @@ export default function Assignments() {
       ) : (
         <div className="stack">
           {showMocks && <MockCards mocks={mocks} assignments={q.data || []} />}
-          {list.map((a) => {
-            const mine = attempts.filter((t) => t.assignment_id === a.id);
-            const who = lk.audience(a);
-            const submitted = new Set(mine.filter((t) => t.submitted_at).map((t) => t.learner_id)).size;
-            const toMark = mine.filter((t) => t.status === 'submitted').length;
+          {sections(list, stats).map(([title, items]) =>
+            items.length ? (
+              <section key={title} className="stack sm">
+                <h2 className="list-head">
+                  {title} <span className="muted">({items.length})</span>
+                </h2>
+                {items.map((a) => card(a))}
+              </section>
+            ) : null,
+          )}
+        </div>
+      )}
+      {open && <AssignmentOptions a={open} stats={stats(open)} onClose={() => setOpen(null)} />}
+      {creating === 'mock' && <NewMock onClose={() => setCreating(false)} />}
+      {creating === true && <NewAssignment onClose={() => setCreating(false)} onMock={() => setCreating('mock')} />}
+    </Page>
+  );
+
+  // who it's for, how many have handed in, how many wait to be marked
+  function stats(a) {
+    const mine = attempts.filter((t) => t.assignment_id === a.id);
+    const who = lk.audience(a);
+    const submitted = new Set(mine.filter((t) => t.submitted_at).map((t) => t.learner_id)).size;
+    const toMark = mine.filter((t) => t.status === 'submitted').length;
+    return { who, submitted, toMark, started: mine.length };
+  }
+
+  function card(a) {
+            const { who, submitted, toMark } = stats(a);
             const d = due(a.due_at);
             return (
-              <button key={a.id} className="work-card" onClick={() => go(`/assignments/${a.id}`)}>
+              <button key={a.id} className="work-card" onClick={() => setOpen(a)} aria-haspopup="dialog">
                 <span className="bar-l" style={{ background: lk.subject(a.subject_id)?.color || 'var(--line)' }} />
                 <span className="grow stack sm">
                   <span className="row wrap" style={{ gap: 8 }}>
@@ -103,7 +133,7 @@ export default function Assignments() {
                   <span className="strong" style={{ fontSize: 16 }}>{a.title}</span>
                   <span className="row wrap small muted" style={{ gap: 12 }}>
                     {a.subject_id && <SubjectTag id={a.subject_id} />}
-                    <span className={d.tone === 'bad' ? '' : ''}>{d.text}</span>
+                    <span className={d.tone === 'bad' ? 'overdue' : ''}>{d.text}</span>
                     <span>
                       {submitted} of {who.length} submitted
                     </span>
@@ -111,15 +141,118 @@ export default function Assignments() {
                   </span>
                 </span>
                 <VisibilityPill item={a} />
-                <Icon name="right" size={18} />
+                <Icon name="more" size={18} />
               </button>
             );
-          })}
+  }
+}
+
+// Not posted · still open (not everyone has handed in, soonest due first) · everyone has handed in
+function sections(list, stats) {
+  const byDue = (x, y) => (x.due_at || '9999').localeCompare(y.due_at || '9999');
+  const posted = list.filter((a) => !notPosted(a));
+  const allIn = (a) => {
+    const s = stats(a);
+    return s.who.length > 0 && s.submitted >= s.who.length;
+  };
+  return [
+    ['Not posted yet', list.filter(notPosted)],
+    ['Waiting for hand-ins', posted.filter((a) => !allIn(a)).sort(byDue)],
+    ['Everyone has handed in', posted.filter(allIn)],
+  ];
+}
+
+// Tapping an assignment: edit it, post it (or hide it again), see what's handed in, copy it, or delete it
+function AssignmentOptions({ a, stats, onClose }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const discard = useDiscardDraft();
+  const files = useQuery('files', api.listFiles).data || [];
+  const [busy, setBusy] = useState('');
+  const waiting = notPosted(a);
+  async function act(what, fn) {
+    setBusy(what);
+    try {
+      await fn();
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad', ms: 7000 });
+    } finally {
+      setBusy('');
+    }
+  }
+  const post = () =>
+    act('post', async () => {
+      const s = await quickPost(a, files);
+      invalidate('assignments');
+      const who = stats.who.map((l) => l.display_name);
+      toast(
+        s.visibility === 'scheduled'
+          ? { title: `Scheduled: ${a.title}`, body: `Learners see it from ${new Date(s.visible_from).toLocaleString()}.` }
+          : { title: `Posted: ${a.title}`, body: who.length ? `Sent to ${who.join(', ')}.` : 'Nobody takes this subject yet.' },
+      );
+      onClose();
+    });
+  const hide = () =>
+    act('hide', async () => {
+      if (!(await confirm({ title: `Hide “${a.title}”?`, body: 'Learners won’t see it until you post it again. Anything they’ve handed in is kept.', ok: 'Hide it' }))) return;
+      await api.save('assignments', { id: a.id, visibility: 'hidden', updated_at: new Date().toISOString() });
+      invalidate('assignments');
+      toast('Hidden from learners');
+      onClose();
+    });
+  const del = () =>
+    act('delete', async () => {
+      if (a.draft) {
+        if (await discard('assignments', a)) onClose();
+        return;
+      }
+      const body = stats.started ? `${stats.submitted} learner${stats.submitted === 1 ? ' has' : 's have'} handed it in. Their answers and marks are deleted too.` : 'All its questions are deleted.';
+      if (!(await confirm({ title: `Delete “${a.title}”?`, body, ok: 'Delete', danger: true }))) return;
+      await api.remove('assignments', a.id);
+      invalidate('assignments', 'attempts');
+      toast('Deleted');
+      onClose();
+    });
+  const dup = () =>
+    act('copy', async () => {
+      const c = await api.duplicateAssignment(a);
+      invalidate('assignments');
+      go(`/assignments/${c.id}`);
+    });
+  return (
+    <Modal title={a.title} onClose={onClose}>
+      <div className="stack sm">
+        <div className="small muted">
+          {kindLabel[a.kind]} · {waiting ? (a.draft ? 'a draft, not posted yet' : 'not posted yet') : `${stats.submitted} of ${stats.who.length} handed in`}
+          {stats.toMark ? ` · ${stats.toMark} to mark` : ''}
         </div>
-      )}
-      {creating === 'mock' && <NewMock onClose={() => setCreating(false)} />}
-      {creating === true && <NewAssignment onClose={() => setCreating(false)} onMock={() => setCreating('mock')} />}
-    </Page>
+        <div className="sheet-actions">
+          <button className="btn" onClick={() => go(`/assignments/${a.id}`)}>
+            <Icon name="pen" size={18} /> Edit
+          </button>
+          {waiting ? (
+            <button className="btn primary" disabled={!!busy} onClick={post}>
+              <Icon name="send" size={18} /> {busy === 'post' ? 'Posting…' : a.draft ? 'Approve & post' : 'Post now'}
+            </button>
+          ) : (
+            <button className="btn" disabled={!!busy} onClick={hide}>
+              <Icon name="eye" size={18} /> Hide from learners
+            </button>
+          )}
+          {!waiting && (
+            <button className="btn" onClick={() => go(`/marking?a=${a.id}`)}>
+              <Icon name="checkCircle" size={18} /> Handed in ({stats.submitted}){stats.toMark ? ` · ${stats.toMark} to mark` : ''}
+            </button>
+          )}
+          <button className="btn" disabled={!!busy} onClick={dup}>
+            <Icon name="copy" size={18} /> Duplicate
+          </button>
+          <button className="btn danger" disabled={!!busy} onClick={del}>
+            <Icon name="trash" size={18} /> {a.draft ? 'Discard' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

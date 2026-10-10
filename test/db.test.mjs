@@ -1757,3 +1757,47 @@ test('StudyBridge content: made by the content account, checked twice before stu
   await as('S', `select send_feedback('question', 'How do I pay?')`);
   await fails(as('L', `select send_feedback('question', 'hi')`), /Only tutors and students/);
 });
+
+test('basic fixes: let a learner try again, skip or withdraw a weekly report, clear own practice, a parent stops following', async () => {
+  // homework handed in by accident: the tutor reopens it and the answers stay
+  const a = await val('TW', `insert into assignments (title, visibility, learner_ids) values ('Reopen me', 'visible', $1) returning id`, [[U.LW]]);
+  const q = await val('TW', `insert into questions (assignment_id, type, prompt_md, options, marks) values ($1, 'mcq', 'Pick B', '["A","B"]', 1) returning id`, [a]);
+  await as('TW', `insert into question_keys (question_id, answer) values ($1, '{"choice":"1"}')`, [q]);
+  const t = await one('LW', `select * from start_attempt($1, 'web')`, [a]);
+  await as('LW', `select save_response($1, $2, '{"choice":"0"}')`, [t.id, q]);
+  await as('LW', `select submit_attempt($1)`, [t.id]);
+  await fails(as('T', `select reopen_attempt($1)`, [t.id]), /Not found/);
+  await as('TW', `select reopen_attempt($1)`, [t.id]);
+  const back = await one('TW', `select status, submitted_at, score from attempts where id = $1`, [t.id]);
+  assert.equal(back.status, 'in_progress');
+  assert.equal(back.submitted_at, null);
+  assert.equal(back.score, null);
+  assert.deepEqual((await one('TW', `select answer from responses where attempt_id = $1`, [t.id])).answer, { choice: '0' }, 'the answers stay');
+  assert.equal((await as('LW', `select 1 from notifications where user_id = auth.uid() and title like 'You can carry on%'`)).length, 1);
+  await fails(as('TW', `select reopen_attempt($1)`, [t.id]), /still working/);
+
+  // weekly reports: skip a finished week; withdraw an approved one to fix it
+  const rep = await val('TW', `insert into parent_reports (learner_id, week_start, data) values ($1, '2020-01-06', '{}') returning id`, [U.LW]);
+  await fails(as('T', `select skip_report($1)`, [rep]), /not found/);
+  await as('TW', `select skip_report($1)`, [rep]);
+  assert.equal(await val('TW', `select status from parent_reports where id = $1`, [rep]), 'skipped');
+  await fails(as('TW', `select withdraw_report($1)`, [rep]), /not found/);
+  await db.query(`update parent_reports set status = 'sent', sent_at = now() where id = $1`, [rep]);
+  await as('TW', `select withdraw_report($1)`, [rep]);
+  assert.equal(await val('TW', `select status from parent_reports where id = $1`, [rep]), 'draft');
+
+  // a student clears their own practice from their list (only their own)
+  const prac = await val('S', `select id from assignments where source = 'self' limit 1`);
+  assert.equal(await val('L', `select hide_my_practice($1)`, [[prac]]), 0, 'only your own practice');
+  assert.equal(await val('S', `select hide_my_practice($1)`, [[prac]]), 1);
+  assert.equal(await val('S', `select learner_hidden from assignments where id = $1`, [prac]), true);
+
+  // a parent stops following a child; the tutor is told
+  const inv = await one('TW', `select * from create_parent_invite($1, 'Mum')`, [U.LW]);
+  await one('PW', `select * from accept_parent_invite($1, 'Mum', 'Africa/Lusaka')`, [inv.code]);
+  assert.equal((await val('PW', `select parent_children()`)).length, 1);
+  await as('PW', `select parent_unlink($1)`, [U.LW]);
+  assert.equal((await val('PW', `select parent_children()`)).length, 0);
+  await fails(as('PW', `select parent_unlink($1)`, [U.LW]), /Not found/);
+  assert.ok((await as('TW', `select 1 from notifications where user_id = auth.uid() and title like '%stopped following%'`)).length >= 1);
+});

@@ -1267,6 +1267,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'id', t.id, 'assignment_id', t.assignment_id, 'number', t.number, 'status', t.status,
     'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
     'released', public._is_released(t),
+    'released_at', case when public._is_released(t) then t.released_at end,
     'score', case when public._is_released(t) then t.score end,
     'max_score', t.max_score,
     'feedback_md', case when public._is_released(t) then t.feedback_md end
@@ -6001,6 +6002,84 @@ language plpgsql stable security definer set search_path = public as $$
 begin
   if not coalesce((select self_learner from public.profiles where id = auth.uid()), false) then return '{}'::jsonb; end if;
   return (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1);
+end $$;
+
+-- ---------------------------------------------------------------------
+-- Basic fixes (9 Oct 2026): let a learner try again, skip or withdraw a weekly report, clear your own practice,
+-- a parent stops following a child
+-- ---------------------------------------------------------------------
+-- The tutor reopens a handed-in attempt (for example one handed in by accident): the answers stay, marks are cleared,
+-- and a timed one gets the time it had left (at least 5 minutes). The learner hands it in again.
+create or replace function public.reopen_attempt(p_attempt uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  v_left int;
+begin
+  select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
+  if t.id is null then raise exception 'Not found.'; end if;
+  if t.status = 'in_progress' then raise exception 'They’re still working on it.'; end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  if a.time_limit_min is not null then
+    v_left := greatest(300, a.time_limit_min * 60 - coalesce(t.time_spent_sec, 0));
+  end if;
+  update public.attempts
+     set status = 'in_progress', submitted_at = null, score = null, released = false, released_at = null,
+         auto_reason = null, strikes = 0, self_marked_at = null,
+         started_at = case when a.time_limit_min is null then started_at
+                           else now() - make_interval(secs => a.time_limit_min * 60 - v_left) end
+   where id = t.id;
+  update public.responses set marks = null, auto_marks = null, step_marks = '[]', mistake = null, self_marks = null
+   where attempt_id = t.id;
+  perform public.notify_user(t.learner_id, 'assignment', 'You can carry on with ' || a.title,
+    'Your tutor reopened it. Your answers are still there; hand it in again when you’re done.', jsonb_build_object('assignment_id', a.id));
+end $$;
+
+-- Weekly reports: a finished week can be skipped (it stops waiting); an approved one can be withdrawn to fix it
+do $$ begin
+  alter table public.parent_reports drop constraint if exists parent_reports_status_check;
+  alter table public.parent_reports add constraint parent_reports_status_check check (status in ('draft', 'sent', 'skipped'));
+exception when duplicate_object then null; end $$;
+
+create or replace function public.skip_report(p_report uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.parent_reports set status = 'skipped', updated_at = now()
+   where id = p_report and tutor_id = auth.uid() and status = 'draft';
+  if not found then raise exception 'Report not found.'; end if;
+end $$;
+
+create or replace function public.withdraw_report(p_report uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.parent_reports set status = 'draft', sent_at = null, sent_via = null, updated_at = now()
+   where id = p_report and tutor_id = auth.uid() and status = 'sent';
+  if not found then raise exception 'Report not found.'; end if;
+end $$;
+
+-- Practice a learner started themselves can be cleared from their list (their progress keeps it)
+alter table public.assignments add column if not exists learner_hidden boolean not null default false;
+create or replace function public.hide_my_practice(p_ids uuid[]) returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  update public.assignments set learner_hidden = true
+   where id = any (coalesce(p_ids, '{}')) and source = 'self' and learner_ids = array[auth.uid()];
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- A parent stops following a child; the tutor is told
+create or replace function public.parent_unlink(p_learner uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare pl public.parent_links;
+begin
+  delete from public.parent_links where parent_id = auth.uid() and learner_id = p_learner returning * into pl;
+  if pl.id is null then raise exception 'Not found.'; end if;
+  perform public.notify_user(pl.tutor_id, 'parent_removed',
+    coalesce((select display_name from public.profiles where id = auth.uid()), 'A parent') || ' stopped following '
+      || coalesce((select display_name from public.profiles where id = pl.learner_id), 'a learner'), null, jsonb_build_object('learner_id', pl.learner_id));
 end $$;
 
 grant execute on all functions in schema public to authenticated;

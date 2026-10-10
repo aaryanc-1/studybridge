@@ -941,3 +941,9 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .content-row .grow { gap: 6px; min-width: 0; }
 .content-preview { border-left: 3px solid var(--line-soft); padding-left: 10px; }
 .fix-form { border-left: 3px solid var(--accent); padding-left: 10px; }
+/* lists split into sections (assignments: not posted / waiting for hand-ins / everyone handed in) */
+.list-head { font-size: 15px; font-weight: 600; margin: 10px 0 0; }
+.overdue { color: var(--red); font-weight: 600; }
+/* the options shown when you tap an item */
+.sheet-actions { display: grid; gap: 8px; }
+.sheet-actions .btn { justify-content: flex-start; }

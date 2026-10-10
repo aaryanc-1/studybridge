@@ -29,6 +29,17 @@ export default function Marking() {
     done: all.filter((t) => t.status === 'marked' && t.released),
   };
   const list = groups[tab];
+  // who hasn't handed in posted work yet (soonest due first): the learners it's for, minus those who handed it in
+  const posted = (a) => !a.draft && !a.practice && a.source !== 'self' && a.visibility !== 'hidden' && !(a.visibility === 'scheduled' && a.visible_from && new Date(a.visible_from) > new Date());
+  const missing = assignments
+    .filter((a) => posted(a) && (!only || a.id === only))
+    .flatMap((a) =>
+      lk
+        .audience(a)
+        .filter((l) => !(attempts.data || []).some((t) => t.assignment_id === a.id && t.learner_id === l.id && t.submitted_at))
+        .map((l) => ({ a, l, started: (attempts.data || []).some((t) => t.assignment_id === a.id && t.learner_id === l.id) })),
+    )
+    .sort((x, y) => (x.a.due_at || '9999').localeCompare(y.a.due_at || '9999'));
 
   return (
     <Page
@@ -50,9 +61,50 @@ export default function Marking() {
           { value: 'unreleased', label: `Marked, not returned (${groups.unreleased.length})` },
           { value: 'in_progress', label: `In progress (${groups.in_progress.length})` },
           { value: 'done', label: `Returned (${groups.done.length})` },
+          { value: 'missing', label: `Not handed in (${missing.length})` },
         ]}
       />
-      {attempts.data && list.length === 0 ? (
+      {tab === 'missing' ? (
+        missing.length === 0 ? (
+          <Empty>Everyone has handed in{only ? ' this one' : ' everything that’s posted'}.</Empty>
+        ) : (
+          <div className="card pad0">
+            <table className="table responsive">
+              <thead>
+                <tr>
+                  <th>Learner</th>
+                  <th>Assignment</th>
+                  <th>Due</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missing.map(({ a, l, started }) => {
+                  const late = a.due_at && new Date(a.due_at) < new Date();
+                  return (
+                    <tr key={a.id + l.id} className="click" onClick={() => go(`/learners/${l.id}`)}>
+                      <td data-label="Learner">
+                        <div className="row">
+                          <Avatar person={l} size="sm" />
+                          {l.display_name}
+                        </div>
+                      </td>
+                      <td data-label="Assignment">
+                        <div className="strong">{a.title}</div>
+                        <div className={'kind ' + a.kind}>{kindLabel[a.kind]}</div>
+                      </td>
+                      <td data-label="Due">{a.due_at ? when(a.due_at) : 'No due date'}</td>
+                      <td data-label="Status">
+                        <span className={'pill ' + (late ? 'bad' : '')}>{late ? 'Overdue' : started ? 'Started' : 'Not started'}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : attempts.data && list.length === 0 ? (
         <Empty>{tab === 'submitted' ? 'All caught up. New submissions appear here straight away.' : 'Nothing here.'}</Empty>
       ) : (
         <div className="card pad0">
@@ -127,6 +179,20 @@ export function MarkAttempt({ id }) {
   const a = assignment.data;
   const qs = questions.data || [];
   const learner = d ? lk.learner(d.attempt.learner_id) : null;
+  // reopen it (for example after a hand-in by accident): answers stay, marks are cleared, they hand it in again
+  async function reopen() {
+    const name = learner?.display_name?.split(' ')[0] || 'them';
+    const timed = a?.time_limit_min ? ' They get the time they had left (at least 5 minutes).' : '';
+    if (!(await confirm({ title: `Let ${name} try again?`, body: `It opens again with their answers still there. Any marks for it are cleared, and they hand it in again.${timed}`, ok: 'Reopen it' }))) return;
+    try {
+      await api.reopenAttempt(id);
+      invalidate('attempts', `attempt:${id}`);
+      toast(`Reopened. ${name} can carry on now.`);
+      go('/marking');
+    } catch (e) {
+      toast({ title: 'Couldn’t reopen it', body: e.message, tone: 'bad' });
+    }
+  }
 
   useEffect(() => {
     if (d && feedback === null) setFeedback(d.attempt.feedback_md || '');
@@ -228,7 +294,16 @@ export function MarkAttempt({ id }) {
           <StatusPill t={{ ...d.attempt, released: d.attempt.released }} />
         </span>
       }
-      actions={<span className="save-state">{saving > 0 ? 'Saving…' : 'Saved'}</span>}
+      actions={
+        <>
+          <span className="save-state">{saving > 0 ? 'Saving…' : 'Saved'}</span>
+          {d.attempt.status !== 'in_progress' && (
+            <button className="btn ghost" onClick={reopen}>
+              <Icon name="refresh" size={16} /> Let them try again
+            </button>
+          )}
+        </>
+      }
     >
       {(d.attempt.lockdown_events || []).length > 0 && (
         <div className="card warn">

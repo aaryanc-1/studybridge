@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Markdown, Page, go, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Markdown, Page, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
@@ -62,6 +62,7 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
   const app = useApp();
   const lk = useLookups();
   const toast = useToast();
+  const confirm = useConfirm();
   const isTutor = app.me.role === 'tutor';
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -112,6 +113,15 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
   }
 
   const shown = [...list, ...pending.filter((p) => !list.some((c) => c.body === p.body && c.author_id === p.author_id))];
+  async function removeMsg(c) {
+    if (!(await confirm({ title: 'Delete this message?', body: 'It’s removed for both of you.', ok: 'Delete', danger: true }))) return;
+    try {
+      await api.remove('comments', c.id);
+      invalidate('comments');
+    } catch (e) {
+      toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+    }
+  }
   const other = isTutor ? lk.learner(learnerId) : null;
 
   return (
@@ -134,6 +144,14 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
                 <div className="w">
                   {c.pending ? 'Waiting to send…' : ago(c.created_at)}
                   {mine && c.read_at && ' · Seen'}
+                  {mine && isTutor && !c.pending && (
+                    <>
+                      {' · '}
+                      <button type="button" className="linkbtn tiny" onClick={() => removeMsg(c)}>
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             );

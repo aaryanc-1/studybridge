@@ -29,9 +29,11 @@ export default function QuestionBank() {
   const app = useApp();
   const [asking, setAsking] = useState(false);
   const [practicing, setPracticing] = useState(false);
+  const [writing, setWriting] = useState(false);
   const all = bank.data || [];
   const mine = all.filter((b) => b.owner_id === app.me.id);
   const waiting = mine.filter((b) => b.status === 'review');
+  const rejected = mine.filter((b) => b.status === 'rejected');
   const usable = all.filter((b) => b.status === 'approved' && (b.owner_id === app.me.id || b.owner_id === null));
 
   if (!bank.data) return <Loading />;
@@ -42,6 +44,9 @@ export default function QuestionBank() {
           {usable.length} question{usable.length === 1 ? '' : 's'} ready to use · yours and StudyBridge’s shared exam-style questions. Learners never see the bank, only the work you set from it.
         </div>
         <div className="row wrap">
+          <button className="btn" onClick={() => setWriting(true)}>
+            <Icon name="plus" size={18} /> Write a question
+          </button>
           <button className="btn" onClick={() => setPracticing(true)} disabled={!usable.length}>
             <Icon name="target" size={18} /> Set practice for a learner
           </button>
@@ -52,6 +57,8 @@ export default function QuestionBank() {
       </div>
       {waiting.length > 0 && <ReviewQueue rows={waiting} title="Waiting for your approval" />}
       <BankBrowser rows={usable} />
+      {rejected.length > 0 && <Rejected rows={rejected} />}
+      {writing && <BankEdit b={{ owner_id: app.me.id, type: 'mcq', prompt_md: '', options: [], answer: {}, marks: 1, topic: '' }} onClose={() => setWriting(false)} />}
       {asking && <AskProf onClose={() => setAsking(false)} />}
       {practicing && <PracticeBuilder rows={usable} onClose={() => setPracticing(false)} />}
     </div>
@@ -316,9 +323,13 @@ export function BankBrowser({ rows, picking = null, onPick }) {
                         aria-label="Delete"
                         onClick={async () => {
                           if (!(await confirm({ title: 'Delete this question from your bank?', body: 'Assignments already using it keep their copy.', ok: 'Delete', danger: true }))) return;
-                          await api.remove('bank_questions', b.id);
-                          invalidate('bank');
-                          toast('Deleted');
+                          try {
+                            await api.remove('bank_questions', b.id);
+                            invalidate('bank');
+                            toast('Deleted');
+                          } catch (e) {
+                            toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+                          }
                         }}
                       >
                         <Icon name="trash" size={16} />
@@ -377,6 +388,7 @@ function BankDetail({ b }) {
 // Approve or reject questions Prof wrote (your own, or — for the admin — the shared ones)
 export function ReviewQueue({ rows, title, batch = 20 }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const shown = rows.slice(0, batch);
@@ -433,7 +445,13 @@ export function ReviewQueue({ rows, title, batch = 20 }) {
                 <button className="btn sm" onClick={() => setEdit(b)}>
                   Edit
                 </button>
-                <button className="btn sm ghost" disabled={busy} onClick={() => setStatus([b.id], 'rejected')}>
+                <button
+                  className="btn sm ghost"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (await confirm({ title: 'Reject this question?', body: 'It won’t be used. You can find it again under Rejected.', ok: 'Reject' })) setStatus([b.id], 'rejected');
+                  }}
+                >
                   Reject
                 </button>
               </div>
@@ -448,19 +466,24 @@ export function ReviewQueue({ rows, title, batch = 20 }) {
 
 function BankEdit({ b, onClose }) {
   const toast = useToast();
+  const lk = useLookups();
+  const isNew = !b.id;
   const [x, setX] = useState({ ...b, answer: { ...(b.answer || {}) }, optionsText: (Array.isArray(b.options) ? b.options : b.options?.items || []).join('\n') });
   const set = (p) => setX((v) => ({ ...v, ...p }));
   const setA = (p) => setX((v) => ({ ...v, answer: { ...v.answer, ...p } }));
   async function saveIt() {
     try {
       const opts = x.optionsText.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (!x.prompt_md.trim()) throw new Error('Write the question first.');
+      if (x.type === 'mcq' && opts.length < 2) throw new Error('A multiple-choice question needs at least two options.');
+      if (x.type === 'numeric' && !String(x.answer.value ?? '').trim()) throw new Error('Add the correct number.');
       await api.saveBank({
-        id: b.id,
+        ...(isNew ? { owner_id: b.owner_id, type: x.type, subject_id: x.subject_id || null, status: 'approved', source: 'tutor' } : { id: b.id }),
         prompt_md: x.prompt_md,
         topic: x.topic || null,
         difficulty: x.difficulty ? Number(x.difficulty) : null,
         marks: Number(x.marks) || 0,
-        options: x.type === 'mcq' ? (Array.isArray(b.options) ? opts : { ...b.options, items: opts }) : [],
+        options: x.type === 'mcq' ? (Array.isArray(b.options) || isNew ? opts : { ...b.options, items: opts }) : [],
         answer: x.answer,
         mark_scheme_md: x.mark_scheme_md || null,
         solution_md: x.solution_md || null,
@@ -468,7 +491,7 @@ function BankEdit({ b, onClose }) {
         updated_at: new Date().toISOString(),
       });
       invalidate('bank');
-      toast('Saved');
+      toast(isNew ? 'Added to your bank' : 'Saved');
       onClose();
     } catch (e) {
       toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
@@ -476,7 +499,7 @@ function BankEdit({ b, onClose }) {
   }
   return (
     <Modal
-      title="Edit question"
+      title={isNew ? 'Write a question' : 'Edit question'}
       wide
       onClose={onClose}
       foot={
@@ -490,8 +513,30 @@ function BankEdit({ b, onClose }) {
         </>
       }
     >
+      {isNew && (
+        <div className="grid g2">
+          <Field label="Kind of question">
+            <select className="select" value={x.type} onChange={(e) => set({ type: e.target.value, answer: e.target.value === 'numeric' ? { value: '', tolerance: '0' } : e.target.value === 'mcq' ? { choice: '0' } : {} })}>
+              <option value="mcq">Multiple choice</option>
+              <option value="numeric">A number</option>
+              <option value="short">Written answer</option>
+              <option value="steps">Maths with working</option>
+            </select>
+          </Field>
+          <Field label="Subject">
+            <select className="select" value={x.subject_id || ''} onChange={(e) => set({ subject_id: e.target.value || null })}>
+              <option value="">None</option>
+              {lk.subjects.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      )}
       <Field label="Question">
-        <textarea className="textarea" style={{ minHeight: 110 }} value={x.prompt_md} onChange={(e) => set({ prompt_md: e.target.value })} />
+        <textarea className="textarea" style={{ minHeight: 110 }} value={x.prompt_md} onChange={(e) => set({ prompt_md: e.target.value })} aria-label="Question" />
       </Field>
       {x.type === 'mcq' && (
         <div className="grid g2">
@@ -550,6 +595,46 @@ function BankEdit({ b, onClose }) {
         <MathText value={x.solution_md || ''} onChange={(v) => set({ solution_md: v })} label="Worked solution" />
       </Field>
     </Modal>
+  );
+}
+
+// Questions you rejected: approve them after all, or delete them
+function Rejected({ rows }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  async function act(b, approve) {
+    try {
+      if (approve) await api.setBankStatus([b.id], 'approved');
+      else {
+        if (!(await confirm({ title: 'Delete this question?', ok: 'Delete', danger: true }))) return;
+        await api.remove('bank_questions', b.id);
+      }
+      invalidate('bank');
+      toast(approve ? 'Approved' : 'Deleted');
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <details className="card">
+      <summary className="strong">Rejected ({rows.length})</summary>
+      <div className="list">
+        {rows.map((b) => (
+          <div key={b.id} className="item">
+            <span className="grow">
+              <span className="name">{(b.prompt_md || '').replace(/\s+/g, ' ').slice(0, 120)}</span>
+              <span className="meta">{[b.topic, typeLabel[b.type]].filter(Boolean).join(' · ')}</span>
+            </span>
+            <button className="btn sm" onClick={() => act(b, true)}>
+              Approve
+            </button>
+            <button className="btn sm ghost icon" aria-label="Delete" onClick={() => act(b, false)}>
+              <Icon name="trash" size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

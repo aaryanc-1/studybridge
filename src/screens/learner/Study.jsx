@@ -108,6 +108,7 @@ function Cards({ onReview }) {
   const d = useDeck();
   const lk = useLookups();
   const [making, setMaking] = useState(false);
+  const [listing, setListing] = useState(false);
   const mistakes = d.all.filter((c) => c.source === 'mistake').length;
   const own = d.all.filter((c) => c.source === 'own').length;
   return (
@@ -116,9 +117,16 @@ function Cards({ onReview }) {
         <h2 className="row" style={{ margin: 0 }}>
           <Icon name="layers" style={{ color: 'var(--accent)' }} /> Flashcards
         </h2>
-        <button className="btn sm" onClick={() => setMaking((x) => !x)}>
-          <Icon name="plus" size={14} /> Make a card
-        </button>
+        <span className="row" style={{ gap: 6 }}>
+          {own + mistakes > 0 && (
+            <button className="btn sm ghost" onClick={() => setListing((x) => !x)} aria-expanded={listing}>
+              My cards ({own + mistakes})
+            </button>
+          )}
+          <button className="btn sm" onClick={() => setMaking((x) => !x)}>
+            <Icon name="plus" size={14} /> Make a card
+          </button>
+        </span>
       </div>
       {d.ready && !d.all.length ? (
         <div className="small muted">No cards yet. Your tutor adds them, and questions you get wrong become cards here too. You can also make your own.</div>
@@ -138,6 +146,70 @@ function Cards({ onReview }) {
         </>
       )}
       {making && <OwnCard subjects={lk.mySubjects} onDone={() => setMaking(false)} />}
+      {listing && <MyCards cards={d.all.filter((c) => c.source === 'own' || c.source === 'mistake')} />}
+    </div>
+  );
+}
+
+// Cards you made (edit or delete) and cards from your mistakes (delete once you've got it)
+function MyCards({ cards }) {
+  const toast = useToast();
+  const [editing, setEditing] = useState(null);
+  const [front, setFront] = useState('');
+  const [back, setBack] = useState('');
+  async function del(c) {
+    try {
+      await api.remove('cards', c.id);
+      invalidate('cards');
+      toast('Card deleted');
+    } catch (e) {
+      toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+    }
+  }
+  async function save(c) {
+    try {
+      await api.save('cards', { id: c.id, front_md: front.trim(), back_md: back.trim() });
+      invalidate('cards');
+      setEditing(null);
+    } catch (e) {
+      toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <div className="list" style={{ borderTop: '1px solid var(--line-soft)' }}>
+      {cards.map((c) =>
+        editing === c.id ? (
+          <div key={c.id} className="item stack sm" style={{ alignItems: 'stretch' }}>
+            <textarea className="textarea" rows={2} value={front} onChange={(e) => setFront(e.target.value)} aria-label="Front" />
+            <textarea className="textarea" rows={2} value={back} onChange={(e) => setBack(e.target.value)} aria-label="Back" />
+            <span className="row" style={{ gap: 6 }}>
+              <button className="btn sm primary" disabled={!front.trim() || !back.trim()} onClick={() => save(c)}>
+                Save
+              </button>
+              <button className="btn sm ghost" onClick={() => setEditing(null)}>
+                Cancel
+              </button>
+            </span>
+          </div>
+        ) : (
+          <div key={c.id} className="item">
+            <span className="grow">
+              <span className="name">
+                <Markdown src={c.front_md} />
+              </span>
+              <span className="meta">{c.source === 'mistake' ? 'From your mistakes' : 'You made this'}</span>
+            </span>
+            {c.source === 'own' && (
+              <button className="btn sm ghost icon" aria-label="Edit card" onClick={() => (setEditing(c.id), setFront(c.front_md), setBack(c.back_md))}>
+                <Icon name="pen" size={14} />
+              </button>
+            )}
+            <button className="btn sm ghost icon" aria-label="Delete card" onClick={() => del(c)}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        ),
+      )}
     </div>
   );
 }

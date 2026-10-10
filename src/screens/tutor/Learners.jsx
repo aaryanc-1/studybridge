@@ -12,6 +12,8 @@ import ProgressView from '../shared/Progress.jsx';
 
 export default function Learners() {
   const lk = useLookups();
+  const confirm = useConfirm();
+  const toast = useToast();
   const invites = useQuery('invites', api.listInvites);
   const activity = useQuery('activity', api.listActivity).data || [];
   const accounts = useQuery('accounts', api.learnerAccounts).data || [];
@@ -93,8 +95,13 @@ export default function Learners() {
                   className="btn sm ghost"
                   aria-label="Cancel invite"
                   onClick={async () => {
-                    await api.revokeInvite(i.id);
-                    invalidate('invites');
+                    if (!(await confirm({ title: `Cancel the invite for ${i.name || 'this learner'}?`, body: 'The code stops working. You can make a new one any time.', ok: 'Cancel invite', cancel: 'Keep it' }))) return;
+                    try {
+                      await api.revokeInvite(i.id);
+                      invalidate('invites');
+                    } catch (e) {
+                      toast({ title: 'Couldn’t cancel it', body: e.message, tone: 'bad' });
+                    }
                   }}
                 >
                   <Icon name="trash" size={16} />
@@ -270,8 +277,13 @@ function ParentsPanel({ learner }) {
                 <button
                   className="btn sm ghost"
                   onClick={async () => {
-                    await api.revokeParentInvite(i.id);
-                    reload();
+                    if (!(await confirm({ title: 'Cancel this parent invite?', body: 'The code stops working. You can make a new one any time.', ok: 'Cancel invite', cancel: 'Keep it' }))) return;
+                    try {
+                      await api.revokeParentInvite(i.id);
+                      reload();
+                    } catch (e) {
+                      toast({ title: 'Couldn’t cancel it', body: e.message, tone: 'bad' });
+                    }
                   }}
                 >
                   Cancel

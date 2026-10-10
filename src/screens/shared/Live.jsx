@@ -285,8 +285,12 @@ export default function Live({ sessionId }) {
                         onClick={async () => {
                           if (s.series_id) return setStopping(s);
                           if (!(await confirm({ title: 'Cancel this lesson?', body: 'Your learners get a message saying it’s cancelled.', ok: 'Cancel lesson', cancel: 'Keep', danger: true }))) return;
-                          await api.remove('sessions', s.id);
-                          invalidate('sessions');
+                          try {
+                            await api.remove('sessions', s.id);
+                            invalidate('sessions');
+                          } catch (e) {
+                            toast({ title: 'Couldn’t cancel it', body: e.message, tone: 'bad' });
+                          }
                         }}
                       >
                         <Icon name="trash" size={16} />

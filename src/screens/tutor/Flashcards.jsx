@@ -63,7 +63,38 @@ export default function Flashcards() {
 
 function CardTile({ c }) {
   const confirm = useConfirm();
+  const toast = useToast();
   const lk = useLookups();
+  const [editing, setEditing] = useState(false);
+  const [front, setFront] = useState(c.front_md);
+  const [back, setBack] = useState(c.back_md);
+  if (editing)
+    return (
+      <div className="card-tile stack sm">
+        <textarea className="textarea" rows={2} value={front} onChange={(e) => setFront(e.target.value)} aria-label="Front" />
+        <textarea className="textarea" rows={3} value={back} onChange={(e) => setBack(e.target.value)} aria-label="Back" />
+        <div className="row" style={{ gap: 6 }}>
+          <button
+            className="btn sm primary"
+            disabled={!front.trim()}
+            onClick={async () => {
+              try {
+                await api.save('cards', { id: c.id, front_md: front.trim(), back_md: back.trim() });
+                invalidate('cards');
+                setEditing(false);
+              } catch (e) {
+                toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+              }
+            }}
+          >
+            Save
+          </button>
+          <button className="btn sm ghost" onClick={() => (setFront(c.front_md), setBack(c.back_md), setEditing(false))}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
   return (
     <div className="card-tile">
       <div className="front">
@@ -77,17 +108,26 @@ function CardTile({ c }) {
           {c.source === 'prof' ? 'Prof' : 'You'}
           {c.learner_id ? ` · only ${lk.learner(c.learner_id)?.display_name?.split(' ')[0] || 'one learner'}` : ''}
         </span>
-        <button
-          className="btn ghost icon sm"
-          aria-label="Delete card"
-          onClick={async () => {
-            if (!(await confirm({ title: 'Delete this card?', body: 'Learners won’t see it again.', ok: 'Delete', danger: true }))) return;
-            await api.remove('cards', c.id);
-            invalidate('cards');
-          }}
-        >
-          <Icon name="trash" size={14} />
-        </button>
+        <span className="row" style={{ gap: 2 }}>
+          <button className="btn ghost icon sm" aria-label="Edit card" onClick={() => setEditing(true)}>
+            <Icon name="pen" size={14} />
+          </button>
+          <button
+            className="btn ghost icon sm"
+            aria-label="Delete card"
+            onClick={async () => {
+              if (!(await confirm({ title: 'Delete this card?', body: 'Learners won’t see it again.', ok: 'Delete', danger: true }))) return;
+              try {
+                await api.remove('cards', c.id);
+                invalidate('cards');
+              } catch (e) {
+                toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+              }
+            }}
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        </span>
       </div>
     </div>
   );

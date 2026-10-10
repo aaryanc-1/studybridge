@@ -4,6 +4,7 @@
 import { useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, Link, Loading, Modal, Page, VisibilityPill, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { quickPost } from './AssignmentEditor.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
@@ -110,6 +111,7 @@ export function NewMock({ onClose }) {
 // One mock: its papers, which boundaries it uses, and everyone's results
 // ---------------------------------------------------------------------------
 export default function MockPage({ id }) {
+  const files = useQuery('files', api.listFiles).data || [];
   const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
@@ -132,6 +134,21 @@ export default function MockPage({ id }) {
   if (!m) return <Page title="Mock exam">{mocks.data ? <Empty>This mock exam no longer exists.</Empty> : <Loading />}</Page>;
 
   const refresh = () => invalidate('assignments', 'mocks', `mock:${id}`);
+  const unposted = papers.filter((a) => a.draft || a.visibility === 'hidden');
+  // every paper not posted yet, with the same checks as posting one
+  async function postAll() {
+    const failed = [];
+    for (const a of unposted) {
+      try {
+        await quickPost(a, files);
+      } catch (e) {
+        failed.push(`${a.title}: ${e.message}`);
+      }
+    }
+    refresh();
+    if (failed.length) toast({ title: `${unposted.length - failed.length} posted, ${failed.length} not ready`, body: failed.join(' '), tone: 'bad', ms: 9000 });
+    else toast(`Posted ${unposted.length} paper${unposted.length === 1 ? '' : 's'}`);
+  }
   async function setOrder(ids, removed = []) {
     try {
       await api.setMockPapers(id, ids, removed);
@@ -194,13 +211,29 @@ export default function MockPage({ id }) {
           </span>
         )
       }
-      subtitle={`Mock exam · ${examName(m.exam, lk)}`}
+      subtitle={
+        <span className="row wrap" style={{ gap: 8 }}>
+          <span>Mock exam · {examName(m.exam, lk)}</span>
+          <select className="select sm" style={{ width: 'auto' }} value={m.subject_id || ''} onChange={(e) => saveMock({ subject_id: e.target.value || null })} aria-label="Subject">
+            <option value="">No subject</option>
+            {lk.subjects.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </span>
+      }
       actions={
         <button
           className="btn ghost"
           onClick={async () => {
             if (!(await confirm({ title: 'Delete this mock exam?', body: 'Its papers stay as ordinary assignments, with any work and marks.', ok: 'Delete mock', danger: true }))) return;
-            await api.deleteMock(id);
+            try {
+              await api.deleteMock(id);
+            } catch (e) {
+              return toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+            }
             refresh();
             go('/assignments?show=mocks');
           }}
@@ -247,6 +280,13 @@ export default function MockPage({ id }) {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {unposted.length > 0 && (
+          <div>
+            <button className="btn sm primary" onClick={postAll}>
+              <Icon name="send" size={14} /> Post {unposted.length === papers.length ? 'all papers' : `the ${unposted.length} not posted`}
+            </button>
           </div>
         )}
         <div className="row wrap">
@@ -513,8 +553,12 @@ export function GradeBoundaries({ exam, label, sources = [] }) {
                 aria-label="Delete boundaries"
                 onClick={async () => {
                   if (!(await confirm({ title: 'Delete these boundaries?', body: 'Mocks that used them switch to the newest boundaries left for this exam.', ok: 'Delete', danger: true }))) return;
-                  await api.deleteBoundaries(b.id);
-                  invalidate('boundaries', 'mock');
+                  try {
+                    await api.deleteBoundaries(b.id);
+                    invalidate('boundaries', 'mock');
+                  } catch (e) {
+                    toast({ title: 'Couldn’t delete them', body: e.message, tone: 'bad' });
+                  }
                 }}
               >
                 <Icon name="trash" size={16} />

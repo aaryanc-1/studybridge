@@ -14,6 +14,13 @@ import Settings from '../shared/Settings.jsx';
 import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { gradeLine } from '../shared/MockHistory.jsx';
 
+// "Coming up": overdue work first, then lessons and due work in date order
+const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
+const upcoming = (v) =>
+  [...v.lessons.map((s) => ({ lesson: s, at: s.starts_at })), ...v.due.filter((a) => !overdue(v).includes(a)).map((a) => ({ due: a, at: a.due_at }))].sort(
+    (x, y) => new Date(x.at) - new Date(y.at),
+  );
+
 function notificationTarget(n) {
   const r = n.ref || {};
   if (r.learner_id) return `/child/${r.learner_id}${r.report_id ? `?report=${r.report_id}` : ''}`;
@@ -159,7 +166,22 @@ function Child({ id, kids, section }) {
             <div className="muted small">Nothing booked or due in the next three weeks.</div>
           ) : (
             <div className="list">
-              {v.lessons.map((s, i) => (
+              {overdue(v).length > 0 && <div className="list-head">Overdue</div>}
+              {overdue(v).map((a, i) => (
+                <div key={'o' + i} className="item">
+                  <Icon name="clipboard" style={{ color: 'var(--red)' }} />
+                  <span className="grow">
+                    <span className="name">{a.title}</span>
+                    <span className="meta">
+                      {kindLabel[a.kind]} · was due {when(a.due_at)}
+                    </span>
+                  </span>
+                  <span className="pill bad">Not handed in</span>
+                </div>
+              ))}
+              {overdue(v).length > 0 && <div className="list-head">Coming up</div>}
+              {upcoming(v).map(({ lesson: s, due: a }, i) =>
+                s ? (
                 <div key={'l' + i} className="item">
                   <Icon name="video" style={{ color: 'var(--accent)' }} />
                   <span className="grow">
@@ -171,8 +193,7 @@ function Child({ id, kids, section }) {
                   </span>
                   {s.weekly && <span className="pill accent">Weekly</span>}
                 </div>
-              ))}
-              {v.due.map((a, i) => (
+                ) : (
                 <div key={'d' + i} className="item">
                   <Icon name="clipboard" style={{ color: 'var(--muted)' }} />
                   <span className="grow">
@@ -181,9 +202,10 @@ function Child({ id, kids, section }) {
                       {kindLabel[a.kind]} · due {when(a.due_at)}
                     </span>
                   </span>
-                  {a.handed_in ? <span className="pill good">Handed in</span> : new Date(a.due_at) < new Date() ? <span className="pill bad">Not handed in</span> : <span className="pill">To do</span>}
+                  {a.handed_in ? <span className="pill good">Handed in</span> : <span className="pill">To do</span>}
                 </div>
-              ))}
+                ),
+              )}
             </div>
           )}
         </div>

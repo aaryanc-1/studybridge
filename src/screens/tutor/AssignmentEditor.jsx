@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
 import MathField from '../../ui/MathField.jsx';
 import { StoredImage } from '../../ui/media.jsx';
 import { invalidate, useQuery } from '../../lib/data.js';
@@ -39,7 +39,7 @@ function blankQuestion(type) {
 }
 
 // Anything that would confuse a learner if posted as it is
-function checkReady(a, qs) {
+export function checkReady(a, qs) {
   if (!a.title.trim()) return 'Give it a title.';
   if (!qs.length) return 'Add at least one question.';
   for (const [i, q] of qs.entries()) {
@@ -58,6 +58,17 @@ function checkReady(a, qs) {
   return null;
 }
 
+// Post straight from the assignments list: the same checks as the editor's Post button
+export async function quickPost(a, files) {
+  const q = await api.listQuestions(a.id);
+  const keys = await api.listKeys(q.map((x) => x.id));
+  const problem = checkReady(a, q.map((x) => ({ ...x, key: keys.find((y) => y.question_id === x.id) || { answer: {} } })));
+  if (problem) throw new Error(problem);
+  const visibility = a.visibility === 'scheduled' && a.visible_from && new Date(a.visible_from) > new Date() ? 'scheduled' : 'visible';
+  if (visibility !== 'hidden') await api.ensureCloudIds((a.file_refs || []).map((r) => r.file_id), files);
+  return api.save('assignments', { id: a.id, visibility, visible_from: visibility === 'scheduled' ? a.visible_from : null, draft: false, updated_at: new Date().toISOString() });
+}
+
 export default function AssignmentEditor({ id }) {
   const lk = useLookups();
   const toast = useToast();
@@ -72,6 +83,7 @@ export default function AssignmentEditor({ id }) {
   const [err, setErr] = useState('');
   const [previewIntro, setPreviewIntro] = useState(false);
   const [picking, setPicking] = useState(false);
+  useLeaveGuard(dirty);
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +115,7 @@ export default function AssignmentEditor({ id }) {
   const saveAll = useCallback(
     async ({ publish = false, quiet = false, post = false } = {}) => {
       if (!a) return;
+      const wasLive = !a.draft && a.visibility !== 'hidden'; // already posted: saving keeps you here
       if (post) {
         const problem = checkReady(a, qs);
         if (problem) return toast({ title: 'Not ready to post yet', body: problem, tone: 'bad', ms: 7000 });
@@ -163,7 +176,8 @@ export default function AssignmentEditor({ id }) {
         setRemoved([]);
         setDirty(false);
         invalidate('assignments');
-        if (post || publish) {
+        if ((post || publish) && wasLive) toast('Changes saved. Learners see the new version.');
+        else if (post || publish) {
           const who = lk.audience(s).map((l) => l.display_name);
           const whoText = who.length ? who.join(', ') : 'nobody yet (no learners take this subject)';
           toast(
@@ -171,7 +185,7 @@ export default function AssignmentEditor({ id }) {
               ? { title: `Scheduled: ${s.title}`, body: `${whoText} will see it from ${new Date(s.visible_from).toLocaleString()}.` }
               : { title: `Posted: ${s.title}`, body: `Sent to ${whoText}.` },
           );
-          go('/assignments');
+          go('/assignments', { force: true });
         } else if (!quiet) toast('Saved');
       } catch (e) {
         toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
@@ -199,6 +213,17 @@ export default function AssignmentEditor({ id }) {
   if (err) return <Page title="Assignment"><div className="error">{err}</div></Page>;
   if (!a) return <Loading />;
 
+  async function removeIt() {
+    if (!(await confirm({ title: `Delete “${a.title}”?`, body: 'All questions and every learner’s answers and marks for it are deleted.', ok: 'Delete', danger: true }))) return;
+    try {
+      await api.remove('assignments', a.id);
+    } catch (e) {
+      return toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+    }
+    invalidate('assignments', 'attempts');
+    toast('Deleted');
+    go('/assignments', { force: true });
+  }
   const total = qs.reduce((s, q) => s + (Number(q.marks) || 0), 0);
   const live = !a.draft && a.visibility !== 'hidden';
   const attachable = files.filter((f) => !f.link_url);
@@ -218,6 +243,11 @@ export default function AssignmentEditor({ id }) {
           <button className="btn" onClick={() => go(`/marking?a=${a.id}`)}>
             <Icon name="checkCircle" size={18} /> Submissions
           </button>
+          {!a.draft && (
+            <button className="btn ghost" onClick={() => removeIt()} disabled={busy} aria-label={`Delete ${a.title}`}>
+              <Icon name="trash" size={16} /> Delete
+            </button>
+          )}
           {live ? (
             <button className="btn primary" onClick={() => saveAll({ post: true })} disabled={busy}>
               <Icon name="check" size={18} /> Save changes
@@ -225,7 +255,7 @@ export default function AssignmentEditor({ id }) {
           ) : (
             <>
               {a.draft && (
-                <button className="btn ghost" onClick={async () => (await discard('assignments', a)) && go(a.source === 'prof' || a.source === 'claude' ? '/prof' : '/assignments')} disabled={busy}>
+                <button className="btn ghost" onClick={async () => (await discard('assignments', a)) && go(a.source === 'prof' || a.source === 'claude' ? '/prof' : '/assignments', { force: true })} disabled={busy}>
                   <Icon name="trash" size={16} /> Discard
                 </button>
               )}
@@ -496,15 +526,7 @@ export default function AssignmentEditor({ id }) {
             >
               <Icon name="copy" size={16} /> Duplicate
             </button>
-            <button
-              className="btn danger"
-              onClick={async () => {
-                if (!(await confirm({ title: `Delete “${a.title}”?`, body: 'All questions and every learner’s answers and marks for it are deleted.', ok: 'Delete', danger: true }))) return;
-                await api.remove('assignments', a.id);
-                invalidate('assignments', 'attempts');
-                go('/assignments');
-              }}
-            >
+            <button className="btn danger" onClick={() => removeIt()}>
               <Icon name="trash" size={16} /> Delete
             </button>
           </div>

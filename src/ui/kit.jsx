@@ -10,21 +10,52 @@ function readHash() {
   return { path, parts: path.split('/').filter(Boolean), query: new URLSearchParams(qs || '') };
 }
 let route = readHash();
+let lastHash = location.hash;
 const routeSubs = new Set();
+// A page with unsaved changes asks before you leave it (see useLeaveGuard)
+let leaveGuard = null;
+const mayLeave = () => !leaveGuard || leaveGuard();
 window.addEventListener('hashchange', () => {
+  if (!mayLeave()) {
+    history.pushState(null, '', lastHash || '#/'); // stay on the page (the back button was pressed)
+    return;
+  }
+  lastHash = location.hash;
   route = readHash();
   routeSubs.forEach((f) => f());
 });
+// Editors with unsaved changes: leaving the page (a link, the menu, the back button) asks first.
+// Their own "go" after saving passes { force: true }.
+export function useLeaveGuard(dirty, message = 'You have unsaved changes. Leave without saving them?') {
+  useEffect(() => {
+    if (!dirty) return;
+    const g = () => window.confirm(message);
+    leaveGuard = g;
+    // closing the browser tab too (not in the desktop app, where it would stop the window closing)
+    const before = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    if (!window.studybridge) window.addEventListener('beforeunload', before);
+    return () => {
+      if (leaveGuard === g) leaveGuard = null;
+      window.removeEventListener('beforeunload', before);
+    };
+  }, [dirty, message]);
+}
 export function useRoute() {
   return useSyncExternalStore(
     (f) => (routeSubs.add(f), () => routeSubs.delete(f)),
     () => route,
   );
 }
-export function go(path, { replace = false } = {}) {
+export function go(path, { replace = false, force = false } = {}) {
+  if (!force && !mayLeave()) return;
+  if (force) leaveGuard = null;
   const h = '#' + path;
   if (replace) history.replaceState(null, '', h);
   else if (location.hash !== h) history.pushState(null, '', h);
+  lastHash = location.hash;
   route = readHash();
   routeSubs.forEach((f) => f());
   document.querySelector('.content')?.scrollTo(0, 0);

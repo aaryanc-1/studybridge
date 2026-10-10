@@ -66,8 +66,12 @@ export default function TeachingPlan({ subject, topics }) {
               className="btn sm ghost"
               onClick={async () => {
                 if (!(await confirm({ title: 'Delete this plan?', body: 'Your topics and coverage stay as they are.', ok: 'Delete', danger: true }))) return;
-                await api.deletePlan(subject.id);
-                invalidate(`plan:${subject.id}`);
+                try {
+                  await api.deletePlan(subject.id);
+                  invalidate(`plan:${subject.id}`);
+                } catch (e) {
+                  toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+                }
               }}
             >
               <Icon name="trash" size={14} /> Delete

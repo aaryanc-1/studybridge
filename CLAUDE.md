@@ -183,6 +183,23 @@ Marking has no "mark with Claude Desktop". Settings has no Live video section: `
 LiveKit (Admin → StudyBridge settings) first and a tutor's old keys only if that isn't set. Account switching: the
 device remembers the admin account used it (`sb.adminDevice` = server URL), so signing out of admin no longer hides
 switching; the account menu has "Add another account".
+Basic fixes (10 Oct 2026, from an audit Aaryan asked for): tapping an assignment or lesson notes opens options (Edit,
+Post now / Hide from learners, Handed in, Duplicate, Delete) and lists split into Not posted yet / Waiting for hand-ins /
+Everyone has handed in (`AssignmentOptions`, `quickPost` and `checkReady` in AssignmentEditor.jsx; `LessonOptions` in
+Library.jsx); Marking has a "Not handed in" tab; editors ask before you leave with unsaved changes (`useLeaveGuard` in kit.jsx;
+`go(path, { force: true })` after a save); saving something already posted stays on the page; My files splits shared and
+hidden with Show/Hide and Delete on each row; tutors can delete their own messages and edit flashcards; the question bank
+has Write a question, a Reject confirm and a Rejected list; reports can be skipped (`skip_report`, status 'skipped') or
+withdrawn (`withdraw_report`); "Let them try again" reopens a hand-in (`reopen_attempt`: answers kept, marks cleared, time
+left with at least 5 minutes); mocks have "Post all papers" and a subject picker; confirms on topic removal, invite
+cancelling and draft discarding; subject deletion lists everything it deletes; failed deletes say so. Learners: My cards (edit
+or delete own and mistake cards), To do sorted by due date, own practice can be cleared (`hide_my_practice`,
+`assignments.learner_hidden`), Today's "Marks back" counts this week. Parents: overdue first in Coming up, and Settings →
+Your children → Stop following (`parent_unlink`).
+Website (10 Oct 2026): an Apple-style layer at the end of website/site.css (from emilkowalski/skills apple-design): system
+fonts (no Google Fonts), tight display tracking, a glass header whose links never wrap (menu button under 1180px), pill
+buttons that press in on touch, solid quiet cards, no idle loops (bob, float, pulse, shimmer, flow), and rules for reduced
+motion, reduced transparency and more contrast. Pages and wording unchanged.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

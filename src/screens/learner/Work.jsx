@@ -13,6 +13,7 @@ import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
 
 export default function Work() {
   const app = useApp();
+  const toast = useToast();
   const lk = useLookups();
   const assignments = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('myattempts', () => api.myAttempts()).data || [];
@@ -21,14 +22,23 @@ export default function Work() {
   const [tab, setTab] = useState(route.query.get('tab') || 'todo');
   const all = (assignments.data || []).map((a) => ({ a, s: workState(a, attempts) }));
   const states = all.filter((x) => !x.a.practice);
-  const practice = all.filter((x) => x.a.practice);
+  const practice = all.filter((x) => x.a.practice && !x.a.learner_hidden);
+  const byDue = (x, y) => (x.a.due_at ? new Date(x.a.due_at) : Infinity) - (y.a.due_at ? new Date(y.a.due_at) : Infinity);
   const groups = {
-    todo: states.filter((x) => needsAction(x.s)),
+    todo: states.filter((x) => needsAction(x.s)).sort(byDue),
     waiting: states.filter((x) => x.s.key === 'waiting'),
     marked: states.filter((x) => x.s.key === 'marked'),
     practice,
   };
   const list = groups[tab] || [];
+  async function clear(a) {
+    try {
+      await api.hideMyPractice([a.id]);
+      invalidate('assignments');
+    } catch (e) {
+      toast({ title: 'Couldn’t clear it', body: e.message, tone: 'bad' });
+    }
+  }
 
   return (
     <Page title="My work">
@@ -72,6 +82,19 @@ export default function Work() {
                     </span>
                   </span>
                   <span className="btn sm primary">{mine.length ? 'Practise again' : 'Start'}</span>
+                  {a.source === 'self' && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="btn sm ghost icon"
+                      aria-label={`Clear ${a.title}`}
+                      title="Clear it from this list (your progress keeps it)"
+                      onClick={(e) => (e.stopPropagation(), clear(a))}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.stopPropagation(), clear(a))}
+                    >
+                      <Icon name="x" size={14} />
+                    </span>
+                  )}
                 </button>
               );
             })}

@@ -303,8 +303,12 @@ function Review({ papers }) {
               aria-label="Delete paper"
               onClick={async () => {
                 if (!(await confirm({ title: 'Delete this paper?', body: 'Tutors who already copied it keep their copy.', ok: 'Delete', danger: true }))) return;
-                await api.adminDeletePaper(p.id);
-                invalidate('admin-papers', 'sb-papers');
+                try {
+                  await api.adminDeletePaper(p.id);
+                  invalidate('admin-papers', 'sb-papers');
+                } catch (e) {
+                  toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+                }
               }}
             >
               <Icon name="trash" size={14} />

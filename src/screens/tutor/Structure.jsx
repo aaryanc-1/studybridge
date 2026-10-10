@@ -28,7 +28,15 @@ export default function Structure() {
     }
   }
   async function delSubj(s) {
-    if (!(await confirm({ title: `Delete ${s.name}?`, body: 'Its topics are deleted too. Assignments and files keep existing but lose the subject.', ok: 'Delete', danger: true }))) return;
+    if (
+      !(await confirm({
+        title: `Delete ${s.name}?`,
+        body: 'This also deletes its topics, flashcards, teaching plan and coverage, your learners’ formula sheets for it, and who takes it. Assignments, lesson notes and files stay but lose the subject. This can’t be undone.',
+        ok: 'Delete subject',
+        danger: true,
+      }))
+    )
+      return;
     try {
       await api.remove('subjects', s.id);
       lk.reload();
@@ -105,6 +113,7 @@ export default function Structure() {
 }
 
 function SubjectRow({ s, onEdit, onDelete }) {
+  const confirm = useConfirm();
   const app = useApp();
   const lk = useLookups();
   const toast = useToast();
@@ -172,6 +181,7 @@ function SubjectRow({ s, onEdit, onDelete }) {
               style={{ minHeight: 20, width: 20, height: 20 }}
               aria-label={`Remove topic ${t.name}`}
               onClick={async () => {
+                if (!(await confirm({ title: `Remove the topic ${t.name}?`, body: 'Questions and work tagged with it lose the topic.', ok: 'Remove', danger: true }))) return;
                 await api.remove('topics', t.id).catch((e) => toast({ title: e.message, tone: 'bad' }));
                 lk.reload();
               }}

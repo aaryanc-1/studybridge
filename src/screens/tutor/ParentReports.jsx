@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { Avatar, Empty, Field, Loading, Modal, Page, copyText, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Loading, Modal, Page, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { weekRange, ago } from '../../lib/format.js';
@@ -249,6 +249,30 @@ function ExamModal({ l, s, onClose }) {
 function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
   const onClose = onSent;
   const toast = useToast();
+  const confirm = useConfirm();
+  // an approved report can be taken back (to fix it); a finished week's draft can be skipped
+  async function withdraw() {
+    if (!(await confirm({ title: 'Withdraw this report?', body: 'Parents won’t see it in StudyBridge any more, and it goes back to a draft you can fix and approve again. A copy already sent by WhatsApp or email stays with them.', ok: 'Withdraw' }))) return;
+    try {
+      await api.withdrawReport(r.id);
+      invalidate('parent-reports');
+      toast('Withdrawn. It’s a draft again.');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t withdraw it', body: e.message, tone: 'bad' });
+    }
+  }
+  async function skip() {
+    if (!(await confirm({ title: 'Skip this week’s report?', body: 'It won’t be sent, and it stops waiting for you.', ok: 'Skip it' }))) return;
+    try {
+      await api.skipReport(r.id);
+      invalidate('parent-reports');
+      toast('Skipped');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t skip it', body: e.message, tone: 'bad' });
+    }
+  }
   const [r, setR] = useState(report);
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(false);
@@ -329,9 +353,12 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
           {sent ? (
             <>
               <div className="small muted">Approved {ago(r.sent_at)}.</div>
-              <div>
+              <div className="row wrap">
                 <button className="btn" onClick={printReport}>
                   <Icon name="download" size={16} /> Print or save as PDF
+                </button>
+                <button className="btn ghost" onClick={withdraw}>
+                  Withdraw
                 </button>
               </div>
             </>
@@ -362,6 +389,11 @@ function ReportBody({ report, contact, parents = 0, thisWeek, onSent }) {
                 <button className="btn" onClick={async () => (await saveWords(), toast('Saved'))}>
                   Save
                 </button>
+                {!thisWeek && (
+                  <button className="btn ghost" disabled={busy} onClick={skip}>
+                    Skip this week
+                  </button>
+                )}
                 {parents > 0 && (
                   <button className="btn primary" disabled={busy} onClick={() => approve('app')}>
                     <Icon name="check" size={18} /> Approve

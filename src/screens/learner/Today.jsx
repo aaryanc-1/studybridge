@@ -196,7 +196,7 @@ export default function Today() {
             <h2>This week</h2>
             <div className="grid g2" style={{ gap: 12 }}>
               <div className="stat">
-                <div className="n">{back.length}</div>
+                <div className="n">{attempts.filter((t) => t.released && new Date(t.released_at || t.submitted_at) >= weekRange(0).from).length}</div>
                 <div className="l">Marks back</div>
               </div>
               <div className="stat">

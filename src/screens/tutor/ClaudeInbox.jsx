@@ -104,6 +104,7 @@ export function DraftsWaiting() {
 }
 
 function MarkingDraft({ d }) {
+  const confirm = useConfirm();
   const lk = useLookups();
   const toast = useToast();
   const detail = useQuery(d.attempt_id ? `attempt:${d.attempt_id}` : null, () => api.attemptDetail(d.attempt_id));
@@ -128,8 +129,13 @@ function MarkingDraft({ d }) {
     }
   }
   async function discard() {
-    await api.discardDraft(d.id);
-    invalidate('drafts');
+    if (!(await confirm({ title: 'Discard this suggested marking?', body: 'Nothing changes for your learner.', ok: 'Discard', danger: true }))) return;
+    try {
+      await api.discardDraft(d.id);
+      invalidate('drafts');
+    } catch (e) {
+      toast({ title: 'Couldn’t discard it', body: e.message, tone: 'bad' });
+    }
   }
 
   return (
@@ -188,6 +194,7 @@ function MarkingDraft({ d }) {
 }
 
 function MessageDraft({ d }) {
+  const confirm = useConfirm();
   const lk = useLookups();
   const toast = useToast();
   const [body, setBody] = useState(d.payload?.body || '');
@@ -206,8 +213,13 @@ function MessageDraft({ d }) {
           <button
             className="btn sm"
             onClick={async () => {
-              await api.discardDraft(d.id);
-              invalidate('drafts');
+              if (d.kind === 'message' && !(await confirm({ title: 'Discard this message?', body: 'It’s never sent.', ok: 'Discard', danger: true }))) return;
+              try {
+                await api.discardDraft(d.id);
+                invalidate('drafts');
+              } catch (e) {
+                toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+              }
             }}
           >
             {d.kind === 'message' ? 'Discard' : 'Dismiss'}

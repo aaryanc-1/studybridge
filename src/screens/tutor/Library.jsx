@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { AudiencePicker, Empty, Field, Link, Markdown, Modal, Page, Seg, VisibilityPicker, VisibilityPill, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { AudiencePicker, Empty, Field, Link, Markdown, Modal, Page, Seg, VisibilityPicker, VisibilityPill, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { bytes, ago } from '../../lib/format.js';
@@ -44,6 +44,7 @@ export default function Library({ tab = 'files' }) {
 function Files() {
   const lk = useLookups();
   const toast = useToast();
+  const confirm = useConfirm();
   const files = useQuery('files', api.listFiles);
   const [over, setOver] = useState(false);
   const [uploading, setUploading] = useState([]);
@@ -52,6 +53,29 @@ function Files() {
   const input = useRef(null);
   const papers = (files.data || []).filter((f) => f.exam_board).length;
   const list = (files.data || []).filter((f) => !f.exam_board && (!subject || f.subject_id === subject));
+
+  // Show to learners (everyone taking its subject, or the learners chosen in Settings) or hide again
+  async function showHide(f) {
+    try {
+      const show = f.visibility === 'hidden';
+      if (show && f.cloud === false) await api.ensureCloud(f);
+      await api.save('files', { id: f.id, visibility: show ? 'visible' : 'hidden', visible_from: null });
+      invalidate('files');
+      toast(show ? `${f.name} is shared with learners` : `${f.name} is hidden from learners`);
+    } catch (e) {
+      toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+    }
+  }
+  async function del(f) {
+    if (!(await confirm({ title: `Delete ${f.name}?`, body: 'It’s removed for everyone.', ok: 'Delete', danger: true }))) return;
+    try {
+      await api.deleteFile(f);
+      invalidate('files');
+      toast('Deleted');
+    } catch (e) {
+      toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+    }
+  }
 
   async function upload(fileList) {
     const arr = [...fileList];
@@ -117,6 +141,14 @@ function Files() {
       {list.length === 0 ? (
         files.data && <Empty>Nothing in My files yet.</Empty>
       ) : (
+        [
+          ['Shared with learners', list.filter((f) => f.visibility !== 'hidden')],
+          ['Hidden from learners', list.filter((f) => f.visibility === 'hidden')],
+        ].map(([title, rows]) => rows.length > 0 && (
+        <section key={title} className="stack sm">
+        <h2 className="list-head">
+          {title} <span className="muted">({rows.length})</span>
+        </h2>
         <div className="card pad0">
           <table className="table responsive">
             <thead>
@@ -129,7 +161,7 @@ function Files() {
               </tr>
             </thead>
             <tbody>
-              {list.map((f) => (
+              {rows.map((f) => (
                 <tr key={f.id} className="click" onClick={() => go(`/file/${f.id}`)}>
                   <td data-label="Name">
                     <div className="row">
@@ -149,21 +181,25 @@ function Files() {
                   </td>
                   <td data-label="Size" className="muted">{bytes(f.size)}</td>
                   <td>
-                    <button
-                      className="btn sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEdit(f);
-                      }}
-                    >
-                      Settings
-                    </button>
+                    <span className="row" style={{ gap: 6, justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                      <button className="btn sm" onClick={() => showHide(f)}>
+                        {f.visibility === 'hidden' ? 'Show' : 'Hide'}
+                      </button>
+                      <button className="btn sm" onClick={() => setEdit(f)}>
+                        Settings
+                      </button>
+                      <button className="btn sm ghost icon" onClick={() => del(f)} aria-label={`Delete ${f.name}`}>
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </span>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        </section>
+        ))
       )}
       {edit && <FileSettings file={edit} onClose={() => setEdit(null)} />}
     </>
@@ -206,7 +242,11 @@ export function FileSettings({ file, onClose }) {
             style={{ marginRight: 'auto' }}
             onClick={async () => {
               if (!(await confirm({ title: `Delete ${f.name}?`, body: 'It’s removed for everyone.', ok: 'Delete', danger: true }))) return;
-              await api.deleteFile(f);
+              try {
+                await api.deleteFile(f);
+              } catch (e) {
+                return setErr(e.message);
+              }
               invalidate('files');
               onClose();
             }}
@@ -262,9 +302,79 @@ export function FileSettings({ file, onClose }) {
   );
 }
 
+const lessonWaiting = (l) => l.draft || l.visibility === 'hidden' || (l.visibility === 'scheduled' && l.visible_from && new Date(l.visible_from) > new Date());
+
+// Tapping lesson notes: edit, post (or hide again), or delete
+function LessonOptions({ l, onClose }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const files = useQuery('files', api.listFiles).data || [];
+  const [busy, setBusy] = useState(false);
+  const waiting = lessonWaiting(l);
+  async function act(fn) {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const post = () =>
+    act(async () => {
+      if (!l.title.trim() || !l.body_md.trim()) throw new Error('Write the lesson notes first (Edit).');
+      const visibility = l.visibility === 'scheduled' && l.visible_from && new Date(l.visible_from) > new Date() ? 'scheduled' : 'visible';
+      await api.ensureCloudIds(l.file_ids || [], files);
+      await api.save('lessons', { id: l.id, visibility, visible_from: visibility === 'scheduled' ? l.visible_from : null, draft: false, updated_at: new Date().toISOString() });
+      invalidate('lessons', 'drafts');
+      const who = lk.audience(l).map((x) => x.display_name);
+      toast({ title: `Posted: ${l.title}`, body: who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.' });
+      onClose();
+    });
+  const hide = () =>
+    act(async () => {
+      await api.save('lessons', { id: l.id, visibility: 'hidden', updated_at: new Date().toISOString() });
+      invalidate('lessons');
+      toast('Hidden from learners');
+      onClose();
+    });
+  const del = () =>
+    act(async () => {
+      if (!(await confirm({ title: l.draft ? 'Discard these lesson notes?' : `Delete “${l.title}”?`, body: l.draft ? 'Learners never saw them.' : 'Learners won’t see them any more.', ok: l.draft ? 'Discard' : 'Delete', danger: true }))) return;
+      await api.remove('lessons', l.id);
+      invalidate('lessons', 'drafts');
+      toast(l.draft ? 'Discarded' : 'Deleted');
+      onClose();
+    });
+  return (
+    <Modal title={l.title} onClose={onClose}>
+      <div className="sheet-actions">
+        <button className="btn" onClick={() => go(`/lesson/${l.id}`)}>
+          <Icon name="pen" size={18} /> Edit
+        </button>
+        {waiting ? (
+          <button className="btn primary" disabled={busy} onClick={post}>
+            <Icon name="send" size={18} /> {l.draft ? 'Approve & post' : 'Post now'}
+          </button>
+        ) : (
+          <button className="btn" disabled={busy} onClick={hide}>
+            <Icon name="eye" size={18} /> Hide from learners
+          </button>
+        )}
+        <button className="btn danger" disabled={busy} onClick={del}>
+          <Icon name="trash" size={18} /> {l.draft ? 'Discard' : 'Delete'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function Lessons() {
   const lessons = useQuery('lessons', api.listLessons);
   const lk = useLookups();
+  const [open, setOpen] = useState(null);
   const list = lessons.data || [];
   if (lessons.data && list.length === 0)
     return (
@@ -280,24 +390,41 @@ function Lessons() {
       </Empty>
     );
   return (
-    <div className="card">
-      <div className="list">
-        {list.map((l) => (
-          <Link key={l.id} to={`/lesson/${l.id}`} className="item">
-            <Icon name="book" style={{ color: 'var(--accent)' }} />
-            <span className="grow">
-              <span className="name">{l.title}</span>
-              <span className="meta">
-                {l.subject_id && <SubjectTag id={l.subject_id} />}
-                {l.topic_id && <span>{lk.topic(l.topic_id)?.name}</span>}
-                <span>Updated {ago(l.updated_at)}</span>
-              </span>
-            </span>
-            <VisibilityPill item={l} />
-          </Link>
-        ))}
-      </div>
-    </div>
+    <>
+      {[
+        ['Not posted yet', list.filter(lessonWaiting)],
+        ['Posted', list.filter((l) => !lessonWaiting(l))],
+      ].map(
+        ([title, rows]) =>
+          rows.length > 0 && (
+            <section key={title} className="stack sm">
+              <h2 className="list-head">
+                {title} <span className="muted">({rows.length})</span>
+              </h2>
+              <div className="card">
+                <div className="list">
+                  {rows.map((l) => (
+                    <button key={l.id} className="item" onClick={() => setOpen(l)} aria-haspopup="dialog">
+                      <Icon name="book" style={{ color: 'var(--accent)' }} />
+                      <span className="grow">
+                        <span className="name">{l.title}</span>
+                        <span className="meta">
+                          {l.subject_id && <SubjectTag id={l.subject_id} />}
+                          {l.topic_id && <span>{lk.topic(l.topic_id)?.name}</span>}
+                          <span>Updated {ago(l.updated_at)}</span>
+                        </span>
+                      </span>
+                      <VisibilityPill item={l} />
+                      <Icon name="more" size={18} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          ),
+      )}
+      {open && <LessonOptions l={open} onClose={() => setOpen(null)} />}
+    </>
   );
 }
 
@@ -311,16 +438,19 @@ export function LessonEditor({ id }) {
   const [l, setL] = useState(isNew ? { title: '', body_md: '', visibility: 'hidden', file_ids: [], learner_ids: [] } : null);
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const imgInput = useRef(null);
   const ta = useRef(null);
+  useLeaveGuard(dirty);
 
   useEffect(() => {
     if (!isNew && lessons.data && !l) setL(lessons.data.find((x) => x.id === id) || null);
   }, [lessons.data, id, isNew, l]);
   if (!l) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes no longer exist.</Empty> : null}</Page>;
-  const set = (patch) => setL((x) => ({ ...x, ...patch }));
+  const set = (patch) => (setL((x) => ({ ...x, ...patch })), setDirty(true));
 
   async function saveIt({ post = false } = {}) {
+    const wasLive = !!l.id && !l.draft && l.visibility !== 'hidden'; // already posted: saving keeps you here
     if (!l.title.trim()) return toast({ title: 'Give the lesson a title', tone: 'bad' });
     setBusy(true);
     try {
@@ -341,14 +471,20 @@ export function LessonEditor({ id }) {
       if (visibility !== 'hidden') await api.ensureCloudIds(row.file_ids, files);
       const saved = await api.save('lessons', row);
       invalidate('lessons');
+      setDirty(false);
+      if (post && wasLive) {
+        toast('Changes saved. Learners see the new version.');
+        setL(saved);
+        return;
+      }
       if (post) {
         const who = lk.audience(saved).map((x) => x.display_name);
         toast({ title: saved.visibility === 'scheduled' ? `Scheduled: ${saved.title}` : `Posted: ${saved.title}`, body: who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.' });
-        go('/library/lessons');
+        go('/library/lessons', { force: true });
         return;
       }
       toast('Lesson saved');
-      if (isNew) go(`/lesson/${saved.id}`, { replace: true });
+      if (isNew) go(`/lesson/${saved.id}`, { replace: true, force: true });
       setL(saved);
     } catch (e) {
       toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
@@ -384,9 +520,13 @@ export function LessonEditor({ id }) {
               className="btn danger"
               onClick={async () => {
                 if (!(await confirm({ title: l.draft ? 'Discard these lesson notes?' : 'Delete these lesson notes?', body: l.draft ? 'Learners never saw them.' : undefined, ok: l.draft ? 'Discard' : 'Delete', danger: true }))) return;
-                await api.remove('lessons', l.id);
+                try {
+                  await api.remove('lessons', l.id);
+                } catch (e) {
+                  return toast({ title: 'Couldn’t delete them', body: e.message, tone: 'bad' });
+                }
                 invalidate('lessons', 'drafts');
-                go(l.draft ? '/prof' : '/library/lessons');
+                go(l.draft ? '/prof' : '/library/lessons', { force: true });
               }}
             >
               {l.draft ? 'Discard' : 'Delete'}

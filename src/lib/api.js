@@ -304,6 +304,12 @@ export const adminContentDecide = (kind, id, action, fix = null) => run(sb().rpc
 export const adminReportDone = (id, reply = null) => run(sb().rpc('admin_report_done', { p_report: id, p_reply: reply }));
 export const adminSetPayLinks = (monthly, pass) => run(sb().rpc('admin_set_pay_links', { p_monthly: monthly, p_pass: pass }));
 export const studentPayLinks = () => run(sb().rpc('student_pay_links'));
+// Basic fixes: let a learner carry on after handing in, skip or withdraw a weekly report, clear own practice, a parent unlinks
+export const reopenAttempt = (id) => run(sb().rpc('reopen_attempt', { p_attempt: id }));
+export const skipReport = (id) => run(sb().rpc('skip_report', { p_report: id }));
+export const withdrawReport = (id) => run(sb().rpc('withdraw_report', { p_report: id }));
+export const hideMyPractice = (ids) => run(sb().rpc('hide_my_practice', { p_ids: ids }));
+export const parentUnlink = (learnerId) => run(sb().rpc('parent_unlink', { p_learner: learnerId }));
 export const createParentInvite = (learnerId, name) => run(sb().rpc('create_parent_invite', { p_learner: learnerId, p_name: name || null }));
 export const revokeParentInvite = (id) => run(sb().rpc('revoke_parent_invite', { p_invite: id }));
 export const learnerParents = (learnerId = null) => run(sb().rpc('learner_parents', { p_learner: learnerId }));
