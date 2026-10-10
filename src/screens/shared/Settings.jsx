@@ -8,7 +8,7 @@ import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
 import { sb } from '../../lib/supabase.js';
 import { connectLink, desktop, timezone, SUPPORT_EMAIL } from '../../lib/config.js';
-import { useUpdateStatus, AccountSwitcher } from './Shell.jsx';
+import { useUpdateStatus, AccountSwitcher, restartWaiting } from './Shell.jsx';
 import { palette } from '../../lib/format.js';
 import ReportCard from './ReportCard.jsx';
 import { dataZip } from '../../lib/zip.js';
@@ -989,7 +989,9 @@ function About() {
       {desktop?.updatesOn && st && (
         <div className="row small">
           <span className="muted">
-            {st.state === 'ready'
+            {restartWaiting(st)
+              ? `Version ${st.version} is downloaded. Restart StudyBridge to use it.`
+              : st.state === 'ready'
               ? `Version ${st.version} is ready (see the banner at the top).`
               : st.state === 'downloading'
                 ? `Downloading version ${st.version}…`
@@ -999,7 +1001,12 @@ function About() {
                     ? 'You have the latest version.'
                     : 'Updates install by themselves.'}
           </span>
-          {st.state !== 'downloading' && (
+          {restartWaiting(st) && (
+            <button className="linkbtn small" onClick={() => desktop.restart()}>
+              Restart now
+            </button>
+          )}
+          {st.state !== 'downloading' && !restartWaiting(st) && (
             <button
               className="linkbtn small"
               disabled={busy}

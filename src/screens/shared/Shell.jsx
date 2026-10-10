@@ -457,6 +457,17 @@ export function useUpdateStatus() {
   return st;
 }
 
+// "1.1.68" is newer than "1.1.9"
+const newerVersion = (a, b) => {
+  const pa = String(a || '0').split('.').map(Number);
+  const pb = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
+// A newer version is already downloaded and only needs a restart. The desktop shell's later checks say "up to date"
+// while it waits (nothing newer to fetch), which hid the restart bar; its status still names the waiting version.
+export const restartWaiting = (st) => !!st && st.kind === 'restart' && st.state !== 'ready' && st.state !== 'downloading' && newerVersion(st.version, st.current);
+
 // The website's download page: the way to update by hand if the app can't update itself
 const DOWNLOAD_PAGE = 'https://gostudybridge.com/download';
 
@@ -495,7 +506,8 @@ function UpdateBanner() {
       </div>
     );
   }
-  if (st.state !== 'ready') return null;
+  const waiting = restartWaiting(st);
+  if (st.state !== 'ready' && !waiting) return null;
   const mac = st.kind === 'mac-install';
   const install = st.kind === 'install';
   return (
@@ -511,7 +523,7 @@ function UpdateBanner() {
       <button
         className="btn sm"
         onClick={async () => {
-          const r = await desktop.updates.apply();
+          const r = waiting ? await desktop.restart() : await desktop.updates.apply();
           if (r?.error) toast({ title: r.error, tone: 'bad' });
           if (mac) setHidden(true);
         }}

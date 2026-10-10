@@ -200,6 +200,11 @@ Website (10 Oct 2026): an Apple-style layer at the end of website/site.css (from
 fonts (no Google Fonts), tight display tracking, a glass header whose links never wrap (menu button under 1180px), pill
 buttons that press in on touch, solid quiet cards, no idle loops (bob, float, pulse, shimmer, flow), and rules for reduced
 motion, reduced transparency and more contrast. Pages and wording unchanged. Same day, Aaryan found it too spaced out: a "Tighter" block at the very end of site.css halves section padding (64px, 44px on phones), shrinks h1/h2 and the gaps (the home page is about 17% shorter).
+Updater bug (10 Oct 2026): after the shell downloads a new bundle (state 'ready', pending), a later check (or "Check now")
+finds nothing newer than the pending one and sets 'up-to-date', which hid the restart bar while the old version kept running.
+Fixed in the app, not the shell (a shell change forces everyone to reinstall): `restartWaiting(st)` in Shell.jsx (status still
+has kind 'restart' and the waiting version, newer than `current`) shows the bar and Settings' "Restart now" (`desktop.restart()`).
+Next time electron/ changes anyway, make updater.cjs's check() keep 'ready' when `s.pending` is newer than `status.current`.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
