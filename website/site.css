@@ -671,12 +671,12 @@ h2 { font-size: clamp(32px, 4.8vw, 56px); letter-spacing: -0.03em; line-height: 
 h3 { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.24; }
 h1 em { font-style: normal; font-weight: 700; animation: none; background-size: 100% auto; }
 .lead { font-size: clamp(19px, 2.2vw, 24px); line-height: 1.38; letter-spacing: -0.016em; color: var(--muted); }
-.sub { font-size: clamp(19px, 2vw, 21px); line-height: 1.42; color: var(--muted); max-width: 680px; margin-bottom: 48px; }
+.sub { font-size: clamp(18px, 1.9vw, 20px); line-height: 1.42; color: var(--muted); max-width: 680px; margin-bottom: 28px; }
 .eyebrow { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; color: var(--accent-ink); margin-bottom: 10px; }
 .fine { font-size: 14px; }
 .small { font-size: 15px; }
-section { padding: 120px 0; }
-@media (max-width: 640px) { section { padding: 76px 0; } .sub { margin-bottom: 32px; } }
+section { padding: 64px 0; }
+@media (max-width: 640px) { section { padding: 44px 0; } .sub { margin-bottom: 20px; } }
 .wrap { max-width: 1120px; padding: 0 22px; }
 
 /* The header: a thin sheet of glass, links that never wrap, a menu button on smaller screens */
@@ -757,3 +757,21 @@ select, input[type=date], input[type=email], input[type=text], input:not([type])
   .js .stagger > * { opacity: 1; translate: none; scale: none; }
   .btn:active, .fit-card:active { transform: none; }
 }
+
+/* Tighter (10 Oct 2026): less empty space between and inside sections, so a screen holds more */
+.hero { padding: 40px 0 56px; }
+.page-hero { padding: 44px 0 8px; }
+.page-head { padding: 40px 0 16px; }
+.hero-grid, .prof-grid { gap: 40px; }
+.steps, .t-grid { margin-top: 24px; }
+.inside { margin-top: 32px; gap: 20px 32px; }
+.pricing { margin-top: 48px; }
+.trust-sec { padding: 48px 0; }
+.foot { padding: 40px 0 24px; }
+.legal { padding: 40px 0 56px; }
+h1 { font-size: clamp(40px, 6vw, 68px); }
+h2 { font-size: clamp(28px, 4vw, 44px); margin-bottom: .35em; }
+.eyebrow { margin-bottom: 6px; }
+.pill { margin-bottom: 16px; }
+.cta { margin: 22px 0 10px; }
+@media (max-width: 640px) { .hero { padding: 28px 0 40px; } .page-hero { padding: 32px 0 4px; } .hero-grid, .prof-grid { gap: 28px; } }

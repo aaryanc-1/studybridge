@@ -199,7 +199,7 @@ Your children → Stop following (`parent_unlink`).
 Website (10 Oct 2026): an Apple-style layer at the end of website/site.css (from emilkowalski/skills apple-design): system
 fonts (no Google Fonts), tight display tracking, a glass header whose links never wrap (menu button under 1180px), pill
 buttons that press in on touch, solid quiet cards, no idle loops (bob, float, pulse, shimmer, flow), and rules for reduced
-motion, reduced transparency and more contrast. Pages and wording unchanged.
+motion, reduced transparency and more contrast. Pages and wording unchanged. Same day, Aaryan found it too spaced out: a "Tighter" block at the very end of site.css halves section padding (64px, 44px on phones), shrinks h1/h2 and the gaps (the home page is about 17% shorter).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
