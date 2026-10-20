@@ -407,13 +407,29 @@ export function Bar({ value, tone = '' }) {
   );
 }
 
+// Copy to the clipboard (from a tap or click). The old copy command works on every browser without asking for
+// permission; the newer clipboard is tried only when it doesn't. Never throws: some browsers refuse the clipboard,
+// and before this a refusal was an unhandled error (the button sweep found it on the build robot's browser).
 export function copyText(t) {
+  const text = String(t ?? '');
+  const prev = document.activeElement;
+  let ok = false;
   try {
-    navigator.clipboard.writeText(t);
-    return true;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length); // iPhones
+    ok = document.execCommand('copy');
+    ta.remove();
+    prev?.focus?.({ preventScroll: true });
   } catch {
-    return false;
+    ok = false;
   }
+  if (!ok) navigator.clipboard?.writeText(text).catch(() => {});
+  return ok;
 }
 
 // Keeps one broken screen from blanking the whole app

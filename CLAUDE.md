@@ -280,6 +280,8 @@ to action asks `open_subjects()`: free week if open, else "Ask for this subject"
 og/twitter tags added to every page by the build, share.png (1200×630) from `python scripts/make-share.py`. Student buttons on
 students.html, index.html and the countdown show "Start your free week" once any subject is open (`data-students="open"`), the
 early-access ones until then (`data-students="closed"`). Submit https://gostudybridge.com/sitemap.xml to Google Search Console.
+`copyText` (kit.jsx) copies with the old copy command first and only then the newer clipboard, and never throws (the CI sweep
+found "Write permission denied" errors); the sweep refuses the newer clipboard on purpose to keep it that way.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

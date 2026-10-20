@@ -1139,6 +1139,10 @@ try {
       ['Parent, on a phone', 'dad@example.com', true],
     ]) {
       const pg = await (await browser.newContext(phone ? { viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true } : { viewport: { width: 1300, height: 860 } })).newPage();
+      // like many browsers (and the build robot's), refuse the newer clipboard: copying must still work, quietly
+      await pg.addInitScript(() => {
+        if (navigator.clipboard) navigator.clipboard.writeText = () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'));
+      });
       await signIn(pg, web.url, email);
       reports.push(await sweep(pg, who));
       console.log(`  ${who}: ${reports.at(-1).routes.length} screens, ${reports.at(-1).clicked} buttons, ${reports.at(-1).inPopups} in pop-ups, ${reports.at(-1).failures.length} broke`);
