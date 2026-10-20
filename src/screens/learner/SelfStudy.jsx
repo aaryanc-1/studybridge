@@ -1,6 +1,6 @@
-// Students on their own (launch 1): the guided setup, their plan on Today, what they see when the free week ends,
-// paying, hints, and reporting a problem with StudyBridge's own content
-import { useMemo, useState } from 'react';
+// Students on their own (launch 1): the guided setup, the starting check, their plan on Today, what they see when the
+// free week ends, paying, hints, and reporting a problem with StudyBridge's own content
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Link, Markdown, Modal, Page, go, useToast } from '../../ui/kit.jsx';
@@ -30,7 +30,8 @@ export function SelfSetup({ again = false }) {
   const [busy, setBusy] = useState(false);
 
   // only what students can take now: subjects open to them, and the boards and levels that have one
-  const open = new Set(lk.subjects.filter((s) => s.live && s.catalogue).map((s) => s.catalogue));
+  // (the Owner's test students also see subjects that aren't open yet, to try them first)
+  const open = new Set(lk.subjects.filter((s) => (s.live || me.test_student) && s.catalogue).map((s) => s.catalogue));
   const hasOpen = (subjects) => subjects.some((c) => open.has(c.key));
   const boards = BOARDS.filter((b) => b.levels.some((l) => hasOpen(l.subjects)));
   const board = boards.find((b) => b.id === boardId);
@@ -39,8 +40,8 @@ export function SelfSetup({ again = false }) {
   const level = levels.find((l) => l.id === levelId) || (levels.length === 1 ? levels[0] : null);
   // the catalogue entries, matched to the content account's subjects (only open ones can be chosen)
   const rows = useMemo(
-    () => (level ? level.subjects.map((c) => ({ c, s: lk.subjects.find((x) => x.catalogue === c.key) })).filter((r) => r.s?.live) : []),
-    [level, lk.subjects],
+    () => (level ? level.subjects.map((c) => ({ c, s: lk.subjects.find((x) => x.catalogue === c.key) })).filter((r) => r.s && (r.s.live || me.test_student)) : []),
+    [level, lk.subjects, me.test_student],
   );
   const sessions = board ? upcomingSessions(board.id) : [];
   const steps = ['Exam board', 'Level', 'Subjects', 'Exams', 'Time'];
@@ -51,8 +52,8 @@ export function SelfSetup({ again = false }) {
       await api.selfSetup({ board: board.name, level: level.name, subjects: picked, examDate: exam.date, examLabel: exam.label, hours });
       lk.reload(); // their subjects changed
       await app.refreshMe();
-      toast({ title: 'Your plan is ready', body: 'Here’s what to do this week.' });
-      go('/');
+      toast({ title: 'Your plan is ready', body: again ? 'Here’s what to do this week.' : 'One more thing: a quick starting check.' });
+      go(again ? '/' : '/check');
     } catch (e) {
       toast({ title: 'Couldn’t save that', body: e.message, tone: 'bad' });
     } finally {
@@ -120,6 +121,7 @@ export function SelfSetup({ again = false }) {
                   {on && <Icon name="check" size={14} />}
                   {c.subject}
                   {c.code && <small>{c.code}</small>}
+                  {!s.live && <small>not open yet</small>}
                 </button>
               );
             })}
@@ -199,7 +201,12 @@ export function SelfPlan() {
   const app = useApp();
   const lk = useLookups();
   const me = app.me;
+  const topics = useQuery(me?.self_learner ? 'my-topics' : null, api.myTopics).data || [];
+  const checks = useQuery(me?.self_learner ? 'starting-checks' : null, api.myStartingChecks).data || {};
   if (!me?.self_learner || !me.exam_date) return null;
+  // after the starting check: the topics that need the most work, first
+  const workOn = (sid) =>
+    checks[sid]?.done ? topics.filter((x) => x.subject_id === sid && (x.strength === 'weak' || x.strength === 'developing')).sort((x, y) => (x.ratio ?? 1) - (y.ratio ?? 1)).slice(0, 4) : [];
   const t = today();
   const weeks = Math.max(0, Math.ceil((at(me.exam_date) - at(t)) / (7 * 864e5)));
   const start = me.plan_start && me.plan_start <= t ? me.plan_start : t;
@@ -242,6 +249,17 @@ export function SelfPlan() {
                   <i style={{ width: `${r.pct}%` }} />
                 </span>
               )}
+              {workOn(r.s.id).length > 0 && (
+                <span className="meta work-on">
+                  <b>Work on first:</b>{' '}
+                  {workOn(r.s.id).map((x, i) => (
+                    <span key={x.id}>
+                      {i > 0 && ' · '}
+                      <Link to={`/study?subject=${r.s.id}&topic=${encodeURIComponent(x.name)}`}>{x.name}</Link>
+                    </span>
+                  ))}
+                </span>
+              )}
             </span>
             {r.topic && (
               <Link to={`/study?subject=${r.s.id}&topic=${encodeURIComponent(r.topic)}`} className="btn sm" aria-label={`Practise ${r.topic}`}>
@@ -259,6 +277,133 @@ export function SelfPlan() {
           Change subjects or exams
         </Link>
       </div>
+    </div>
+  );
+}
+
+// The starting check (about 12 questions per subject, auto-marked, no time limit): what they already know, so the plan
+// can say what to work on first. Offered once after the setup (/check) and on Today until done or skipped.
+const skipKey = (sid) => `sb.checkSkip.${sid}`;
+const skipped = (sid) => {
+  try {
+    return localStorage.getItem(skipKey(sid)) === '1';
+  } catch {
+    return false;
+  }
+};
+
+function useCheckable() {
+  const lk = useLookups();
+  const app = useApp();
+  const practice = useQuery('practice-topics', api.practiceTopics).data;
+  const checks = useQuery('starting-checks', api.myStartingChecks);
+  const mine = lk.subjects.filter((s) => lk.learnerSubjects.some((k) => k.subject_id === s.id && k.learner_id === app.me.id));
+  // only subjects with practice questions can have a check
+  const ready = mine.filter((s) => (practice || []).some((p) => p.subject_id === s.id));
+  return { ready, checks: checks.data || {}, loading: !practice || !checks.data };
+}
+
+async function startCheckFor(subjectId, toast) {
+  try {
+    const r = await api.startCheck(subjectId);
+    const t = await api.startAttempt(r.assignment_id);
+    go(`/attempt/${t.id}`);
+  } catch (e) {
+    toast({ title: 'Couldn’t start the check', body: e.message, tone: 'bad' });
+  }
+}
+
+export function StartingCheck() {
+  const toast = useToast();
+  const { ready, checks, loading } = useCheckable();
+  const [busy, setBusy] = useState('');
+  // no questions for their subjects yet: nothing to check, straight to the plan
+  useEffect(() => {
+    if (!loading && !ready.length) go('/', { replace: true });
+  }, [loading, ready.length]);
+  return (
+    <Page eyebrow="One more thing" title="A quick starting check" subtitle="About 12 questions for each subject, from different topics. No time limit and nothing to revise first: just do what you can.">
+      <div className="card stack">
+        <p className="muted">It shows what you already know, so your plan can tell you which topics to work on first. It takes about 15 minutes a subject.</p>
+        {loading && <div className="muted small">One moment…</div>}
+        {!loading && !ready.length && <div className="note small">There aren’t questions for your subjects yet, so there’s no check to take. Your plan is ready.</div>}
+        <div className="list">
+          {ready.map((s) => {
+            const c = checks[s.id];
+            return (
+              <div key={s.id} className="item">
+                <span className="swatch" style={{ background: s.color || '#0E6B6B' }} />
+                <span className="grow">
+                  <span className="name">{s.name}</span>
+                  <span className="meta">{c?.done ? `Done: ${c.score ?? 0} out of ${c.max ?? 0}` : c ? 'Started' : 'Not taken yet'}</span>
+                </span>
+                {c?.done ? (
+                  <Link to={`/results/${c.attempt_id}`} className="btn sm">
+                    See how it went
+                  </Link>
+                ) : (
+                  <button
+                    className="btn sm primary"
+                    disabled={!!busy}
+                    onClick={async () => {
+                      setBusy(s.id);
+                      await startCheckFor(s.id, toast);
+                      setBusy('');
+                    }}
+                  >
+                    {busy === s.id ? 'Opening…' : c ? 'Carry on' : 'Start the check'}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              for (const s of ready) if (!checks[s.id]?.done) try { localStorage.setItem(skipKey(s.id), '1'); } catch {}
+              go('/');
+            }}
+          >
+            Skip for now
+          </button>
+        </div>
+      </div>
+    </Page>
+  );
+}
+
+// On Today: subjects whose starting check isn't done (and wasn't skipped)
+export function CheckNudge() {
+  const app = useApp();
+  const toast = useToast();
+  const { ready, checks } = useCheckable();
+  const [, setTick] = useState(0);
+  if (!app.me?.self_learner) return null;
+  const todo = ready.filter((s) => !checks[s.id]?.done && !skipped(s.id));
+  if (!todo.length) return null;
+  return (
+    <div className="card row wrap check-nudge">
+      <Icon name="target" style={{ color: 'var(--accent)' }} />
+      <span className="grow">
+        <b>Take your starting check</b>
+        <span className="small muted" style={{ display: 'block' }}>
+          About 15 minutes for {todo.map((s) => s.name).join(', ')}. Your plan then shows what to work on first.
+        </span>
+      </span>
+      <button className="btn sm primary" onClick={() => (todo.length === 1 ? startCheckFor(todo[0].id, toast) : go('/check'))}>
+        Start
+      </button>
+      <button
+        className="btn sm ghost"
+        onClick={() => {
+          for (const s of todo) try { localStorage.setItem(skipKey(s.id), '1'); } catch {}
+          setTick((x) => x + 1);
+        }}
+      >
+        Not now
+      </button>
     </div>
   );
 }
@@ -307,13 +452,14 @@ export function monthsToExams(examDate, now = new Date()) {
 }
 
 // Pay by card (the Owner's Stripe links), or another way through Contact StudyBridge. The Owner marks it paid.
-export function PayOptions() {
+// A parent pays for their child the same way (forId: the child's account, so the Owner can match it).
+export function PayOptions({ forId = null, examDate = undefined, otherWay = null }) {
   const app = useApp();
   const links = useQuery('pay-links', api.studentPayLinks).data || {};
-  const months = monthsToExams(app.me.exam_date);
+  const months = monthsToExams(examDate === undefined ? app.me.exam_date : examDate);
   // the account's id goes with the payment so the Owner can match it (nothing personal goes in the link);
   // the desktop app opens it in the browser
-  const open = (url) => window.open(`${url}${url.includes('?') ? '&' : '?'}client_reference_id=${app.me.id}`, '_blank');
+  const open = (url) => window.open(`${url}${url.includes('?') ? '&' : '?'}client_reference_id=${forId || app.me.id}`, '_blank');
   const card = links.monthly || links.pass;
   return (
     <div className="stack sm">
@@ -328,7 +474,7 @@ export function PayOptions() {
             Exam pass by card: ${PRICE.passMonth * months} for {months} month{months === 1 ? '' : 's'}
           </button>
         )}
-        <button className={'btn' + (card ? ' ghost' : ' primary')} onClick={() => go('/settings?s=contact')}>
+        <button className={'btn' + (card ? ' ghost' : ' primary')} onClick={() => (otherWay ? otherWay() : go('/settings?s=contact'))}>
           <Icon name="message" size={18} /> {card ? 'Pay another way' : 'Ask about paying'}
         </button>
       </div>

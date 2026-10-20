@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { AudiencePicker, Empty, Field, Link, Markdown, Modal, Page, Seg, VisibilityPicker, VisibilityPill, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
+import { AudiencePicker, Empty, Field, Link, Markdown, Modal, Page, Seg, VisibilityPicker, VisibilityPill, go, useConfirm, useLeaveGuard, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { bytes, ago } from '../../lib/format.js';
+import { bytes, ago, day, when } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import PastPapers, { OpenBooks } from './PastPapers.jsx';
 import QuestionBank from './QuestionBank.jsx';
@@ -442,10 +442,20 @@ export function LessonEditor({ id }) {
   const imgInput = useRef(null);
   const ta = useRef(null);
   useLeaveGuard(dirty);
+  // Notes for a live lesson (Live → a past lesson → Write lesson notes): its title and date, and the same learners
+  const route = useRoute();
+  const fromSession = isNew ? route.query.get('session') : null;
+  const sid = fromSession || l?.session_id || null;
+  const sessions = useQuery(sid ? 'sessions:all' : null, api.listAllSessions).data;
+  const forSession = sid ? (sessions || []).find((x) => x.id === sid) : null;
 
   useEffect(() => {
     if (!isNew && lessons.data && !l) setL(lessons.data.find((x) => x.id === id) || null);
   }, [lessons.data, id, isNew, l]);
+  useEffect(() => {
+    if (!fromSession || !forSession || !l || l.session_id || dirty) return;
+    setL((x) => ({ ...x, title: x.title || `${forSession.title} (${day(forSession.starts_at)})`, learner_ids: forSession.learner_ids || [], session_id: forSession.id }));
+  }, [fromSession, forSession, l, dirty]);
   if (!l) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes no longer exist.</Empty> : null}</Page>;
   const set = (patch) => (setL((x) => ({ ...x, ...patch })), setDirty(true));
 
@@ -467,9 +477,15 @@ export function LessonEditor({ id }) {
         learner_ids: l.learner_ids?.length ? l.learner_ids : null,
         draft: post ? false : !!l.draft,
         updated_at: new Date().toISOString(),
+        ...(l.session_id ? { session_id: l.session_id } : {}), // written for a live lesson
       };
       if (visibility !== 'hidden') await api.ensureCloudIds(row.file_ids, files);
-      const saved = await api.save('lessons', row);
+      const saved = await api.save('lessons', row).catch((e) => {
+        // a server without the newest setup.sql doesn't know which live lesson notes are for yet: save them anyway
+        if (!row.session_id || !/session_id/.test(e.message)) throw e;
+        const { session_id, ...rest } = row;
+        return api.save('lessons', rest);
+      });
       invalidate('lessons');
       setDirty(false);
       if (post && wasLive) {
@@ -561,6 +577,11 @@ export function LessonEditor({ id }) {
       )}
       <div className="split side-r">
         <div className="card">
+          {forSession && (
+            <div className="small muted row" style={{ gap: 6 }}>
+              <Icon name="video" size={16} /> Notes for the live lesson on {when(forSession.starts_at)}
+            </div>
+          )}
           <Field label="Title">
             <input className="input" value={l.title} onChange={(e) => set({ title: e.target.value })} placeholder="e.g. Solving quadratic equations" />
           </Field>

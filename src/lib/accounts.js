@@ -76,10 +76,10 @@ export function switchTo(currentId, id) {
   window.location.reload();
 }
 // Sign in to one more account on this device, keeping the current one remembered
-export function addAccount(currentId) {
+export function addAccount(currentId, hash = '#/') {
   saveCurrent(currentId);
   localStorage.removeItem(AUTH);
   localStorage.setItem('sb.seen', '1');
-  window.location.hash = '#/';
+  window.location.hash = hash; // e.g. '#start=student-test' opens the test student's sign-up
   window.location.reload();
 }

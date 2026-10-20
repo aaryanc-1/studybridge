@@ -44,6 +44,10 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
 
   return (
     <div className={'shell ' + (theme ? 'theme-' + theme : '')}>
+      {/* keyboard and screen-reader users can jump past the menu (a button: links here would change the page) */}
+      <button type="button" className="skip-app" onClick={() => document.getElementById('main-content')?.focus()}>
+        Skip to the page
+      </button>
       <aside className="side" aria-label="Main">
         <div className="brand">
           <Logo />
@@ -86,9 +90,9 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
         {app.me.role !== 'admin' && <Announcements />}
         <SlowConnectionTip />
         <UpdateBanner pending={pending} />
-        <div className="content">
+        <main className="content" id="main-content" tabIndex={-1}>
           <ErrorBoundary key={route.path}>{children}</ErrorBoundary>
-        </div>
+        </main>
         <nav className="tabbar" aria-label="Main">
           {tabs.map((n) => (
             <Link key={n.to} to={n.to} aria-current={isActive(route, n) ? 'page' : undefined}>

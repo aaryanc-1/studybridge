@@ -15,6 +15,78 @@
   }
   document.documentElement.classList.add('js');
 
+  // ---------- The home page's opening: the logo comes to life, then glides into the header ----------
+  // index.html's head decided whether it plays (<html class="intro-play">) and site.css runs the whole timeline, so this
+  // only aims the last glide at the header's logo and name, lets any click, tap or key end it, and tidies up after
+  try { (function () {
+    var ov = document.getElementById('logo-intro'), html = document.documentElement;
+    if (!ov) return;
+    if (!html.classList.contains('intro-play')) { ov.parentNode.removeChild(ov); return; }
+    var over = false, events = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
+    function gone() {
+      if (ov.parentNode) ov.parentNode.removeChild(ov);
+      html.classList.remove('intro-play', 'intro-fly', 'intro-skip');
+    }
+    function end(quick) {
+      if (over) return;
+      over = true;
+      events.forEach(function (t) { removeEventListener(t, skip, true); });
+      removeEventListener('resize', aim);
+      if (!quick) return gone();
+      html.classList.add('intro-skip'); // the header's logo shows at once, under the fading cover
+      ov.classList.add('li-done');
+      setTimeout(gone, 260);
+    }
+    function skip() { end(true); }
+    // The mark lands on the logo inside the header's icon (82% of its width, centred, a touch low, as
+    // scripts/make-icons.py draws it) and the word on the name beside it. Without these numbers it just fades.
+    function aim() {
+      var img = $('.top .brand img'), name = $('.top .brand span'), mark = $('.li-mark', ov), word = $('.li-word', ov);
+      if (!img || !name || !mark || !word || !mark.offsetWidth || !word.offsetWidth) return;
+      var t = img.getBoundingClientRect(), n = name.getBoundingClientRect();
+      if (!t.width || !n.width) return;
+      // offsetLeft/Top are where they sit before any animation moves them (.li-art fills the screen from 0, 0)
+      var set = function (k, v, unit) { ov.style.setProperty(k, v.toFixed(unit ? 1 : 4) + unit); };
+      set('--mx', t.left + t.width / 2 - (mark.offsetLeft + mark.offsetWidth / 2), 'px');
+      set('--my', t.top + t.height * 0.52 - (mark.offsetTop + mark.offsetHeight / 2), 'px');
+      set('--ms', (t.width * 0.82) / mark.offsetWidth, '');
+      // the word's picture is cropped to its letters, so it aims at the name's letters, not its line box
+      var mid = n.top + n.height * 0.6;
+      try {
+        var c = document.createElement('canvas').getContext('2d'), cs = getComputedStyle(name);
+        c.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+        var m = c.measureText(name.textContent);
+        if (m.fontBoundingBoxAscent) {
+          var baseline = n.top + (n.height - m.fontBoundingBoxAscent - m.fontBoundingBoxDescent) / 2 + m.fontBoundingBoxAscent;
+          mid = baseline + (m.actualBoundingBoxDescent - m.actualBoundingBoxAscent) / 2;
+        }
+      } catch (e) {}
+      set('--wx', n.left + n.width / 2 - (word.offsetLeft + word.offsetWidth / 2), 'px');
+      set('--wy', mid - (word.offsetTop + word.offsetHeight / 2), 'px');
+      set('--ws', n.width / word.offsetWidth, '');
+      html.classList.add('intro-fly');
+    }
+    aim();
+    addEventListener('resize', aim);
+    events.forEach(function (t) { addEventListener(t, skip, true); });
+    $('.li-skip', ov).addEventListener('click', skip);
+    ov.addEventListener('animationend', function (e) { if (e.target === ov && e.animationName === 'li-gone') end(false); });
+    setTimeout(function () { end(false); }, 6000);
+    // On a slow connection, don't play half a logo: if the layers aren't here within a second, let the page show
+    var waiting = 0;
+    $$('.li-l', ov).forEach(function (el) {
+      var m = /url\(["']?([^"')]+)["']?\)/.exec(getComputedStyle(el).backgroundImage);
+      if (!m) return;
+      var im = new Image();
+      im.src = m[1];
+      if (im.complete) return;
+      waiting++;
+      im.onload = function () { waiting--; };
+      im.onerror = skip;
+    });
+    if (waiting) setTimeout(function () { if (waiting) skip(); }, 1000);
+  })(); } catch (e) {}
+
   // Light / dark
   $$('[data-theme-toggle]').forEach(function (b) { b.addEventListener('click', function () {
     var root = document.documentElement;
@@ -254,6 +326,37 @@
   if (dl || $('[data-dl]')) {
     show(null);
     fetch('release.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (rel) { if (rel) show(rel); }, function () {});
+  }
+
+  // ---------- Subjects students can start now (marked on the subjects page) ----------
+  var subjectList = $('.all-boards');
+  if (subjectList && S.sb) {
+    fetch(S.sb.url + '/rest/v1/rpc/open_subjects', {
+      method: 'POST',
+      headers: { apikey: S.sb.key, Authorization: 'Bearer ' + S.sb.key, 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (keys) {
+        if (!Array.isArray(keys) || !keys.length) return;
+        var n = 0;
+        keys.forEach(function (k) {
+          var li = subjectList.querySelector('li[data-key="' + k.replace(/"/g, '') + '"]');
+          if (!li) return;
+          n++;
+          li.classList.add('open-now');
+          var a = document.createElement('a');
+          a.className = 'open-tag';
+          a.href = (S.appPath || 'app/') + '#start=student';
+          a.textContent = 'Start now';
+          li.appendChild(a);
+        });
+        var note = $('#open-now');
+        if (note && n) {
+          note.hidden = false;
+          note.querySelector('b').textContent = n + (n === 1 ? ' subject is' : ' subjects are');
+        }
+      }, function () {});
   }
 
   // ---------- Early access (and subject requests) ----------

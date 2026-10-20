@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildWebsite, siteConfig, subjectCount, PAGES } from '../scripts/build-website.mjs';
+import { buildWebsite, siteConfig, subjectCount, PAGES, catalogueKey } from '../scripts/build-website.mjs';
 
 test('website: every page builds with nothing left unfilled', async () => {
   const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
@@ -32,6 +32,16 @@ test('website: every page builds with nothing left unfilled', async () => {
     for (const a of c.audiences) assert.ok(home.includes(a.name) && home.includes(`href="${a.href}"`), a.name);
     assert.match(home, /#start=invite/);
     assert.match(home, /#start=tutor/);
+    // home only: the opening (the logo comes to life), once a browser session and never with reduced motion,
+    // with every layer it draws published next to the pages
+    assert.match(home, /id="logo-intro"/);
+    assert.match(home, /sessionStorage\.getItem\('sb\.intro'\)/);
+    assert.match(home, /prefers-reduced-motion: reduce/);
+    assert.match(home, /<button class="li-skip" type="button"/, 'a real Skip button');
+    for (const f of pages.filter((p) => p !== 'index.html')) assert.doesNotMatch(read(f), /logo-intro|intro-play/, `${f}: no opening`);
+    const layers = [...read('site.css').matchAll(/url\((intro\/[\w-]+\.png)\)/g)].map((m) => m[1]);
+    assert.ok(layers.length >= 11, 'the logo in layers, and the word');
+    for (const f of layers) assert.ok(existsSync(join(out, f)), f);
     // students: the countdown for every board, the subjects and the early-access form
     const students = read('students.html');
     for (const b of c.boards) assert.ok(students.includes(`data-board="${b.id}"`) && students.includes(`id="panel-${b.id}"`), b.id);
@@ -111,4 +121,13 @@ test('website: every IB subject is offered at SL and HL, and every board has exa
   const ib = c.boards.find((b) => b.id === 'ib');
   for (const [name, levels] of ib.levels[0].subjects) assert.equal(levels, 'SL · HL', name);
   for (const b of c.boards) assert.ok(b.sessions.length >= 2 && b.sessions.every((s) => s.month >= 1 && s.month <= 12 && s.day >= 1 && s.day <= 31), b.id);
+});
+
+// The subjects page marks the subjects students can start now by the same keys the app and the database use
+test('website: subject keys match the app’s catalogue (cambridge:igcse:0607, ib:sl-and-hl:physics), one per subject', () => {
+  const keys = [];
+  for (const b of siteConfig().boards) for (const l of b.levels) for (const [n, code] of l.subjects) keys.push(catalogueKey(b, l, n, code));
+  assert.equal(new Set(keys).size, keys.length, 'no two subjects share a key');
+  assert.ok(keys.includes('cambridge:igcse:0607'));
+  assert.ok(keys.includes('ib:sl-and-hl:physics'));
 });

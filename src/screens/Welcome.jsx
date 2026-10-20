@@ -11,11 +11,11 @@ import setupSql from '../../supabase/setup.sql?raw';
 
 export default function Welcome() {
   const app = useApp();
-  // From the website: #start=tutor (sign up), #start=invite / parent (I have an invite), #start=signin;
-  // from a tutor's message: #join=48291375 (the code is filled in)
+  // From the website: #start=tutor (sign up), #start=invite / parent (I have an invite), #start=signin, #start=student;
+  // from a tutor's message: #join=48291375 (the code is filled in); from Admin → Students: #start=student-test
   const [linked] = useState(() => {
     const h = location.hash || '';
-    const m = h.match(/start=(tutor|invite|parent|signin|student)/);
+    const m = h.match(/start=(tutor|invite|parent|signin|student-test|student)/);
     const j = h.match(/join=(\d{8})/);
     if (m || j) history.replaceState(null, '', location.pathname + location.search);
     if (j) sessionStorage.setItem('sb.joinCode', j[1]);
@@ -24,12 +24,14 @@ export default function Welcome() {
   // First time on this device: choose tutor / learner / sign in. After that: straight to sign in.
   const [step, setStep] = useState(() => {
     if (linked === 'tutor') return app.server ? 'account' : 'server';
-    if (linked === 'student' && app.server) return 'account';
-    if (linked === 'invite' || linked === 'parent') return 'invite';
+    if ((linked === 'student' || linked === 'student-test') && app.server) return 'account';
+    if (linked === 'invite') return 'invite';
+    if (linked === 'parent') return 'parent';
     if (linked === 'signin' && app.server) return 'signin';
     return app.server && (localStorage.getItem('sb.seen') || localStorage.getItem('sb.server')) ? 'signin' : 'start';
   });
-  const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : linked === 'student' ? 'student' : null);
+  const [role, setRole] = useState(linked === 'tutor' ? 'tutor' : linked === 'parent' ? 'parent' : linked === 'invite' ? 'learner' : linked?.startsWith('student') ? 'student' : null);
+  const test = linked === 'student-test'; // the Owner's test student (works while sign-up is closed)
   // Students on their own can sign up once a subject is open to them (and the Owner hasn't paused sign-ups)
   const [studentsOpen, setStudentsOpen] = useState(false);
   useEffect(() => {
@@ -87,13 +89,13 @@ export default function Welcome() {
               </span>
               <Icon name="right" />
             </button>
-            <button className="choice" onClick={() => (setRole('parent'), setStep('invite'))}>
+            <button className="choice" onClick={() => (setRole('parent'), setStep('parent'))}>
               <span className="ic">
                 <Icon name="users" size={24} />
               </span>
               <span className="grow">
                 <div className="t">I’m a parent</div>
-                <div className="s">Follow your child’s progress with the parent invite their tutor sent you.</div>
+                <div className="s">{studentsOpen ? 'Set up your child to study on their own, or follow their progress with a code.' : 'Follow your child’s progress with the parent code their tutor sent you.'}</div>
               </span>
               <Icon name="right" />
             </button>
@@ -105,8 +107,22 @@ export default function Welcome() {
           </div>
         )}
         {step === 'server' && <ServerSetup onBack={() => setStep('start')} onDone={() => setStep('account')} />}
-        {step === 'invite' && <InviteStep parent={role === 'parent'} onBack={() => setStep('start')} onDone={() => setStep('account')} />}
-        {step === 'account' && <Account role={role} onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : role === 'student' ? 'start' : 'invite')} />}
+        {step === 'parent' && (
+          <ParentStart
+            studentsOpen={studentsOpen}
+            onCode={() => (setRole('parent'), setStep('invite'))}
+            onOwnChild={() => (setRole('parent-self'), setStep('account'))}
+            onBack={() => setStep('start')}
+          />
+        )}
+        {step === 'invite' && <InviteStep parent={role === 'parent'} onBack={() => setStep(role === 'parent' ? 'parent' : 'start')} onDone={() => setStep('account')} />}
+        {step === 'account' && (
+          <Account
+            role={role}
+            test={test}
+            onBack={() => setStep(role === 'tutor' ? (builtInServer ? 'start' : 'server') : role === 'student' ? 'start' : role === 'parent-self' ? 'parent' : 'invite')}
+          />
+        )}
         {step === 'signin' && (
           <SignIn
             onNewLearner={() => (setRole('learner'), setStep('invite'))}
@@ -224,6 +240,41 @@ function ServerSetup({ onBack, onDone }) {
   );
 }
 
+// A parent: follow a child with a code (from the tutor, or from a child studying on their own), or set up a child
+// who studies on their own (the parent's account makes the code the child signs up with)
+function ParentStart({ studentsOpen, onCode, onOwnChild, onBack }) {
+  return (
+    <div className="stack">
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24, textAlign: 'center' }}>For parents</h2>
+      {studentsOpen && (
+        <button className="choice" onClick={onOwnChild}>
+          <span className="ic">
+            <Icon name="target" size={24} />
+          </span>
+          <span className="grow">
+            <div className="t">Set up my child to study on their own</div>
+            <div className="s">Make your free parent account, then a code your child signs up with. Needed below grade 8.</div>
+          </span>
+          <Icon name="right" />
+        </button>
+      )}
+      <button className="choice" onClick={onCode}>
+        <span className="ic">
+          <Icon name="link" size={24} />
+        </span>
+        <span className="grow">
+          <div className="t">I have a parent code</div>
+          <div className="s">From your child’s tutor, or from your child’s own StudyBridge.</div>
+        </span>
+        <Icon name="right" />
+      </button>
+      <button type="button" className="btn ghost" style={{ alignSelf: 'flex-start' }} onClick={onBack}>
+        <Icon name="left" size={18} /> Back
+      </button>
+    </div>
+  );
+}
+
 function InviteStep({ parent = false, onBack, onDone }) {
   const app = useApp();
   const [text, setText] = useState(() => {
@@ -246,10 +297,10 @@ function InviteStep({ parent = false, onBack, onDone }) {
   return (
     <form className="card" onSubmit={next}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{parent ? 'Follow your child’s progress' : 'Join your tutor'}</h2>
-      {parent && <div className="note small">A parent account is read-only: you see your child’s weekly reports, lessons, due dates and marks once they’re given back. Never their messages or working.</div>}
+      {parent && <div className="note small">A parent account is read-only: you see your child’s progress, reports, lessons, due dates and marks once they’re given back. Never their messages or working.</div>}
       {parent ? (
-        <Field label="Your parent invite" hint="Paste the whole invite your child’s tutor sent you.">
-          <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="SB1-eyJ1Ijoi…" spellCheck={false} />
+        <Field label="Your parent code" hint="Paste the code or the whole message from your child’s tutor, or from your child.">
+          <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="P3A9F04C21B or SB1-eyJ1Ijoi…" spellCheck={false} />
         </Field>
       ) : (
         <Field label="Your code" hint="The 8-digit code from your tutor, like 4829 1375. You can also paste their whole message.">
@@ -267,14 +318,17 @@ function InviteStep({ parent = false, onBack, onDone }) {
   );
 }
 
-function Account({ role, onBack }) {
+function Account({ role, test = false, onBack }) {
   const app = useApp();
   const [mode, setMode] = useState('new');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
   const [about, setAbout] = useState({ subjects: '', country: '', learners: '' });
-  const [student, setStudent] = useState({ grade: '', country: '' });
+  const [student, setStudent] = useState({ grade: '', country: '', code: '' });
+  // below grade 8, and in India anyone still at school (under 18), a parent sets the account up with a code
+  const india = /^(india|bharat|in)$/i.test(student.country.trim());
+  const young = role === 'student' && student.grade !== '' && (Number(student.grade) < 8 || (india && Number(student.grade) < 13));
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -284,15 +338,21 @@ function Account({ role, onBack }) {
     if (mode === 'new' && !name.trim()) return setErr('Add your name.');
     if (pw.length < 6) return setErr('Use a password of at least 6 characters.');
     if (role === 'student' && mode === 'new' && !student.grade) return setErr('Choose your grade.');
-    if (role === 'student' && mode === 'new' && Number(student.grade) < 8) return setErr('Below grade 8, a parent needs to set up your account with you. Ask a parent to contact us at hello@gostudybridge.com.');
+    if (young && mode === 'new' && student.code.replace(/\D/g, '').length !== 8)
+      return setErr('Below grade 8, a parent sets up your account with you. Ask them to open StudyBridge, choose “I’m a parent”, and give you the 8-digit code it makes.');
     setBusy(true);
     try {
-      const d = mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
+      // trying again after something went wrong (e.g. a mistyped code): the account was already made, so carry on with it
+      const cur = mode === 'new' ? (await sb().auth.getSession()).data.session : null;
+      const again = cur?.user?.email && cur.user.email.toLowerCase() === email.trim().toLowerCase();
+      const d = again ? cur : mode === 'new' ? await api.signUp(email, pw, name.trim()) : await api.signIn(email, pw);
       const user = d.user || d.session?.user;
       if (role === 'tutor') {
         await api.becomeTutor(name.trim() || user.user_metadata?.name || email.split('@')[0], mode === 'new' ? about : null);
       } else if (role === 'student') {
-        if (mode === 'new') await api.startSelfLearner(name.trim(), Number(student.grade), student.country.trim());
+        if (mode === 'new') await api.startSelfLearner(name.trim(), Number(student.grade), student.country.trim(), young ? student.code : null);
+      } else if (role === 'parent-self') {
+        await api.startParent(name.trim() || user.user_metadata?.name || email.split('@')[0]);
       } else {
         const inv = decodeInvite(sessionStorage.getItem('sb.pendingInvite'));
         if (inv) await api.joinWithCode(inv.code, name.trim());
@@ -309,11 +369,17 @@ function Account({ role, onBack }) {
 
   return (
     <form className="card" onSubmit={go}>
-      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{role === 'tutor' ? 'Your tutor account' : role === 'student' ? 'Your student account' : 'Your account'}</h2>
-      {role === 'student' && mode === 'new' && (
+      <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>
+        {role === 'tutor' ? 'Your tutor account' : role === 'student' ? 'Your student account' : role === 'parent-self' ? 'Your parent account' : 'Your account'}
+      </h2>
+      {test && <div className="note small">Test student: you can sign up while student sign-up is closed, choose subjects that aren’t open yet, and never need to pay.</div>}
+      {role === 'student' && mode === 'new' && !test && (
         <div className="note small">
           Everything is free for {site.trialDays} days. Then it’s ${site.selfLearner.month} a month, or an exam pass at ${site.selfLearner.passMonth} a month that lasts until your exams.
         </div>
+      )}
+      {role === 'parent-self' && mode === 'new' && (
+        <div className="note small">A parent account is free. Next you’ll make a code for your child: they sign up with it on their own phone or computer, and their {site.trialDays}-day free trial starts.</div>
       )}
       {role === 'tutor' && mode === 'new' && <div className="note small">New tutor accounts are checked and approved by StudyBridge. You can set up your subjects straight away; you can invite learners once you’re approved.</div>}
       <div className="seg">
@@ -325,7 +391,7 @@ function Account({ role, onBack }) {
         </button>
       </div>
       {mode === 'new' && (
-        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : role === 'parent' ? 'Your child and their tutor see this name.' : role === 'student' ? 'Your first name is enough.' : 'Your tutor sees this name.'}>
+        <Field label="Your name" hint={role === 'tutor' ? 'Learners see this name.' : role === 'parent' || role === 'parent-self' ? 'Your child sees this name.' : role === 'student' ? 'Your first name is enough.' : 'Your tutor sees this name.'}>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" autoFocus />
         </Field>
       )}
@@ -351,6 +417,11 @@ function Account({ role, onBack }) {
             <input className="input" value={student.country} onChange={(e) => setStudent({ ...student, country: e.target.value })} autoComplete="country-name" />
           </Field>
         </div>
+      )}
+      {young && mode === 'new' && (
+        <Field label="Code from your parent" hint={`${india && Number(student.grade) >= 8 ? 'In India, a parent sets up the account for students under 18.' : 'Below grade 8, a parent sets up your account with you.'} They choose “I’m a parent” in StudyBridge and get this 8-digit code.`}>
+          <input className="input code-in" value={student.code} onChange={(e) => setStudent({ ...student, code: e.target.value })} placeholder="4829 1375" inputMode="numeric" autoComplete="one-time-code" />
+        </Field>
       )}
       {role === 'tutor' && mode === 'new' && (
         <>

@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (81)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (86)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -229,6 +229,32 @@ main.jsx and reopens it). Web/phone: `webHasUpdate()` compares the main script's
 the service worker), every 15 minutes and on coming back; reloads in the background, as you come back or after 10 minutes
 untouched, else "A new version of StudyBridge is ready. Reload". Errors from automatic checks stay quiet. Settings → About
 says when it last checked. product.mjs tests both (the desktop shell is played by the page).
+Launch 1 finished (19 Oct 2026, Aaryan: "build entirety of launch 1"; his lawyer said the plan is fine). Starting check:
+`start_practice('check', subject)` picks a question per topic (up to 12, auto-marked, `assignments.starting_check`, 1 try);
+`my_starting_checks`; SelfSetup goes to `/check` (StartingCheck in SelfStudy.jsx; straight to Today if no questions yet),
+`CheckNudge` on Today until done or "Not now" (`sb.checkSkip.<subject>`), and SelfPlan shows "Work on first" (weak/developing
+topics from `my_topics`, only after the check). Exam conditions: students on their own, in a browser, for tests/exams (practice
+papers, mocks) tick "Exam conditions" on WorkDetail: full screen (asked for in the tap), `sb.exam.<attempt>` in sessionStorage,
+each exit counted (`note_left_full_screen`, `attempts.left_full_screen`) with a "Back to full screen" bar; phones that can't go
+full screen keep just the timer. Young students: below grade 8 (and in India under 18, grade < 13) a parent's code is needed:
+`start_parent` ("I'm a parent" → "Set up my child to study on their own"), `parent_child_code` (8 digits, table `child_codes`,
+5 waiting at most), the child types it on sign-up (`start_self_learner(..., p_parent_code)`; wrong codes counted in
+`invite_tries` and return no profile), which links the parent and records `consent_parent`/`consent_at`. `parent_delete_child`
+(only the parent who set it up). Students on their own make parent codes too (`self_parent_invite`, P + 10 hex; Settings → Your
+parents), and parents can link with any P code from their app. `parent_view` has `self` (plan, 7-day study time, practice, trial or
+plan) and parents can pay for a child (`PayOptions forId`). Server-side free week: `_student_ok()` (self-learners need trial, paid
+or test) is in `can_learner_see` (redefined in the launch 1 block: files, lessons, assignments, questions), shared cards, and a
+trigger on self practice (`assignments_self_ok`). Test students: Admin → Students → Try it as a student (`admin_set_test_emails`,
+`app_config.test_emails`, `profiles.test_student`): sign up via `#start=student-test` even while closed, see subjects not open
+yet, never pay. Website: `open_subjects()` (anon) marks "Start now" on subjects.html (keys from `catalogueKey` in
+build-website.mjs = the app's catalogue keys); privacy/terms have the children's section. Accessibility basics: a "Skip to the
+page" button and one `<main id="main-content">` in Shell, reduced motion everywhere in the app, and product.mjs's `a11y()` scan
+(names, labels, alt, one main) on the main screens of each account. Also built: past live lessons open into notes
+(`lessons.session_id`), Start now picks learners, weekly lessons always editable; Admin → Content → Browse everything
+(`admin_content_browse`, `admin_content_decide` kind 'practice_paper'); announcements edit/delete. Website intro: the home page
+plays a 5-second logo animation once per session (layers in website/intro/ cut by `python scripts/make-intro.py`; timeline at the
+end of site.css; skip with any key/tap; off with reduced motion). CI keeps build files 1 day (`retention-days: 1`): 90 days had
+filled GitHub's 0.5 GB Actions storage.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

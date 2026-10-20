@@ -459,6 +459,8 @@ alter table public.assignments add column if not exists practice boolean not nul
 
 alter table public.lessons add column if not exists draft boolean not null default false;
 alter table public.lessons add column if not exists source text not null default 'tutor';
+-- Lesson notes written for a live lesson (Live → a past lesson → Write lesson notes)
+alter table public.lessons add column if not exists session_id uuid references public.sessions (id) on delete set null;
 alter table public.claude_drafts add column if not exists source text not null default 'claude';
 
 -- What the StudyBridge admin did to an account (tutors see the entries about them)
@@ -2905,7 +2907,7 @@ begin
   select * into me from public.profiles where id = auth.uid();
   if me.role is distinct from 'learner' then raise exception 'For learners.'; end if;
   if not public._tutor_active(me.tutor_id) then raise exception 'Practice isn’t available right now.'; end if;
-  if p_mode not in ('daily', 'topic', 'learn', 'drill') then raise exception 'Unknown practice.'; end if;
+  if p_mode not in ('daily', 'topic', 'learn', 'drill', 'check') then raise exception 'Unknown practice.'; end if;
   v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = me.timezone), 'UTC'))::date;
   -- one daily quiz a day
   if p_mode = 'daily' then
@@ -2914,6 +2916,16 @@ begin
      order by created_at desc limit 1;
     if v_id is not null then return jsonb_build_object('assignment_id', v_id, 'existing', true); end if;
     n := 5;
+  end if;
+  -- the starting check (students on their own): one per subject at a time; an unfinished one carries on
+  if p_mode = 'check' then
+    if v_subject is null then raise exception 'Choose a subject.'; end if;
+    select a.id into v_id from public.assignments a
+     where a.starting_check and a.learner_ids = array[me.id] and a.subject_id = v_subject
+       and not exists (select 1 from public.attempts t where t.assignment_id = a.id and t.submitted_at is not null)
+     order by a.created_at desc limit 1;
+    if v_id is not null then return jsonb_build_object('assignment_id', v_id, 'existing', true); end if;
+    n := 12;
   end if;
   select array_agg(ls.subject_id) into v_subjects from public.learner_subjects ls where ls.learner_id = me.id;
   if v_subject is not null and not (v_subject = any (coalesce(v_subjects, '{}'))) then raise exception 'Unknown subject.'; end if;
@@ -2938,6 +2950,17 @@ begin
   end if;
   create temporary table if not exists _picked (bid uuid, ord int) on commit drop;
   delete from _picked;
+  -- the starting check: a question from as many different topics as there are, then more to make 12
+  if p_mode = 'check' then
+    insert into _picked
+    select z.id, row_number() over (order by z.first desc, z.r) from (
+      select bq.id, row_number() over (partition by lower(coalesce(bq.topic, '')) order by random()) = 1 as first, random() as r
+        from public.bank_questions bq
+       where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+         and bq.type in ('mcq', 'numeric') and bq.image_path is null
+         and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))) z
+     order by z.first desc, z.r limit n;
+  end if;
   insert into _picked
   select bq.id, row_number() over () from (
     select bq.id from public.bank_questions bq
@@ -2947,6 +2970,7 @@ begin
             or (v_subject is not null and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))))
        and (p_topic is null or lower(bq.topic) = lower(trim(p_topic)))
        and bq.id is distinct from v_ex.id
+       and p_mode <> 'check'
      order by case when p_mode = 'daily' and lower(bq.topic) = any (coalesce(v_weak, '{}')) then 0 else 1 end, random()
      limit n) bq;
   if not exists (select 1 from _picked) then
@@ -2962,11 +2986,16 @@ begin
     when 'daily' then 'Daily quiz · ' || to_char(v_today, 'DD Mon')
     when 'learn' then 'Worked example: ' || coalesce(nullif(trim(p_topic), ''), 'mixed')
     when 'drill' then 'Timed drill' || coalesce(': ' || nullif(trim(p_topic), ''), '') || coalesce(' · ' || p_minutes || ' min', '')
+    when 'check' then 'Starting check: ' || coalesce((select name from public.subjects where id = v_subject), 'my subject')
     else 'Practice: ' || coalesce(nullif(trim(p_topic), ''), 'mixed') end;
+  if p_mode = 'check' then
+    v_instr := 'A quick check of what you already know, a question or two from each topic. There’s no time limit and nothing to revise first: just do what you can. Your plan then starts with the topics you need most.';
+  end if;
   insert into public.assignments (tutor_id, title, kind, practice, subject_id, learner_ids, visibility, draft, max_attempts,
-     release_mode, show_answers, time_limit_min, lockdown, camera, allow_notes, source, instructions_md)
-  values (me.tutor_id, left(v_title, 200), 'quiz', true, v_subject, array[me.id], 'visible', false, 50,
-     'on_submit', true, case when p_mode = 'drill' then greatest(1, least(coalesce(p_minutes, 10), 180)) end, false, false, true, 'self', v_instr)
+     release_mode, show_answers, time_limit_min, lockdown, camera, allow_notes, source, instructions_md, starting_check)
+  values (me.tutor_id, left(v_title, 200), 'quiz', true, v_subject, array[me.id], 'visible', false, case when p_mode = 'check' then 1 else 50 end,
+     'on_submit', true, case when p_mode = 'drill' then greatest(1, least(coalesce(p_minutes, 10), 180)) end, false, false, true, 'self', v_instr,
+     p_mode = 'check')
   returning id into v_id;
   for b in select bq.* from public.bank_questions bq join _picked p on p.bid = bq.id order by p.ord loop
     insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id, hint_md, bank_id)
@@ -3519,6 +3548,26 @@ returns void language plpgsql security definer set search_path = public as $$
 begin
   perform public._admin();
   update public.announcements set ended_at = now() where id = p_id;
+end $$;
+-- Change an announcement's words, who sees it and until when (an ended one stays ended)
+create or replace function public.admin_edit_announcement(p_id uuid, p_title text, p_body text, p_audience text, p_until timestamptz default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if length(trim(coalesce(p_title, ''))) = 0 then raise exception 'Give it a title.'; end if;
+  if length(trim(p_title)) > 120 then raise exception 'Keep the title to 120 characters.'; end if;
+  if length(coalesce(p_body, '')) > 2000 then raise exception 'Keep the message to 2000 characters.'; end if;
+  if coalesce(p_audience, '') not in ('tutors', 'everyone') then raise exception 'Choose who sees it: tutors, or tutors and learners.'; end if;
+  update public.announcements set title = trim(p_title), body = coalesce(p_body, ''), audience = p_audience, until = p_until where id = p_id;
+  if not found then raise exception 'That announcement isn’t there any more.'; end if;
+end $$;
+-- Delete an announcement for good
+create or replace function public.admin_delete_announcement(p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  delete from public.announcements where id = p_id;
+  if not found then raise exception 'That announcement isn’t there any more.'; end if;
 end $$;
 
 -- ---------------- "Contact StudyBridge": tutors' messages to the admin ----------------
@@ -4379,7 +4428,9 @@ end $$;
 create or replace function public.revoke_parent_invite(p_invite uuid)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  update public.parent_invites set revoked = true where id = p_invite and tutor_id = auth.uid() and accepted_by is null;
+  update public.parent_invites set revoked = true
+   where id = p_invite and accepted_by is null
+     and (tutor_id = auth.uid() or (learner_id = auth.uid() and (select self_learner from public.profiles where id = auth.uid())));
   if not found then raise exception 'Not found.'; end if;
 end $$;
 
@@ -4407,10 +4458,13 @@ begin
   insert into public.parent_links (parent_id, learner_id, tutor_id) values (auth.uid(), inv.learner_id, inv.tutor_id)
   on conflict (parent_id, learner_id) do update set tutor_id = excluded.tutor_id;
   update public.parent_invites set accepted_by = auth.uid(), accepted_at = now() where id = inv.id;
-  perform public.notify_user(inv.tutor_id, 'parent_joined', v.display_name || ' can now follow ' || l.display_name || '’s progress',
-    'They joined as a parent. They see approved reports, lessons, due dates and marks you’ve given back.', jsonb_build_object('learner_id', l.id));
+  if not l.self_learner then
+    perform public.notify_user(inv.tutor_id, 'parent_joined', v.display_name || ' can now follow ' || l.display_name || '’s progress',
+      'They joined as a parent. They see approved reports, lessons, due dates and marks you’ve given back.', jsonb_build_object('learner_id', l.id));
+  end if;
   perform public.notify_user(l.id, 'parent_joined', v.display_name || ' can now see your progress',
-    'They see your weekly reports, lessons, due dates and marks once they’re given back. Never your messages or working. You can remove them in Settings.', '{}');
+    case when l.self_learner then 'They see your plan, how much you study, your marks and how each topic is going. Never your answers or messages. You can remove them in Settings.'
+         else 'They see your weekly reports, lessons, due dates and marks once they’re given back. Never your messages or working. You can remove them in Settings.' end, '{}');
   return v;
 end $$;
 
@@ -4429,7 +4483,10 @@ begin
                           where pl.learner_id = v_l and pl.tutor_id = (select tutor_id from public.profiles where id = v_l)), '[]'),
     'invites', case when v_tutor then coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'code', i.code, 'name', i.name, 'created_at', i.created_at) order by i.created_at)
                                                   from public.parent_invites i where i.learner_id = v_l and i.tutor_id = auth.uid()
-                                                   and i.accepted_by is null and not i.revoked), '[]') end);
+                                                   and i.accepted_by is null and not i.revoked), '[]')
+                    when v_l = auth.uid() and (select self_learner from public.profiles where id = v_l) then
+                      coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'code', i.code, 'name', i.name, 'created_at', i.created_at) order by i.created_at)
+                                  from public.parent_invites i where i.learner_id = v_l and i.accepted_by is null and not i.revoked), '[]') end);
 end $$;
 
 -- The learner or the tutor takes a parent off
@@ -4482,6 +4539,16 @@ begin
   return jsonb_build_object(
     'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'timezone', l.timezone),
     'tutor', (select display_name from public.profiles where id = pl.tutor_id),
+    'self', case when l.self_learner then jsonb_build_object(
+        'exam_date', l.exam_date, 'exam_label', l.exam_label, 'setup_done', l.setup_done, 'hours', l.study_hours,
+        'goal_min', l.study_goal_min, 'plan_start', l.plan_start,
+        'week_seconds', (select coalesce(sum(a.seconds), 0) from public.activity a where a.learner_id = l.id and a.created_at > now() - interval '7 days'),
+        'days_this_week', (select count(distinct a.day) from public.activity a where a.learner_id = l.id and a.created_at > now() - interval '7 days'),
+        'practice_this_week', (select count(*) from public.attempts t join public.assignments a on a.id = t.assignment_id
+                                where t.learner_id = l.id and a.source = 'self' and t.submitted_at > now() - interval '7 days'),
+        'subjects', (select coalesce(jsonb_agg(s.name order by s.position), '[]') from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = l.id),
+        'trial_until', l.trial_until, 'paid_until', l.paid_until, 'paid_plan', l.paid_plan,
+        'set_up_by_me', l.consent_parent = auth.uid()) end,
     'exam', case when r.exam_date is not null and r.exam_date >= current_date
                  then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - current_date) end,
     'lessons', coalesce((select jsonb_agg(jsonb_build_object('title', s.title, 'starts_at', s.starts_at, 'duration_min', s.duration_min, 'weekly', s.series_id is not null) order by s.starts_at)
@@ -5129,12 +5196,37 @@ begin
   update public.app_config set students_paused = not coalesce(p_open, false) where id = 1;
 end $$;
 
--- A new account becomes a student studying on their own, with a 7-day free trial
-create or replace function public.start_self_learner(p_name text, p_grade int, p_country text, p_timezone text default 'UTC')
+-- Launch 1, part 3: test students the Owner signs up (Admin → Students), a parent's consent below grade 8, and the
+-- codes a parent's account makes for a child studying on their own (8 digits; the child signs up with it)
+alter table public.profiles add column if not exists test_student boolean not null default false;
+alter table public.profiles add column if not exists consent_parent uuid references public.profiles (id) on delete set null;
+alter table public.profiles add column if not exists consent_at timestamptz;
+alter table public.app_config add column if not exists test_emails text[] not null default '{}';
+create table if not exists public.child_codes (
+  id uuid primary key default gen_random_uuid(),
+  parent_id uuid not null references public.profiles (id) on delete cascade,
+  code text not null unique,
+  name text not null default '',
+  grade int,
+  used_by uuid references public.profiles (id) on delete set null,
+  used_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table public.child_codes enable row level security;
+revoke all on public.child_codes from public, anon, authenticated;
+
+-- A new account becomes a student studying on their own, with a 7-day free trial. Below grade 8 a parent sets it up:
+-- the child signs up with the code from the parent's account (the parent's consent is kept with the account).
+-- The Owner's test students (Admin → Students) can sign up while sign-up is closed and never need to pay.
+drop function if exists public.start_self_learner(text, int, text, text);
+create or replace function public.start_self_learner(p_name text, p_grade int, p_country text, p_timezone text default 'UTC',
+  p_parent_code text default null)
 returns public.profiles language plpgsql security definer set search_path = public as $$
 declare
   v public.profiles;
   c uuid := public._studybridge_account();
+  k public.child_codes;
+  v_test boolean;
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into v from public.profiles where id = auth.uid();
@@ -5142,20 +5234,44 @@ begin
     if v.self_learner then return v; end if;
     raise exception 'This account is already set up for something else. Use a new email for your student account.';
   end if;
-  if c is null or (select students_paused from public.app_config where id = 1)
-     or not exists (select 1 from public.subjects where tutor_id = c and live) then
+  v_test := lower(coalesce(v.email, '')) = any (coalesce((select test_emails from public.app_config where id = 1), '{}'));
+  if c is null or (not v_test and ((select students_paused from public.app_config where id = 1)
+     or not exists (select 1 from public.subjects where tutor_id = c and live))) then
     raise exception 'Student sign-up isn’t open right now. Please try again later.';
   end if;
-  if p_grade is null or p_grade < 8 then
-    raise exception 'Below grade 8, a parent needs to set up your account with you. Ask a parent to contact us at hello@gostudybridge.com.';
+  if nullif(regexp_replace(coalesce(p_parent_code, ''), '\D', '', 'g'), '') is not null then
+    -- wrong codes are counted like tutors' invite codes (an error would undo the count): 10 in an hour and it waits
+    if (select count(*) from public.invite_tries where user_id = auth.uid() and at > now() - interval '1 hour') >= 10 then
+      raise exception 'Too many wrong codes. Wait an hour, then try again.';
+    end if;
+    select * into k from public.child_codes where code = regexp_replace(p_parent_code, '\D', '', 'g') for update;
+    if k.id is null or (k.used_by is not null and k.used_by <> auth.uid()) then
+      insert into public.invite_tries (user_id) values (auth.uid());
+      return null;
+    end if;
+  end if;
+  if p_grade is null or (p_grade < 8 and k.id is null) then
+    raise exception 'Below grade 8, a parent sets up your account with you. Ask them to open StudyBridge, choose “I’m a parent”, and give you the code it makes.';
+  end if;
+  -- where the law asks for a parent's consent under 18 (India), any student still at school needs the code too
+  if lower(trim(coalesce(p_country, ''))) in ('india', 'bharat', 'in') and p_grade < 13 and k.id is null then
+    raise exception 'In India, a parent sets up the account for students under 18. Ask them to open StudyBridge, choose “I’m a parent”, and give you the code it makes.';
   end if;
   update public.profiles
-     set role = 'learner', tutor_id = c, self_learner = true,
+     set role = 'learner', tutor_id = c, self_learner = true, test_student = v_test,
          display_name = coalesce(nullif(trim(coalesce(p_name, '')), ''), display_name),
          timezone = coalesce(nullif(p_timezone, ''), timezone),
-         grade = least(p_grade, 13), country = nullif(left(trim(coalesce(p_country, '')), 60), ''),
-         trial_until = now() + interval '7 days'
+         grade = least(coalesce(k.grade, p_grade), 13), country = nullif(left(trim(coalesce(p_country, '')), 60), ''),
+         trial_until = now() + interval '7 days',
+         consent_parent = k.parent_id, consent_at = case when k.id is not null then now() end
    where id = auth.uid() returning * into v;
+  if k.id is not null then
+    update public.child_codes set used_by = auth.uid(), used_at = now() where id = k.id;
+    insert into public.parent_links (parent_id, learner_id, tutor_id) values (k.parent_id, auth.uid(), c)
+    on conflict (parent_id, learner_id) do update set tutor_id = excluded.tutor_id;
+    perform public.notify_user(k.parent_id, 'parent_joined', coalesce(v.display_name, 'Your child') || ' has set up their StudyBridge account',
+      'You can follow their plan and progress in StudyBridge. Their free week has started.', jsonb_build_object('learner_id', v.id));
+  end if;
   return v;
 end $$;
 
@@ -5170,7 +5286,7 @@ declare
 begin
   select * into v from public.profiles where id = auth.uid();
   if v.id is null or not v.self_learner then raise exception 'This is for students studying on their own.'; end if;
-  select count(*) into n from public.subjects where id = any(coalesce(p_subjects, '{}')) and tutor_id = c and live;
+  select count(*) into n from public.subjects where id = any(coalesce(p_subjects, '{}')) and tutor_id = c and (live or v.test_student);
   if n = 0 then raise exception 'Pick at least one subject.'; end if;
   if n <> (select count(distinct s) from unnest(p_subjects) s) then raise exception 'One of those subjects isn’t open yet.'; end if;
   if p_exam_date is null or p_exam_date <= current_date then raise exception 'Pick when your exams are.'; end if;
@@ -5193,6 +5309,7 @@ begin
   perform public._admin();
   return jsonb_build_object(
     'open', not (select students_paused from public.app_config where id = 1),
+    'test_emails', (select to_jsonb(test_emails) from public.app_config where id = 1),
     'pay_links', (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1),
     'content', (select jsonb_build_object('id', p.id, 'email', p.email, 'name', p.display_name,
                   'subjects', (select count(*) from public.subjects s where s.tutor_id = p.id and s.catalogue is not null),
@@ -5202,6 +5319,8 @@ begin
         'id', p.id, 'name', p.display_name, 'email', p.email, 'grade', p.grade, 'country', p.country,
         'joined', p.created_at, 'trial_until', p.trial_until, 'paid_until', p.paid_until, 'paid_plan', p.paid_plan,
         'exam_date', p.exam_date, 'exam_label', p.exam_label, 'setup_done', p.setup_done, 'last_seen_at', p.last_seen_at,
+        'test', p.test_student, 'parent_set_up', p.consent_parent is not null,
+        'parents', (select count(*) from public.parent_links pl where pl.learner_id = p.id),
         'subjects', (select coalesce(jsonb_agg(s.name order by s.position), '[]'::jsonb)
                        from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = p.id))
       order by p.created_at desc) from public.profiles p where p.self_learner), '[]'::jsonb));
@@ -5408,7 +5527,8 @@ begin
                                     and coalesce(b.check_result ->> 'state', '') <> 'waiting'),
       'lessons', (select count(*) from public.lessons l where l.subject_id = s.id and l.tutor_id = c and l.visibility = 'visible' and not l.draft),
       'flashcards', (select count(*) from public.cards k where k.subject_id = s.id and k.tutor_id = c and k.learner_id is null),
-      'papers_live', (select count(*) from public.assignments a where a.subject_id = s.id and a.tutor_id = c and a.source = 'studybridge' and not a.draft),
+      'papers_live', (select count(*) from public.assignments a where a.subject_id = s.id and a.tutor_id = c and a.source = 'studybridge' and not a.draft
+                        and a.visibility = 'visible'),
       'papers_waiting', (select count(*) from public.assignments a where a.subject_id = s.id and a.tutor_id = c and a.source = 'studybridge' and a.draft))
     order by s.position)
     from public.subjects s where s.tutor_id = c and s.catalogue is not null and (p_subject is null or s.id = p_subject)), '[]'::jsonb);
@@ -5977,10 +6097,119 @@ begin
     elsif p_action = 'fix' then
       update public.cards set front_md = coalesce(nullif(btrim(f ->> 'front'), ''), front_md), back_md = coalesce(f ->> 'back', back_md) where id = p_id;
     end if;
+  elsif p_kind = 'practice_paper' then
+    -- a whole practice paper (Admin → Content → Browse): put it up with every question approved, hide it, or remove it
+    select id into v_paper from public.assignments where id = p_id and tutor_id = c and source = 'studybridge';
+    if v_paper is null then raise exception 'Paper not found.'; end if;
+    if p_action = 'remove' then
+      if exists (select 1 from public.attempts where assignment_id = v_paper) then
+        raise exception 'Students have already taken this paper. Hide it instead.';
+      end if;
+      delete from public.assignments where id = v_paper;
+    elsif p_action = 'hide' then
+      -- no longer a draft either, so passing its checks later doesn't put it back up by itself
+      update public.assignments set visibility = 'hidden', draft = false, updated_at = now() where id = v_paper;
+    elsif p_action = 'approve' then
+      if not exists (select 1 from public.questions where assignment_id = v_paper) then raise exception 'This paper has no questions left.'; end if;
+      update public.question_keys qk set check_result = coalesce(qk.check_result, '{}') || jsonb_build_object('state', 'approved', 'by_owner', now(), 'at', now())
+        from public.questions qq
+       where qq.id = qk.question_id and qq.assignment_id = v_paper and coalesce(qk.check_result ->> 'state', '') not in ('passed', 'approved');
+      update public.assignments set visibility = 'visible', draft = false, updated_at = now() where id = v_paper;
+    else
+      raise exception 'Fix a paper one question at a time.';
+    end if;
   else
     raise exception 'Unknown kind.';
   end if;
   perform public._admin_log('content_' || p_action, c, jsonb_build_object('kind', p_kind, 'id', p_id));
+end $$;
+
+-- Admin → Content → Browse: everything the content account has made (practice questions, lessons, flashcards and
+-- practice papers), newest first, narrowed by subject, kind, status (live, waiting, problems, hidden) and words.
+-- Counts per status are for the subject, kind and words chosen, so the status filter can show them.
+create or replace function public.admin_content_browse(p_subject uuid default null, p_kind text default null, p_status text default null,
+  p_search text default null, p_limit int default 100) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  c uuid := public._studybridge_account();
+  v_q text := lower(nullif(btrim(coalesce(p_search, '')), ''));
+  v_kind text := nullif(p_kind, '');
+  v_status text := nullif(p_status, '');
+  v_lim int := greatest(1, least(coalesce(p_limit, 100), 300));
+begin
+  perform public._admin();
+  if v_kind is not null and v_kind not in ('question', 'lesson', 'card', 'practice_paper') then raise exception 'Unknown kind.'; end if;
+  if v_status is not null and v_status not in ('live', 'waiting', 'problems', 'hidden') then raise exception 'Unknown status.'; end if;
+  if c is null then
+    return jsonb_build_object('subjects', '[]'::jsonb, 'counts', jsonb_build_object('live', 0, 'waiting', 0, 'problems', 0, 'hidden', 0),
+                              'total', 0, 'items', '[]'::jsonb);
+  end if;
+  return (
+    with items as (
+      -- practice questions: live once approved; hidden (removed) ones can be approved again
+      select 'question'::text as kind, b.id, b.subject_id, b.created_at,
+             case when b.status = 'approved' then 'live' when b.status = 'rejected' then 'hidden'
+                  when b.check_result ->> 'state' = 'waiting' then 'waiting' else 'problems' end as status,
+             concat_ws(' ', b.topic, b.prompt_md, b.hint_md, b.solution_md) as words
+        from public.bank_questions b where b.owner_id = c
+      union all
+      select 'lesson', l.id, l.subject_id, l.created_at,
+             case when coalesce(l.check_result ->> 'state', '') = 'problems' and l.visibility = 'hidden' then 'problems'
+                  when not l.draft and l.visibility <> 'hidden' then 'live' else 'hidden' end,
+             concat_ws(' ', l.title, l.body_md)
+        from public.lessons l where l.tutor_id = c
+      union all
+      -- StudyBridge's flashcards (never students' own cards); a card is up or gone
+      select 'card', k.id, k.subject_id, k.created_at, 'live', concat_ws(' ', k.front_md, k.back_md)
+        from public.cards k where k.tutor_id = c and k.learner_id is null
+      union all
+      select 'practice_paper', a.id, a.subject_id, a.created_at,
+             case when exists (select 1 from public.questions q join public.question_keys qk on qk.question_id = q.id
+                                where q.assignment_id = a.id and qk.check_result ->> 'state' in ('problems', 'failed', 'compare')) then 'problems'
+                  when a.draft and exists (select 1 from public.questions q join public.question_keys qk on qk.question_id = q.id
+                                            where q.assignment_id = a.id and qk.check_result ->> 'state' = 'waiting') then 'waiting'
+                  when not a.draft and a.visibility = 'visible' then 'live' else 'hidden' end,
+             concat_ws(' ', a.title, a.instructions_md)
+        from public.assignments a where a.tutor_id = c and a.source = 'studybridge'
+    ),
+    picked as (
+      select i.* from items i
+       where (p_subject is null or i.subject_id = p_subject) and (v_kind is null or i.kind = v_kind)
+         and (v_q is null or strpos(lower(i.words), v_q) > 0)
+    ),
+    shown as (
+      select p.* from picked p where v_status is null or p.status = v_status order by p.created_at desc limit v_lim
+    )
+    select jsonb_build_object(
+      'subjects', coalesce((select jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'board', s.board, 'level', s.level, 'live', s.live,
+                     'items', (select count(*) from items i where i.subject_id = s.id)) order by s.position, s.name)
+                   from public.subjects s where s.tutor_id = c), '[]'::jsonb),
+      'counts', (select jsonb_build_object('live', count(*) filter (where status = 'live'), 'waiting', count(*) filter (where status = 'waiting'),
+                   'problems', count(*) filter (where status = 'problems'), 'hidden', count(*) filter (where status = 'hidden')) from picked),
+      'total', (select count(*) from picked where v_status is null or status = v_status),
+      'items', coalesce((select jsonb_agg(z.item order by z.created_at desc) from (
+          select sh.created_at, jsonb_build_object('kind', sh.kind, 'id', sh.id, 'status', sh.status, 'subject_id', sh.subject_id,
+                   'subject', (select name from public.subjects where id = sh.subject_id), 'created_at', sh.created_at)
+                 || coalesce(case sh.kind
+                      when 'question' then (select jsonb_build_object('topic', b.topic, 'type', b.type, 'prompt', b.prompt_md, 'options', b.options,
+                          'marks', b.marks, 'answer', b.answer, 'hint', b.hint_md, 'solution', b.solution_md, 'mark_scheme', b.mark_scheme_md,
+                          'check', b.check_result, 'uses', b.uses) from public.bank_questions b where b.id = sh.id)
+                      when 'lesson' then (select jsonb_build_object('topic', tp.name, 'title', l.title, 'body', l.body_md, 'check', l.check_result,
+                          'updated_at', l.updated_at) from public.lessons l left join public.topics tp on tp.id = l.topic_id where l.id = sh.id)
+                      when 'card' then (select jsonb_build_object('topic', tp.name, 'front', k.front_md, 'back', k.back_md)
+                          from public.cards k left join public.topics tp on tp.id = k.topic_id where k.id = sh.id)
+                      else (select jsonb_build_object('title', a.title, 'minutes', a.time_limit_min,
+                          'taken', (select count(*) from public.attempts t where t.assignment_id = a.id),
+                          'marks', (select coalesce(sum(q.marks), 0) from public.questions q where q.assignment_id = a.id),
+                          'questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'number', q.position + 1, 'topic', tp.name, 'type', q.type,
+                              'prompt', q.prompt_md, 'options', q.options, 'marks', q.marks, 'answer', qk.answer, 'solution', qk.solution_md,
+                              'mark_scheme', qk.mark_scheme_md, 'check', qk.check_result) order by q.position)
+                            from public.questions q left join public.question_keys qk on qk.question_id = q.id left join public.topics tp on tp.id = q.topic_id
+                           where q.assignment_id = a.id), '[]'::jsonb))
+                          from public.assignments a where a.id = sh.id)
+                    end, '{}'::jsonb) as item
+            from shown sh) z), '[]'::jsonb))
+  );
 end $$;
 
 -- A report is sorted; an optional reply goes to the student as a notification
@@ -6011,7 +6240,8 @@ end $$;
 create or replace function public.student_pay_links() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if not coalesce((select self_learner from public.profiles where id = auth.uid()), false) then return '{}'::jsonb; end if;
+  -- students on their own, and parents (who can pay for a child studying on their own)
+  if not coalesce((select self_learner or role = 'parent' from public.profiles where id = auth.uid()), false) then return '{}'::jsonb; end if;
   return (select jsonb_build_object('monthly', pay_link_monthly, 'pass', pay_link_pass) from public.app_config where id = 1);
 end $$;
 
@@ -6093,6 +6323,204 @@ begin
       || coalesce((select display_name from public.profiles where id = pl.learner_id), 'a learner'), null, jsonb_build_object('learner_id', pl.learner_id));
 end $$;
 
+-- =====================================================================
+-- Launch 1, parts 3 and 4 (19 Oct 2026): the starting check, exam conditions, parents for young students and for
+-- students on their own, test students for the Owner, the free trial checked on the server, and which subjects
+-- are open (for the website)
+-- =====================================================================
+alter table public.assignments add column if not exists starting_check boolean not null default false;
+alter table public.attempts add column if not exists left_full_screen int not null default 0;
+
+-- Students on their own use StudyBridge's content during the free week, once they've paid, or as the Owner's test
+-- student. Everyone else (tutors' learners, tutors, parents) is never affected.
+create or replace function public._student_ok() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select not p.self_learner or p.test_student or coalesce(p.trial_until > now(), false) or coalesce(p.paid_until >= current_date, false)
+                     from public.profiles p where p.id = auth.uid()), true)
+$$;
+
+-- What a learner may see (files, lessons, assignments and their questions): now also the free week or a plan
+create or replace function public.can_learner_see(
+  p_tutor uuid, p_learner_ids uuid[], p_subject uuid, p_visibility text, p_visible_from timestamptz
+) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles me where me.id = auth.uid() and me.role = 'learner' and me.tutor_id = p_tutor)
+    and (p_visibility = 'visible' or (p_visibility = 'scheduled' and p_visible_from is not null and p_visible_from <= now()))
+    and (case
+           when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then auth.uid() = any (p_learner_ids)
+           when p_subject is not null then exists (
+             select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = p_subject)
+           else true
+         end)
+    and public._student_ok()
+$$;
+
+-- Shared flashcards too (a student's own cards and cards from their mistakes always stay theirs)
+drop policy if exists cards_learner_read on public.cards;
+create policy cards_learner_read on public.cards for select using (
+  tutor_id = public.my_tutor() and public.my_role() = 'learner'
+  and (learner_id = auth.uid()
+       or (learner_id is null and public._student_ok()
+           and (subject_id is null or exists (select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = cards.subject_id)))));
+
+-- Practice a student starts themselves (daily quiz, topics, drills, the starting check) needs the free week or a plan
+create or replace function public._self_practice_ok() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.source = 'self' and not public._student_ok() then
+    raise exception 'Your free week is over. Choose a plan in Settings to keep practising.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists assignments_self_ok on public.assignments;
+create trigger assignments_self_ok before insert on public.assignments for each row execute function public._self_practice_ok();
+
+-- The starting check for each of my subjects: done (with the score), or started and not finished
+create or replace function public.my_starting_checks() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_object_agg(z.subject_id, jsonb_build_object('assignment_id', z.id, 'attempt_id', z.attempt_id,
+           'done', z.submitted_at is not null, 'score', z.score, 'max', z.max_score, 'at', z.submitted_at)), '{}')
+  from (select distinct on (a.subject_id) a.subject_id, a.id, t.id as attempt_id, t.submitted_at, t.score, t.max_score
+          from public.assignments a
+          left join lateral (select * from public.attempts x where x.assignment_id = a.id and x.learner_id = auth.uid()
+                              order by x.number desc limit 1) t on true
+         where a.starting_check and a.learner_ids = array[auth.uid()] and a.subject_id is not null
+         order by a.subject_id, (t.submitted_at is not null) desc, coalesce(t.submitted_at, a.created_at) desc) z
+$$;
+
+-- Exam conditions (students on their own, in a browser): each time they leave full screen is counted on the attempt
+create or replace function public.note_left_full_screen(p_attempt uuid) returns int
+language sql security definer set search_path = public as $$
+  update public.attempts set left_full_screen = left_full_screen + 1
+   where id = p_attempt and learner_id = auth.uid() and status = 'in_progress'
+  returning left_full_screen
+$$;
+
+-- A new account becomes a parent without a tutor's code: to set up a child who studies on their own
+create or replace function public.start_parent(p_name text, p_timezone text default 'UTC') returns public.profiles
+language plpgsql security definer set search_path = public as $$
+declare v public.profiles;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select * into v from public.profiles where id = auth.uid();
+  if v.role = 'parent' then return v; end if;
+  if v.role is not null then raise exception 'This account is already a % account. Use a different email for the parent account.', v.role; end if;
+  update public.profiles
+     set role = 'parent', tutor_id = null, programme_id = null,
+         display_name = coalesce(nullif(trim(coalesce(p_name, '')), ''), nullif(display_name, ''), 'Parent'),
+         timezone = coalesce(nullif(p_timezone, ''), timezone)
+   where id = auth.uid() returning * into v;
+  return v;
+end $$;
+
+-- The parent makes a code for their child to sign up with (8 digits). Below grade 8 the child needs one; it links
+-- them to the parent's account and records the parent's consent.
+create or replace function public.parent_child_code(p_name text, p_grade int) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v public.child_codes;
+  c text;
+begin
+  if public.my_role() is distinct from 'parent' then raise exception 'This is for parent accounts.'; end if;
+  if nullif(trim(coalesce(p_name, '')), '') is null then raise exception 'Add your child’s first name.'; end if;
+  if p_grade is null or p_grade < 1 or p_grade > 13 then raise exception 'Choose your child’s grade.'; end if;
+  if (select count(*) from public.child_codes where parent_id = auth.uid() and used_by is null) >= 5 then
+    raise exception 'You already have 5 codes waiting to be used. Cancel one first.';
+  end if;
+  loop
+    c := lpad((floor(random() * 100000000))::bigint::text, 8, '0');
+    exit when not exists (select 1 from public.child_codes where code = c);
+  end loop;
+  insert into public.child_codes (parent_id, code, name, grade) values (auth.uid(), c, left(trim(p_name), 80), p_grade)
+  returning * into v;
+  return jsonb_build_object('id', v.id, 'code', v.code, 'name', v.name, 'grade', v.grade, 'created_at', v.created_at);
+end $$;
+
+create or replace function public.parent_child_codes() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'code', code, 'name', name, 'grade', grade, 'created_at', created_at) order by created_at), '[]')
+    from public.child_codes where parent_id = auth.uid() and used_by is null
+$$;
+
+create or replace function public.parent_cancel_child_code(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.child_codes where id = p_id and parent_id = auth.uid() and used_by is null;
+  if not found then raise exception 'Not found.'; end if;
+end $$;
+
+-- A student on their own (grade 8 and up) gives a parent a code to follow their progress
+create or replace function public.self_parent_invite(p_name text default null) returns public.parent_invites
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v public.parent_invites;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null or not me.self_learner then raise exception 'This is for students studying on their own.'; end if;
+  if (select count(*) from public.parent_invites where learner_id = me.id and accepted_by is null and not revoked) >= 5 then
+    raise exception 'You already have 5 parent codes waiting. Cancel one first.';
+  end if;
+  insert into public.parent_invites (tutor_id, learner_id, name) values (me.tutor_id, me.id, left(trim(coalesce(p_name, '')), 80))
+  returning * into v;
+  return v;
+end $$;
+
+-- Children's privacy: the parent who set up a young child's account can close it, with everything in it
+create or replace function public.parent_delete_child(p_learner uuid, p_confirm text) returns void
+language plpgsql security definer set search_path = public as $$
+declare l public.profiles;
+begin
+  select * into l from public.profiles where id = p_learner;
+  if l.id is null or l.consent_parent is distinct from auth.uid() or public.my_role() is distinct from 'parent' then
+    raise exception 'Only the parent who set up this account can close it.';
+  end if;
+  if upper(trim(coalesce(p_confirm, ''))) <> 'DELETE' then raise exception 'Type DELETE to confirm.'; end if;
+  delete from auth.users where id = l.id;
+end $$;
+
+-- The parent's children (again, now saying who studies on their own)
+create or replace function public.parent_children() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id, 'name', l.display_name, 'tutor', t.display_name, 'timezone', l.timezone, 'self', l.self_learner, 'set_up_by_me', l.consent_parent = auth.uid(),
+      'next_lesson', (select min(s.starts_at) from public.sessions s where s.tutor_id = pl.tutor_id and l.id = any (s.learner_ids)
+                       and not s.cancelled and s.starts_at > now()),
+      'reports', (select count(*) from public.parent_reports r where r.learner_id = l.id and r.tutor_id = pl.tutor_id and r.status = 'sent'),
+      'latest_report', (select max(r.week_start) from public.parent_reports r where r.learner_id = l.id and r.tutor_id = pl.tutor_id and r.status = 'sent'))
+      order by l.display_name), '[]')
+    from public.parent_links pl
+    join public.profiles l on l.id = pl.learner_id and l.role = 'learner' and l.tutor_id = pl.tutor_id
+    join public.profiles t on t.id = pl.tutor_id
+   where pl.parent_id = auth.uid() and public.my_role() = 'parent'
+$$;
+
+-- The website: which catalogue subjects students can start now (shown on the subjects list)
+create or replace function public.open_subjects() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(s.catalogue order by s.catalogue), '[]')
+    from public.subjects s
+   where s.tutor_id = public._studybridge_account() and s.live and s.catalogue is not null
+     and not (select students_paused from public.app_config where id = 1)
+$$;
+grant execute on function public.open_subjects() to anon;
+
+-- The Owner's test students: emails that can sign up as a student while sign-up is closed, see subjects that
+-- aren't open yet, and never need to pay (Admin → Students → Try it as a student)
+create or replace function public.admin_set_test_emails(p_emails text[]) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v text[];
+begin
+  perform public._admin();
+  select coalesce(array_agg(distinct lower(trim(e))), '{}') into v
+    from unnest(coalesce(p_emails, '{}')) e where trim(e) ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$';
+  if cardinality(v) > 10 then raise exception 'Up to 10 test emails.'; end if;
+  update public.app_config set test_emails = v where id = 1;
+  update public.profiles set test_student = (lower(email) = any (v)) where self_learner;
+  perform public._admin_log('test_students', null, jsonb_build_object('emails', v));
+  return to_jsonb(v);
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -6140,6 +6568,7 @@ revoke execute on function public._auto_hand_in() from public, anon, authenticat
 revoke execute on function public._set_paid_plan(uuid, text, text, text, timestamptz) from public, anon, authenticated;
 revoke execute on function public._email_us(text, text, text, text) from public, anon, authenticated;
 revoke execute on function public._check_plan_room() from public, anon, authenticated;
+revoke execute on function public._self_practice_ok() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

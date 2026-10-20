@@ -1,6 +1,6 @@
 import { useApp } from '../../App.jsx';
 import { StudyNudge } from './Study.jsx';
-import { SelfPlan, TrialNote } from './SelfStudy.jsx';
+import { CheckNudge, SelfPlan, TrialNote } from './SelfStudy.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
@@ -82,6 +82,7 @@ export default function Today() {
       </div>
 
       <TrialNote />
+      <CheckNudge />
       <SelfPlan />
       <StudyNudge />
 

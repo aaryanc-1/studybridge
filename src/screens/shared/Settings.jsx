@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Field, Page, Toggle, copyText, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, Field, Modal, Page, Toggle, copyText, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
@@ -17,6 +17,7 @@ import { bytes } from '../../lib/format.js';
 import { setTheme, useTheme, setTextSize, useTextSize, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
 import { studentAccess } from '../../lib/students.js';
 import { PayOptions } from '../learner/SelfStudy.jsx';
+import { SetUpChild, AddWithCode } from '../parent/ChildCodes.jsx';
 
 export default function Settings() {
   const app = useApp();
@@ -39,7 +40,10 @@ export default function Settings() {
       {(isTutor || isStudent) && <ContactStudyBridge />}
       {isTutor && <AccountHistory />}
       {app.me.role === 'parent' && <MyChildren />}
-      {isLearner && !isStudent && <LinkedParents />}
+      {app.me.role === 'parent' && <SetUpChild />}
+      {app.me.role === 'parent' && <AddWithCode />}
+      {isStudent && <ParentCodes />}
+      {isLearner && <LinkedParents />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <LearnerPhoneAlerts />}
@@ -390,14 +394,15 @@ function MyChildren() {
   const kids = useQuery('parent-children', api.parentChildren).data || [];
   if (!kids.length) return null;
   return (
-    <Section id="children" icon="users" title="Your children" sub="Whose progress you follow. To follow another child, ask their tutor for a parent code.">
+    <Section id="children" icon="users" title="Your children" sub="Whose progress you follow. To follow another child, use a parent code from their tutor or from them.">
       <div className="list">
         {kids.map((k) => (
           <div key={k.id} className="item">
             <span className="grow">
               <span className="name">{k.name}</span>
-              <span className="meta">Tutor: {k.tutor}</span>
+              <span className="meta">{k.self ? 'Studying on their own' : `Tutor: ${k.tutor}`}</span>
             </span>
+            {k.set_up_by_me && <CloseChildAccount child={k} />}
             <button
               className="btn sm ghost"
               onClick={async () => {
@@ -530,6 +535,118 @@ function AccountHistory() {
         ))}
       </div>
     </Section>
+  );
+}
+
+// A student on their own gives a parent a code to follow their progress (the parent can also pay for them)
+function ParentCodes() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('my-parents', () => api.learnerParents());
+  const [name, setName] = useState('');
+  const codes = q.data?.invites || [];
+  return (
+    <Section id="parent-codes" icon="users" title="Your parents" sub="Give a parent a code so they can follow your plan and progress, and pay for you if they like. They never see your answers or messages.">
+      <div className="row wrap">
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Their name, e.g. Mum" aria-label="Parent’s name" style={{ maxWidth: 220 }} />
+        <button
+          className="btn"
+          onClick={async () => {
+            try {
+              await api.selfParentInvite(name.trim());
+              invalidate('my-parents');
+              setName('');
+            } catch (e) {
+              toast({ title: 'Couldn’t make a code', body: e.message, tone: 'bad' });
+            }
+          }}
+        >
+          Make a parent code
+        </button>
+      </div>
+      {codes.length > 0 && (
+        <div className="stack sm">
+          {codes.map((c) => (
+            <div key={c.id} className="code-card">
+              <span className="small">
+                Code for <b>{c.name || 'a parent'}</b>
+              </span>
+              <b className="code-show">{c.code}</b>
+              <span className="small muted">They choose “I’m a parent” → “I have a parent code” in StudyBridge</span>
+              <span className="row wrap" style={{ gap: 8 }}>
+              <button
+                className="btn sm"
+                onClick={async () => {
+                  await copyText(`Follow my progress on StudyBridge: open ${api.WEB_APP}#start=parent, choose “I have a parent code” and type ${c.code}.`);
+                  toast('Copied');
+                }}
+              >
+                <Icon name="copy" size={14} /> Copy message
+              </button>
+              <button
+                className="btn sm ghost"
+                onClick={async () => {
+                  if (!(await confirm({ title: 'Cancel this code?', body: 'It stops working straight away.', ok: 'Cancel code', danger: true }))) return;
+                  await api.revokeParentInvite(c.id).catch((e) => toast({ title: 'Couldn’t cancel it', body: e.message, tone: 'bad' }));
+                  invalidate('my-parents');
+                }}
+              >
+                Cancel
+              </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// Children's privacy: the parent who set up a young child's account can close it (typing DELETE)
+function CloseChildAccount({ child }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState('');
+  return (
+    <>
+      <button className="btn sm danger" onClick={() => setOpen(true)}>
+        Close their account
+      </button>
+      {open && (
+        <Modal
+          title={`Close ${child.name}’s account?`}
+          onClose={() => setOpen(false)}
+          foot={
+            <>
+              <button className="btn" onClick={() => setOpen(false)}>
+                Keep it
+              </button>
+              <button
+                className="btn danger"
+                disabled={typed.trim().toUpperCase() !== 'DELETE'}
+                onClick={async () => {
+                  try {
+                    await api.parentDeleteChild(child.id, typed);
+                    invalidate('parent-children');
+                    toast(`${child.name}’s account is closed`);
+                    setOpen(false);
+                  } catch (e) {
+                    toast({ title: 'Couldn’t close it', body: e.message, tone: 'bad' });
+                  }
+                }}
+              >
+                Close the account
+              </button>
+            </>
+          }
+        >
+          <div className="stack sm">
+            <div className="small">Everything in it is deleted for good: their plan, work, marks and progress. This can’t be undone. Type DELETE to confirm.</div>
+            <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Type DELETE" autoFocus />
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 

@@ -177,6 +177,34 @@ export default function Attempt({ id }) {
   }, []);
   const left = a?.time_limit_min && t && !redoOnly ? a.time_limit_min * 60 - (now - new Date(t.started_at).getTime()) / 1000 : null;
 
+  // Exam conditions (students on their own, in a browser; chosen before starting): full screen until it's handed in.
+  // Leaving full screen is counted on the attempt and they're asked to go back. Phones that can't go full screen
+  // just keep the timer.
+  const canFull = typeof document !== 'undefined' && !!document.documentElement.requestFullscreen;
+  const [examMode] = useState(() => {
+    try {
+      return !desktop && canFull && sessionStorage.getItem(`sb.exam.${id}`) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [outOfFull, setOutOfFull] = useState(false);
+  const [leftFull, setLeftFull] = useState(0);
+  useEffect(() => {
+    if (!examMode || t?.status !== 'in_progress' || done) return;
+    const change = () => {
+      const full = !!document.fullscreenElement;
+      setOutOfFull(!full);
+      if (!full) api.noteLeftFullScreen(id).then((n) => n != null && setLeftFull(n)).catch(() => {});
+    };
+    setOutOfFull(!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', change);
+    return () => document.removeEventListener('fullscreenchange', change);
+  }, [examMode, t?.status, done, id]);
+  useEffect(() => {
+    if (done && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  }, [done]);
+
   const pendingSaves = useRef({});
   const flushOne = useCallback(
     async (qid, ans) => {
@@ -291,9 +319,10 @@ export default function Attempt({ id }) {
           done.queued
             ? 'You’re offline, so it’s saved on this laptop and will send by itself as soon as you’re connected. Don’t sign out until it has.'
             : app.me.self_learner
-              ? a?.self_mark
-                ? 'Now mark it yourself with the mark scheme: that’s where you learn the most.'
-                : 'See how you did, and look at the worked solutions for anything you missed.'
+              ? (a?.self_mark
+                  ? 'Now mark it yourself with the mark scheme: that’s where you learn the most.'
+                  : 'See how you did, and look at the worked solutions for anything you missed.') +
+                (examMode ? (leftFull ? ` You left full screen ${leftFull} time${leftFull === 1 ? '' : 's'}: in the real exam, try not to.` : ' You stayed in full screen the whole time, like the real exam.') : '')
               : 'Your tutor has been told. You’ll get a notification when it’s marked.'
         }
         action={
@@ -323,6 +352,17 @@ export default function Attempt({ id }) {
         <div className="banner off">
           <Icon name="wifiOff" size={18} />
           <span className="grow">You’re offline. Keep going: your answers are saved on this device and send when you’re back.</span>
+        </div>
+      )}
+      {examMode && outOfFull && (
+        <div className="banner lock" role="alert">
+          <Icon name="maximize" size={18} />
+          <span className="grow">
+            Exam conditions: you’re out of full screen. In the real exam you couldn’t leave.{leftFull > 0 ? ` (${leftFull} time${leftFull === 1 ? '' : 's'} so far)` : ''}
+          </span>
+          <button className="btn sm" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})}>
+            Back to full screen
+          </button>
         </div>
       )}
       <div className="attempt-bar">

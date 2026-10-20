@@ -333,6 +333,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); margin: 12px 0; }
 .subject-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; }
 .subject-list li { display: flex; justify-content: space-between; gap: 10px; padding: 11px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); font-size: 15px; }
 .subject-list li small { color: var(--muted); white-space: nowrap; }
+/* subjects students can start now (from the server) */
+.subject-list li.open-now { border-color: var(--accent, #0E6B6B); flex-wrap: wrap; }
+.open-tag { display: inline-block; padding: 2px 10px; border-radius: 99px; background: var(--accent, #0E6B6B); color: #fff; font-size: 12px; font-weight: 600; text-decoration: none; }
+.subject-list li .open-tag { margin-left: auto; }
+.open-now-note { margin: 0 0 18px; color: var(--ink-2); }
 .none-found { text-align: center; color: var(--muted); padding: 20px; }
 .request { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 28px; max-width: 760px; margin: 0 auto 80px; }
 .request form { display: grid; grid-template-columns: 1.2fr 1fr auto; gap: 10px; align-items: end; margin-top: 14px; }
@@ -779,3 +784,74 @@ h2 { font-size: clamp(28px, 4vw, 44px); margin-bottom: .35em; }
 /* The "With Prof" badge links to Meet Prof */
 a.tag { text-decoration: none; cursor: pointer; }
 a.tag:hover { text-decoration: underline; }
+
+/* ---------- The home page's opening (19 Oct 2026): the logo comes to life, then glides into the header ----------
+   About 5 seconds: the book's pages unfold from the spine into a bridge (bottom stripe first), the tutor rises onto the
+   right page, reaches down and helps the student up onto the left one (a soft glow where the hands meet), the yellow
+   head pops in, "StudyBridge" arrives underneath, and the mark and the word glide onto the header's logo and name as
+   the cover fades. index.html's head adds .intro-play to <html> (once a browser session, never with reduced motion),
+   so it shows from the very first paint and the page draws underneath it. The timeline is all here, so it lets go by
+   itself at 5.05 s even if site.js never runs; site.js aims the glide (.intro-fly), ends it on any click, tap or key,
+   and removes it. Every layer is the full logo's size (scripts/make-intro.py), so they stack into the exact logo. */
+:root { --li-ink: #0B2639; --li-ease: cubic-bezier(.2, .8, .2, 1); --li-glide: cubic-bezier(.6, 0, .2, 1); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --li-ink: #F5F5F7; } }
+:root[data-theme="dark"] { --li-ink: #F5F5F7; }
+.logo-intro { display: none; }
+.intro-play .logo-intro { display: block; position: fixed; inset: 0; z-index: 100; transition: opacity .25s ease; animation: li-gone .01s linear 5.05s forwards; }
+.logo-intro.li-done { opacity: 0; pointer-events: none; }
+.li-bg { position: absolute; inset: 0; background: var(--bg); animation: li-out .45s cubic-bezier(.4, 0, .2, 1) 4.5s forwards; }
+.li-art { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(18px, 3.4vw, 30px); padding-bottom: 5vh; }
+.li-mark { position: relative; width: min(400px, 74vw); aspect-ratio: 743 / 458; }
+.li-l, .li-lean, .li-tutor, .li-student { position: absolute; inset: 0; }
+.li-l { background: center / 100% 100% no-repeat; }
+.li-l.tutor { background-image: url(intro/tutor.png); }
+.li-l.tutor-head { background-image: url(intro/tutor-head.png); }
+.li-l.student { background-image: url(intro/student.png); }
+.li-l.student-head { background-image: url(intro/student-head.png); }
+.li-page.l1 { background-image: url(intro/book-l1.png); } .li-page.r1 { background-image: url(intro/book-r1.png); }
+.li-page.l2 { background-image: url(intro/book-l2.png); } .li-page.r2 { background-image: url(intro/book-r2.png); }
+.li-page.l3 { background-image: url(intro/book-l3.png); } .li-page.r3 { background-image: url(intro/book-r3.png); }
+.li-word { width: calc(min(400px, 74vw) * .84); aspect-ratio: 1303 / 234; background: var(--li-ink); -webkit-mask: url(intro/word.png) center / contain no-repeat; mask: url(intro/word.png) center / contain no-repeat; }
+
+/* 1. The bridge: each stripe swings down from upright at the spine, bottom pair first, the pages they stand on last */
+.li-page { animation: li-unfold .85s var(--li-ease) both; }
+.li-page.l1, .li-page.l2, .li-page.l3 { --r: 72deg; transform-origin: 49.5% 99.6%; }
+.li-page.r1, .li-page.r2, .li-page.r3 { --r: -72deg; transform-origin: 50.3% 99.6%; }
+.li-page.l3, .li-page.r3 { animation-delay: .2s; }
+.li-page.l2, .li-page.r2 { animation-delay: .4s; }
+.li-page.l1, .li-page.r1 { animation-delay: .6s; animation-duration: .95s; }
+@keyframes li-unfold { from { transform: rotate(var(--r)); opacity: 0; } 30% { opacity: 1; } to { transform: none; opacity: 1; } }
+/* 2. The tutor rises from behind the right page (the pages sit in front), then his head settles */
+.li-tutor { animation: li-rise .9s var(--li-ease) 1.3s both; }
+.li-l.tutor-head { animation: li-settle 1s var(--li-ease) 1.42s both; }
+@keyframes li-rise { from { translate: 0 11%; opacity: 0; } 45% { opacity: 1; } to { translate: none; opacity: 1; } }
+@keyframes li-settle { from { translate: 0 15%; opacity: 0; } 40% { opacity: 1; } 70% { translate: 0 -1%; } to { translate: none; opacity: 1; } }
+/* 3. He leans down from his back foot, and the student comes up from the lower left to take his hand */
+.li-lean { transform-origin: 80.8% 72%; animation: li-lean .8s cubic-bezier(.45, 0, .2, 1) 2.2s both; }
+.li-student { transform-origin: 48.6% 35.4%; animation: li-climb 1.1s var(--li-ease) 2.3s both; }
+.li-glow { position: absolute; left: 48.6%; top: 35.4%; width: 24%; aspect-ratio: 1; margin: -12% 0 0 -12%; border-radius: 50%; background: radial-gradient(closest-side, rgba(253, 203, 64, .55), rgba(253, 203, 64, .16) 55%, transparent); animation: li-glow 1s ease-out 2.95s both; }
+@keyframes li-lean { from { rotate: 6deg; } to { rotate: none; } }
+@keyframes li-climb { from { transform: translate(-4.6%, 11.4%) rotate(-12deg); opacity: 0; } 40% { opacity: 1; } to { transform: none; opacity: 1; } }
+@keyframes li-glow { from { opacity: 0; scale: .5; } 35% { opacity: 1; } to { opacity: 0; scale: 1.5; } }
+/* 4. The yellow head pops in as the student comes up (never a moment without it), with a small settle */
+.li-l.student-head { transform-origin: 36.8% 32.8%; animation: li-pop .6s var(--li-ease) 2.45s both; }
+@keyframes li-pop { from { scale: .4; opacity: 0; } 55% { scale: 1.06; opacity: 1; } to { scale: 1; opacity: 1; } }
+/* 5. The name arrives underneath */
+.li-word { animation: li-word .7s var(--li-ease) 3.6s both, li-out .45s ease 4.45s forwards; }
+@keyframes li-word { from { translate: 0 35%; opacity: 0; } to { translate: none; opacity: 1; } }
+/* 6. The cover fades. With site.js (.intro-fly) the mark and the word glide onto the header's logo and name first, and
+   the header's own logo appears under them as they land; without it they simply fade with the cover */
+.li-mark { animation: li-out .45s ease 4.45s forwards; }
+.intro-fly .li-mark { animation: li-glide-mark .62s var(--li-glide) 4.3s both, li-out .14s linear 4.9s forwards; }
+.intro-fly .li-word { animation: li-word .7s var(--li-ease) 3.6s both, li-glide-word .59s var(--li-glide) 4.33s both, li-out .14s linear 4.9s forwards; } /* a beat behind the mark, so it swings out beside it rather than across it */
+.intro-play:not(.intro-skip) .top .brand { animation: li-in .45s ease 4.45s both; }
+.intro-play.intro-fly:not(.intro-skip) .top .brand { animation: li-in .2s ease 4.86s both; }
+@keyframes li-glide-mark { to { transform: translate(var(--mx, 0), var(--my, 0)) scale(var(--ms, 1)); } }
+@keyframes li-glide-word { to { transform: translate(var(--wx, 0), var(--wy, 0)) scale(var(--ws, 1)); } }
+@keyframes li-in { from { opacity: 0; } }
+@keyframes li-out { to { opacity: 0; } }
+@keyframes li-gone { from, to { visibility: hidden; } } /* hidden at both ends: a finished animation can stop a hair short of 100% */
+/* Skip: a quiet pill in the corner (any click, tap or key also ends it) */
+.li-skip { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); min-height: 36px; padding: 0 16px; border: 0; border-radius: 980px; background: var(--bg-2); color: var(--ink-2); font: 600 14px var(--sans); letter-spacing: -0.01em; cursor: pointer; animation: li-in .4s ease .6s both, li-out .3s ease 4.3s forwards; }
+.li-skip:hover { color: var(--ink); }
+@media (prefers-reduced-motion: reduce) { .intro-play .logo-intro { display: none; } .intro-play .top .brand { animation: none; } }

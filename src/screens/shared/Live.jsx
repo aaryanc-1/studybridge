@@ -113,6 +113,10 @@ export default function Live({ sessionId }) {
   const attempts = useQuery(isTutor ? 'attempts' : null, api.listAttempts).data || [];
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const [editing, setEditing] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [pastOpen, setPastOpen] = useState(null);
+  // lesson notes written for a past lesson (Recent → the lesson → Open lesson notes)
+  const lessons = useQuery(isTutor ? 'lessons' : null, api.listLessons).data || [];
 
   if (sessionId) {
     const s = (sessions.data || []).find((x) => x.id === sessionId);
@@ -138,7 +142,8 @@ export default function Live({ sessionId }) {
       .filter(Boolean)
       .join(', ');
   const upcoming = list.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > now);
-  const past = list.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 <= now).reverse().slice(0, 10);
+  const past = list.filter((s) => !s.cancelled && new Date(s.starts_at).getTime() + s.duration_min * 60000 <= now).reverse().slice(0, 10);
+  const notesFor = (s) => lessons.find((l) => l.session_id === s.id);
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const watching = attempts.filter((t) => t.status === 'in_progress' && aById[t.assignment_id]?.camera);
   const configured = status.data?.configured;
@@ -153,15 +158,7 @@ export default function Live({ sessionId }) {
             <button className="btn" onClick={() => setEditing({ title: '', starts_at: new Date(Math.ceil(now / 900000) * 900000).toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id), repeat: false })}>
               <Icon name="calendar" size={18} /> Schedule
             </button>
-            <button
-              className="btn primary"
-              disabled={!configured}
-              onClick={async () => {
-                const s = await api.save('sessions', { title: 'Live lesson', starts_at: new Date().toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id) });
-                invalidate('sessions');
-                go(`/live/${s.id}`);
-              }}
-            >
+            <button className="btn primary" disabled={!configured} onClick={() => setStarting(true)}>
               <Icon name="video" size={18} /> Start now
             </button>
           </>
@@ -211,21 +208,25 @@ export default function Live({ sessionId }) {
           <div className="list">
             {activeSeries.map((x) => {
               const next = list.find((s) => s.series_id === x.id && !s.cancelled && new Date(s.starts_at).getTime() > now);
+              const skipped = !next && list.some((s) => s.series_id === x.id && s.cancelled && new Date(s.starts_at).getTime() > now);
               return (
                 <div key={x.id} className="item">
                   <Icon name="calendar" style={{ color: 'var(--accent)' }} />
                   <span className="grow">
                     <span className="name">{x.title}</span>
                     <span className="meta">
-                      {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${learnerTimes(next)}` : 'No lessons coming up'}
+                      {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${learnerTimes(next)}` : skipped ? 'The lessons coming up are skipped' : 'No lessons coming up'}
                       {x.ends_on && ` · last one ${day(x.ends_on + 'T12:00')}`}
                     </span>
                   </span>
-                  {next && (
-                    <button className="btn sm ghost" aria-label="Change weekly lesson" onClick={() => setEditing({ ...next, scope: 'all', until: x.ends_on || '' })}>
-                      <Icon name="pen" size={16} />
-                    </button>
-                  )}
+                  {/* always changeable, even when the next lessons are skipped */}
+                  <button
+                    className="btn sm ghost"
+                    aria-label="Change weekly lesson"
+                    onClick={() => setEditing(next ? { ...next, scope: 'all', until: x.ends_on || '' } : { ...afterLastLesson(x, list), scope: 'all', seriesOnly: true, until: x.ends_on || '' })}
+                  >
+                    <Icon name="pen" size={16} />
+                  </button>
                   <button className="btn sm ghost" aria-label="Stop weekly lesson" onClick={() => setStopping({ ...(next || {}), series_id: x.id, whole: true })}>
                     <Icon name="trash" size={16} />
                   </button>
@@ -319,19 +320,37 @@ export default function Live({ sessionId }) {
         <div className="card">
           <h2>Recent</h2>
           <div className="list">
-            {past.map((s) => (
-              <div key={s.id} className="item">
-                <Icon name="video" style={{ color: 'var(--muted)' }} />
-                <span className="grow">
-                  <span className="name">{s.title}</span>
-                  <span className="meta">{when(s.starts_at)}</span>
-                </span>
-                {s.notes_md && <span className="small muted ellipsis" style={{ maxWidth: 300 }}>{s.notes_md}</span>}
-              </div>
-            ))}
+            {past.map((s) => {
+              const inner = (
+                <>
+                  <Icon name="video" style={{ color: 'var(--muted)' }} />
+                  <span className="grow">
+                    <span className="name">{s.title}</span>
+                    <span className="meta">
+                      {when(s.starts_at)}
+                      {isTutor && notesFor(s) && <span>Lesson notes written</span>}
+                    </span>
+                  </span>
+                  {s.notes_md && <span className="small muted ellipsis" style={{ maxWidth: 300 }}>{s.notes_md}</span>}
+                </>
+              );
+              // the tutor opens a past lesson to see who was there and write (or open) its lesson notes
+              return isTutor ? (
+                <button key={s.id} className="item" onClick={() => setPastOpen(s)} aria-haspopup="dialog">
+                  {inner}
+                  <Icon name="more" size={18} />
+                </button>
+              ) : (
+                <div key={s.id} className="item">
+                  {inner}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
+      {starting && <StartNow onClose={() => setStarting(false)} />}
+      {pastOpen && <PastLesson session={pastOpen} notes={notesFor(pastOpen)} onClose={() => setPastOpen(null)} />}
       {editing && <SessionForm initial={editing} series={seriesList.find((x) => x.id === editing.series_id)} onClose={() => setEditing(null)} />}
       {stopping && (
         <Modal
@@ -397,13 +416,24 @@ function movesWithClocks(startIso, tz) {
   return false;
 }
 
+// A weekly lesson with nothing coming up (the next ones were skipped): changing it starts the week after its
+// last lesson (so skipped ones stay skipped), on my clock
+function afterLastLesson(x, sessions) {
+  const mine = sessions.filter((s) => s.series_id === x.id);
+  const d = mine.length ? new Date(mine[mine.length - 1].starts_at) : new Date(`${x.starts_on}T${x.start_time}`);
+  if (mine.length) d.setDate(d.getDate() + 7);
+  while (d.getTime() <= Date.now()) d.setDate(d.getDate() + 7);
+  return { title: x.title, starts_at: d.toISOString(), duration_min: x.duration_min, learner_ids: x.learner_ids || [], notes_md: x.notes_md, series_id: x.id };
+}
+
 function SessionForm({ initial, series, onClose }) {
   const lk = useLookups();
   const toast = useToast();
   const [s, setS] = useState({ repeat: false, ...initial, until: initial.until || series?.ends_on || '' });
   const [scope, setScope] = useState(initial.scope || 'one'); // a weekly lesson: just this one, or this and every week after
   const [err, setErr] = useState('');
-  const isNew = !s.id;
+  // seriesOnly: the weekly lesson itself, with no lesson of its own to change (all the coming ones were skipped)
+  const isNew = !s.id && !initial.seriesOnly;
   const weekly = !!s.series_id;
   const allWeeks = (isNew && s.repeat) || (weekly && scope === 'all');
   const myTz = myTimezone();
@@ -433,7 +463,7 @@ function SessionForm({ initial, series, onClose }) {
   return (
     <Modal title={isNew ? 'Schedule a lesson' : weekly ? 'Change a weekly lesson' : 'Edit lesson'} onClose={onClose}>
       <form className="stack" onSubmit={submit}>
-        {weekly && (
+        {weekly && !initial.seriesOnly && (
           <div className="row wrap" role="radiogroup" aria-label="Which lessons">
             <label className="check">
               <input type="radio" name="scope" checked={scope === 'one'} onChange={() => setScope('one')} />
@@ -496,6 +526,109 @@ function SessionForm({ initial, series, onClose }) {
           <button className="btn primary">Save</button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// "Start now": choose who's invited (everyone to begin with), then straight into the lesson
+function StartNow({ onClose }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const [title, setTitle] = useState('Live lesson');
+  const [ids, setIds] = useState(() => lk.learners.map((l) => l.id));
+  const [busy, setBusy] = useState(false);
+  const none = lk.learners.length > 0 && ids.length === 0;
+  async function start() {
+    setBusy(true);
+    try {
+      const s = await api.save('sessions', { title: title.trim() || 'Live lesson', starts_at: new Date().toISOString(), duration_min: 60, learner_ids: ids });
+      invalidate('sessions');
+      onClose();
+      go(`/live/${s.id}`);
+    } catch (e) {
+      toast({ title: 'Couldn’t start the lesson', body: e.message, tone: 'bad' });
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title="Start a lesson now"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy || none} onClick={start}>
+            <Icon name="video" size={18} /> Start
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Title">
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Simultaneous equations" />
+        </Field>
+        <Field label="Who to invite" hint={none ? 'Choose at least one learner.' : 'They get a message that the lesson is starting.'}>
+          {lk.learners.length === 0 ? (
+            <div className="small muted">You don’t have any learners yet. You can still start a lesson to try it out.</div>
+          ) : (
+            <div className="stack sm">
+              {lk.learners.length > 1 && (
+                <label className="check">
+                  <input type="checkbox" checked={ids.length === lk.learners.length} onChange={(e) => setIds(e.target.checked ? lk.learners.map((l) => l.id) : [])} />
+                  <span className="t">Everyone</span>
+                </label>
+              )}
+              {lk.learners.map((l) => (
+                <label key={l.id} className="check">
+                  <input type="checkbox" checked={ids.includes(l.id)} onChange={(e) => setIds(e.target.checked ? [...ids, l.id] : ids.filter((x) => x !== l.id))} />
+                  <span className="t">{l.display_name}</span>
+                  <span className="s">{placeOf(l.timezone)}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+// A lesson that's over: when it was, who was in it, and its lesson notes (open them, or write them now)
+function PastLesson({ session: s, notes, onClose }) {
+  const lk = useLookups();
+  const who = (s.learner_ids || []).map((id) => lk.learner(id)?.display_name).filter(Boolean);
+  return (
+    <Modal title={s.title} onClose={onClose}>
+      <div className="stack">
+        <div className="stack sm">
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="calendar" size={16} style={{ color: 'var(--muted)' }} />
+            {day(s.starts_at)}, {time(s.starts_at)} your time
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="clock" size={16} style={{ color: 'var(--muted)' }} />
+            {s.duration_min} minutes
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="users" size={16} style={{ color: 'var(--muted)' }} />
+            {who.length ? who.join(', ') : 'No learners'}
+          </div>
+          {s.notes_md && <div className="small muted pre-wrap">{s.notes_md}</div>}
+        </div>
+        <div className="sheet-actions">
+          {notes ? (
+            <button className="btn primary" onClick={() => go(`/lesson/${notes.id}`)}>
+              <Icon name="book" size={18} /> Open lesson notes
+            </button>
+          ) : (
+            <button className="btn primary" onClick={() => go(`/lesson/new?session=${s.id}`)}>
+              <Icon name="pen" size={18} /> Write lesson notes
+            </button>
+          )}
+        </div>
+      </div>
     </Modal>
   );
 }

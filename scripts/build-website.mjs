@@ -11,6 +11,19 @@ import QRCode from 'qrcode';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const siteConfig = () => JSON.parse(readFileSync(join(root, 'website/site.config.json'), 'utf8'));
 
+// A subject's key, the same as the app's catalogue (src/lib/catalogue.js): 'cambridge:igcse:0607', 'ib:sl-and-hl:physics'.
+// The subjects page marks the ones students can start now (the open_subjects list from the server).
+const slug = (s) =>
+  String(s)
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+export function catalogueKey(b, l, subject, code) {
+  const c = b.id === 'ib' ? '' : code || '';
+  return `${b.id}:${slug(l.name)}:${c ? slug(c) : slug(subject)}`;
+}
+
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // Tutors pay per learner, in steps that get cheaper; site.js turns data-usd into the visitor's currency (and yearly)
@@ -158,7 +171,10 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
         (b) => `<section class="board-panel board-block" data-board="${esc(b.id)}"><h2 class="left" style="font-size:28px">${esc(b.name)}</h2>${b.levels
           .map(
             (l) => `<div class="level"><h3>${esc(levelTitle(b, l))}</h3><ul class="subject-list">${l.subjects
-              .map(([n, code]) => `<li data-s="${esc(`${n} ${code || ''} ${b.name} ${l.name}`.toLowerCase())}"><span>${esc(n)}</span>${code ? `<small>${esc(code)}</small>` : ''}</li>`)
+              .map(
+                ([n, code]) =>
+                  `<li data-s="${esc(`${n} ${code || ''} ${b.name} ${l.name}`.toLowerCase())}" data-key="${esc(catalogueKey(b, l, n, code))}"><span>${esc(n)}</span>${code ? `<small>${esc(code)}</small>` : ''}</li>`,
+              )
               .join('')}</ul></div>`,
           )
           .join('')}</section>`,
@@ -179,6 +195,9 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
       writeFileSync(join(out, f), fresh(render(readFileSync(join(root, 'website', f), 'utf8'), page, f)));
     } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
   }
+  // the home page's opening: the logo cut into layers by scripts/make-intro.py
+  mkdirSync(join(out, 'intro'), { recursive: true });
+  for (const f of readdirSync(join(root, 'website/intro'))) copyFileSync(join(root, 'website/intro', f), join(out, 'intro', f));
   const pub = {
     brand: c.brand, siteUrl: c.siteUrl, contactEmail: c.contactEmail, appPath: c.appPath, releasesRepo: c.releasesRepo, tutorLevels: c.tutorLevels, yearlyMonthsFree: c.yearlyMonthsFree, currencies: c.currencies,
     boards: c.boards.map((b) => ({ id: b.id, name: b.name, sessions: b.sessions })),

@@ -127,6 +127,7 @@ export default function Work() {
 }
 
 export function WorkDetail({ id }) {
+  const app = useApp();
   const lk = useLookups();
   const toast = useToast();
   const assignments = useQuery('assignments', api.listAssignments);
@@ -134,6 +135,7 @@ export function WorkDetail({ id }) {
   const files = useQuery('files', api.listFiles).data || [];
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [examConditions, setExamConditions] = useState(true);
   const a = (assignments.data || []).find((x) => x.id === id);
   if (!a) return <Page title="Work">{assignments.data ? <Empty>This isn’t available any more.</Empty> : <Loading />}</Page>;
   const mine = attempts.data || [];
@@ -143,11 +145,19 @@ export function WorkDetail({ id }) {
   const blocked = (a.lockdown || a.camera) && !desktop;
   const canStart = s.key === 'todo' || s.key === 'doing' || s.key === 'redo' || (s.key === 'marked' && s.canRetry);
   const label = s.key === 'doing' ? 'Continue' : s.key === 'redo' ? 'Redo the questions' : s.key === 'marked' ? 'Try again' : 'Start';
+  // Students on their own can sit a practice paper or mock like the real thing (full screen, timer, no notes)
+  const canExam = !!app.me.self_learner && !desktop && (a.kind === 'test' || a.kind === 'exam') && !!document.documentElement.requestFullscreen;
 
   async function start() {
     setBusy(true);
+    // full screen has to be asked for straight from the tap, before anything else
+    if (canExam && examConditions) document.documentElement.requestFullscreen().catch(() => {});
     try {
       const t = await api.startAttempt(a.id);
+      try {
+        if (canExam && examConditions) sessionStorage.setItem(`sb.exam.${t.id}`, '1');
+        else sessionStorage.removeItem(`sb.exam.${t.id}`);
+      } catch {}
       await store.del(`submitted:${t.id}`);
       invalidate('myattempts');
       // time ran out while it was closed: the server handed it in
@@ -214,6 +224,19 @@ export function WorkDetail({ id }) {
             )}
           </div>
           {blocked && <div className="error">Open this on your laptop in the StudyBridge app. It can’t be done in a web browser.</div>}
+        </div>
+      )}
+      {canExam && canStart && (
+        <div className="card">
+          <label className="row top" style={{ gap: 10, cursor: 'pointer' }}>
+            <input type="checkbox" checked={examConditions} onChange={(e) => setExamConditions(e.target.checked)} style={{ marginTop: 4 }} />
+            <span>
+              <b>Exam conditions</b>
+              <span className="small muted" style={{ display: 'block' }}>
+                Full screen until you hand in{a.time_limit_min ? `, with the ${a.time_limit_min}-minute timer` : ''}, no notes. Do it like the real exam: it’s the best practice there is.
+              </span>
+            </span>
+          </label>
         </div>
       )}
       {attached.length > 0 && (

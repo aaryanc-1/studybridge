@@ -3,6 +3,7 @@ const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0
 
 export function studentAccess(me, now = new Date()) {
   if (!me?.self_learner) return { ok: true };
+  if (me.test_student) return { ok: true, test: true }; // the Owner trying StudyBridge as a student
   if (me.paid_until && String(me.paid_until).slice(0, 10) >= ymd(now)) return { ok: true, paid: true, plan: me.paid_plan, until: String(me.paid_until).slice(0, 10) };
   if (me.trial_until && new Date(me.trial_until) > now) return { ok: true, trial: true, daysLeft: Math.max(1, Math.ceil((new Date(me.trial_until) - now) / 864e5)) };
   return { ok: false };

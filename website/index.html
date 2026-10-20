@@ -13,8 +13,27 @@
 <link rel="apple-touch-icon" href="logo-192.png">
 <link rel="stylesheet" href="site.css">
 <script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<!-- The opening (the logo comes to life): once a browser session, never with reduced motion, a link to a section or a tab opened in the background -->
+<script>try{if(!location.hash&&document.visibilityState!=='hidden'&&!sessionStorage.getItem('sb.intro')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){sessionStorage.setItem('sb.intro','1');document.documentElement.classList.add('intro-play')}}catch(e){}</script>
 </head>
 <body>
+<!-- The opening: the book opens into a bridge, the tutor helps the student up, then the logo glides into the header.
+     Shown only while <html> has .intro-play; the timeline is in site.css, the layers come from scripts/make-intro.py -->
+<div class="logo-intro" id="logo-intro">
+  <div class="li-bg"></div>
+  <div class="li-art" aria-hidden="true">
+    <div class="li-mark">
+      <div class="li-lean">
+        <i class="li-glow"></i>
+        <div class="li-tutor"><i class="li-l tutor"></i><i class="li-l tutor-head"></i></div>
+        <div class="li-student"><i class="li-l student"></i><i class="li-l student-head"></i></div>
+      </div>
+      <i class="li-l li-page l3"></i><i class="li-l li-page r3"></i><i class="li-l li-page l2"></i><i class="li-l li-page r2"></i><i class="li-l li-page l1"></i><i class="li-l li-page r1"></i>
+    </div>
+    <div class="li-word"></div>
+  </div>
+  <button class="li-skip" type="button" aria-label="Skip the logo animation">Skip</button>
+</div>
 <a class="skip" href="#main">Skip to the page</a>
 {{header}}
 

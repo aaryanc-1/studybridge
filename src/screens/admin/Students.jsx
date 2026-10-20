@@ -1,7 +1,9 @@
 // Admin → Students: students studying on their own. The Owner opens sign-up, picks the account that holds
 // StudyBridge's own content, puts every subject into it, and records payments taken by hand.
 import { useState } from 'react';
+import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
+import { addAccount } from '../../lib/accounts.js';
 import { Empty, Field, Page, Toggle, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -105,6 +107,8 @@ export default function StudentsPage() {
         />
       </div>
 
+      <TestStudents emails={d.test_emails || []} run={run} busy={busy} />
+
       <div className="card">
         <div className="card-head">
           <h2>Students ({students.length})</h2>
@@ -120,6 +124,61 @@ export default function StudentsPage() {
         )}
       </div>
     </Page>
+  );
+}
+
+// Try StudyBridge as a student before a subject opens: emails that can sign up as a student even while sign-up is
+// closed, see subjects that aren't open yet, and never pay
+function TestStudents({ emails, run, busy }) {
+  const app = useApp();
+  const [email, setEmail] = useState('');
+  const save = (list, ok) => run('test', () => api.adminSetTestEmails(list), ok);
+  return (
+    <div className="card stack" id="test-students">
+      <h2>Try it as a student</h2>
+      <div className="small muted">
+        Add an email you can sign in with, for example yours with +student before the @ (Gmail delivers it to you). That email can sign up as a student even while sign-up is
+        closed, sees subjects that aren’t open yet (so you can check a subject before you open it), and never needs to pay.
+      </div>
+      {emails.length > 0 && (
+        <div className="list">
+          {emails.map((e) => (
+            <div key={e} className="item">
+              <Icon name="user" style={{ color: 'var(--accent)' }} />
+              <span className="grow">
+                <span className="name">{e}</span>
+              </span>
+              <button className="btn sm ghost" disabled={!!busy} onClick={() => save(emails.filter((x) => x !== e), 'Removed')}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <form
+        className="row wrap"
+        style={{ gap: 8, alignItems: 'flex-end' }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          save([...emails, email.trim()], 'Added').then((ok) => ok && setEmail(''));
+        }}
+      >
+        <Field label="Test student’s email">
+          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you+student@gmail.com" style={{ minWidth: 260 }} />
+        </Field>
+        <button className="btn" disabled={!email.trim() || !!busy}>
+          Add
+        </button>
+      </form>
+      {emails.length > 0 && (
+        <div>
+          <button className="btn primary" onClick={() => addAccount(app.me.id, '#start=student-test')}>
+            <Icon name="plus" size={18} /> Sign up a test student on this device
+          </button>
+          <div className="small muted" style={{ marginTop: 6 }}>You stay signed in here: switch back from the account menu.</div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -162,8 +221,10 @@ function StudentRow({ s, busy, run }) {
   const [paying, setPaying] = useState(false);
   const [plan, setPlan] = useState('monthly');
   const [until, setUntil] = useState(plus(1));
-  const a = studentAccess({ ...s, self_learner: true });
-  const status = a.paid
+  const a = studentAccess({ ...s, self_learner: true, test_student: s.test });
+  const status = a.test
+    ? 'Test student (never pays)'
+    : a.paid
     ? `${s.paid_plan === 'pass' ? 'Exam pass' : 'Monthly'}, paid until ${day(s.paid_until)}`
     : a.trial
       ? `Free trial: ${a.daysLeft} day${a.daysLeft === 1 ? '' : 's'} left`
@@ -180,8 +241,10 @@ function StudentRow({ s, busy, run }) {
         <span className="meta">
           {s.setup_done ? `${(s.subjects || []).join(', ') || 'No subjects'} · ${s.exam_label || `exams ${day(s.exam_date)}`}` : 'Hasn’t finished setting up yet'}
         </span>
-        <span className={'pill ' + (a.paid ? 'good' : a.trial ? 'accent' : 'warn')} style={{ alignSelf: 'flex-start' }}>
-          {status}
+        <span className="row wrap" style={{ gap: 6 }}>
+          <span className={'pill ' + (a.paid || a.test ? 'good' : a.trial ? 'accent' : 'warn')}>{status}</span>
+          {s.parent_set_up && <span className="pill">Set up by a parent</span>}
+          {s.parents > 0 && <span className="pill">{s.parents} parent{s.parents === 1 ? '' : 's'} following</span>}
         </span>
         {paying && (
           <span className="row wrap" style={{ gap: 8, alignItems: 'flex-end', marginTop: 6 }}>

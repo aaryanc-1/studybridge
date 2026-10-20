@@ -287,7 +287,23 @@ export const acceptParentInvite = (code, name) => run(sb().rpc('accept_parent_in
 export const joinWithCode = (code, name) => (isParentCode(code) ? acceptParentInvite(code, name) : acceptInvite(code, name));
 
 // Students on their own (launch 1): a 7-day trial, a guided setup, and the Owner's tools for them
-export const startSelfLearner = (name, grade, country) => run(sb().rpc('start_self_learner', { p_name: name, p_grade: grade, p_country: country, p_timezone: timezone() }));
+export async function startSelfLearner(name, grade, country, parentCode = null) {
+  const p = await run(sb().rpc('start_self_learner', { p_name: name, p_grade: grade, p_country: country, p_timezone: timezone(), p_parent_code: parentCode || null }));
+  // a wrong code from a parent is counted on the server, so it comes back empty rather than as an error
+  if (!p?.id) throw new Error('That code from your parent isn’t right. Check it with them: it’s 8 digits.');
+  return p;
+}
+// Launch 1, part 3: the starting check, exam conditions, parents for children studying on their own, test students
+export const startCheck = (subjectId) => run(sb().rpc('start_practice', { p_mode: 'check', p_subject: subjectId }));
+export const myStartingChecks = () => run(sb().rpc('my_starting_checks'));
+export const noteLeftFullScreen = (attemptId) => run(sb().rpc('note_left_full_screen', { p_attempt: attemptId }));
+export const startParent = (name) => run(sb().rpc('start_parent', { p_name: name, p_timezone: timezone() }));
+export const parentChildCode = (name, grade) => run(sb().rpc('parent_child_code', { p_name: name, p_grade: grade }));
+export const parentChildCodes = () => run(sb().rpc('parent_child_codes'));
+export const parentCancelChildCode = (id) => run(sb().rpc('parent_cancel_child_code', { p_id: id }));
+export const parentDeleteChild = (learnerId, confirm) => run(sb().rpc('parent_delete_child', { p_learner: learnerId, p_confirm: confirm }));
+export const selfParentInvite = (name) => run(sb().rpc('self_parent_invite', { p_name: name || null }));
+export const adminSetTestEmails = (emails) => run(sb().rpc('admin_set_test_emails', { p_emails: emails }));
 export const selfSetup = (o) =>
   run(sb().rpc('self_setup', { p_board: o.board, p_level: o.level, p_subjects: o.subjects, p_exam_date: o.examDate, p_exam_label: o.examLabel || null, p_hours: o.hours }));
 export const setSubjectLive = (id, live) => run(sb().from('subjects').update({ live }).eq('id', id));
@@ -301,6 +317,9 @@ export const adminExtendTrial = (id, days = 7) => run(sb().rpc('admin_extend_tri
 export const reportContent = (kind, id, message) => run(sb().rpc('report_content', { p_kind: kind, p_id: id, p_message: message }));
 export const adminContentReview = () => run(sb().rpc('admin_content_review'));
 export const adminContentDecide = (kind, id, action, fix = null) => run(sb().rpc('admin_content_decide', { p_kind: kind, p_id: id, p_action: action, p_fix: fix }));
+// Everything StudyBridge has made: kind 'question' | 'lesson' | 'card' | 'practice_paper'; status 'live' | 'waiting' | 'problems' | 'hidden'
+export const adminContentBrowse = ({ subject = null, kind = null, status = null, search = '', limit = 100 } = {}) =>
+  run(sb().rpc('admin_content_browse', { p_subject: subject || null, p_kind: kind || null, p_status: status || null, p_search: search.trim() || null, p_limit: limit }));
 export const adminReportDone = (id, reply = null) => run(sb().rpc('admin_report_done', { p_report: id, p_reply: reply }));
 export const adminSetPayLinks = (monthly, pass) => run(sb().rpc('admin_set_pay_links', { p_monthly: monthly, p_pass: pass }));
 export const studentPayLinks = () => run(sb().rpc('student_pay_links'));
@@ -597,6 +616,9 @@ export const adminFeedback = () => run(sb().rpc('admin_feedback'));
 export const adminReplyFeedback = (id, reply, close = true) => run(sb().rpc('admin_reply_feedback', { p_id: id, p_reply: reply, p_close: close }));
 export const adminAnnounce = (title, body, audience, until) => run(sb().rpc('admin_announce', { p_title: title, p_body: body, p_audience: audience, p_until: until || null }));
 export const adminEndAnnouncement = (id) => run(sb().rpc('admin_end_announcement', { p_id: id }));
+export const adminEditAnnouncement = (id, title, body, audience, until) =>
+  run(sb().rpc('admin_edit_announcement', { p_id: id, p_title: title, p_body: body, p_audience: audience, p_until: until || null }));
+export const adminDeleteAnnouncement = (id) => run(sb().rpc('admin_delete_announcement', { p_id: id }));
 export const adminSetMinVersion = (v) => run(sb().rpc('admin_set_min_version', { p_version: v || null }));
 export const listAnnouncements = () => run(sb().from('announcements').select('*').order('created_at', { ascending: false }).limit(50));
 export const sendFeedback = (kind, body) => run(sb().rpc('send_feedback', { p_kind: kind, p_body: body, p_version: appVersion() }));

@@ -65,6 +65,8 @@ jobs:
         with:
           name: screenshots
           path: screenshots
+          # build files only need to last until the release job has them (GitHub counts storage)
+          retention-days: 1
 
   # The app's screens as an update file, plus the web version (for phones)
   bundle:
@@ -91,6 +93,7 @@ jobs:
         with:
           name: studybridge-bundle
           path: out/*
+          retention-days: 1
 
   build:
     needs: test
@@ -123,6 +126,7 @@ jobs:
             release/*.dmg
             build/studybridge.mcpb
           if-no-files-found: error
+          retention-days: 1
 
   # Keep the database and the Prof server in step with the apps
   server:

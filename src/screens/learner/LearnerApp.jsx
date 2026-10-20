@@ -17,7 +17,7 @@ import Live from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import Study from './Study.jsx';
-import { SelfSetup, TrialOver } from './SelfStudy.jsx';
+import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
@@ -79,7 +79,7 @@ export default function LearnerApp() {
   const self = !!app.me.self_learner;
   const nav = self
     ? [
-        { to: '/', label: 'Today', icon: 'home', also: ['/setup'] },
+        { to: '/', label: 'Today', icon: 'home', also: ['/setup', '/check'] },
         { to: '/study', label: 'Study', icon: 'flame' },
         { to: '/work', label: 'Practice', icon: 'clipboard', also: ['/results'] },
         { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
@@ -118,6 +118,7 @@ export default function LearnerApp() {
   if (self && a !== 'settings') {
     if (!app.me.setup_done) page = <SelfSetup />;
     else if (a === 'setup') page = <SelfSetup again />;
+    else if (a === 'check') page = <StartingCheck />;
     if (!studentAccess(app.me).ok && a !== 'progress') page = <TrialOver />;
   }
 

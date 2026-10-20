@@ -2,13 +2,19 @@
 // lessons and due dates, marks that were given back, topic strengths, mock grades and the exam countdown.
 // Never messages, working, photos, the exam camera or anything from Prof (the server only hands these out).
 // Four tabs, big on phones: This week (the report), Coming up, Marks and Settings.
+// A child studying on their own (launch 1): their plan, how much they study, their free week or plan and paying for
+// it; the parent can set such a child up with a code (needed below grade 8).
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Bar, Empty, Loading, Modal, Page, go, useRoute } from '../../ui/kit.jsx';
+import { Bar, Loading, Modal, Page, go, useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { day, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
+import { SUPPORT_EMAIL } from '../../lib/config.js';
+import { studentAccess } from '../../lib/students.js';
+import { SetUpChild, AddWithCode } from './ChildCodes.jsx';
+import { PayOptions } from '../learner/SelfStudy.jsx';
+import { day, dur, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
 import Shell from '../shared/Shell.jsx';
 import Settings from '../shared/Settings.jsx';
 import ReportCard, { printReport } from '../shared/ReportCard.jsx';
@@ -69,11 +75,62 @@ export default function ParentApp() {
 function NoChildren() {
   const app = useApp();
   return (
-    <Page title={`Hello, ${app.me.display_name.split(' ')[0]}`}>
-      <Empty title="No children linked">
-        Your account isn’t linked to a learner right now. Ask your child’s tutor for a parent invite, then join with it in a new account or from the sign-in page.
-      </Empty>
+    <Page title={`Hello, ${app.me.display_name.split(' ')[0]}`} subtitle="Your account isn’t linked to a child yet.">
+      <SetUpChild />
+      <AddWithCode />
     </Page>
+  );
+}
+
+// A child studying on their own: their plan, their week, and their free week or plan (the parent can pay)
+function OwnStudy({ v }) {
+  const s = v.self;
+  const weeks = s.exam_date ? Math.max(0, Math.ceil((new Date(s.exam_date + 'T12:00') - new Date()) / (7 * 864e5))) : null;
+  const goal = (s.goal_min || 0) * 7 * 60;
+  const access = studentAccess({ self_learner: true, trial_until: s.trial_until, paid_until: s.paid_until, paid_plan: s.paid_plan });
+  const first = v.learner.name.split(' ')[0];
+  return (
+    <>
+      <div className="card stack">
+        <div className="card-head">
+          <div>
+            <h2>{first}’s plan</h2>
+            <div className="small muted">{s.setup_done ? `${s.subjects.join(', ') || 'No subjects yet'}${s.exam_label ? ` · ${s.exam_label}` : ''}` : `${first} hasn’t finished setting up their plan yet.`}</div>
+          </div>
+          {weeks != null && (
+            <div className="weeks-left">
+              <b>{weeks}</b>
+              <span>week{weeks === 1 ? '' : 's'} to go</span>
+            </div>
+          )}
+        </div>
+        <div className="own-stats">
+          <div className="stat">
+            <div className="n">{dur(s.week_seconds)}</div>
+            <div className="l">Studied in the last 7 days{goal ? ` (aim: ${dur(goal)})` : ''}</div>
+          </div>
+          <div className="stat">
+            <div className="n">{s.days_this_week}</div>
+            <div className="l">Days they studied</div>
+          </div>
+          <div className="stat">
+            <div className="n">{s.practice_this_week}</div>
+            <div className="l">Practice sessions</div>
+          </div>
+        </div>
+      </div>
+      <div className="card stack">
+        <h2>Their StudyBridge plan</h2>
+        <div className="muted small">
+          {access.paid
+            ? `Paid (${access.plan === 'pass' ? 'exam pass' : 'monthly'}) until ${day(access.until + 'T12:00')}.`
+            : access.trial
+              ? `Free week: ${access.daysLeft} day${access.daysLeft === 1 ? '' : 's'} left.`
+              : `${first}’s free week is over. Their work is all saved; pay to open it again.`}
+        </div>
+        {!access.paid && <PayOptions forId={v.learner.id} examDate={s.exam_date} otherWay={() => window.open(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Paying for ' + first)}`)} />}
+      </div>
+    </>
   );
 }
 
@@ -112,8 +169,9 @@ function Child({ id, kids, section }) {
       </div>
     ) : null;
   return (
-    <Page eyebrow={picker} title={v.learner.name} subtitle={`${SUBTITLE[section]} Tutor: ${v.tutor}.`}>
-      {section === 'week' && (
+    <Page eyebrow={picker} title={v.learner.name} subtitle={v.self ? 'Studying on their own with StudyBridge.' : `${SUBTITLE[section]} Tutor: ${v.tutor}.`}>
+      {section === 'week' && v.self && <OwnStudy v={v} />}
+      {section === 'week' && !v.self && (
         <>
           {v.exam && (
             <div className="card row parent-exam">

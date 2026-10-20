@@ -2,10 +2,10 @@
 // the inbox ("Contact StudyBridge") and announcements. Account details only, never anyone's work.
 import { useEffect, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Loading, Page, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Loading, Modal, Page, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, bytes, planName } from '../../lib/format.js';
+import { ago, bytes, planName, toLocalInput } from '../../lib/format.js';
 import { money, RaiseAllowance, PlanModal, PasswordModal, LearnerList } from './Admin.jsx';
 
 const FREE_STORAGE = 1024 ** 3; // Supabase free plan: 1 GB of files
@@ -377,6 +377,8 @@ function FeedbackItem({ f }) {
 export function AnnouncementsPage() {
   const q = useQuery('announcements', api.listAnnouncements);
   const toast = useToast();
+  const confirm = useConfirm();
+  const [editing, setEditing] = useState(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [audience, setAudience] = useState('tutors');
@@ -443,23 +445,113 @@ export function AnnouncementsPage() {
               </span>
             </div>
             {a.body && <div className="small pre-wrap">{a.body}</div>}
-            {live(a) && (
-              <div>
-                <button
-                  className="btn sm"
-                  onClick={async () => {
-                    await api.adminEndAnnouncement(a.id);
+            <div className="row wrap" style={{ gap: 6 }}>
+              {live(a) && (
+                <>
+                  <button className="btn sm" onClick={() => setEditing(a)}>
+                    <Icon name="pen" size={15} /> Edit
+                  </button>
+                  <button
+                    className="btn sm"
+                    onClick={async () => {
+                      try {
+                        await api.adminEndAnnouncement(a.id);
+                        invalidate('announcements');
+                      } catch (e) {
+                        toast({ title: 'Couldn’t end it', body: e.message, tone: 'bad' });
+                      }
+                    }}
+                  >
+                    End it now
+                  </button>
+                </>
+              )}
+              <button
+                className="btn sm ghost"
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: 'Delete this announcement?',
+                    body: live(a) ? 'It disappears from everyone’s app straight away and is gone for good.' : 'It’s gone for good.',
+                    ok: 'Delete',
+                    danger: true,
+                  });
+                  if (!ok) return;
+                  try {
+                    await api.adminDeleteAnnouncement(a.id);
                     invalidate('announcements');
-                  }}
-                >
-                  End it now
-                </button>
-              </div>
-            )}
+                    toast('Deleted');
+                  } catch (e) {
+                    toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+                  }
+                }}
+              >
+                <Icon name="trash" size={15} /> Delete
+              </button>
+            </div>
           </div>
         ))}
       </div>
+      {editing && <EditAnnouncement a={editing} onClose={() => setEditing(null)} />}
     </Page>
+  );
+}
+
+// Change an announcement that's up: its words, who sees it and until when
+function EditAnnouncement({ a, onClose }) {
+  const toast = useToast();
+  const was = a.until ? toLocalInput(a.until).slice(0, 10) : '';
+  const [title, setTitle] = useState(a.title);
+  const [body, setBody] = useState(a.body || '');
+  const [audience, setAudience] = useState(a.audience);
+  const [until, setUntil] = useState(was);
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    try {
+      // an unchanged date keeps its exact time; a new one runs to the end of that day
+      const end = until === was ? a.until || null : until ? new Date(`${until}T23:59`).toISOString() : null;
+      await api.adminEditAnnouncement(a.id, title.trim(), body.trim(), audience, end);
+      invalidate('announcements');
+      toast('Announcement saved');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title="Edit announcement"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy || !title.trim()} onClick={save}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <Field label="Title">
+        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} />
+      </Field>
+      <Field label="Message (optional)">
+        <textarea className="textarea" value={body} onChange={(e) => setBody(e.target.value)} maxLength={2000} />
+      </Field>
+      <div className="grid g2" style={{ gap: 12 }}>
+        <Field label="Who sees it">
+          <select className="select" value={audience} onChange={(e) => setAudience(e.target.value)}>
+            <option value="tutors">Tutors</option>
+            <option value="everyone">Tutors and learners</option>
+          </select>
+        </Field>
+        <Field label="Show it until" hint="Leave it empty to keep it up until you end it.">
+          <input className="input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
+        </Field>
+      </div>
+    </Modal>
   );
 }
 

@@ -1,12 +1,14 @@
 // Admin → Content: StudyBridge's own lessons and questions that need the Owner. Questions whose second check
 // disagreed or that failed the plain checks wait here; students' reports come here too (the item stays up for
-// students until the Owner sorts it, so nobody thinks it was fixed when it wasn't).
-import { useState } from 'react';
+// students until the Owner sorts it, so nobody thinks it was fixed when it wasn't). "Browse everything" lists all
+// of StudyBridge's own content, by subject, to search, hide, approve or remove.
+import { useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Markdown, Page, useToast } from '../../ui/kit.jsx';
+import { Empty, Loading, Markdown, Page, Seg, go, useConfirm, useDebounced, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
+import { plainMaths } from '../../lib/plain.js';
 
 const LETTERS = 'ABCDEFGHIJ';
 const optionList = (o) => (Array.isArray(o) ? o : Array.isArray(o?.items) ? o.items : []);
@@ -305,12 +307,39 @@ function ReportRow({ r }) {
 }
 
 export default function ContentPage() {
+  const route = useRoute();
+  const tab = route.parts[1] === 'browse' ? 'browse' : 'review';
+  return (
+    <Page
+      title="Content"
+      subtitle={
+        tab === 'browse'
+          ? 'Everything StudyBridge has made for students: practice questions, lessons, flashcards and practice papers.'
+          : 'StudyBridge’s own lessons and questions that need you: what students reported, and anything that didn’t pass its checks.'
+      }
+    >
+      <Seg
+        label="Content"
+        value={tab}
+        onChange={(t) => go(t === 'browse' ? '/content/browse' : '/content', { replace: true })}
+        options={[
+          { value: 'review', label: 'Needs you', icon: 'alert' },
+          { value: 'browse', label: 'Browse everything', icon: 'layers' },
+        ]}
+      />
+      {tab === 'browse' ? <Browse /> : <Review />}
+    </Page>
+  );
+}
+
+// What needs the Owner: students' reports and anything that didn't pass its checks
+function Review() {
   const q = useQuery('admin-content', api.adminContentReview, { poll: 60000 });
   const d = q.data;
-  if (!d) return <Page title="Content">{q.error ? <div className="error">{q.error.message}</div> : null}</Page>;
+  if (!d) return q.error ? <div className="error">{q.error.message}</div> : <Loading />;
   const checks = [...(d.questions || []), ...(d.lessons || [])];
   return (
-    <Page title="Content" subtitle="StudyBridge’s own lessons and questions that need you: what students reported, and anything that didn’t pass its checks.">
+    <>
       <div className="note small row" style={{ gap: 8 }}>
         <Icon name="info" size={16} />
         {d.waiting
@@ -364,6 +393,239 @@ export default function ContentPage() {
           </div>
         </details>
       )}
-    </Page>
+    </>
+  );
+}
+
+// ---------------- Browse everything ----------------
+const STATUS = {
+  live: { label: 'Live', tone: 'good' },
+  waiting: { label: 'Waiting for checks', tone: 'accent' },
+  problems: { label: 'Has problems', tone: 'warn' },
+  hidden: { label: 'Hidden', tone: '' },
+};
+const KIND_ONE = { question: 'Practice question', lesson: 'Lesson', card: 'Flashcard', practice_paper: 'Practice paper' };
+const KINDS = { question: 'Practice questions', lesson: 'Lessons', card: 'Flashcards', practice_paper: 'Practice papers' };
+const firstLine = (s) => plainMaths(String(s || '').replace(/[#>*_`]/g, '').trim()).split('\n')[0] || '—';
+
+function Browse() {
+  const [subject, setSubject] = useState('');
+  const [kind, setKind] = useState('');
+  const [status, setStatus] = useState('');
+  const [text, setText] = useState('');
+  const [search, setSearch] = useState('');
+  const [limit, setLimit] = useState(100);
+  const typed = useDebounced((v) => (setSearch(v.trim()), setLimit(100)), 400);
+  const pick = (set) => (v) => (set(v), setLimit(100));
+  const q = useQuery(`admin-content:browse:${subject}:${kind}:${status}:${search}:${limit}`, () => api.adminContentBrowse({ subject, kind, status, search, limit }));
+  // keep showing the last list while a new one loads
+  const last = useRef(null);
+  if (q.data) last.current = q.data;
+  const d = q.data || last.current;
+  if (!d) return q.error ? <div className="error">{q.error.message}</div> : <Loading />;
+  const c = d.counts || {};
+  const all = (c.live || 0) + (c.waiting || 0) + (c.problems || 0) + (c.hidden || 0);
+  const subjects = d.subjects.filter((s) => s.items > 0 || s.id === subject);
+  // grouped by subject, in the syllabus order of the subjects
+  const groups = subject
+    ? [[subject, d.subjects.find((s) => s.id === subject)?.name || 'Subject', d.items]]
+    : [...d.subjects.map((s) => [s.id, s.name, d.items.filter((x) => x.subject_id === s.id)]), ['none', 'No subject', d.items.filter((x) => !x.subject_id)]].filter(([, , rows]) => rows.length);
+  return (
+    <>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <select className="select" style={{ width: 'auto', minHeight: 36 }} value={subject} onChange={(e) => pick(setSubject)(e.target.value)} aria-label="Subject">
+          <option value="">All subjects</option>
+          {subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} ({s.items})
+            </option>
+          ))}
+        </select>
+        <select className="select" style={{ width: 'auto', minHeight: 36 }} value={kind} onChange={(e) => pick(setKind)(e.target.value)} aria-label="Kind">
+          <option value="">Everything</option>
+          {Object.entries(KINDS).map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <span className="row grow" style={{ gap: 6, minWidth: 200 }}>
+          <Icon name="search" size={16} style={{ color: 'var(--muted)' }} />
+          <input className="input" style={{ minHeight: 36 }} value={text} onChange={(e) => (setText(e.target.value), typed(e.target.value))} placeholder="Search the words" aria-label="Search" />
+        </span>
+        {q.loading && <div className="spinner" aria-label="Loading" />}
+      </div>
+      <Seg
+        label="Status"
+        value={status}
+        onChange={pick(setStatus)}
+        options={[
+          { value: '', label: `All (${all})` },
+          ...Object.entries(STATUS).map(([k, s]) => ({ value: k, label: `${s.label} (${c[k] || 0})` })),
+        ]}
+      />
+      <div className="small muted">Hidden things stay here, so you can put them back up. Removing is for good.</div>
+      {d.items.length === 0 ? (
+        <Empty>{search || kind || status || subject ? 'Nothing matches. Try other filters.' : 'StudyBridge hasn’t made anything yet.'}</Empty>
+      ) : (
+        groups.map(([id, name, rows]) => (
+          <section key={id} className="stack sm">
+            <h2 className="list-head">
+              {name} <span className="muted">({rows.length})</span>
+            </h2>
+            <div className="card">
+              <div className="list">
+                {rows.map((x) => (
+                  <BrowseRow key={x.kind + x.id} x={x} />
+                ))}
+              </div>
+            </div>
+          </section>
+        ))
+      )}
+      {d.total > d.items.length && (
+        <div className="row wrap" style={{ gap: 8 }}>
+          <span className="small muted">
+            Showing {d.items.length} of {d.total}.
+          </span>
+          {limit < 300 ? (
+            <button className="btn sm" onClick={() => setLimit(limit + 100)}>
+              Show more
+            </button>
+          ) : (
+            <span className="small muted">Choose a subject or search to see the rest.</span>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function BrowseRow({ x }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [open, setOpen] = useState(false);
+  const [fixing, setFixing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const st = STATUS[x.status] || STATUS.hidden;
+  const paper = x.kind === 'practice_paper';
+  async function act(action, ok, ask) {
+    if (ask && !(await confirm(ask))) return;
+    setBusy(true);
+    try {
+      await api.adminContentDecide(x.kind, x.id, action);
+      invalidate('admin-content');
+      toast(ok);
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const what = x.kind === 'question' ? x.prompt : x.kind === 'card' ? x.front : x.title;
+  const removeAsk = {
+    title: paper ? `Remove “${x.title}”?` : x.kind === 'lesson' ? `Remove the lesson “${x.title}”?` : 'Remove this flashcard?',
+    body: 'It’s deleted for good and students won’t see it again. To take it down for now, hide it instead.',
+    ok: 'Remove',
+    danger: true,
+  };
+  if (x.kind === 'card') removeAsk.body = 'It’s deleted for good and students won’t see it again.';
+  const up = x.status === 'hidden' ? 'Put it back up' : x.status === 'live' ? null : paper ? 'Approve all and put it up' : 'Approve and put it up';
+  // a paper with questions that haven't passed their checks: approving it approves them all, so ask first
+  const unchecked = paper && x.questions.some((q) => !['passed', 'approved'].includes(q.check?.state));
+  // hiding: a practice question can always be taken out (even while it waits); lessons and papers once they're up
+  const canHide = x.kind === 'question' ? x.status !== 'hidden' : x.kind !== 'card' && x.status === 'live';
+  const meta = [
+    KIND_ONE[x.kind],
+    x.topic,
+    paper ? `${x.questions.length} question${x.questions.length === 1 ? '' : 's'} · ${x.marks} mark${x.marks === 1 ? '' : 's'}${x.minutes ? ` · ${x.minutes} min` : ''}` : null,
+    paper && x.taken ? `taken ${x.taken} time${x.taken === 1 ? '' : 's'}` : null,
+    `added ${ago(x.created_at)}`,
+  ];
+  return (
+    <div className="item content-row">
+      <span className="grow stack sm">
+        <span className="meta">
+          <span className={'pill ' + st.tone}>{st.label}</span>
+          {meta.filter(Boolean).join(' · ')}
+        </span>
+        <button className="linkbtn" style={{ color: 'var(--ink)', maxWidth: '100%' }} onClick={() => setOpen(!open)} aria-expanded={open}>
+          <span className="row" style={{ gap: 6, minWidth: 0 }}>
+            <Icon name={open ? 'down' : 'right'} size={14} />
+            <span className={open ? '' : 'ellipsis'} style={{ minWidth: 0 }}>
+              {firstLine(what)}
+            </span>
+          </span>
+        </button>
+        {x.status === 'problems' && !paper && (
+          <span className="pill warn" style={{ alignSelf: 'flex-start', whiteSpace: 'normal' }}>
+            {why(x)}
+          </span>
+        )}
+        {fixing ? (
+          <FixForm kind={x.kind} x={x} onDone={() => setFixing(false)} />
+        ) : open ? (
+          paper ? <PaperQuestions x={x} /> : <Preview x={x.kind === 'lesson' ? { ...x, title: null } : x} />
+        ) : null}
+      </span>
+      {!fixing && (
+        <span className="row wrap" style={{ gap: 6, justifyContent: 'flex-end' }}>
+          {up && (
+            <button
+              className="btn sm"
+              disabled={busy}
+              onClick={() =>
+                act('approve', 'It’s up for students', unchecked ? { title: 'Put the whole paper up?', body: 'Every question in it is approved as it is, without waiting for its checks.', ok: 'Put it up' } : null)
+              }
+            >
+              {up}
+            </button>
+          )}
+          {!paper && (
+            <button className="btn sm" disabled={busy} onClick={() => (setOpen(true), setFixing(true))}>
+              Fix
+            </button>
+          )}
+          {canHide && (
+            <button className="btn sm ghost" disabled={busy} onClick={() => act('hide', 'Hidden from students')}>
+              Hide
+            </button>
+          )}
+          {x.kind !== 'question' && !(paper && x.taken) && (
+            <button className="btn sm ghost" disabled={busy} onClick={() => act('remove', 'Removed', removeAsk)} aria-label={`Remove ${KIND_ONE[x.kind].toLowerCase()}`}>
+              <Icon name="trash" size={15} /> Remove
+            </button>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// A practice paper's questions, each with how its check went
+function PaperQuestions({ x }) {
+  if (!x.questions.length) return <div className="small muted">This paper has no questions.</div>;
+  return (
+    <div className="stack sm">
+      {x.questions.map((q) => {
+        const s = q.check?.state;
+        const ok = s === 'passed' || s === 'approved';
+        return (
+          <div key={q.id} className="stack sm">
+            <span className="meta">
+              <b>Question {q.number}</b>
+              {q.topic && <span>{q.topic}</span>}
+              <span>
+                {q.marks} mark{Number(q.marks) === 1 ? '' : 's'}
+              </span>
+              <span className={'pill ' + (ok ? 'good' : s === 'waiting' ? 'accent' : 'warn')} style={{ whiteSpace: 'normal' }}>
+                {ok ? 'Passed' : s === 'waiting' ? 'Waiting for its check' : why(q)}
+              </span>
+            </span>
+            <Preview x={q} />
+          </div>
+        );
+      })}
+    </div>
   );
 }

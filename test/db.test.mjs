@@ -1763,6 +1763,123 @@ test('StudyBridge content: made by the content account, checked twice before stu
   await fails(as('L', `select send_feedback('question', 'hi')`), /Only tutors and students/);
 });
 
+test('Admin → Content → Browse: everything StudyBridge has made, by subject, kind, status and words; hide, approve or remove from there', async () => {
+  const maths = (await db.query(`select id from subjects where tutor_id = $1 and catalogue = 'cambridge:igcse:0607'`, [U.C])).rows[0].id;
+  // only the admin can look (not tutors, not the content account itself, not students)
+  for (const who of ['T', 'C', 'S']) await fails(as(who, `select admin_content_browse()`), /admins only/);
+  await fails(as('A', `select admin_content_browse(null, 'poem')`), /Unknown kind/);
+  await fails(as('A', `select admin_content_browse(null, null, 'gone')`), /Unknown status/);
+  const all = await val('A', `select admin_content_browse()`);
+  assert.deepEqual([...new Set(all.items.map((x) => x.kind))].sort(), ['card', 'lesson', 'practice_paper', 'question']);
+  assert.equal(all.total, all.items.length);
+  assert.equal(all.counts.live + all.counts.waiting + all.counts.problems + all.counts.hidden, all.total);
+  assert.equal(all.subjects.find((s) => s.id === maths).items, all.items.filter((x) => x.subject_id === maths).length);
+  // a student's own practice never shows up as StudyBridge's content
+  const prac = await val('S', `select id from assignments where source = 'self' limit 1`);
+  assert.ok(prac && !all.items.some((x) => x.id === prac));
+  const by = (kind, re) => all.items.find((x) => x.kind === kind && re.test(x.prompt || x.title || x.front || ''));
+  assert.equal(by('question', /15/).status, 'live');
+  assert.match(by('question', /15/).hint, /Find 10%/);
+  assert.equal(by('question', /Work out \$3 \+ 4/).status, 'hidden', 'removed in the review list');
+  assert.equal(by('lesson', /^Percentages$/).status, 'live');
+  assert.equal(by('lesson', /Short one/).status, 'problems');
+  assert.equal(by('card', /prime/).status, 'live');
+  const paper = by('practice_paper', /Practice paper 1/);
+  assert.equal(paper.status, 'live');
+  assert.equal(paper.questions.length, 2);
+  assert.equal(paper.marks, 3);
+  assert.equal(paper.taken, 1);
+
+  // narrowed by subject, kind, status and words (words are plain text: % is not a wildcard)
+  const live = await val('A', `select admin_content_browse($1, 'question', 'live')`, [maths]);
+  assert.ok(live.items.length >= 3 && live.items.every((x) => x.kind === 'question' && x.status === 'live' && x.subject_id === maths));
+  assert.equal(live.counts.hidden, 1, 'counts are for the subject, kind and words chosen');
+  assert.deepEqual((await val('A', `select admin_content_browse(null, null, null, 'PRIME')`)).items.map((x) => x.kind).sort(), ['card', 'question']);
+  assert.ok((await val('A', `select admin_content_browse(null, null, null, '%')`)).total < all.total);
+  const two = await val('A', `select admin_content_browse(null, null, null, null, 2)`);
+  assert.equal(two.items.length, 2);
+  assert.equal(two.total, all.total);
+
+  // a new question waits for its check; the Owner can hide it from here, and bring it back
+  await val('C', `select content_add_questions($1, $2)`, [
+    maths,
+    JSON.stringify([{ topic: 'Geometry', type: 'numeric', prompt: 'How many sides has a hexagon?', answer: { value: '6' }, hint: 'Hex means six.', solution: 'A hexagon has 6 sides.' }]),
+  ]);
+  const hex = (await val('A', `select admin_content_browse($1, 'question', 'waiting', 'hexagon')`, [maths])).items[0];
+  assert.equal(hex.hint, 'Hex means six.');
+  await as('A', `select admin_content_decide('question', $1, 'hide')`, [hex.id]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'question', 'hidden', 'hexagon')`)).total, 1);
+  await as('A', `select admin_content_decide('question', $1, 'approve')`, [hex.id]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'question', 'live', 'hexagon')`)).total, 1);
+  await as('A', `select admin_content_decide('question', $1, 'remove')`, [hex.id]);
+
+  // a lesson: hidden from students, then put back up
+  const pct = by('lesson', /^Percentages$/);
+  await as('A', `select admin_content_decide('lesson', $1, 'hide')`, [pct.id]);
+  assert.equal((await as('S', `select id from lessons where id = $1`, [pct.id])).length, 0, 'hidden from students');
+  assert.ok((await val('A', `select admin_content_browse(null, 'lesson', 'hidden')`)).items.some((x) => x.id === pct.id));
+  await as('A', `select admin_content_decide('lesson', $1, 'approve')`, [pct.id]);
+  assert.equal((await as('S', `select id from lessons where id = $1`, [pct.id])).length, 1);
+
+  // a flashcard is up or gone
+  await val('C', `select content_add_cards($1, $2)`, [maths, JSON.stringify([{ topic: 'Geometry', front: 'What is a hexagon?', back: 'A shape with 6 sides.' }])]);
+  const card = (await val('A', `select admin_content_browse(null, 'card', null, 'hexagon')`)).items[0];
+  await as('A', `select admin_content_decide('card', $1, 'remove')`, [card.id]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'card', null, 'hexagon')`)).total, 0);
+
+  // a whole practice paper: hide it and put it back up; once a student has taken it, it can't be removed
+  await fails(as('T', `select admin_content_decide('practice_paper', $1, 'hide')`, [paper.id]), /admins only/);
+  await as('A', `select admin_content_decide('practice_paper', $1, 'hide')`, [paper.id]);
+  assert.equal((await as('S', `select id from assignments where id = $1`, [paper.id])).length, 0, 'hidden from students');
+  assert.equal((await val('A', `select admin_content_browse(null, 'practice_paper', 'hidden')`)).items[0].id, paper.id);
+  assert.equal((await val('C', `select content_status($1)`, [maths]))[0].papers_live, 0);
+  await fails(as('A', `select admin_content_decide('practice_paper', $1, 'remove')`, [paper.id]), /already taken/);
+  await fails(as('A', `select admin_content_decide('practice_paper', $1, 'fix', '{}')`, [paper.id]), /one question at a time/);
+  await as('A', `select admin_content_decide('practice_paper', $1, 'approve')`, [paper.id]);
+  assert.equal((await as('S', `select id from assignments where id = $1`, [paper.id])).length, 1);
+  // a paper with a problem: approving the whole paper approves its questions and puts it up; nobody has taken it, so it can go
+  const p2 = await val('C', `select content_add_paper($1, 'Practice paper 2', 30, null, $2)`, [
+    maths,
+    JSON.stringify([{ type: 'numeric', prompt: 'Work out $9 + 1', answer: { value: '10' }, solution: '$9 + 1 = 10$', mark_scheme: 'B1 10', marks: 1 }]),
+  ]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'practice_paper', 'problems', 'paper 2')`)).items[0].id, p2.id);
+  await as('A', `select admin_content_decide('practice_paper', $1, 'approve')`, [p2.id]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'practice_paper', 'live', 'paper 2')`)).total, 1);
+  assert.equal((await as('S', `select id from assignments where id = $1`, [p2.id])).length, 1);
+  await as('A', `select admin_content_decide('practice_paper', $1, 'remove')`, [p2.id]);
+  assert.equal((await val('A', `select admin_content_browse(null, 'practice_paper', null, 'paper 2')`)).total, 0);
+});
+
+test('announcements: the admin can change one (words, who sees it, until when) or delete it; nobody else can', async () => {
+  const id = await val('A', `select admin_announce('Typo in titel', 'Body', 'tutors')`);
+  await fails(as('T', `select admin_edit_announcement($1, 'Hacked', '', 'everyone', null)`, [id]), /admins only/);
+  await fails(as('T', `select admin_delete_announcement($1)`, [id]), /admins only/);
+  await fails(as('A', `select admin_edit_announcement($1, '  ', '', 'tutors', null)`, [id]), /title/);
+  await fails(as('A', `select admin_edit_announcement($1, 'Hi', '', 'parents', null)`, [id]), /Choose who sees it/);
+  assert.equal((await as('S', `select * from announcements where id = $1`, [id])).length, 0, 'learners don’t see tutor announcements');
+  await as('A', `select admin_edit_announcement($1, ' Typo in title ', 'Fixed body', 'everyone', now() + interval '2 days')`, [id]);
+  const a = await one('S', `select * from announcements where id = $1`, [id]);
+  assert.equal(a.title, 'Typo in title');
+  assert.equal(a.body, 'Fixed body');
+  assert.equal(a.audience, 'everyone');
+  // an end date in the past takes it down
+  await as('A', `select admin_edit_announcement($1, 'Typo in title', '', 'everyone', now() - interval '1 minute')`, [id]);
+  assert.equal((await as('S', `select * from announcements where id = $1`, [id])).length, 0);
+  await as('A', `select admin_delete_announcement($1)`, [id]);
+  assert.equal((await as('A', `select * from announcements where id = $1`, [id])).length, 0);
+  await fails(as('A', `select admin_delete_announcement($1)`, [id]), /isn’t there any more/);
+  await fails(as('A', `select admin_edit_announcement($1, 'x', '', 'tutors', null)`, [id]), /isn’t there any more/);
+});
+
+test('lesson notes written after a live lesson remember which lesson they were for', async () => {
+  const s = await val('TW', `insert into sessions (title, starts_at, duration_min, learner_ids) values ('Fractions', now() - interval '2 hours', 60, $1) returning id`, [[U.LW]]);
+  const l = await val('TW', `insert into lessons (title, session_id, learner_ids) values ('Fractions (Mon 12 Oct)', $1, $2) returning id`, [s, [U.LW]]);
+  assert.equal(await val('TW', `select session_id from lessons where id = $1`, [l]), s);
+  await as('TW', `delete from sessions where id = $1`, [s]);
+  assert.equal(await val('TW', `select session_id from lessons where id = $1`, [l]), null, 'the notes stay when the lesson is deleted');
+  await as('TW', `delete from lessons where id = $1`, [l]);
+});
+
 test('basic fixes: let a learner try again, skip or withdraw a weekly report, clear own practice, a parent stops following', async () => {
   // homework handed in by accident: the tutor reopens it and the answers stay
   const a = await val('TW', `insert into assignments (title, visibility, learner_ids) values ('Reopen me', 'visible', $1) returning id`, [[U.LW]]);
@@ -1805,4 +1922,106 @@ test('basic fixes: let a learner try again, skip or withdraw a weekly report, cl
   assert.equal((await val('PW', `select parent_children()`)).length, 0);
   await fails(as('PW', `select parent_unlink($1)`, [U.LW]), /Not found/);
   assert.ok((await as('TW', `select 1 from notifications where user_id = auth.uid() and title like '%stopped following%'`)).length >= 1);
+});
+
+test('launch 1: the starting check, exam conditions, parents for young students, test students, and the free week checked on the server', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  await mk('S3', 'kid@x.com');
+  await mk('S4', 'teen@x.com');
+  await mk('PK', 'mum@x.com');
+  await mk('PD', 'dad@x.com');
+  await mk('TS', 'owner+student@x.com');
+  const subj = async (key) => (await db.query(`select id from subjects where tutor_id = $1 and catalogue = $2`, [U.C, key])).rows[0].id;
+  const maths = await subj('cambridge:igcse:0607');
+  const phys = await subj('ib:sl-and-hl:physics');
+
+  // the starting check: questions from different topics (up to 12), one check at a time per subject
+  const c1 = await val('S', `select start_practice('check', $1)`, [maths]);
+  assert.ok(c1.assignment_id && c1.questions >= 1 && c1.questions <= 12);
+  const a = await one('S', `select title, starting_check, max_attempts from assignments where id = $1`, [c1.assignment_id]);
+  assert.match(a.title, /^Starting check: /);
+  assert.equal(a.starting_check, true);
+  assert.equal(a.max_attempts, 1);
+  assert.equal((await val('S', `select start_practice('check', $1)`, [maths])).existing, true, 'an unfinished check carries on');
+  await fails(as('S', `select start_practice('check')`), /Choose a subject/);
+  assert.equal((await val('S', `select my_starting_checks()`))[maths].done, false);
+  const t = await one('S', `select * from start_attempt($1, 'web')`, [c1.assignment_id]);
+  await as('S', `select submit_attempt($1)`, [t.id]);
+  const done = (await val('S', `select my_starting_checks()`))[maths];
+  assert.equal(done.done, true);
+  assert.equal(done.attempt_id, t.id);
+
+  // exam conditions: each time they leave full screen is counted, on their own attempt only
+  const pr = await val('S', `select start_practice('topic', $1)`, [maths]);
+  const t2 = await one('S', `select * from start_attempt($1, 'web')`, [pr.assignment_id]);
+  assert.equal(await val('S', `select note_left_full_screen($1)`, [t2.id]), 1);
+  assert.equal(await val('S', `select note_left_full_screen($1)`, [t2.id]), 2);
+  assert.equal(await val('L', `select note_left_full_screen($1)`, [t2.id]), null, 'not someone else’s');
+
+  // the free week, checked on the server: when it's over and nothing is paid, StudyBridge's content and practice stop
+  // (the student's own cards stay); paying opens it all again. Tutors' learners are never affected.
+  await one('S4', `select * from start_self_learner('Teen', 9, 'Zambia')`);
+  await as('S4', `select self_setup('Cambridge', 'IGCSE', $1, current_date + 200, null, 4)`, [[maths]]);
+  const sees = async (k) => Number(await val(k, `select (select count(*) from lessons) + (select count(*) from assignments) + (select count(*) from cards where learner_id is null)`));
+  const before = await sees('S4');
+  assert.ok(before > 0, 'sees StudyBridge’s content in the free week');
+  const tutored = await sees('L');
+  await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.S4]);
+  assert.equal(await sees('S4'), 0, 'nothing once the free week is over');
+  await fails(as('S4', `select start_practice('daily')`), /free week is over/);
+  assert.equal(await sees('L'), tutored, 'a tutor’s learner sees the same as before');
+  await as('A', `select admin_set_student_paid($1, 'monthly', current_date + 30)`, [U.S4]);
+  assert.equal(await sees('S4'), before, 'paid: everything is back');
+
+  // a parent's account for a child on their own, without a tutor's code
+  assert.equal((await one('PK', `select * from start_parent('Mum', 'Africa/Lusaka')`)).role, 'parent');
+  await fails(as('S', `select parent_child_code('Kid', 6)`), /parent accounts/);
+  await fails(as('PK', `select parent_child_code('', 6)`), /first name/);
+  const code = await val('PK', `select parent_child_code('Kid', 6)`);
+  assert.match(code.code, /^\d{8}$/);
+  assert.equal((await val('PK', `select parent_child_codes()`)).length, 1);
+  // below grade 8 the child needs that code; a wrong one is counted, not an error
+  await fails(as('S3', `select start_self_learner('Kid', 6, 'Zambia')`), /parent sets up/);
+  await fails(as('S3', `select start_self_learner('Kid', 10, 'India')`), /In India, a parent sets up/);
+  assert.equal((await one('S3', `select * from start_self_learner('Kid', 6, 'Zambia', 'UTC', '0000 0001')`)).id, null);
+  const kid = await one('S3', `select * from start_self_learner('Kid', 6, 'Zambia', 'UTC', $1)`, [`${code.code.slice(0, 4)} ${code.code.slice(4)}`]);
+  assert.equal(kid.self_learner, true);
+  assert.equal(kid.consent_parent, U.PK, 'the parent’s consent is kept');
+  assert.equal((await val('PK', `select parent_child_codes()`)).length, 0, 'the code is used up');
+  assert.equal((await val('PK', `select parent_children()`))[0].self, true);
+  const pv = await val('PK', `select parent_view($1)`, [U.S3]);
+  assert.equal(pv.self.set_up_by_me, true);
+  assert.equal((await as('PK', `select 1 from notifications where user_id = auth.uid() and title like '%set up their StudyBridge account'`)).length, 1);
+
+  // a student on their own (grade 8 and up) gives a parent a code; there's no tutor to tell
+  const inv = await one('S', `select * from self_parent_invite('Dad')`);
+  assert.match(inv.code, /^P[0-9A-F]{10}$/);
+  assert.equal((await val('S', `select learner_parents()`)).invites.length, 1);
+  await fails(as('L', `select self_parent_invite('x')`), /on their own/);
+  await one('PD', `select * from accept_parent_invite($1, 'Dad')`, [inv.code]);
+  assert.equal((await val('PD', `select parent_children()`))[0].self, true);
+  assert.equal((await as('C', `select 1 from notifications where user_id = auth.uid() and title like '%can now follow%'`)).length, 0, 'the content account isn’t told');
+  // children's privacy: only the parent who set up a young child's account can close it
+  await fails(as('PD', `select parent_delete_child($1, 'DELETE')`, [U.S3]), /Only the parent/);
+  await fails(as('PK', `select parent_delete_child($1, 'yes')`, [U.S3]), /Type DELETE/);
+  await as('PK', `select parent_delete_child($1, 'DELETE')`, [U.S3]);
+  assert.equal((await db.query(`select 1 from profiles where id = $1`, [U.S3])).rows.length, 0);
+
+  // the Owner's test students: sign up while sign-up is paused, choose a subject that isn't open yet, never pay
+  await fails(as('T', `select admin_set_test_emails($1)`, [['owner+student@x.com']]), /admins only/);
+  assert.deepEqual(await val('A', `select admin_set_test_emails($1)`, [['Owner+Student@x.com', 'not an email']]), ['owner+student@x.com']);
+  await as('A', `select admin_students_open(false)`);
+  assert.deepEqual(await val(null, `select open_subjects()`), [], 'paused: the website shows nothing open');
+  const ts = await one('TS', `select * from start_self_learner('Test', 10, 'US')`);
+  assert.equal(ts.test_student, true);
+  assert.deepEqual(await val('TS', `select self_setup('IB', 'IB Diploma', $1, current_date + 100, null, 4)`, [[phys]]), { subjects: 1 });
+  await as('A', `select admin_students_open(true)`);
+  const list = (await val('A', `select admin_students()`)).students;
+  assert.equal(list.find((x) => x.id === U.TS).test, true);
+  assert.equal(list.find((x) => x.id === U.S).parents, 1);
+  // the website: which subjects students can start now
+  assert.deepEqual(await val(null, `select open_subjects()`), ['cambridge:igcse:0607']);
 });

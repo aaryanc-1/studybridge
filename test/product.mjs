@@ -48,6 +48,35 @@ const shot = async (page, name) => {
   await page.screenshot({ path: join(SHOTS, `${++shotN}-${name}.png`) });
 };
 const errors = [];
+// Accessibility basics: every button and link has a name, every field has a label, every picture has alt text,
+// one main area, and the page language is set. Run on the main screens of each kind of account.
+async function a11y(page, where) {
+  const problems = await page.evaluate(() => {
+    const out = [];
+    const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) && getComputedStyle(el).visibility !== 'hidden';
+    const named = (el) =>
+      (el.getAttribute('aria-label') || '').trim() ||
+      (el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby'))?.textContent.trim()) ||
+      (el.getAttribute('title') || '').trim() ||
+      (el.textContent || '').trim() ||
+      [...el.querySelectorAll('img[alt]')].map((i) => i.alt).join('').trim();
+    const what = (el) => `${el.tagName.toLowerCase()}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : ''}`;
+    for (const el of document.querySelectorAll('button, a[href], [role="button"], [role="switch"], [role="tab"]')) {
+      if (visible(el) && !named(el)) out.push(`no name: ${what(el)}`);
+    }
+    for (const el of document.querySelectorAll('input:not([type="hidden"]), select, textarea')) {
+      if (!visible(el)) continue;
+      const label =
+        (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) || el.closest('label') || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title');
+      if (!label) out.push(`no label: ${what(el)}${el.placeholder ? ` (placeholder “${el.placeholder}”)` : ''}`);
+    }
+    for (const el of document.querySelectorAll('img')) if (visible(el) && !el.hasAttribute('alt')) out.push(`no alt: img ${el.getAttribute('src')?.slice(0, 40)}`);
+    if (document.querySelectorAll('main').length !== 1) out.push(`${document.querySelectorAll('main').length} main areas`);
+    if (!document.documentElement.lang) out.push('no page language');
+    return [...new Set(out)];
+  });
+  if (problems.length) throw new Error(`Accessibility on ${where}:\n  ${problems.join('\n  ')}`);
+}
 async function expectValue(loc, re, ms = 30000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -559,7 +588,8 @@ try {
   watch(P, 'parent');
   await P.goto(web.url);
   await P.getByText('I’m a parent').click();
-  await P.getByLabel('Your parent invite').fill(ptoken);
+  await P.getByText('I have a parent code').click();
+  await P.getByLabel('Your parent code').fill(ptoken);
   await P.getByRole('button', { name: 'Next' }).click();
   await P.getByLabel('Your name').fill('Dad');
   await P.getByLabel('Email').fill('dad@example.com');
@@ -756,7 +786,11 @@ try {
   await SL.getByRole('button', { name: 'Next' }).click();
   await SL.getByRole('button', { name: '6 hours' }).click();
   await SL.getByRole('button', { name: 'Make my plan' }).click();
-  await SL.getByRole('heading', { name: 'Your plan' }).waitFor();
+  // straight after the setup: the starting check (0607 already has shared practice questions); it can wait
+  await SL.getByRole('heading', { name: 'A quick starting check' }).waitFor();
+  await shot(SL, 'student-starting-check-offer');
+  await SL.getByRole('button', { name: 'Skip for now' }).click();
+  await SL.getByRole('heading', { name: 'Your plan', exact: true }).waitFor();
   await SL.locator('.plan-row', { hasText: 'International Mathematics (0607)' }).getByText(/Week 1 of \d+/).waitFor();
   assert.equal(await SL.locator('.plan-row').count(), 1, 'the plan shows only the subjects they chose');
   await SL.locator('.plan-row').getByText('Number').waitFor();
@@ -844,6 +878,101 @@ try {
   await SL.getByRole('button', { name: /^Exam pass by card: \$\d+ for \d+ months?$/ }).waitFor();
   await SL.getByRole('heading', { name: 'Contact StudyBridge' }).waitFor();
   await shot(SL, 'student-pay');
+
+  step('Launch 1: the starting check finds what to work on first; a parent sets up a young student with a code and follows them; the Owner tries it as a test student; accessibility basics');
+  // the starting check they skipped after the setup: taken now from its page
+  await SL.evaluate(() => (location.hash = '#/'));
+  await SL.getByRole('heading', { name: 'Your plan', exact: true }).waitFor();
+  await a11y(SL, 'the student’s Today');
+  await SL.evaluate(() => (location.hash = '#/check'));
+  await SL.getByRole('button', { name: 'Start the check' }).click();
+  await SL.getByText(/^Starting check: /).first().waitFor();
+  for (const box of await SL.getByLabel('Your answer').all()) await box.fill('1');
+  await SL.getByRole('button', { name: 'Hand in', exact: true }).first().click();
+  await SL.getByRole('dialog', { name: 'Hand in now?' }).getByRole('button', { name: 'Hand in' }).click();
+  await SL.getByRole('button', { name: 'See my answers' }).waitFor({ timeout: 20000 });
+  await SL.evaluate(() => (location.hash = '#/'));
+  await SL.locator('.plan-row .work-on').getByRole('link', { name: 'Number' }).waitFor();
+  assert.equal(await SL.getByText('Take your starting check').count(), 0, 'done: no nudge');
+  await shot(SL, 'student-starting-check');
+  // a student on their own gives a parent a code
+  await SL.evaluate(() => (location.hash = '#/settings'));
+  await SL.getByLabel('Parent’s name').fill('Mum');
+  await SL.getByRole('button', { name: 'Make a parent code' }).click();
+  await SL.locator('#set-parent-codes .code-show').waitFor();
+  await a11y(SL, 'the student’s Settings');
+
+  // a parent sets up a child below grade 8: their free parent account makes the code the child signs up with
+  const PP = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(PP, 'parent of a young student');
+  await PP.goto(web.url);
+  await PP.getByText('I’m a parent').click();
+  await PP.getByText('Set up my child to study on their own').click();
+  await PP.getByLabel('Your name').fill('Chipo');
+  await PP.getByLabel('Email').fill('chipo@example.com');
+  await PP.getByLabel('Password').fill('secret123');
+  await PP.getByRole('button', { name: 'Create account' }).click();
+  await PP.getByRole('heading', { name: 'Set up your child to study on their own' }).waitFor();
+  await PP.getByLabel('Your child’s first name').fill('Mapalo');
+  await PP.getByLabel('Their grade').selectOption('6');
+  await PP.getByRole('button', { name: 'Make a code' }).click();
+  const kidCode = (await PP.locator('.code-show').first().textContent()).trim();
+  assert.match(kidCode, /^\d{4} \d{4}$/);
+  await a11y(PP, 'the parent’s first screen');
+  await shot(PP, 'parent-sets-up-child');
+  const KID = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(KID, 'young student');
+  await KID.goto(web.url);
+  await KID.getByText('I’m studying on my own').click();
+  await KID.getByLabel('Your name').fill('Mapalo');
+  await KID.getByLabel('Email').fill('mapalo@example.com');
+  await KID.getByLabel('Password').fill('secret123');
+  await KID.getByLabel('Your grade').selectOption('6');
+  await KID.getByLabel('Country').fill('Zambia');
+  await KID.getByLabel('Code from your parent').fill('1111 2222');
+  await KID.getByRole('button', { name: 'Create account' }).click();
+  await KID.getByText('That code from your parent isn’t right').waitFor();
+  await KID.getByLabel('Code from your parent').fill(kidCode);
+  await KID.getByRole('button', { name: 'Create account' }).click();
+  await KID.getByText('Let’s set up your plan').waitFor();
+  await PP.reload();
+  await PP.getByText('Studying on their own with StudyBridge.').waitFor();
+  await PP.getByRole('heading', { name: 'Mapalo’s plan' }).waitFor();
+  await PP.getByText(/Free week: 7 days left/).waitFor();
+  await shot(PP, 'parent-follows-young-student');
+  await KID.close();
+  await PP.close();
+
+  // the Owner tries StudyBridge as a test student, even with sign-up paused, and sees subjects that aren't open yet
+  await nav(ADM, 'Students').click();
+  await ADM.getByLabel('Test student’s email').fill('aaryan+student@example.com');
+  await ADM.locator('#test-students').getByRole('button', { name: 'Add' }).click();
+  await ADM.locator('#test-students').getByText('aaryan+student@example.com').waitFor();
+  await ADM.getByRole('switch', { name: 'Students can sign up' }).click();
+  await ADM.getByText('New student sign-ups are paused').waitFor();
+  await a11y(ADM, 'Admin → Students');
+  const TS = await (await browser.newContext({ viewport: { width: 1280, height: 820 } })).newPage();
+  watch(TS, 'test student');
+  await TS.goto(web.url + '#start=student-test');
+  await TS.getByText(/^Test student:/).waitFor();
+  await TS.getByLabel('Your name').fill('Aaryan');
+  await TS.getByLabel('Email').fill('aaryan+student@example.com');
+  await TS.getByLabel('Password').fill('secret123');
+  await TS.getByLabel('Your grade').selectOption('10');
+  await TS.getByRole('button', { name: 'Create account' }).click();
+  await TS.getByText('Let’s set up your plan').waitFor();
+  await TS.getByRole('button', { name: /^Cambridge/ }).click();
+  await TS.getByRole('button', { name: /^IGCSE/ }).click();
+  await TS.getByRole('button', { name: /Physics.*not open yet/ }).first().waitFor();
+  await TS.close();
+  await ADM.getByRole('switch', { name: 'Students can sign up' }).click();
+  await ADM.getByText('Students can sign up', { exact: true }).first().waitFor();
+  // the tutor's main screens pass the same accessibility basics
+  for (const [hash, where] of [['#/', 'the tutor’s Home'], ['#/assignments', 'Assignments'], ['#/marking', 'Marking'], ['#/learners', 'Learners'], ['#/settings', 'the tutor’s Settings']]) {
+    await A.evaluate((h) => (location.hash = h), hash);
+    await A.waitForTimeout(600);
+    await a11y(A, where);
+  }
 
   step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
