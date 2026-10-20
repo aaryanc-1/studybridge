@@ -1,10 +1,10 @@
 // The website builds from its one config, and the config agrees with the app (plan limits, prices, web address)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildWebsite, siteConfig, subjectCount, PAGES, catalogueKey } from '../scripts/build-website.mjs';
+import { buildWebsite, siteConfig, subjectCount, PAGES, catalogueKey, subjectPages, subjectName } from '../scripts/build-website.mjs';
 
 test('website: every page builds with nothing left unfilled', async () => {
   const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
@@ -130,4 +130,115 @@ test('website: subject keys match the app’s catalogue (cambridge:igcse:0607, i
   assert.equal(new Set(keys).size, keys.length, 'no two subjects share a key');
   assert.ok(keys.includes('cambridge:igcse:0607'));
   assert.ok(keys.includes('ib:sl-and-hl:physics'));
+});
+
+// Getting found: a page for every subject, a sitemap and robots.txt, and a link preview on every page
+test('website: every subject has its own page, with the right way in whether or not it is open yet', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
+  try {
+    await buildWebsite(out, '1.1.99', { url: 'https://example.supabase.co/', key: 'anon-key' });
+    const c = siteConfig();
+    const read = (f) => readFileSync(join(out, f), 'utf8');
+    const amp = (s) => s.replace(/&/g, '&amp;');
+    const subjects = subjectPages(c);
+    assert.equal(subjects.length, subjectCount(c), 'one page per subject');
+    assert.equal(new Set(subjects.map((s) => s.file)).size, subjects.length, 'no two subjects share a page');
+    // the file name is the app's catalogue key, so the page and the server's open_subjects() agree
+    const maths = subjects.find((s) => s.file === 'subject-cambridge-igcse-0607.html');
+    assert.equal(maths?.key, 'cambridge:igcse:0607');
+    assert.equal(subjectName(maths.b, maths.l, maths.n, maths.code), 'Cambridge IGCSE International Mathematics (0607)');
+    const subjectsPage = read('subjects.html');
+    for (const s of subjects) {
+      const html = read(s.file);
+      const name = subjectName(s.b, s.l, s.n, s.code);
+      const where = s.file;
+      assert.doesNotMatch(html, /\{\{/, `${where}: nothing left unfilled`);
+      assert.ok(html.includes(`<title>${amp(name)} · ${c.brand}</title>`), `${where}: title`);
+      assert.equal(/<h1>(.*?)<\/h1>/.exec(html)?.[1].replace(/<[^>]+>/g, ''), amp(name), `${where}: the full name as the heading`);
+      const pill = [s.b.name, s.l.name, s.b.id === 'ib' ? '' : s.code].filter(Boolean).join(' · ');
+      assert.ok(html.includes(`<span class="pill">${amp(pill)}</span>`), `${where}: board · level · code`);
+      // open: the free week; not open: ask for it, the subject already filled in (site.js picks one from open_subjects())
+      assert.ok(html.includes(`class="sp-card" id="start" data-key="${s.key}"`), `${where}: knows its key`);
+      assert.ok(html.includes(`href="${c.appPath}#start=student">Start your free week</a>`), `${where}: the free week`);
+      assert.ok(html.includes('id="req-form"') && html.includes(`<input type="hidden" name="subject" value="${amp(name)}">`), `${where}: ask for this subject`);
+      // what a student on their own gets (the IB core has no exam papers or mocks)
+      const main = /<main[\s\S]*<\/main>/.exec(html)[0];
+      assert.match(main, /a plan to your (exam|deadlines)/i, `${where}: a plan`);
+      assert.match(main, /hint/, `${where}: hints`);
+      if (s.l.name !== 'Core') for (const bit of ['worked solution', 'practice papers', 'mark scheme', 'timed mocks', 'Progress by topic', 'parents']) assert.ok(main.includes(bit), `${where}: ${bit}`);
+      // the board's next sessions, the student price, a short FAQ, the trademark note and the way back
+      assert.ok(html.includes(`<ul class="sp-sessions" data-board="${s.b.id}"><li>`), `${where}: exam sessions`);
+      assert.ok((html.match(/<li><b>[^<]+ \d{4}<\/b><span>Starts about/g) || []).length >= 2, `${where}: at least two sessions`);
+      assert.ok(html.includes(`data-usd="${c.selfLearner.month}"`) && html.includes(`data-usd="${c.selfLearner.passMonth}"`), `${where}: the student price`);
+      const faqs = (main.match(/<details/g) || []).length;
+      assert.ok(faqs >= 3 && faqs <= 4, `${where}: 3 or 4 questions`);
+      assert.match(main, /Not affiliated with or endorsed by [^.<]+\./, `${where}: the trademark note`);
+      assert.ok(main.includes('href="subjects.html"'), `${where}: back to all subjects`);
+      // students never use AI: no Prof, no chat promised
+      assert.doesNotMatch(main, /\bProf\b/, `${where}: Prof is for tutors`);
+      // search engines: a Course
+      const ld = JSON.parse(/<script type="application\/ld\+json">(.*?)<\/script>/.exec(html)[1]);
+      const course = ld['@graph'].find((x) => x['@type'] === 'Course');
+      assert.equal(course.name, name, `${where}: Course name`);
+      assert.equal(course.url, `${c.siteUrl}${s.file.replace(/\.html$/, '')}`, `${where}: Course address`);
+      assert.equal(course.provider.name, c.brand);
+      assert.ok(course.description.length > 40);
+      // the subjects page links to it
+      assert.ok(subjectsPage.includes(`data-key="${s.key}"><a href="${s.file}">`), `subjects.html links to ${where}`);
+    }
+    assert.ok(!existsSync(join(out, 'subject-page.html')), 'the template is not a page');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('website: a sitemap of every page, robots.txt, and a link preview on every page', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'sbsite-'));
+  try {
+    await buildWebsite(out, '1.1.99', { url: 'https://example.supabase.co/', key: 'anon-key' });
+    const c = siteConfig();
+    const read = (f) => readFileSync(join(out, f), 'utf8');
+    const pages = readdirSync(out).filter((f) => f.endsWith('.html'));
+    // the address each page is shared at: no .html (Cloudflare Pages sends /x.html to /x), the home page at the root
+    const address = (f) => c.siteUrl + (f === 'index.html' ? '' : f.replace(/\.html$/, ''));
+    assert.ok(c.siteUrl.startsWith('https://') && c.siteUrl.endsWith('/'));
+    // sitemap: every page once, nothing else
+    const sitemap = read('sitemap.xml');
+    assert.match(sitemap, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/);
+    const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+    assert.deepEqual([...locs].sort(), pages.map(address).sort(), 'every page, once');
+    assert.equal(locs[0], c.siteUrl, 'the home page first');
+    for (const s of subjectPages(c)) assert.ok(locs.includes(address(s.file)), `sitemap lists ${s.file}`);
+    for (const [f] of PAGES) assert.ok(locs.includes(address(f)), `sitemap lists ${f}`);
+    // robots.txt: everything but the app, and where the sitemap is
+    const robots = read('robots.txt');
+    assert.match(robots, /^User-agent: \*$/m);
+    assert.match(robots, /^Disallow: \/app\/$/m);
+    assert.ok(robots.includes(`\nSitemap: ${c.siteUrl}sitemap.xml\n`), 'robots.txt points to the sitemap');
+    // the preview picture: a 1200 x 630 PNG
+    const png = readFileSync(join(out, 'share.png'));
+    assert.equal(png.toString('latin1', 1, 4), 'PNG');
+    assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [1200, 630], 'share.png is 1200 x 630');
+    const tag = (html, attr, key) => [...html.matchAll(new RegExp(`<meta ${attr}="${key}" content="([^"]*)">`, 'g'))].map((m) => m[1]);
+    for (const f of pages) {
+      const html = read(f);
+      const head = html.slice(0, html.indexOf('</head>'));
+      const title = /<title>([^<]+)<\/title>/.exec(head)[1];
+      const description = /<meta name="description" content="([^"]+)">/.exec(head)[1];
+      const canonical = [...head.matchAll(/<link rel="canonical" href="([^"]+)">/g)].map((m) => m[1]);
+      assert.deepEqual(canonical, [address(f)], `${f}: one canonical address`);
+      assert.deepEqual(tag(head, 'property', 'og:title'), [title], `${f}: og:title is its title`);
+      assert.deepEqual(tag(head, 'property', 'og:description'), [description], `${f}: og:description is its description`);
+      assert.deepEqual(tag(head, 'property', 'og:url'), [address(f)], `${f}: og:url`);
+      assert.deepEqual(tag(head, 'property', 'og:image'), [`${c.siteUrl}share.png`], `${f}: og:image, a full address`);
+      assert.deepEqual(tag(head, 'property', 'og:type'), ['website'], `${f}: og:type`);
+      assert.deepEqual(tag(head, 'property', 'og:site_name'), [c.brand], `${f}: og:site_name`);
+      assert.deepEqual(tag(head, 'name', 'twitter:card'), ['summary_large_image'], `${f}: twitter:card`);
+      // Aaryan: nothing says "coming soon" (we launch when it's ready)
+      assert.doesNotMatch(html, /coming soon/i, `${f}: never "coming soon"`);
+    }
+    assert.doesNotMatch(read('config.js'), /coming soon/i);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 });

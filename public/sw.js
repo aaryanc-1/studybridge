@@ -46,6 +46,17 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
+// The daily study reminder (web push). The push carries no message, so the words are always these.
+self.addEventListener('push', (e) => {
+  e.waitUntil(
+    self.registration.showNotification('Time for StudyBridge', {
+      body: 'A few minutes today keeps your streak going.',
+      icon: 'icon-192.png',
+      tag: 'study-reminder',
+    }),
+  );
+});
+
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   e.waitUntil(

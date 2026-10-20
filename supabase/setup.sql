@@ -5272,6 +5272,7 @@ begin
     perform public.notify_user(k.parent_id, 'parent_joined', coalesce(v.display_name, 'Your child') || ' has set up their StudyBridge account',
       'You can follow their plan and progress in StudyBridge. Their free week has started.', jsonb_build_object('learner_id', v.id));
   end if;
+  perform public._email_welcome(v.id);
   return v;
 end $$;
 
@@ -5338,6 +5339,7 @@ begin
   if not found then raise exception 'That isn’t a student account.'; end if;
   perform public._admin_log(case when p_plan is null then 'student_unpaid' else 'student_paid' end, p_user,
     jsonb_build_object('plan', p_plan, 'until', p_until));
+  if p_plan is not null then perform public._email_all_set(p_user); end if;
 end $$;
 
 create or replace function public.admin_extend_trial(p_user uuid, p_days int default 7) returns void
@@ -5345,10 +5347,149 @@ language plpgsql security definer set search_path = public as $$
 begin
   perform public._admin();
   update public.profiles
-     set trial_until = greatest(coalesce(trial_until, now()), now()) + make_interval(days => greatest(1, least(coalesce(p_days, 7), 60)))
+     set trial_until = greatest(coalesce(trial_until, now()), now()) + make_interval(days => greatest(1, least(coalesce(p_days, 7), 60))),
+         trial_reminded = false
    where id = p_user and self_learner;
   if not found then raise exception 'That isn’t a student account.'; end if;
   perform public._admin_log('student_trial', p_user, jsonb_build_object('days', p_days));
+end $$;
+
+-- Emails to students on their own, and to the parents who follow them (19 Oct 2026): welcome, "your free week ends
+-- in 2 days" and "you're all set". They go in the email queue (outgoing_emails) and Prof sends them through Resend
+-- once email is set up in Admin → Selling, from StudyBridge's address; replies go to support@.
+alter table public.profiles add column if not exists trial_reminded boolean not null default false;
+alter table public.profiles add column if not exists stripe_student_sub text; -- a monthly card subscription, to renew
+
+create or replace function public._app_link() returns text language sql immutable as $$ select 'https://gostudybridge.com/app/' $$;
+create or replace function public._nice_date(d date) returns text language sql immutable as $$ select to_char(d, 'FMDD FMMonth YYYY') $$;
+
+-- One email to the student and one to each parent who follows them (each in their own words)
+create or replace function public._email_student(p_user uuid, p_subject text, p_body text, p_parent_subject text, p_parent_body text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  s public.profiles;
+  p record;
+  v_reply text := (select support_email from public.app_config where id = 1);
+  v_sign text := E'\n\nQuestions? Just reply to this email.\n\nThe StudyBridge team';
+begin
+  select * into s from public.profiles where id = p_user;
+  if s.id is null or s.test_student then return; end if;
+  if coalesce(s.email, '') <> '' then
+    insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+    values (s.email, left(p_subject, 200), left(p_body || v_sign, 8000), v_reply);
+  end if;
+  for p in select pr.email from public.parent_links pl join public.profiles pr on pr.id = pl.parent_id
+            where pl.learner_id = p_user and coalesce(pr.email, '') <> '' loop
+    insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+    values (p.email, left(p_parent_subject, 200), left(p_parent_body || v_sign, 8000), v_reply);
+  end loop;
+  perform public._prof_kick();
+end $$;
+
+-- "Welcome": after sign-up (the parent who made the code hears too)
+create or replace function public._email_welcome(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare s public.profiles; v_first text;
+begin
+  select * into s from public.profiles where id = p_user;
+  if s.id is null then return; end if;
+  v_first := coalesce(nullif(split_part(trim(coalesce(s.display_name, '')), ' ', 1), ''), 'there');
+  perform public._email_student(p_user,
+    'Welcome to StudyBridge, ' || v_first || '!',
+    'Hi ' || v_first || E',\n\nWelcome to StudyBridge. Your free week has started and runs until '
+      || public._nice_date((s.trial_until at time zone 'UTC')::date) || E'.\n\nHow to get going:\n'
+      || E'1. Set up your plan: your subjects, when your exams are and how much time you have.\n'
+      || E'2. Take the starting check, so your plan shows what to work on first.\n'
+      || E'3. Study a little every day: lessons, practice with hints, flashcards and practice papers.\n\n'
+      || 'Open StudyBridge: ' || public._app_link()
+      || E'\n\nWhen your free week ends, you can choose a plan in Settings → Your plan.',
+    v_first || ' has started StudyBridge',
+    'Hello,' || E'\n\n' || v_first || ' has set up their StudyBridge account with your code, and their free week has started (until '
+      || public._nice_date((s.trial_until at time zone 'UTC')::date) || E').\n\nYou can follow their plan and progress in your parent account: '
+      || public._app_link() || E'\n\nWhen the free week ends, you can pay for them from your account.');
+end $$;
+
+-- "You're all set": when a payment is recorded (by the Owner, or a card payment through Stripe)
+create or replace function public._email_all_set(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare s public.profiles; v_first text; v_what text;
+begin
+  select * into s from public.profiles where id = p_user;
+  if s.id is null or s.paid_until is null then return; end if;
+  v_first := coalesce(nullif(split_part(trim(coalesce(s.display_name, '')), ' ', 1), ''), 'there');
+  v_what := case when s.paid_plan = 'pass' then 'exam pass' else 'monthly plan' end;
+  perform public._email_student(p_user,
+    'You''re all set',
+    'Hi ' || v_first || E',\n\nThank you! Your StudyBridge ' || v_what || ' is active until ' || public._nice_date(s.paid_until)
+      || E'. Everything is open: your plan, lessons, practice, papers and mocks.\n\nKeep going: ' || public._app_link(),
+    v_first || '''s StudyBridge is paid',
+    'Hello,' || E'\n\nThank you! ' || v_first || '''s StudyBridge ' || v_what || ' is active until ' || public._nice_date(s.paid_until)
+      || E'.\n\nYou can follow their progress in your parent account: ' || public._app_link());
+end $$;
+
+-- Every hour: "your free week ends in 2 days", once, to students who haven't paid (and their parents)
+create or replace function public._student_emails_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare s public.profiles; n int := 0; v_first text; v_end text;
+begin
+  for s in select * from public.profiles
+            where self_learner and not test_student and not trial_reminded
+              and trial_until > now() and trial_until <= now() + interval '2 days'
+              and (paid_until is null or paid_until < current_date) loop
+    update public.profiles set trial_reminded = true where id = s.id;
+    v_first := coalesce(nullif(split_part(trim(coalesce(s.display_name, '')), ' ', 1), ''), 'there');
+    v_end := public._nice_date((s.trial_until at time zone 'UTC')::date);
+    perform public._email_student(s.id,
+      'Your free week ends in 2 days',
+      'Hi ' || v_first || E',\n\nYour free StudyBridge week ends on ' || v_end || E'. Everything you''ve done stays saved.\n\n'
+        || 'To keep going, choose a plan: open StudyBridge, then Settings → Your plan. ' || public._app_link(),
+      v_first || '''s free week ends in 2 days',
+      'Hello,' || E'\n\n' || v_first || '''s free StudyBridge week ends on ' || v_end
+        || E'. Everything they''ve done stays saved.\n\nYou can pay for them from your parent account: ' || public._app_link());
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- A card payment through the Owner's Pay by card links (Prof's Stripe webhook, never the app): monthly adds a month
+-- (from today, or from the end of what's paid); an exam pass bought for enough months lasts until about 60 days after
+-- the first exam, the same as "Mark as paid" in Admin, otherwise for the months bought
+create or replace function public._student_paid_by_card(p_user uuid, p_plan text, p_months int, p_subscription text default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  s public.profiles;
+  v_until date;
+  v_need int;
+  m int := greatest(1, coalesce(p_months, 1));
+begin
+  select * into s from public.profiles where id = p_user;
+  if s.id is null or not s.self_learner or p_plan not in ('monthly', 'pass') then return; end if;
+  if p_plan = 'monthly' then
+    v_until := (greatest(coalesce(s.paid_until, current_date), current_date) + interval '1 month')::date;
+  else
+    v_need := case when s.exam_date is not null then greatest(1, ceil((s.exam_date - current_date) / 30.44)::int) end;
+    v_until := case when v_need is not null and m >= v_need then s.exam_date + 60 else (current_date + make_interval(months => m))::date end;
+  end if;
+  update public.profiles set paid_plan = p_plan, paid_until = greatest(v_until, coalesce(paid_until, v_until)),
+         stripe_student_sub = coalesce(p_subscription, stripe_student_sub)
+   where id = p_user;
+  perform public._admin_log('student_paid_card', p_user, jsonb_build_object('plan', p_plan, 'months', m, 'until', v_until));
+  perform public._content_alert('student_paid', coalesce(s.display_name, s.email, 'A student') || ' paid by card',
+    case when p_plan = 'pass' then 'Exam pass' else 'Monthly' end || ', until ' || public._nice_date(v_until) || '. It''s recorded already.',
+    jsonb_build_object('student', p_user));
+  perform public._email_all_set(p_user);
+end $$;
+
+-- The next month of a monthly card subscription (Stripe's invoice.paid)
+create or replace function public._student_renewed(p_subscription text) returns void
+language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  update public.profiles
+     set paid_plan = 'monthly', paid_until = (greatest(coalesce(paid_until, current_date), current_date) + interval '1 month')::date
+   where self_learner and stripe_student_sub = p_subscription and coalesce(p_subscription, '') <> ''
+  returning id into v;
+  if v is not null then perform public._email_all_set(v); end if;
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -6521,6 +6662,231 @@ begin
   return to_jsonb(v);
 end $$;
 
+-- =====================================================================
+-- Daily study reminder (20 Oct 2026). A learner picks a time; if they haven't studied that day by then, they get a
+-- nudge: in StudyBridge, on their phone through ntfy (if phone alerts are on), and as the browser's own notification
+-- (web push) on each device where they switched it on. The push carries no message, so there's nothing to encrypt:
+-- the device shows StudyBridge's fixed reminder (public/sw.js). Prof sends the pushes, signed with StudyBridge's own
+-- key pair, which Prof makes the first time it's needed (nobody pastes a key).
+-- =====================================================================
+alter table public.profiles add column if not exists remind_on boolean not null default false;
+alter table public.profiles add column if not exists remind_time time not null default '17:00'; -- the learner's own clock
+alter table public.profiles add column if not exists reminded_on date;                          -- the learner's own day
+alter table public.app_config add column if not exists vapid_public text;        -- the public half: the app needs it to subscribe
+alter table public.platform_secrets add column if not exists vapid_private text; -- the private half (a JWK): only Prof reads it
+
+-- Devices that get the reminder as a browser notification. Only through the functions below, each person their own.
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text,
+  auth text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_push_subscriptions_user on public.push_subscriptions (user_id);
+alter table public.push_subscriptions enable row level security;
+revoke all on public.push_subscriptions from public, anon, authenticated;
+
+-- Pushes waiting for Prof to send (it tries each up to 3 times; a reminder more than 6 hours late isn't sent)
+create table if not exists public.push_outbox (
+  id bigserial primary key,
+  subscription_id uuid not null references public.push_subscriptions (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  lease_until timestamptz,
+  tries int not null default 0,
+  sent_at timestamptz,
+  error text
+);
+create index if not exists idx_push_outbox_waiting on public.push_outbox (id) where sent_at is null;
+alter table public.push_outbox enable row level security;
+revoke all on public.push_outbox from public, anon, authenticated;
+
+-- My reminder: on or off, the time, and whether this device (its push address) gets it
+create or replace function public.my_study_reminder(p_endpoint text default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v_tz text;
+  v_today date;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null then return null; end if;
+  v_tz := public._tz_of(me.id);
+  v_today := (now() at time zone v_tz)::date;
+  return jsonb_build_object(
+    'on', me.remind_on,
+    'time', to_char(me.remind_time, 'HH24:MI'),
+    'timezone', v_tz,
+    -- reminded already, or studied already: the next one is tomorrow
+    'today_done', coalesce(me.reminded_on >= v_today, false)
+                  or exists (select 1 from public.activity a where a.learner_id = me.id and a.day = v_today),
+    'devices', (select count(*) from public.push_subscriptions s where s.user_id = me.id),
+    'this_device', p_endpoint is not null
+                   and exists (select 1 from public.push_subscriptions s where s.user_id = me.id and s.endpoint = p_endpoint));
+end $$;
+
+create or replace function public.set_study_reminder(p_on boolean, p_time text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v_on boolean;
+  v_time time;
+  v_local timestamp;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null or me.role is distinct from 'learner' then raise exception 'The daily study reminder is for learners.'; end if;
+  if p_time is not null and trim(p_time) !~ '^([01]?[0-9]|2[0-3]):[0-5][0-9]$' then
+    raise exception 'Choose a time like 17:00.';
+  end if;
+  v_on := coalesce(p_on, me.remind_on);
+  v_time := coalesce(trim(p_time)::time, me.remind_time);
+  v_local := now() at time zone public._tz_of(me.id);
+  update public.profiles
+     set remind_on = v_on, remind_time = v_time,
+         -- switched on (or moved) after today's time has already gone by: the first reminder is tomorrow
+         reminded_on = case when v_on and (not me.remind_on or me.remind_time <> v_time)
+                                 and v_local::time >= least(v_time, time '23:50')
+                            then v_local::date else reminded_on end
+   where id = me.id;
+  -- off: forget this account's devices (each one is set up again when it's switched back on there)
+  if not v_on then delete from public.push_subscriptions where user_id = me.id; end if;
+  return public.my_study_reminder(null);
+end $$;
+
+-- This device's push address, from the browser. Only the browsers' own push services (Chrome and Android, Firefox,
+-- Safari and iPhone, Edge), so Prof never posts anywhere else. An address another account saved can only be taken
+-- over from that same browser (its secret matches): a shared computer moves the reminder to whoever switched it on last.
+create or replace function public.save_push_subscription(p_endpoint text, p_p256dh text, p_auth text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v public.push_subscriptions;
+begin
+  if public.my_role() is distinct from 'learner' then raise exception 'The daily study reminder is for learners.'; end if;
+  if p_endpoint is null or length(p_endpoint) > 1000
+     or p_endpoint !~ '^https://([a-z0-9-]+\.)*(googleapis\.com|mozilla\.com|push\.apple\.com|notify\.windows\.com)(:[0-9]+)?/' then
+    raise exception 'This browser’s notifications can’t be used for reminders.';
+  end if;
+  select * into v from public.push_subscriptions where endpoint = p_endpoint;
+  if v.id is not null and v.user_id <> auth.uid() and v.auth is distinct from p_auth then
+    raise exception 'This browser’s notifications can’t be used for reminders.';
+  end if;
+  insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values (auth.uid(), p_endpoint, p_p256dh, p_auth)
+  on conflict (endpoint) do update set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = now();
+  -- the 10 newest devices are plenty
+  delete from public.push_subscriptions where user_id = auth.uid() and id not in
+    (select id from public.push_subscriptions where user_id = auth.uid() order by created_at desc limit 10);
+  return jsonb_build_object('devices', (select count(*) from public.push_subscriptions where user_id = auth.uid()));
+end $$;
+
+create or replace function public.remove_push_subscription(p_endpoint text) returns void
+language sql security definer set search_path = public as $$
+  delete from public.push_subscriptions where endpoint = p_endpoint and user_id = auth.uid()
+$$;
+
+-- "Send me a test": the reminder right now, everywhere it would go
+create or replace function public.send_test_reminder() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if public.my_role() is distinct from 'learner' then raise exception 'The daily study reminder is for learners.'; end if;
+  if exists (select 1 from public.notifications where user_id = auth.uid() and kind = 'study_reminder'
+              and ref @> '{"test": true}' and created_at > now() - interval '30 seconds') then
+    raise exception 'A test is on its way. Give it a moment to arrive.';
+  end if;
+  perform public.notify_user(auth.uid(), 'study_reminder', 'Time for StudyBridge', 'A few minutes today keeps your streak going.', '{"test": true}');
+  insert into public.push_outbox (subscription_id) select id from public.push_subscriptions where user_id = auth.uid();
+  get diagnostics n = row_count;
+  perform public._prof_kick();
+  return jsonb_build_object('devices', n);
+end $$;
+
+-- StudyBridge's public push key (empty until Prof has made the pair; the app then asks Prof)
+create or replace function public.push_key() returns text
+language sql stable security definer set search_path = public as $$
+  select vapid_public from public.app_config where id = 1
+$$;
+
+-- Every 10 minutes (pg_cron): learners whose own clock has reached their time today, who haven't been reminded
+-- today and haven't studied today. Once a day each. (A time after 23:50 counts as 23:50, the day's last run.)
+-- p_now is for the tests.
+create or replace function public._study_reminders(p_now timestamptz default now()) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in
+    with zones as materialized (select name from pg_timezone_names),
+    due as (select p.id, p.remind_time, p.reminded_on, (p_now at time zone coalesce(z.name, 'UTC')) as local_now
+              from public.profiles p left join zones z on z.name = p.timezone
+             where p.role = 'learner' and p.remind_on
+               -- a student on their own whose free week is over (and nothing paid) isn't nudged to study
+               and (not p.self_learner or p.test_student or coalesce(p.trial_until > p_now, false) or coalesce(p.paid_until >= current_date, false)))
+    select d.id, d.local_now::date as today from due d
+     where d.local_now::time >= least(d.remind_time, time '23:50')
+       and (d.reminded_on is null or d.reminded_on < d.local_now::date)
+       and not exists (select 1 from public.activity a where a.learner_id = d.id and a.day = d.local_now::date)
+  loop
+    -- once a day, even if two runs overlap
+    update public.profiles set reminded_on = r.today where id = r.id and (reminded_on is null or reminded_on < r.today);
+    continue when not found;
+    perform public.notify_user(r.id, 'study_reminder', 'Time for StudyBridge', 'A few minutes today keeps your streak going.', '{}');
+    insert into public.push_outbox (subscription_id) select id from public.push_subscriptions where user_id = r.id;
+    n := n + 1;
+  end loop;
+  delete from public.push_outbox where created_at < now() - interval '3 days';
+  -- wake Prof to send them (and anything an earlier run couldn't)
+  if exists (select 1 from public.push_outbox where sent_at is null and tries < 3 and created_at > now() - interval '6 hours') then
+    perform public._prof_kick();
+  end if;
+  return n;
+end $$;
+
+-- Prof only: StudyBridge's push key pair. Prof makes it the first time it's needed; the first one saved is kept.
+create or replace function public._push_keys(p_public text default null, p_private text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  perform 1 from public.platform_secrets where id = 1 for update;
+  if p_public is not null and p_private is not null and (select vapid_private from public.platform_secrets where id = 1) is null then
+    update public.platform_secrets set vapid_private = p_private where id = 1;
+    update public.app_config set vapid_public = p_public where id = 1;
+  end if;
+  return (select jsonb_build_object('public', c.vapid_public, 'private', s.vapid_private)
+            from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
+end $$;
+
+-- Prof only: the next pushes to send (each handed out once at a time), and who StudyBridge is to the push services
+create or replace function public._push_claim(p_limit int default 100) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v jsonb;
+begin
+  with c as (
+    update public.push_outbox o set lease_until = now() + interval '2 minutes', tries = o.tries + 1
+     where o.id in (select x.id from public.push_outbox x
+                     where x.sent_at is null and x.tries < 3 and x.created_at > now() - interval '6 hours'
+                       and (x.lease_until is null or x.lease_until < now())
+                     order by x.id limit greatest(1, least(coalesce(p_limit, 100), 500)) for update skip locked)
+    returning o.id, o.subscription_id)
+  select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'endpoint', s.endpoint) order by c.id), '[]') into v
+    from c join public.push_subscriptions s on s.id = c.subscription_id;
+  return jsonb_build_object('pushes', v,
+    'contact', 'mailto:' || coalesce((select nullif(trim(support_email), '') from public.app_config where id = 1), 'support@gostudybridge.com'));
+end $$;
+
+-- Prof only: how a push went. 404 or 410 means the browser stopped that subscription, so the device is forgotten.
+create or replace function public._push_done(p_id bigint, p_status int, p_error text default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if p_status between 200 and 299 then
+    update public.push_outbox set sent_at = now(), lease_until = null, error = null where id = p_id;
+  elsif p_status in (404, 410) then
+    delete from public.push_subscriptions where id = (select subscription_id from public.push_outbox where id = p_id);
+  else
+    update public.push_outbox set lease_until = null, error = left(coalesce(nullif(p_error, ''), 'Push service said ' || coalesce(p_status, 0)), 300)
+     where id = p_id;
+  end if;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -6565,10 +6931,20 @@ revoke execute on function public._mock_result(uuid, uuid, boolean) from public,
 revoke execute on function public._parent_link(uuid) from public, anon, authenticated;
 revoke execute on function public._hand_in(uuid, text) from public, anon, authenticated;
 revoke execute on function public._auto_hand_in() from public, anon, authenticated;
+revoke execute on function public._study_reminders(timestamptz) from public, anon, authenticated;
+revoke execute on function public._push_keys(text, text) from public, anon, authenticated;
+revoke execute on function public._push_claim(int) from public, anon, authenticated;
+revoke execute on function public._push_done(bigint, int, text) from public, anon, authenticated;
 revoke execute on function public._set_paid_plan(uuid, text, text, text, timestamptz) from public, anon, authenticated;
 revoke execute on function public._email_us(text, text, text, text) from public, anon, authenticated;
 revoke execute on function public._check_plan_room() from public, anon, authenticated;
 revoke execute on function public._self_practice_ok() from public, anon, authenticated;
+revoke execute on function public._email_student(uuid, text, text, text, text) from public, anon, authenticated;
+revoke execute on function public._email_welcome(uuid) from public, anon, authenticated;
+revoke execute on function public._email_all_set(uuid) from public, anon, authenticated;
+revoke execute on function public._student_emails_tick() from public, anon, authenticated;
+revoke execute on function public._student_paid_by_card(uuid, text, int, text) from public, anon, authenticated;
+revoke execute on function public._student_renewed(text) from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;
@@ -6637,6 +7013,8 @@ begin
   perform cron.schedule('studybridge-prof', '* * * * *', 'select public.prof_tick()');
   perform cron.schedule('studybridge-lessons', '*/5 * * * *', 'select public._lesson_tick()');
   perform cron.schedule('studybridge-handin', '* * * * *', 'select public._auto_hand_in()');
+  perform cron.schedule('studybridge-reminders', '*/10 * * * *', 'select public._study_reminders()');
+  perform cron.schedule('studybridge-students', '17 * * * *', 'select public._student_emails_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

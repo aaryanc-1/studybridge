@@ -274,7 +274,8 @@ function useAnnouncer(target) {
         go(target(n));
       };
       if (document.hasFocus()) toast({ title: n.title, body: n.body, onClick: open, ms: 7000 });
-      showSystemNotification(n, open);
+      // in a browser the study reminder already arrives as a push notification: don't show it twice
+      if (!(n.kind === 'study_reminder' && !desktop)) showSystemNotification(n, open);
     }
     if (fresh.some((n) => ['submitted', 'note', 'marked', 'message', 'auto_submitted', 'attempt_cancelled'].includes(n.kind))) invalidate('attempts', 'comments', 'myattempts');
     // a parent joined or was removed; a report was approved (parent accounts)

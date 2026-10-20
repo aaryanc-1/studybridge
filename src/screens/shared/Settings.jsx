@@ -46,6 +46,7 @@ export default function Settings() {
       {isLearner && <LinkedParents />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
+      {isLearner && <StudyReminder />}
       {isLearner && <LearnerPhoneAlerts />}
       {isTutor && <YourPlan />}
       {!isTutor && !isStudent && app.me.role !== 'admin' && <Help learner={isLearner} />}
@@ -755,6 +756,14 @@ function LearnerNotifications() {
     <Section id="notify" icon="bell" title="Notifications" sub="Get a notification when new work arrives, marks come back, or your tutor messages you.">
       {perm === 'granted' ? (
         <div className="okmsg">Notifications are on.</div>
+      ) : perm === 'denied' ? (
+        // the browser was told no before: only its own settings can switch them back on
+        <div className="note small">
+          Notifications are blocked for StudyBridge on this {desktop ? 'computer' : 'browser'}. To turn them on,{' '}
+          {desktop
+            ? 'open your computer’s notification settings and allow StudyBridge.'
+            : 'click the lock (or settings) icon next to the web address, set Notifications to Allow, then reload this page.'}
+        </div>
       ) : (
         <div>
           <button className="btn" onClick={() => Notification.requestPermission().then(setPerm)}>
@@ -813,6 +822,162 @@ function LearnerPhoneAlerts() {
         }}
         title="Send reminders to my phone"
       />
+    </Section>
+  );
+}
+
+// Daily study reminder (learners): at the time they pick, a nudge on days they haven't studied by then.
+// In a browser it's the browser's own notification (web push), even with StudyBridge closed. The desktop app
+// has no web push, so there it shows while StudyBridge is open (and on the phone through phone alerts).
+const onIPhone = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const onHomeScreen = () => navigator.standalone === true || !!window.matchMedia?.('(display-mode: standalone)')?.matches;
+function pushKind() {
+  if (desktop) return 'desktop';
+  if (onIPhone() && !onHomeScreen()) return 'iphone'; // iPhones only allow it from the Home Screen
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') return 'none';
+  return 'push';
+}
+const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=')), (c) => c.charCodeAt(0));
+const toB64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// The web app registers its service worker as it starts; give it a moment
+async function pushRegistration() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg || Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 3000))]);
+}
+
+function StudyReminder() {
+  const toast = useToast();
+  const kind = pushKind();
+  const [endpoint, setEndpoint] = useState(kind === 'push' ? undefined : null); // this browser's push address (null: none)
+  const [perm, setPerm] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
+  const [key, setKey] = useState(null);
+  const [time, setTime] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (kind !== 'push') return;
+    pushRegistration()
+      .then((reg) => reg?.pushManager.getSubscription())
+      .then((s) => setEndpoint(s?.endpoint || null))
+      .catch(() => setEndpoint(null));
+    // ready ahead, so switching on goes straight from "Allow" to subscribing
+    api.pushKey().then(setKey).catch(() => {});
+  }, [kind]);
+  const q = useQuery('study-reminder', () => api.myStudyReminder(endpoint), { enabled: endpoint !== undefined });
+  const d = q.data;
+  useEffect(() => {
+    if (d?.time) setTime(d.time);
+  }, [d?.time]);
+  if (!d) return null;
+
+  // This browser: notifications allowed, then subscribed with StudyBridge's key and saved
+  async function addThisDevice(asking) {
+    const p = await (asking || Notification.requestPermission());
+    setPerm(p);
+    if (p !== 'granted') return null;
+    const reg = await pushRegistration();
+    if (!reg) throw new Error('Open StudyBridge at gostudybridge.com/app to get reminders in this browser.');
+    const k = key || (await api.pushKey());
+    if (!k) throw new Error('Reminders aren’t ready yet. Try again in a minute.');
+    let s = await reg.pushManager.getSubscription();
+    if (s && s.options?.applicationServerKey && toB64url(s.options.applicationServerKey) !== k) {
+      await s.unsubscribe(); // made with another key: start again
+      s = null;
+    }
+    s ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64url(k) });
+    await api.savePushSubscription(s.toJSON());
+    setEndpoint(s.endpoint);
+    return s.endpoint;
+  }
+  async function deviceOn(asking) {
+    try {
+      const ep = await addThisDevice(asking);
+      if (ep) q.mutate(await api.myStudyReminder(ep));
+    } catch (e) {
+      toast({ title: 'This device couldn’t be set up', body: e.message, tone: 'bad' });
+    }
+  }
+  async function turn(on) {
+    // the tap itself asks for notifications (iPhones insist), before anything else happens
+    const asking = on && kind === 'push' && perm === 'default' ? Notification.requestPermission() : null;
+    setBusy(true);
+    try {
+      q.mutate(await api.setStudyReminder(on, time));
+      toast(on ? 'Daily reminder is on' : 'Daily reminder is off');
+      if (on && kind === 'push' && perm !== 'denied') await deviceOn(asking);
+    } catch (e) {
+      toast({ title: 'Couldn’t change that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveTime() {
+    setBusy(true);
+    try {
+      q.mutate({ ...(await api.setStudyReminder(d.on, time)), this_device: d.this_device });
+      toast('Saved');
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function sendTest() {
+    setBusy(true);
+    try {
+      const r = await api.sendTestReminder();
+      toast(r?.devices ? 'Test sent. It should arrive in a few seconds.' : 'Test sent. It shows in your StudyBridge notifications (the bell).');
+    } catch (e) {
+      toast({ title: 'Couldn’t send a test', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const here =
+    kind === 'desktop' ? (
+      <div className="note small">On this computer: shown when StudyBridge is open; also on your phone if phone alerts are on (below).</div>
+    ) : kind === 'iphone' ? (
+      <div className="note small">On iPhone or iPad, add StudyBridge to your Home Screen first: tap Share, then “Add to Home Screen”. Open it from there and come back to this page.</div>
+    ) : kind === 'none' ? (
+      <div className="note small">This browser can’t show reminders. You’ll still see them in StudyBridge, and on your phone if phone alerts are on (below).</div>
+    ) : perm === 'denied' ? (
+      <div className="note small">Notifications are blocked: allow them in your browser’s site settings (the lock or settings icon next to the web address), then reload this page.</div>
+    ) : d.this_device && perm === 'granted' ? (
+      <div className="okmsg">This device gets the reminder.</div>
+    ) : (
+      <div className="row wrap">
+        <span className="muted small grow">This device doesn’t get it yet.</span>
+        <button className="btn sm" disabled={busy} onClick={() => deviceOn(null)}>
+          Get it on this device
+        </button>
+      </div>
+    );
+  return (
+    <Section id="study-reminder" icon="clock" title="Daily study reminder" sub="Pick a time. If you haven’t studied by then, StudyBridge gives you a friendly nudge.">
+      <Toggle checked={d.on} disabled={busy} onChange={turn} title="Remind me to study each day" />
+      <div className="row wrap" style={{ alignItems: 'flex-end' }}>
+        <Field label="Time">
+          <input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ maxWidth: 160 }} />
+        </Field>
+        {time && time !== d.time && (
+          <button className="btn" disabled={busy} onClick={saveTime}>
+            Save time
+          </button>
+        )}
+      </div>
+      {d.on && (
+        <>
+          <div className="muted small">
+            Next one: {d.today_done ? 'tomorrow' : 'today'} at {d.time} ({String(d.timezone || '').replace(/_/g, ' ')} time), only if you haven’t studied by then.
+          </div>
+          {here}
+          <div>
+            <button className="btn sm" disabled={busy} onClick={sendTest}>
+              Send me a test
+            </button>
+          </div>
+        </>
+      )}
     </Section>
   );
 }

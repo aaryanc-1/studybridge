@@ -2,6 +2,8 @@
 // change is one edit. CI publishes it at the root of the releases repo's GitHub Pages, next to the phone app at app/.
 //   node scripts/build-website.mjs <out dir> [version]
 // With a version, release.json points the download buttons straight at that release's files.
+// For search engines and shared links it also makes a page for every subject (website/partials/subject-page.html),
+// sitemap.xml and robots.txt, and gives every page a canonical address and a link preview (website/share.png).
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
@@ -65,6 +67,172 @@ function marquee(c, half) {
 const statusClass = (s) => ({ 'Available now': 'now', Free: 'free', 'Early access': 'early' })[s] || '';
 const levelTitle = (b, l) => (b.id === 'ib' ? `IB Diploma ${l.name === 'Core' ? 'core' : `subjects, ${l.name}`}` : `${b.name} ${l.name}`);
 export const subjectCount = (c) => c.boards.reduce((n, b) => n + b.levels.reduce((m, l) => m + l.subjects.length, 0), 0);
+
+// ---------- A page for every subject (search engines and shared links land on them) ----------
+// Each one is website/partials/subject-page.html filled in for that subject, published at the site root as
+// subject-<its catalogue key>.html (subject-cambridge-igcse-0607.html), so the shared header and footer links work.
+export const subjectFile = (b, l, n, code) => `subject-${catalogueKey(b, l, n, code).replace(/:/g, '-')}.html`;
+export function subjectPages(c) {
+  return c.boards.flatMap((b) => b.levels.flatMap((l) => l.subjects.map(([n, code]) => ({ b, l, n, code, key: catalogueKey(b, l, n, code), file: subjectFile(b, l, n, code) }))));
+}
+// Its full name: "Cambridge IGCSE International Mathematics (0607)", "Pearson Edexcel International GCSE Biology",
+// "IB Diploma Physics (SL and HL)", "IB Diploma Theory of Knowledge"
+const isCore = (b, l) => b.id === 'ib' && l.name === 'Core';
+const namePrefix = (b, l) => (b.id === 'ib' ? 'IB Diploma' : `${b.name} ${l.name}`);
+const nameSuffix = (b, l, code) => (b.id === 'ib' ? (isCore(b, l) ? '' : ' (SL and HL)') : code ? ` (${code})` : '');
+export const subjectName = (b, l, n, code) => `${namePrefix(b, l)} ${n}${nameSuffix(b, l, code)}`;
+// Who owns the exam, for "Not affiliated with or endorsed by …"
+const boardOwner = (b) => (b.id === 'ib' ? 'the IB' : b.name);
+// The address a page lives at: Cloudflare Pages sends /students.html to /students, so that's the one search engines get
+const pageUrl = (c, f) => c.siteUrl + (f === 'index.html' ? '' : f.replace(/\.html$/, ''));
+
+// A board's next exam sessions from today (the same rule as the countdown in site.js, which refreshes them on the page)
+const DAY = 864e5;
+function nextSessions(b, now = new Date(), n = 3) {
+  const out = [];
+  for (let y = now.getFullYear(); y <= now.getFullYear() + 2; y++) {
+    for (const s of b.sessions) {
+      const date = new Date(y, s.month - 1, s.day);
+      if (date - now > DAY) out.push({ label: `${s.name} ${y}`, date });
+    }
+  }
+  return out.sort((a, z) => a.date - z.date).slice(0, n);
+}
+const longDate = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+// Small line icons for what a student gets
+const featIcon = (d) => `<span class="sp-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg></span>`;
+const FEAT_ICONS = {
+  plan: featIcon('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><path d="M8 15l2.5 2.5L16 13"/>'),
+  lessons: featIcon('<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5Z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5Z"/>'),
+  hints: featIcon('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3Z"/>'),
+  papers: featIcon('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>'),
+  mock: featIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>'),
+  progress: featIcon('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'),
+  yours: featIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+};
+
+// What a student on their own gets, and the questions they ask. The IB core (TOK, the Extended Essay) has no exam
+// papers or mocks, so its page talks about a plan to the deadlines, lessons and practice instead.
+function subjectCopy(c, { b, l, n, code }) {
+  const brand = esc(c.brand), short = esc(n), full = esc(subjectName(b, l, n, code));
+  const tutorFaq = ['Do I need a tutor?', `No. Everything here is made for studying ${short} on your own, and your first ${c.trialDays} days are free. Already have a tutor on ${brand}? <a href="${esc(c.appPath)}#start=invite">Join with their code</a> instead.`];
+  const parentFaq = ['Can my parents see how I’m doing?', 'Yes, if you’d like. Make a parent code in Settings and they get a free parent account with your plan, your study time and your practice. A parent can pay for your plan, too.'];
+  if (isCore(b, l)) {
+    return {
+      whatSub: 'On your own, in the right order, from today to your deadlines.',
+      ownWork: 'lessons and practice questions',
+      lead: `Support for the IB Diploma ${short}, on your own and step by step: a plan to your deadlines, short lessons, practice with hints, and progress you can see.`,
+      description: `Support for the ${full} on your own: a plan to your deadlines, short lessons, practice with hints and progress you can see. ${c.trialDays} days free.`,
+      feats: [
+        ['plan', 'A plan to your deadlines', 'Pick your exam session and the hours you have each week. Every part is spread over the weeks left, so nothing piles up at the end.'],
+        ['lessons', 'Lessons, step by step', `Short lessons on what ${short} asks of you and how it’s assessed, one idea at a time, with worked examples.`],
+        ['hints', 'Practice with hints', 'Questions to practise with, each with a hint and a worked answer, written ahead of time and checked.'],
+        ['progress', 'Progress you can see', 'What you’ve covered and your study time each week. Your parents can follow along with a free account.'],
+      ],
+      faq: [tutorFaq, ['Will it write my essay?', `No. Students never use AI on ${brand}, and nothing here writes for you. Lessons, hints and worked answers are written ahead of time and checked, so the ideas and the writing stay yours.`], parentFaq],
+    };
+  }
+  return {
+    whatSub: 'On your own, in the right order, from today to exam day.',
+    ownWork: 'lessons and practice papers',
+    lead: `Study ${short} on your own, step by step: a plan to your exam, lessons topic by topic, practice with hints and worked solutions, original practice papers and timed mocks.`,
+    description: `Study ${full} on your own: a plan to your exam, lessons, practice with hints and worked solutions, original practice papers and timed mocks. ${c.trialDays} days free.`,
+    feats: [
+      ['plan', 'A plan to your exam', 'Pick your exam session and the hours you have each week. Every topic is spread over the weeks left, with time for papers and a mock at the end. A quick starting check puts your weakest topics first.'],
+      ['lessons', 'Lessons, topic by topic', `Short lessons that follow the ${short} syllabus in order, one idea at a time, each with a worked example.`],
+      ['hints', 'A hint and a worked solution', 'Every practice question has a hint and a worked solution, written ahead of time and checked. Open them only when you need them.'],
+      ['papers', 'Practice papers in the exam’s format', 'Original papers built like the real ones: the same sections, timing and marks. Mark them with the mark scheme and see where every mark comes from.'],
+      ['mock', 'Timed mocks in exam conditions', 'Full screen, with a timer, like the real exam, so exam day feels familiar.'],
+      ['progress', 'Progress by topic', 'See which topics are strong and which need more work, and your study time each week. Your parents can follow along with a free account.'],
+    ],
+    faq: [
+      tutorFaq,
+      ['Are the practice papers real past papers?', `No. They’re original papers written in the format of the real ${full} papers: the same sections, timing, marks and style, each with a mark scheme. Official past papers come from the exam board.`],
+      ['Is there an AI tutor or chat?', `No. Students never chat with AI on ${brand}. Lessons, hints and worked solutions are written ahead of time and checked before you see them, so the thinking stays yours.`],
+      parentFaq,
+    ],
+  };
+}
+
+// The tokens that fill website/partials/subject-page.html for one subject
+function subjectTokens(c, s, all) {
+  const { b, l, n, code, key, file } = s;
+  const full = subjectName(b, l, n, code);
+  const url = pageUrl(c, file);
+  const copy = subjectCopy(c, s);
+  const course = {
+    '@type': 'Course',
+    '@id': `${url}#course`,
+    name: full,
+    description: copy.description.replace(/&amp;/g, '&'),
+    url,
+    ...(code && b.id !== 'ib' ? { courseCode: code } : {}),
+    educationalLevel: b.id === 'ib' ? 'IB Diploma' : l.name,
+    inLanguage: 'en',
+    provider: { '@type': 'Organization', name: c.brand, url: c.siteUrl },
+    isAccessibleForFree: false,
+    offers: [{ '@type': 'Offer', category: 'Subscription', price: c.selfLearner.month, priceCurrency: 'USD', url }],
+    hasCourseInstance: [{ '@type': 'CourseInstance', courseMode: 'Online' }],
+  };
+  const crumbs = {
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      ['Home', c.siteUrl],
+      ['Subjects', pageUrl(c, 'subjects.html')],
+      [full, url],
+    ].map(([name, item], i) => ({ '@type': 'ListItem', position: i + 1, name, item })),
+  };
+  // the other subjects at the same level (all of the IB Diploma's together), so each page leads to the next
+  const siblings = all.filter((x) => x !== s && x.b === b && (b.id === 'ib' || x.l === l));
+  return {
+    spName: esc(full),
+    spShort: esc(n),
+    spKey: esc(key),
+    spH1: `${esc(namePrefix(b, l))} <em>${esc(n)}</em>${esc(nameSuffix(b, l, code))}`,
+    spPill: [b.name, l.name, b.id === 'ib' ? '' : code].filter(Boolean).map(esc).join(' · '),
+    spLead: copy.lead,
+    spDescription: copy.description,
+    spFeatures: copy.feats.map(([ic, h, p]) => `<article>${FEAT_ICONS[ic]}<h3>${h}</h3><p>${p}</p></article>`).join(''),
+    spFeatClass: copy.feats.length === 4 ? ' two' : '',
+    spWhatSub: copy.whatSub,
+    spOwnWork: copy.ownWork,
+    spFaq: copy.faq.map(([q, a]) => `<details class="reveal"><summary>${q}</summary><p>${a}</p></details>`).join('\n      '),
+    spBoard: esc(b.name),
+    spBoardId: esc(b.id),
+    spOwner: esc(boardOwner(b)),
+    spSessions: nextSessions(b).map((x) => `<li><b>${esc(x.label)}</b><span>Starts about ${longDate(x.date)}</span></li>`).join(''),
+    spMoreTitle: esc(b.id === 'ib' ? 'More IB Diploma subjects' : `More ${b.name} ${l.name} subjects`),
+    spSiblings: siblings.map((x) => `<li><a href="${x.file}">${esc(x.n)}</a></li>`).join(''),
+    // JSON inside <script>: "<" written as < so nothing in it can close the tag
+    spJsonLd: JSON.stringify({ '@context': 'https://schema.org', '@graph': [course, crumbs] }).replace(/</g, '\\u003c'),
+  };
+}
+
+// Link previews (WhatsApp, social media) and search: every page gets its own title and description as the preview,
+// its address without .html as the canonical one, and the share picture (website/share.png, from scripts/make-share.py)
+function previews(html, c, f) {
+  const title = /<title>([^<]+)<\/title>/.exec(html)?.[1];
+  const description = /<meta name="description" content="([^"]+)">/.exec(html)?.[1];
+  if (!title || !description) throw new Error(`website/${f}: needs a <title> and a <meta name="description">`);
+  const url = pageUrl(c, f);
+  const tags = [
+    `<link rel="canonical" href="${url}">`,
+    '<meta property="og:type" content="website">',
+    `<meta property="og:site_name" content="${esc(c.brand)}">`,
+    `<meta property="og:title" content="${title}">`,
+    `<meta property="og:description" content="${description}">`,
+    `<meta property="og:url" content="${url}">`,
+    `<meta property="og:image" content="${c.siteUrl}share.png">`,
+    '<meta property="og:image:width" content="1200">',
+    '<meta property="og:image:height" content="630">',
+    `<meta property="og:image:alt" content="${esc(`${c.brand}: get exam-ready, step by step`)}">`,
+    '<meta name="twitter:card" content="summary_large_image">',
+  ];
+  // a page's own preview tags would only repeat these
+  const clean = html.replace(/<meta (?:property="og:|name="twitter:)[^>]*>\n?/g, '').replace(/<link rel="canonical"[^>]*>\n?/g, '');
+  return clean.replace('</head>', `${tags.join('\n')}\n</head>`);
+}
 
 // The pages, in the order the menu shows them
 export const PAGES = [
@@ -173,7 +341,7 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
             (l) => `<div class="level"><h3>${esc(levelTitle(b, l))}</h3><ul class="subject-list">${l.subjects
               .map(
                 ([n, code]) =>
-                  `<li data-s="${esc(`${n} ${code || ''} ${b.name} ${l.name}`.toLowerCase())}" data-key="${esc(catalogueKey(b, l, n, code))}"><span>${esc(n)}</span>${code ? `<small>${esc(code)}</small>` : ''}</li>`,
+                  `<li data-s="${esc(`${n} ${code || ''} ${b.name} ${l.name}`.toLowerCase())}" data-key="${esc(catalogueKey(b, l, n, code))}"><a href="${subjectFile(b, l, n, code)}"><span>${esc(n)}</span>${code ? `<small>${esc(code)}</small>` : ''}</a></li>`,
               )
               .join('')}</ul></div>`,
           )
@@ -189,12 +357,29 @@ export async function buildWebsite(out, version, sb = { url: process.env.SB_URL,
       .replace(/href="site\.css"/g, `href="site.css?v=${v('site.css')}"`)
       .replace(/src="site\.js"/g, `src="site.js?v=${v('site.js')}"`)
       .replace(/src="config\.js"/g, `src="config.js?v=${String(version || Date.now())}"`);
+  const built = [];
   for (const f of readdirSync(join(root, 'website'))) {
     if (f.endsWith('.html')) {
       const page = { ...tokens, header: header(c, f), footer: footer(c, tokens.year) };
-      writeFileSync(join(out, f), fresh(render(readFileSync(join(root, 'website', f), 'utf8'), page, f)));
-    } else if (f.endsWith('.css') || f.endsWith('.js')) copyFileSync(join(root, 'website', f), join(out, f));
+      writeFileSync(join(out, f), fresh(previews(render(readFileSync(join(root, 'website', f), 'utf8'), page, f), c, f)));
+      built.push(f);
+    } else if (f.endsWith('.css') || f.endsWith('.js') || f.endsWith('.png')) copyFileSync(join(root, 'website', f), join(out, f));
   }
+  // a page for every subject, all from one template
+  const subjectSrc = readFileSync(join(root, 'website/partials/subject-page.html'), 'utf8');
+  const subjects = subjectPages(c);
+  for (const s of subjects) {
+    const page = { ...tokens, ...subjectTokens(c, s, subjects), header: header(c, s.file), footer: footer(c, tokens.year) };
+    writeFileSync(join(out, s.file), fresh(previews(render(subjectSrc, page, 'partials/subject-page.html'), c, s.file)));
+  }
+  // For search engines: every page (home, the menu's pages, the rest, then the subjects), and everything but the app
+  const first = ['index.html', ...PAGES.map(([f]) => f)].filter((f) => built.includes(f));
+  const urls = [...first, ...built.filter((f) => !first.includes(f)).sort(), ...subjects.map((s) => s.file)].map((f) => pageUrl(c, f));
+  writeFileSync(
+    join(out, 'sitemap.xml'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${esc(u)}</loc></url>`).join('\n')}\n</urlset>\n`,
+  );
+  writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\nDisallow: /app/\n\nSitemap: ${c.siteUrl}sitemap.xml\n`);
   // the home page's opening: the logo cut into layers by scripts/make-intro.py
   mkdirSync(join(out, 'intro'), { recursive: true });
   for (const f of readdirSync(join(root, 'website/intro'))) copyFileSync(join(root, 'website/intro', f), join(out, 'intro', f));

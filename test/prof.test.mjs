@@ -540,6 +540,39 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
   assert.equal(await hook({ type: 'customer.subscription.deleted', data: { object: { customer: 'cus_42', metadata: { tutor: me, plan: 'starter' } } } }), 200);
   assert.equal((await q(T.rpc('my_plan'))).plan, 'free');
 
+  // a student pays through the Owner's Pay by card links: recorded straight away, and "you're all set" is emailed
+  const S = client();
+  await q(S.auth.signUp({ email: 'card-student@x.com', password: 'secret123' }));
+  const sid = (await S.auth.getUser()).data.user.id;
+  await srv.db.query(`update public.profiles set role = 'learner', tutor_id = $2, self_learner = true, trial_until = now() + interval '7 days', exam_date = current_date + 200 where id = $1`, [sid, me]);
+  await srv.db.query(`update public.app_config set pay_link_monthly = 'https://buy.stripe.com/plink_month', pay_link_pass = 'https://buy.stripe.com/plink_pass?locale=en' where id = 1`);
+  const student = async () => (await srv.db.query(`select paid_plan, paid_until::text, stripe_student_sub from public.profiles where id = $1`, [sid])).rows[0];
+  const day = async (sql) => (await srv.db.query(`select (${sql})::date::text d`)).rows[0].d;
+  const session = (o) => ({ type: 'checkout.session.completed', data: { object: { client_reference_id: sid, payment_status: 'paid', metadata: {}, ...o } } });
+  // a link that isn't one of the Owner's: nothing changes
+  assert.equal(await hook(session({ id: 'cs_other', payment_link: 'plink_other', mode: 'payment' })), 200);
+  assert.equal((await student()).paid_plan, null);
+  // an exam pass for 3 months (the exams are about 7 months away): 3 months
+  assert.equal(await hook(session({ id: 'cs_pass_q3', payment_link: 'plink_pass', mode: 'payment' })), 200);
+  assert.deepEqual([(await student()).paid_plan, (await student()).paid_until], ['pass', await day(`current_date + interval '3 months'`)]);
+  assert.ok(outside.some((x) => x.url.startsWith('/v1/payment_links/plink_pass') && x.auth === 'Bearer sk_test_x'));
+  // enough months for the exams: until about 60 days after them
+  assert.equal(await hook(session({ id: 'cs_pass_q8', payment_link: 'plink_pass', mode: 'payment' })), 200);
+  assert.equal((await student()).paid_until, await day(`current_date + 200 + 60`));
+  // monthly by card subscription: a month on, and each renewal another month
+  await srv.db.query(`update public.profiles set paid_plan = null, paid_until = null where id = $1`, [sid]);
+  assert.equal(await hook(session({ id: 'cs_month', payment_link: 'plink_month', mode: 'subscription', subscription: 'sub_9' })), 200);
+  assert.deepEqual(await student(), { paid_plan: 'monthly', paid_until: await day(`current_date + interval '1 month'`), stripe_student_sub: 'sub_9' });
+  assert.equal(await hook({ type: 'invoice.paid', data: { object: { subscription: 'sub_9', billing_reason: 'subscription_cycle' } } }), 200);
+  assert.equal((await student()).paid_until, await day(`current_date + interval '2 months'`));
+  assert.equal(await hook({ type: 'invoice.paid', data: { object: { subscription: 'sub_9', billing_reason: 'subscription_create' } } }), 200);
+  assert.equal((await student()).paid_until, await day(`current_date + interval '2 months'`), 'the first invoice is the checkout itself');
+  const mails = (await srv.db.query(`select subject from public.outgoing_emails where to_addr = 'card-student@x.com'`)).rows.map((r) => r.subject);
+  assert.ok(mails.filter((s) => s === 'You\'re all set').length >= 3, 'an email each time it was paid');
+  // a student can't record their own payment
+  const { error: selfPay } = await S.rpc('_student_paid_by_card', { p_user: sid, p_plan: 'pass', p_months: 12 });
+  assert.ok(selfPay, 'only the server may call it');
+
   // an approved report by email, from StudyBridge itself
   const inv = await q(T.from('invites').insert({ name: 'Pay learner' }).select().single());
   const L = client();
@@ -568,4 +601,82 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
   assert.match(hello.body.text, /IGCSE Physics/);
   [st] = await call({ action: 'checkout', plan: 'pro', period: 'month' }, L);
   assert.equal(st, 403, 'learners can’t buy plans');
+});
+
+test('study reminders as browser notifications: Prof signs each push with StudyBridge’s own key (made once, never pasted) and forgets a device that’s gone', async () => {
+  // a stand-in push service: one device takes the push, the other has gone (410)
+  const http = await import('node:http');
+  const got = [];
+  const push = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      got.push({ method: req.method, url: req.url, headers: req.headers, body: raw });
+      res.writeHead(req.url.startsWith('/gone') ? 410 : 201);
+      res.end();
+    });
+  });
+  await new Promise((r) => push.listen(0, '127.0.0.1', r));
+  const origin = `http://127.0.0.1:${push.address().port}`;
+  try {
+    const L = client();
+    await q(L.auth.signUp({ email: 'push-learner@x.com', password: 'secret123' }));
+    const lid = (await L.auth.getUser()).data.user.id;
+    await srv.db.query(`update public.profiles set role = 'learner', timezone = 'Africa/Lusaka' where id = $1`, [lid]);
+
+    // the app asks for the public key; Prof makes the pair the first time and keeps it
+    assert.equal(await q(L.rpc('push_key')), null, 'no key until Prof makes one');
+    const { data: s } = await L.auth.getSession();
+    const askKey = async () => {
+      const r = await fetch(`${srv.url}/functions/v1/prof`, { method: 'POST', headers: { 'content-type': 'application/json', apikey: srv.anonKey, authorization: `Bearer ${s.session.access_token}` }, body: '{"action":"push_key"}' });
+      return [r.status, await r.json()];
+    };
+    const [st, made] = await askKey();
+    assert.equal(st, 200, JSON.stringify(made));
+    assert.equal(Buffer.from(made.key, 'base64url').length, 65, 'a P-256 public key');
+    assert.equal(await q(L.rpc('push_key')), made.key);
+    assert.equal((await askKey())[1].key, made.key, 'made once');
+    const secret = (await srv.db.query(`select vapid_private, hook_secret from public.platform_secrets where id = 1`)).rows[0];
+    assert.equal(JSON.parse(secret.vapid_private).kty, 'EC', 'the private half stays in the database');
+
+    // two devices (the stand-in isn't a real push service, so it goes straight into the table), then a test
+    for (const path of ['/device-1', '/gone-1']) {
+      await srv.db.query(`insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values ($1, $2, 'p', 'a')`, [lid, origin + path]);
+    }
+    await q(L.rpc('set_study_reminder', { p_on: true, p_time: '17:00' }));
+    assert.equal((await q(L.rpc('send_test_reminder'))).devices, 2);
+    // the database wakes Prof (with its shared secret) to send them
+    const wake = () => fetch(`${srv.url}/functions/v1/prof`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-prof-secret': secret.hook_secret }, body: '{"action":"kick"}' }).then((r) => r.status);
+    assert.equal(await wake(), 200);
+    assert.equal(got.length, 2);
+    for (const g of got) {
+      assert.equal(g.method, 'POST');
+      assert.equal(g.body, '', 'an empty push: nothing to encrypt');
+      assert.equal(g.headers['content-length'], '0');
+      assert.equal(g.headers.ttl, '14400');
+      const m = g.headers.authorization.match(/^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/);
+      assert.ok(m, g.headers.authorization);
+      const [, head, body, sig, k] = m;
+      assert.equal(k, made.key);
+      assert.deepEqual(JSON.parse(Buffer.from(head, 'base64url')), { typ: 'JWT', alg: 'ES256' });
+      const claims = JSON.parse(Buffer.from(body, 'base64url'));
+      assert.equal(claims.aud, origin, 'for this push service only');
+      assert.equal(claims.sub, 'mailto:support@gostudybridge.com');
+      const now = Date.now() / 1000;
+      assert.ok(claims.exp > now && claims.exp <= now + 12 * 3600 + 5, 'good for 12 hours at most');
+      // signed with the private half of the public key the app subscribed with
+      const pub = await crypto.webcrypto.subtle.importKey('raw', Buffer.from(k, 'base64url'), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+      assert.ok(await crypto.webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, Buffer.from(sig, 'base64url'), Buffer.from(`${head}.${body}`)), 'the signature checks out');
+    }
+    // the device that took it is done; the one that's gone (410) is forgotten
+    const subs = (await srv.db.query(`select endpoint from public.push_subscriptions where user_id = $1`, [lid])).rows.map((r) => r.endpoint);
+    assert.deepEqual(subs, [origin + '/device-1']);
+    const left = (await srv.db.query(`select count(*)::int n from public.push_outbox where sent_at is null`)).rows[0].n;
+    assert.equal(left, 0);
+    // nothing waiting: the next wake-up sends nothing
+    assert.equal(await wake(), 200);
+    assert.equal(got.length, 2);
+  } finally {
+    push.close();
+  }
 });

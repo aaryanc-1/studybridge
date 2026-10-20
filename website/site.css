@@ -855,3 +855,90 @@ a.tag:hover { text-decoration: underline; }
 .li-skip { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); min-height: 36px; padding: 0 16px; border: 0; border-radius: 980px; background: var(--bg-2); color: var(--ink-2); font: 600 14px var(--sans); letter-spacing: -0.01em; cursor: pointer; animation: li-in .4s ease .6s both, li-out .3s ease 4.3s forwards; }
 .li-skip:hover { color: var(--ink); }
 @media (prefers-reduced-motion: reduce) { .intro-play .logo-intro { display: none; } .intro-play .top .brand { animation: none; } }
+
+/* ---------- A subject's own page (website/partials/subject-page.html, one for every subject) ----------
+   The subject's name and what you get on the left; on the right a card that site.js fills once the server says whether
+   students can start it now: "Start your free week", or "Ask for this subject" with the subject already filled in. */
+.sp-hero { padding: 40px 0 8px; }
+.sp-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 48px; align-items: center; }
+.sp-back { display: flex; align-items: center; gap: 6px; width: fit-content; font-size: 15px; font-weight: 600; text-decoration: none; margin-bottom: 18px; }
+.sp-back:hover { text-decoration: underline; }
+.sp-hero h1 { font-size: clamp(36px, 4.8vw, 56px); overflow-wrap: break-word; }
+.sp-hero .lead { margin-bottom: 0; }
+.sp-card { background: var(--card); border-radius: 26px; box-shadow: var(--shadow); padding: 30px; }
+.sp-card h2 { font-size: clamp(24px, 2.8vw, 30px); text-align: left; margin: 0 0 8px; }
+.sp-card .status { display: inline-block; margin-bottom: 12px; }
+.sp-card p { color: var(--ink-2); }
+.sp-card .btn.big { width: 100%; margin: 4px 0 14px; }
+.sp-card .fine { margin: 0; }
+.sp-card .fine a { font-weight: 600; }
+/* until the server answers, the card keeps its size but shows nothing (no flash of the wrong one) */
+.js .sp-card[data-state="wait"] > * { visibility: hidden; }
+.sp-card > div:not([hidden]) { animation: rise .35s ease both; }
+.sp-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 18px; }
+.sp-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.sp-card .ea-msg { margin-top: 12px; }
+.sp-card .ea-msg:empty { display: none; }
+.sp-card .ea-msg.bad { color: #B4471F; }
+:root[data-theme="dark"] .sp-card .ea-msg.bad { color: #FF9F7A; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .sp-card .ea-msg.bad { color: #FF9F7A; } }
+@media (max-width: 900px) { .sp-grid { grid-template-columns: 1fr; gap: 28px; } .sp-card { max-width: 560px; } }
+@media (max-width: 640px) { .sp-hero { padding: 24px 0 4px; } }
+@media (max-width: 480px) { .sp-card { padding: 22px; border-radius: 22px; } .sp-form { grid-template-columns: 1fr; } .sp-form .btn { width: 100%; } }
+
+/* What you get: cards with a small line icon */
+.sp-ic { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: var(--accent-tint); color: var(--accent-ink); margin-bottom: 14px; }
+.sp-feats.two { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 860px; margin-left: auto; margin-right: auto; }
+/* on phones the icon sits beside the heading, so six cards don't make a long scroll */
+@media (max-width: 560px) {
+  .sp-feats.two { grid-template-columns: 1fr; }
+  .sp-feats article { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 4px 14px; align-items: center; padding: 20px; }
+  .sp-feats .sp-ic { margin: 0; }
+  .sp-feats h3 { margin: 0; }
+  .sp-feats p { grid-column: 1 / -1; margin-top: 6px; }
+}
+/* the sections after the opening sit a little closer than the site's usual rhythm */
+.sp-when { padding-top: 0; }
+.sp-more { padding-top: 16px; }
+.sp-more .center { margin-top: 28px; }
+
+/* The next exam sessions, and the price */
+.sp-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.sp-box { display: flex; flex-direction: column; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 30px; }
+.sp-box h2 { font-size: clamp(24px, 2.6vw, 30px); }
+.sp-sessions { list-style: none; padding: 0; margin: 4px 0 18px; }
+.sp-sessions li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.sp-sessions li:last-child { border-bottom: 0; }
+.sp-sessions b { font-weight: 600; }
+.sp-sessions span { grid-column: 1; color: var(--muted); font-size: 14.5px; }
+.sp-sessions em { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-style: normal; font-size: 13px; font-weight: 600; padding: 4px 11px; border-radius: 99px; background: var(--accent-tint); color: var(--accent-ink); white-space: nowrap; }
+.sp-box > .fine { margin: auto 0 0; }
+.sp-price { background: var(--accent-tint); color: var(--ink); text-decoration: none; transition: box-shadow .45s var(--ease); }
+.sp-price:hover { box-shadow: var(--shadow); }
+.sp-price p { color: var(--ink-2); }
+.sp-price .ticks { margin: 4px 0 22px; }
+/* Ticks in dark mode: the tick's own colour is a dark teal, so it gets the light one (here and on every page) */
+:root[data-theme="dark"] .ticks li::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='%2379D8DF' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ticks li::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='%2379D8DF' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); } }
+.sp-price .ticks li::before { background-color: var(--card); }
+.sp-price .btn { margin-top: auto; align-self: flex-start; }
+.sp-price:hover .btn { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+@media (max-width: 760px) { .sp-two { grid-template-columns: 1fr; } .sp-box { padding: 24px 22px; } .sp-price .btn { width: 100%; } }
+
+/* Questions, the trademark note, and the other subjects at the same level */
+.sp-legal { margin: 18px 0 0; text-align: center; font-size: 14px; color: var(--muted); }
+.sp-chips { justify-content: center; max-width: 920px; margin: 0 auto 24px; }
+.sp-chips li { padding: 0; border: 0; background: var(--card); box-shadow: var(--shadow-sm); }
+.sp-chips a { display: block; padding: 7px 14px; border-radius: inherit; color: var(--ink-2); text-decoration: none; transition: color .2s; }
+.sp-chips a:hover { color: var(--accent); }
+
+/* The subjects page: every subject opens its own page */
+.subject-list li { padding: 0; align-items: center; transition: border-color .2s; }
+.subject-list li > a:first-child { flex: 1; min-width: 0; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 11px 14px; border-radius: inherit; color: inherit; text-decoration: none; }
+.subject-list li:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.subject-list li > a:first-child:hover span { color: var(--accent); }
+.subject-list li.open-now { flex-wrap: nowrap; }
+.subject-list li .open-tag { margin: 0 12px 0 0; flex: none; }
+
+/* Reduced motion wins over every reveal rule above: content sits in place from the start */
+@media (prefers-reduced-motion: reduce) { .js .reveal, .js .reveal.in { opacity: 1; transform: none; transition: none; } }

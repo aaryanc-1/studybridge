@@ -55,7 +55,8 @@ export default function SellingPage() {
           <li>Stripe → Developers → API keys: copy the Secret key.</li>
           <li>
             Stripe → Developers → Webhooks → Add endpoint: <span className="code-box" style={{ display: 'inline', padding: '2px 6px' }}>{`${api.profUrl?.() || 'your Supabase URL/functions/v1/prof'}?stripe=webhook`}</span>, events
-            checkout.session.completed, customer.subscription.updated and customer.subscription.deleted. Copy its signing secret.
+            checkout.session.completed, customer.subscription.updated, customer.subscription.deleted and invoice.paid. Copy its signing secret.
+            With these saved, students who pay with the Pay by card links (Admin → Students) are switched on by themselves.
           </li>
         </ol>
         <div className="grid g2" style={{ gap: 10 }}>

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{spName}} · {{brand}}</title>
+<meta name="description" content="{{spDescription}}">
+<meta name="theme-color" content="#0E6B6B">
+<link rel="icon" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-192.png">
+<link rel="stylesheet" href="site.css">
+<script>try{var t=localStorage.getItem('site.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<script type="application/ld+json">{{spJsonLd}}</script>
+</head>
+<body>
+<!-- One subject's page. scripts/build-website.mjs fills this in for every subject in site.config.json and publishes it
+     as subject-<catalogue key>.html. site.js asks the server whether students can start it now (open_subjects) and
+     shows either the free week or "Ask for this subject"; it also keeps the exam sessions up to date. -->
+<a class="skip" href="#main">Skip to the page</a>
+{{header}}
+
+<main id="main">
+  <section class="sp-hero">
+    <div class="wrap sp-grid">
+      <div class="sp-copy">
+        <a class="sp-back" href="subjects.html"><span aria-hidden="true">←</span> All subjects</a>
+        <span class="pill">{{spPill}}</span>
+        <h1>{{spH1}}</h1>
+        <p class="lead">{{spLead}}</p>
+      </div>
+      <aside class="sp-card" id="start" data-key="{{spKey}}" data-state="wait" aria-label="Start {{spShort}}">
+        <div class="sp-open" hidden>
+          <span class="status now">Open now</span>
+          <h2>Start your free week</h2>
+          <p>{{trialDays}} days free, no card needed. Then <span data-usd="{{studentMonth}}">${{studentMonth}}</span> a month, or an exam pass that lasts until your exams.</p>
+          <a class="btn primary big" href="{{app}}#start=student">Start your free week</a>
+          <p class="fine">Choose {{spShort}} as you sign up. Already have an account? <a href="{{app}}#start=signin">Sign in</a>.</p>
+        </div>
+        <div class="sp-ask">
+          <h2>Ask for this subject</h2>
+          <p>Leave your email and we’ll tell you when you can start {{spShort}} here. The subjects students ask for most open first.</p>
+          <form id="req-form" class="sp-form" novalidate data-done="Thank you! We’ll email you when you can start it.">
+            <input type="hidden" name="subject" value="{{spName}}">
+            <label>Your email<input type="email" name="email" placeholder="you@example.com" autocomplete="email" required></label>
+            <button class="btn primary" type="submit">Ask for it</button>
+          </form>
+          <p class="ea-msg" id="req-msg" role="status"></p>
+          <p class="fine" id="req-off" hidden>Write to <a href="mailto:{{contactEmail}}">{{contactEmail}}</a> and we’ll tell you when you can start it.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="sp-what">
+    <div class="wrap">
+      <h2 class="reveal">What you get for {{spShort}}</h2>
+      <p class="sub reveal">{{spWhatSub}}</p>
+      <div class="t-grid sp-feats{{spFeatClass}} reveal">{{spFeatures}}</div>
+    </div>
+  </section>
+
+  <section class="sp-when">
+    <div class="wrap sp-two">
+      <div class="sp-box reveal">
+        <h2 class="left">Next {{spBoard}} exam sessions</h2>
+        <ul class="sp-sessions" data-board="{{spBoardId}}">{{spSessions}}</ul>
+        <p class="fine">Session dates are approximate. Check your own exam timetable, or <a href="students.html#countdown">see how your weeks could be shaped</a>.</p>
+      </div>
+      <a class="sp-box sp-price reveal" href="pricing.html#students">
+        <span class="eyebrow left">Pricing</span>
+        <h2 class="left">Every subject, <span data-usd="{{studentMonth}}">${{studentMonth}}</span> a month</h2>
+        <p>Or an exam pass at <span data-usd="{{studentPass}}">${{studentPass}}</span> a month, paid once, until your exams. {{trialDays}} days free, and a parent can pay for their child.</p>
+        <ul class="ticks small"><li>Every subject at your level</li><li>Your plan to exam day</li><li>Lessons, practice papers and timed mocks</li><li>Hints and worked solutions</li><li>A free parent account for your family</li></ul>
+        <span class="btn">See student pricing</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="faq">
+    <div class="wrap narrow">
+      <h2 class="reveal">Questions about {{spShort}}</h2>
+      {{spFaq}}
+      <p class="sp-legal">Not affiliated with or endorsed by {{spOwner}}. {{brand}}’s {{spOwnWork}} are original.</p>
+    </div>
+  </section>
+
+  <section class="sp-more">
+    <div class="wrap">
+      <h2 class="reveal">{{spMoreTitle}}</h2>
+      <ul class="chips sp-chips reveal">{{spSiblings}}</ul>
+      <p class="center"><a class="btn" href="subjects.html">See all {{subjectCount}} subjects</a></p>
+    </div>
+  </section>
+</main>
+
+{{footer}}
+<script src="config.js"></script>
+<script src="site.js"></script>
+</body>
+</html>

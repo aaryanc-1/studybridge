@@ -213,7 +213,8 @@ export default function PdfViewer({ blob, source = null, size = 0, title, toolba
         <span className="grow" />
         {doc && (
           <>
-            <button className="tool" onClick={() => jump(Math.max(1, page - 1))} aria-label="Previous page">
+            {/* nothing before the first page or after the last: those buttons grey out */}
+            <button className="tool" onClick={() => jump(Math.max(1, page - 1))} disabled={Number(page) <= 1} aria-label="Previous page">
               <Icon name="up" size={18} />
             </button>
             <span className="small" style={{ minWidth: 70, textAlign: 'center' }}>
@@ -230,7 +231,7 @@ export default function PdfViewer({ blob, source = null, size = 0, title, toolba
               />{' '}
               / {doc.numPages}
             </span>
-            <button className="tool" onClick={() => jump(Math.min(doc.numPages, Number(page) + 1))} aria-label="Next page">
+            <button className="tool" onClick={() => jump(Math.min(doc.numPages, Number(page) + 1))} disabled={Number(page) >= doc.numPages} aria-label="Next page">
               <Icon name="down" size={18} />
             </button>
             <button className="tool" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))} aria-label="Zoom out">

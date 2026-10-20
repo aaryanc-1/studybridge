@@ -14,6 +14,19 @@ export async function startFakeClaude() {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     // stand-in Stripe and Resend (same server)
+    // a Payment Link's address, and how many of it were bought (the exam pass is bought by the month)
+    const plink = req.url.match(/^\/v1\/payment_links\/([^/?]+)/);
+    if (plink) {
+      outside.push({ url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ id: plink[1], url: `https://buy.stripe.com/${plink[1]}` }));
+    }
+    const items = req.url.match(/^\/v1\/checkout\/sessions\/([^/?]+)\/line_items/);
+    if (items) {
+      outside.push({ url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ data: [{ quantity: Number(items[1].split('_q')[1] || 1) }] }));
+    }
     if (req.url.startsWith('/v1/checkout/sessions') || req.url.startsWith('/v1/billing_portal/sessions') || req.url.startsWith('/emails')) {
       const raw = Buffer.concat(chunks).toString();
       outside.push({ url: req.url, auth: req.headers.authorization, body: req.url.startsWith('/emails') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw)) });

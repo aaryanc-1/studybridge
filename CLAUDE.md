@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (86)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (91)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -255,6 +255,31 @@ page" button and one `<main id="main-content">` in Shell, reduced motion everywh
 plays a 5-second logo animation once per session (layers in website/intro/ cut by `python scripts/make-intro.py`; timeline at the
 end of site.css; skip with any key/tap; off with reduced motion). CI keeps build files 1 day (`retention-days: 1`): 90 days had
 filled GitHub's 0.5 GB Actions storage.
+Ready for students (20 Oct 2026, Aaryan: "go for all"). Student emails go in `outgoing_emails` (Prof sends them via Resend,
+reply-to support@; never to test students): `_email_welcome` (from start_self_learner; the parent who made the code too),
+`_student_emails_tick` (pg_cron `studybridge-students` hourly: "your free week ends in 2 days" once, `profiles.trial_reminded`, reset
+by admin_extend_trial; not if paid) and `_email_all_set` (admin_set_student_paid and card payments); `_email_student` writes one to
+the student and one to each linked parent. Card payments record themselves: Prof's stripeWebhook, for checkout.session.completed
+with client_reference_id and a payment_link, looks the link up (`payment_links/<id>` url vs app_config pay links) and, for the exam
+pass, the quantity (`checkout/sessions/<id>/line_items`), then `_student_paid_by_card` (service only; pass for enough months to
+the exams = exam_date + 60 days, else the months bought; monthly = +1 month, `profiles.stripe_student_sub`); invoice.paid with
+billing_reason subscription_cycle → `_student_renewed`. The webhook needs invoice.paid too (Admin → Selling says so). The
+button sweep (test/sweep.mjs) also presses buttons inside pop-ups (`insidePopup`), fails the walkthrough when anything breaks,
+and runs as its own CI job `sweep` (SWEEP=1 node test/product.mjs); the release waits for it. Blocked notifications explain how to
+allow them; the PDF viewer's page buttons grey out at the first and last page.
+Daily study reminder (same update): learners switch it on in Settings (time, default 17:00; `set_study_reminder`,
+`profiles.remind_on/remind_time/reminded_on`); pg_cron `studybridge-reminders` every 10 min runs `_study_reminders()` (their own
+clock reached the time, not reminded today, no `activity` today, and not a student whose free week is over unpaid) →
+`notify_user(..., 'study_reminder', ...)` (in-app + ntfy) and one web push per device (`push_subscriptions` → `push_outbox`, then
+`_prof_kick`). Prof's `sendPushes()` sends payload-free web pushes with VAPID (`vapidKeys()` makes the key pair itself the first
+time: `app_config.vapid_public`, `platform_secrets.vapid_private`; action `push_key`; WebCrypto only), drops a device on 404/410,
+and only posts to the big browsers' push services. public/sw.js shows "Time for StudyBridge" on a push. In a browser Shell.jsx
+doesn't also pop the in-page notification for 'study_reminder'. Website (same update): a page per catalogue subject
+(`subject-<board>-<level>-<code>.html` from `website/partials/subject-page.html`, `subjectPages()` in build-website.mjs; its call
+to action asks `open_subjects()`: free week if open, else "Ask for this subject"), sitemap.xml, robots.txt (no /app/), canonical +
+og/twitter tags added to every page by the build, share.png (1200×630) from `python scripts/make-share.py`. Student buttons on
+students.html, index.html and the countdown show "Start your free week" once any subject is open (`data-students="open"`), the
+early-access ones until then (`data-students="closed"`). Submit https://gostudybridge.com/sitemap.xml to Google Search Console.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

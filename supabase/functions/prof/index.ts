@@ -1502,6 +1502,14 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     if (!r.ok) throw new Error(data?.error?.message || `Stripe error ${r.status}`);
     return data;
   }
+  async function stripeGet(secret, path) {
+    const r = await fetch(`${STRIPE}/v1/${path}`, { headers: { authorization: `Bearer ${secret}` } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data?.error?.message || `Stripe error ${r.status}`);
+    return data;
+  }
+  // "https://buy.stripe.com/abc?x=1" and "https://buy.stripe.com/abc/" are the same link
+  const sameLink = (a, b) => !!a && !!b && String(a).split('?')[0].replace(/\/+$/, '') === String(b).split('?')[0].replace(/\/+$/, '');
   const safeReturn = (u) => {
     try {
       const x = new URL(String(u || ''));
@@ -1565,6 +1573,28 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     const o = ev?.data?.object || {};
     const m = o.metadata || {};
     const when = o.current_period_end ? new Date(o.current_period_end * 1000).toISOString() : null;
+    // A student paying through the Owner's Pay by card links (the app adds their account as client_reference_id):
+    // recorded straight away, so the Owner doesn't have to. Which link it was (monthly or exam pass) comes from Stripe;
+    // an exam pass is bought by the month (the quantity). Renewals of a monthly card subscription add a month.
+    if (ev.type === 'checkout.session.completed' && !m.tutor && o.client_reference_id && o.payment_link && o.payment_status !== 'unpaid') {
+      const links = (await rest('app_config?id=eq.1&select=pay_link_monthly,pay_link_pass'))[0] || {};
+      const pl = await stripeGet(cfg.stripe_secret, `payment_links/${encodeURIComponent(o.payment_link)}`);
+      const plan = sameLink(pl.url, links.pay_link_pass) ? 'pass' : sameLink(pl.url, links.pay_link_monthly) ? 'monthly' : null;
+      if (plan) {
+        const items = plan === 'pass' ? await stripeGet(cfg.stripe_secret, `checkout/sessions/${encodeURIComponent(o.id)}/line_items?limit=1`) : null;
+        await rpc('_student_paid_by_card', {
+          p_user: o.client_reference_id,
+          p_plan: plan,
+          p_months: Math.max(1, Number(items?.data?.[0]?.quantity || 1)),
+          p_subscription: o.subscription || null,
+        });
+      }
+      return json({ received: true });
+    }
+    if (ev.type === 'invoice.paid' && o.subscription && o.billing_reason === 'subscription_cycle') {
+      await rpc('_student_renewed', { p_subscription: o.subscription });
+      return json({ received: true });
+    }
     if (ev.type === 'checkout.session.completed' && m.tutor) {
       await rpc('_set_paid_plan', { p_tutor: m.tutor, p_plan: m.plan, p_period: m.period, p_customer: o.customer || null, p_renews: null });
     } else if (ev.type === 'customer.subscription.updated' && m.tutor) {
@@ -1596,6 +1626,66 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       } catch (e) {
         await rest(`outgoing_emails?id=eq.${m.id}`, { method: 'PATCH', body: { tries: (m.tries || 0) + 1, error: String(e.message || e).slice(0, 300) } }).catch(() => {});
       }
+    }
+    return sent;
+  }
+
+  // ---------------- daily study reminders as browser notifications (web push) ----------------
+  // The database queues one push per device. A push carries no message, so nothing needs encrypting: the
+  // device's service worker shows StudyBridge's fixed reminder. Each push is signed with StudyBridge's own key
+  // pair (VAPID), which Prof makes the first time it's needed and keeps in the database (nobody pastes a key).
+  const b64url = (bytes) => b64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const jsonPart = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)));
+  let vapid = null;
+  async function vapidKeys() {
+    if (vapid) return vapid;
+    let k = await rpc('_push_keys', {});
+    if (!k?.public || !k?.private) {
+      const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+      const pub = b64url(new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)));
+      const priv = JSON.stringify(await crypto.subtle.exportKey('jwk', pair.privateKey));
+      k = await rpc('_push_keys', { p_public: pub, p_private: priv }); // if another call saved one first, that one is kept
+    }
+    const key = await crypto.subtle.importKey('jwk', JSON.parse(k.private), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+    vapid = { public: k.public, key };
+    return vapid;
+  }
+  // "vapid t=<a note signed with our key: for this push service, until 12 hours from now, from this address>, k=<our public key>"
+  async function vapidAuth(origin, contact) {
+    const v = await vapidKeys();
+    const unsigned = `${jsonPart({ typ: 'JWT', alg: 'ES256' })}.${jsonPart({ aud: origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: contact })}`;
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, v.key, new TextEncoder().encode(unsigned));
+    return `vapid t=${unsigned}.${b64url(new Uint8Array(sig))}, k=${v.public}`;
+  }
+  async function sendPushes() {
+    let sent = 0;
+    for (let round = 0; round < 5; round++) {
+      const batch = await rpc('_push_claim', { p_limit: 100 });
+      const items = batch?.pushes || [];
+      if (!items.length) break;
+      const signed = {}; // one signed note per push service
+      for (let i = 0; i < items.length; i += 10) {
+        await Promise.all(
+          items.slice(i, i + 10).map(async (p) => {
+            let status = 0;
+            let error = null;
+            try {
+              const origin = new URL(p.endpoint).origin;
+              signed[origin] ||= vapidAuth(origin, batch.contact);
+              // an empty push; TTL: the push service keeps it for up to 4 hours if the device is off
+              const res = await fetch(p.endpoint, { method: 'POST', headers: { authorization: await signed[origin], ttl: '14400' }, body: new Uint8Array(0), signal: AbortSignal.timeout(15000) });
+              status = res.status;
+              const text = await res.text().catch(() => '');
+              if (!res.ok) error = `Push service said ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`;
+            } catch (e) {
+              error = String(e.message || e);
+            }
+            if (status >= 200 && status < 300) sent++;
+            await rpc('_push_done', { p_id: p.id, p_status: status, p_error: error }).catch(() => {});
+          }),
+        );
+      }
+      if (items.length < 100) break;
     }
     return sent;
   }
@@ -1657,6 +1747,14 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
     const user = fromDb ? null : await whoIs(req).catch(() => null);
     if (!fromDb && !user) return json({ error: 'Not signed in.' }, 401);
     if (action === 'hello') return json({ ok: true, key_set: !!cfg.key, model: cfg.model });
+    // The app needs StudyBridge's public push key before a device can get study reminders (made here the first time)
+    if (action === 'push_key') {
+      try {
+        return json({ key: (await vapidKeys()).public });
+      } catch (e) {
+        return json({ error: `Reminders aren’t ready yet: ${e.message}` }, 500);
+      }
+    }
     if (action === 'cleanup') {
       if (!fromDb && !user.admin) return json({ error: 'Admins only.' }, 403);
       return json({ removed: await cleanup() });
@@ -1671,7 +1769,12 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
     }
     if (action === 'kick') {
       if (user && user.role !== 'tutor' && !user.admin) return json({ error: 'Tutors only.' }, 403);
-      const p = later(sendQueued().catch((e) => console.error('Prof email:', e)).then(() => work(cfg)));
+      const p = later(
+        sendQueued()
+          .catch((e) => console.error('Prof email:', e))
+          .then(() => sendPushes().catch((e) => console.error('Prof push:', e)))
+          .then(() => work(cfg)),
+      );
       if (p) await p;
       return json({ ok: true });
     }

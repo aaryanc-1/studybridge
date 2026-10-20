@@ -191,8 +191,9 @@ function PayLinks({ links, run, busy }) {
       <h2>Paying by card</h2>
       <div className="small muted">
         In Stripe, make two Payment Links: <b>Monthly</b> at ${PRICE.month} a month (repeating), and <b>Exam pass</b> at ${PRICE.passMonth} with “Let customers adjust
-        quantity” switched on (one for each month until their exams). Paste them here and students see “Pay by card” buttons. When Stripe emails you about a
-        payment, mark that student as paid below. The payment shows their StudyBridge account id as the client reference.
+        quantity” switched on (one for each month until their exams). Paste them here and students see “Pay by card” buttons. Once your Stripe key and webhook
+        are saved in Admin → Selling, a card payment switches the student on by itself (and they get a “you’re all set” email). Until then, when Stripe
+        emails you about a payment, mark that student as paid below: the payment shows their StudyBridge account id as the client reference.
       </div>
       <form
         className="stack sm"

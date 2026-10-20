@@ -218,6 +218,16 @@
       else if (exam && $('#cd-date').value) exam.value = $('#cd-date').value;
     });
   }
+  // A subject's page: its board's next exam sessions from today (the page was built on an earlier day), and how far away
+  $$('.sp-sessions[data-board]').forEach(function (ul) {
+    var b = boards.filter(function (x) { return x.id === ul.dataset.board; })[0];
+    if (!b) return;
+    var now = new Date();
+    ul.innerHTML = upcoming(b).slice(0, 3).map(function (s) {
+      var w = Math.max(0, Math.ceil((s.date - now) / (7 * DAY)));
+      return '<li><b>' + esc(s.label) + '</b><span>Starts about ' + s.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) + '</span><em>' + w + (w === 1 ? ' week' : ' weeks') + ' away</em></li>';
+    }).join('');
+  });
 
   // ---------- Prices: in the visitor's currency; tutors monthly or yearly, and what N learners cost ----------
   var levels = S.tutorLevels || [];
@@ -328,9 +338,20 @@
     fetch('release.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (rel) { if (rel) show(rel); }, function () {});
   }
 
-  // ---------- Subjects students can start now (marked on the subjects page) ----------
-  var subjectList = $('.all-boards');
-  if (subjectList && S.sb) {
+  // ---------- Subjects students can start now: marked on the subjects page; a subject's own page offers the free week ----------
+  var subjectList = $('.all-boards'), spCard = $('.sp-card[data-key]');
+  // a subject's page shows "Start your free week" when it's open, otherwise "Ask for this subject" (also when the
+  // server can't be reached); it switches to open if the answer comes after the wait
+  function spShow(state) {
+    if (!spCard || (state === 'ask' && spCard.dataset.state !== 'wait')) return;
+    spCard.dataset.state = state;
+    $('.sp-open', spCard).hidden = state !== 'open';
+    $('.sp-ask', spCard).hidden = state === 'open';
+  }
+  if (spCard) setTimeout(function () { spShow('ask'); }, 4000);
+  // Pages with student buttons show "Start your free week" once a subject is open, otherwise the early-access ones
+  var studentBits = document.querySelectorAll('[data-students]');
+  if (studentBits.length && S.sb) {
     fetch(S.sb.url + '/rest/v1/rpc/open_subjects', {
       method: 'POST',
       headers: { apikey: S.sb.key, Authorization: 'Bearer ' + S.sb.key, 'Content-Type': 'application/json' },
@@ -338,7 +359,21 @@
     })
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (keys) {
-        if (!Array.isArray(keys) || !keys.length) return;
+        var open = Array.isArray(keys) && keys.length > 0;
+        studentBits.forEach(function (el) { el.hidden = el.getAttribute('data-students') !== (open ? 'open' : 'closed'); });
+      }, function () {});
+  }
+  if ((subjectList || spCard) && S.sb) {
+    fetch(S.sb.url + '/rest/v1/rpc/open_subjects', {
+      method: 'POST',
+      headers: { apikey: S.sb.key, Authorization: 'Bearer ' + S.sb.key, 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (keys) {
+        if (!Array.isArray(keys)) keys = [];
+        if (spCard) spShow(keys.indexOf(spCard.dataset.key) !== -1 ? 'open' : 'ask');
+        if (!subjectList || !keys.length) return;
         var n = 0;
         keys.forEach(function (k) {
           var li = subjectList.querySelector('li[data-key="' + k.replace(/"/g, '') + '"]');
@@ -356,8 +391,8 @@
           note.hidden = false;
           note.querySelector('b').textContent = n + (n === 1 ? ' subject is' : ' subjects are');
         }
-      }, function () {});
-  }
+      }, function () { spShow('ask'); });
+  } else spShow('ask');
 
   // ---------- Early access (and subject requests) ----------
   function join(fields) {
@@ -436,8 +471,12 @@
     });
   }
 
+  // Ask for a subject: on the subjects page (any subject) and on a subject's own page (that one, filled in)
   var req = $('#req-form');
-  if (req && !S.sb) req.hidden = true;
+  if (req && !S.sb) {
+    req.hidden = true;
+    if ($('#req-off')) $('#req-off').hidden = false;
+  }
   if (req && S.sb) {
     req.addEventListener('submit', function (e) {
       e.preventDefault();
@@ -447,7 +486,7 @@
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(f.email.value.trim())) { msg.className = 'ea-msg bad'; msg.textContent = 'Please check your email address.'; f.email.focus(); return; }
       msg.textContent = 'Sending…';
       join({ p_email: f.email.value, p_role: 'student', p_note: 'Subject request: ' + f.subject.value.trim() })
-        .then(function () { req.reset(); msg.textContent = 'Thanks! We’ve noted it, and we’ll email you when it’s ready.'; },
+        .then(function () { req.reset(); msg.textContent = req.dataset.done || 'Thanks! We’ve noted it, and we’ll email you when it’s ready.'; },
           function (err) { msg.className = 'ea-msg bad'; msg.textContent = err.message; });
     });
   }

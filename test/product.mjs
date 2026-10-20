@@ -1122,6 +1122,33 @@ try {
   assert.match(D.url(), /#\/assignments/);
   await D.close();
 
+  // SWEEP=1: every screen and button, for each kind of account (test/sweep.mjs); the report goes next to the screenshots
+  if (process.env.SWEEP) {
+    step('The button sweep: every screen and every button, for each kind of account');
+    const { sweep, signIn, writeReport } = await import('./sweep.mjs');
+    const reports = [];
+    for (const [who, email, phone] of [
+      ['Tutor', 'aaryan@example.com'],
+      ['Learner with a tutor', 'anaya@example.com'],
+      ['Parent', 'dad@example.com'],
+      ['Student on their own', 'tendai@example.com'],
+      ['Parent of a student on their own', 'chipo@example.com'],
+      ['Admin', 'aaryan+admin@example.com'],
+      ['Content account', 'content@example.com'],
+      ['Student on their own, on a phone', 'tendai@example.com', true],
+      ['Parent, on a phone', 'dad@example.com', true],
+    ]) {
+      const pg = await (await browser.newContext(phone ? { viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true } : { viewport: { width: 1300, height: 860 } })).newPage();
+      await signIn(pg, web.url, email);
+      reports.push(await sweep(pg, who));
+      console.log(`  ${who}: ${reports.at(-1).routes.length} screens, ${reports.at(-1).clicked} buttons, ${reports.at(-1).inPopups} in pop-ups, ${reports.at(-1).failures.length} broke`);
+      await pg.context().close();
+    }
+    console.log(writeReport(reports, SHOTS));
+    const broke = reports.flatMap((r) => r.failures.map((f) => `${r.who} · ${f.where}: ${f.what} ${(f.errors || []).join(' / ').slice(0, 200)}`));
+    if (broke.length) throw new Error('The button sweep found something broken:\n' + broke.join('\n'));
+  }
+
   if (errors.length) throw new Error('Errors in the page:\n' + errors.join('\n'));
   console.log('\nProduct walkthrough passed.');
 } catch (e) {

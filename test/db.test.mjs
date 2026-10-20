@@ -2025,3 +2025,152 @@ test('launch 1: the starting check, exam conditions, parents for young students,
   // the website: which subjects students can start now
   assert.deepEqual(await val(null, `select open_subjects()`), ['cambridge:igcse:0607']);
 });
+
+test('emails to students on their own and their parents: welcome, the free week ending, you’re all set', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  const mails = async (to) => (await db.query(`select subject, body, reply_to from outgoing_emails where to_addr = $1 order by created_at`, [to])).rows;
+  await mk('S5', 'ruth@x.com');
+  await mk('PR', 'ruthsmum@x.com');
+  // a parent sets up a young student: both get a welcome
+  await one('PR', `select * from start_parent('Ruth''s mum')`);
+  const code = (await val('PR', `select parent_child_code('Ruth', 7)`)).code;
+  await one('S5', `select * from start_self_learner('Ruth Banda', 7, 'Zambia', 'UTC', $1)`, [code]);
+  const [w] = await mails('ruth@x.com');
+  assert.equal(w.subject, 'Welcome to StudyBridge, Ruth!');
+  assert.match(w.body, /free week has started/);
+  assert.match(w.body, /https:\/\/gostudybridge\.com\/app\//);
+  assert.equal(w.reply_to, 'support@gostudybridge.com', 'replies reach support@');
+  assert.equal((await mails('ruthsmum@x.com'))[0].subject, 'Ruth has started StudyBridge');
+  // no email to the Owner's test students
+  assert.equal((await mails('owner+student@x.com')).length, 0);
+  // two days before the free week ends: once, to the student and the parent
+  await db.query(`update profiles set trial_until = now() + interval '36 hours' where id = $1`, [U.S5]);
+  assert.ok((await val(null, `select 1`)) === 1);
+  await db.query(`select public._student_emails_tick()`);
+  await db.query(`select public._student_emails_tick()`);
+  assert.deepEqual((await mails('ruth@x.com')).map((m) => m.subject), ['Welcome to StudyBridge, Ruth!', 'Your free week ends in 2 days']);
+  assert.equal((await mails('ruthsmum@x.com')).at(-1).subject, 'Ruth\'s free week ends in 2 days');
+  // a new free week from the Owner: a new reminder when that one ends
+  await as('A', `select admin_extend_trial($1, 7)`, [U.S5]);
+  assert.equal((await one('S5', `select trial_reminded from profiles where id = auth.uid()`)).trial_reminded, false);
+  // the Owner records a payment: "you're all set" to both
+  await as('A', `select admin_set_student_paid($1, 'monthly', current_date + 30)`, [U.S5]);
+  assert.equal((await mails('ruth@x.com')).at(-1).subject, 'You\'re all set');
+  assert.match((await mails('ruthsmum@x.com')).at(-1).body, /monthly plan is active until/);
+  // paid students get no "ends in 2 days"
+  await db.query(`update profiles set trial_until = now() + interval '30 hours', trial_reminded = false where id = $1`, [U.S5]);
+  const before = (await mails('ruth@x.com')).length;
+  await db.query(`select public._student_emails_tick()`);
+  assert.equal((await mails('ruth@x.com')).length, before);
+  // only the server sends these
+  await fails(as('S5', `select public._student_emails_tick()`), /permission denied/);
+  await fails(as('S5', `select public._student_paid_by_card($1, 'pass', 12)`, [U.S5]), /permission denied/);
+});
+
+test('daily study reminder: once a day at the learner’s own time in their own time zone, never after studying that day; devices only through their own functions', async () => {
+  for (const k of ['RA', 'RB', 'RC']) U[k] = (await db.query(`insert into auth.users (email) values ($1) returning id`, [`${k.toLowerCase()}.remind@x.com`])).rows[0].id;
+  // RA in Lusaka (2 hours ahead of UTC all year), RB in New York (5 hours behind in January); RC has no role
+  await db.query(`update profiles set role = 'learner', timezone = 'Africa/Lusaka' where id = $1`, [U.RA]);
+  await db.query(`update profiles set role = 'learner', timezone = 'America/New_York' where id = $1`, [U.RB]);
+  const first = await val('RA', `select my_study_reminder(null)`);
+  assert.deepEqual([first.on, first.time, first.timezone, first.devices, first.this_device], [false, '17:00', 'Africa/Lusaka', 0, false], 'off at first, 17:00');
+  await fails(as('T', `select set_study_reminder(true, '17:00')`), /for learners/);
+  await fails(as('RC', `select set_study_reminder(true, '17:00')`), /for learners/);
+  await fails(as('RA', `select set_study_reminder(true, '5pm')`), /like 17:00/);
+  await fails(as('RA', `select set_study_reminder(true, '24:00')`), /like 17:00/);
+  // switched on after today's time has gone by (00:00 always has): the first one is tomorrow
+  assert.equal((await val('RA', `select set_study_reminder(true, '00:00')`)).today_done, true);
+  const on = await val('RA', `select set_study_reminder(true, '18:30')`);
+  assert.deepEqual([on.on, on.time], [true, '18:30']);
+  await as('RB', `select set_study_reminder(true, '20:00')`);
+  // only through the functions; the every-10-minutes job is the server's
+  await fails(as('RA', `update profiles set remind_on = false, reminded_on = null where id = auth.uid()`), /permission denied/);
+  await fails(as('RA', `select _study_reminders()`), /permission denied/);
+
+  // the job, run for a fixed winter day, from a clean slate
+  await db.query(`update profiles set reminded_on = null where id = any($1)`, [[U.RA, U.RB]]);
+  const run = async (at) => Number((await db.query(`select _study_reminders($1::timestamptz) n`, [at])).rows[0].n);
+  const nudges = async (k) => Number((await db.query(`select count(*) n from notifications where user_id = $1 and kind = 'study_reminder' and ref = '{}'`, [U[k]])).rows[0].n);
+  assert.equal(await run('2031-01-15 16:20Z'), 0, '18:20 in Lusaka, 11:20 in New York: too early for both');
+  assert.equal(await run('2031-01-15 16:30Z'), 1, '18:30 in Lusaka');
+  assert.deepEqual([await nudges('RA'), await nudges('RB')], [1, 0]);
+  const n1 = await one('RA', `select title, body from notifications where user_id = auth.uid() and kind = 'study_reminder'`);
+  assert.equal(`${n1.title}: ${n1.body}`, 'Time for StudyBridge: A few minutes today keeps your streak going.');
+  assert.equal(await val('RA', `select reminded_on::text from profiles where id = auth.uid()`), '2031-01-15');
+  assert.equal(await run('2031-01-15 21:00Z'), 0, 'once a day');
+  assert.equal(await run('2031-01-16 00:30Z'), 0, '19:30 in New York; already the 16th in Lusaka, but not 18:30 yet');
+  assert.equal(await run('2031-01-16 01:05Z'), 1, '20:05 in New York, still the 15th there');
+  assert.equal(await val('RB', `select reminded_on::text from profiles where id = auth.uid()`), '2031-01-15', 'the learner’s own day');
+  // studied that day (their own day): no nudge
+  await db.query(`insert into activity (learner_id, tutor_id, kind, seconds, day) values ($1, $2, 'session', 300, '2031-01-16')`, [U.RA, U.T]);
+  assert.equal(await run('2031-01-16 17:00Z'), 0, 'RA studied on the 16th');
+  assert.equal(await run('2031-01-17 16:40Z'), 1, 'but not on the 17th');
+  assert.equal(await nudges('RA'), 2);
+
+  // devices: only the browsers' push services, and each person's own
+  const ep = 'https://fcm.googleapis.com/fcm/send/remind-ra-1';
+  const apple = 'https://web.push.apple.com/QGx-remind-ra';
+  for (const bad of ['https://example.com/push/1', 'http://fcm.googleapis.com/fcm/send/x', 'https://fcm.googleapis.com.evil.example/x']) {
+    await fails(as('RA', `select save_push_subscription($1, 'k', 'a')`, [bad]), /can’t be used/);
+  }
+  await fails(as('T', `select save_push_subscription($1, 'k', 'a')`, [ep]), /for learners/);
+  assert.equal((await val('RA', `select save_push_subscription($1, 'p256-ra', 'auth-ra')`, [ep])).devices, 1);
+  assert.equal((await val('RA', `select save_push_subscription($1, 'p256-ra', 'auth-ra')`, [ep])).devices, 1, 'saving again changes nothing');
+  assert.equal((await val('RA', `select save_push_subscription($1, 'p256-ra2', 'auth-ra2')`, [apple])).devices, 2);
+  assert.equal((await val('RA', `select my_study_reminder($1)`, [ep])).this_device, true);
+  assert.equal((await val('RB', `select my_study_reminder($1)`, [ep])).this_device, false);
+  await fails(as('RA', `select * from push_subscriptions`), /permission denied/);
+  await fails(as('RA', `insert into push_subscriptions (user_id, endpoint) values (auth.uid(), 'https://fcm.googleapis.com/x')`), /permission denied/);
+  await fails(as('RA', `select * from push_outbox`), /permission denied/);
+  // someone who only knows the address can't take it over or remove it
+  const owner = async (e) => (await db.query(`select user_id from push_subscriptions where endpoint = $1`, [e])).rows[0]?.user_id;
+  await fails(as('RB', `select save_push_subscription($1, 'p', 'not-the-same-secret')`, [ep]), /can’t be used/);
+  await as('RB', `select remove_push_subscription($1)`, [ep]);
+  assert.equal(await owner(ep), U.RA);
+  // the same browser (same secret) on a shared computer: whoever switched it on there last
+  await as('RB', `select save_push_subscription($1, 'p256-ra', 'auth-ra')`, [ep]);
+  assert.equal(await owner(ep), U.RB);
+  await as('RA', `select save_push_subscription($1, 'p256-ra', 'auth-ra')`, [ep]);
+  assert.equal(await owner(ep), U.RA);
+
+  // a reminder queues a push for each device; "Send me a test" does everything a reminder does, then waits a moment
+  const queued = async () => Number((await db.query(`select count(*) n from push_outbox o join push_subscriptions s on s.id = o.subscription_id where s.user_id = $1 and o.sent_at is null`, [U.RA])).rows[0].n);
+  assert.equal(await run('2031-01-18 16:40Z'), 1);
+  assert.equal(await queued(), 2, 'one push for each of RA’s devices');
+  assert.equal((await val('RA', `select send_test_reminder()`)).devices, 2);
+  await fails(as('RA', `select send_test_reminder()`), /on its way/);
+  await fails(as('T', `select send_test_reminder()`), /for learners/);
+  assert.equal(await queued(), 4);
+
+  // Prof's side: the key pair (the first one saved is kept; the app reads only the public half)
+  assert.equal(await val('RA', `select push_key()`), null);
+  await fails(as('RA', `select _push_keys('x', 'y')`), /permission denied/);
+  await fails(as('RA', `select _push_claim(10)`), /permission denied/);
+  await fails(as('RA', `select _push_done(1, 201)`), /permission denied/);
+  assert.equal((await db.query(`select _push_keys('PUB-1', '{"d":"one"}') v`)).rows[0].v.public, 'PUB-1');
+  assert.deepEqual((await db.query(`select _push_keys('PUB-2', '{"d":"two"}') v`)).rows[0].v, { public: 'PUB-1', private: '{"d":"one"}' });
+  assert.equal(await val('RA', `select push_key()`), 'PUB-1');
+  await fails(as('RA', `select vapid_private from platform_secrets`), /permission denied/);
+  // each waiting push is handed out once; sent, tried again later, or the device forgotten when its push service says it's gone
+  const claim = async () => (await db.query(`select _push_claim(100) v`)).rows[0].v;
+  const c = await claim();
+  assert.equal(c.contact, 'mailto:support@gostudybridge.com');
+  assert.equal(c.pushes.length, 4);
+  assert.equal((await claim()).pushes.length, 0, 'not handed out twice');
+  const [sent, slow] = c.pushes.filter((p) => p.endpoint === ep);
+  await db.query(`select _push_done($1, 201)`, [sent.id]);
+  await db.query(`select _push_done($1, 429, 'Too many requests')`, [slow.id]);
+  await db.query(`select _push_done($1, 410)`, [c.pushes.find((p) => p.endpoint === apple).id]);
+  assert.equal(await owner(apple), undefined, '410: that device is forgotten');
+  assert.equal((await db.query(`select sent_at is not null s from push_outbox where id = $1`, [sent.id])).rows[0].s, true);
+  assert.equal((await db.query(`select error from push_outbox where id = $1`, [slow.id])).rows[0].error, 'Too many requests');
+  assert.deepEqual((await claim()).pushes.map((p) => p.id), [slow.id], 'a failed one is tried again');
+
+  // off: no reminders, and the devices are forgotten
+  const off = await val('RA', `select set_study_reminder(false, null)`);
+  assert.deepEqual([off.on, off.time, off.devices], [false, '18:30', 0]);
+  assert.equal(await run('2031-01-19 16:40Z'), 0);
+});

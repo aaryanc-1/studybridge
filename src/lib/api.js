@@ -304,6 +304,16 @@ export const parentCancelChildCode = (id) => run(sb().rpc('parent_cancel_child_c
 export const parentDeleteChild = (learnerId, confirm) => run(sb().rpc('parent_delete_child', { p_learner: learnerId, p_confirm: confirm }));
 export const selfParentInvite = (name) => run(sb().rpc('self_parent_invite', { p_name: name || null }));
 export const adminSetTestEmails = (emails) => run(sb().rpc('admin_set_test_emails', { p_emails: emails }));
+// Daily study reminder (learners): the time, and this device's browser notifications (web push)
+export const myStudyReminder = (endpoint = null) => run(sb().rpc('my_study_reminder', { p_endpoint: endpoint }));
+export const setStudyReminder = (on, time) => run(sb().rpc('set_study_reminder', { p_on: on, p_time: time || null }));
+export const savePushSubscription = (s) => run(sb().rpc('save_push_subscription', { p_endpoint: s.endpoint, p_p256dh: s.keys?.p256dh || null, p_auth: s.keys?.auth || null }));
+export const sendTestReminder = () => run(sb().rpc('send_test_reminder'));
+// StudyBridge's public push key; Prof makes it the first time anyone needs it
+export async function pushKey() {
+  const k = await run(sb().rpc('push_key'));
+  return k || (await callProf('push_key'))?.key || null;
+}
 export const selfSetup = (o) =>
   run(sb().rpc('self_setup', { p_board: o.board, p_level: o.level, p_subjects: o.subjects, p_exam_date: o.examDate, p_exam_label: o.examLabel || null, p_hours: o.hours }));
 export const setSubjectLive = (id, live) => run(sb().from('subjects').update({ live }).eq('id', id));

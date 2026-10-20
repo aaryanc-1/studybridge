@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{brand}}: learning that gets you exam-ready</title>
 <meta name="description" content="{{brand}} brings everything for exams together: a plan for the weeks you have, lessons, practice papers, timed mocks and marking for IGCSE, A-Level and IB. For students, tutors, parents and schools.">
-<meta property="og:title" content="{{brand}}">
-<meta property="og:description" content="{{tagline}}">
-<meta property="og:image" content="{{siteUrl}}logo-512.png">
 <meta name="theme-color" content="#0E6B6B">
 <link rel="icon" href="favicon.png">
 <link rel="apple-touch-icon" href="logo-192.png">
@@ -160,9 +157,10 @@
     <div class="wrap">
       <div class="final-box reveal">
         <h2>Ready when you are.</h2>
-        <p>Students can join early access today. Tutors can try it free for {{trialDays}} days.</p>
+        <p><span data-students="open" hidden>Students and tutors can try it free for {{trialDays}} days.</span><span data-students="closed">Students can join early access today. Tutors can try it free for {{trialDays}} days.</span></p>
         <div class="cta center">
-          <a class="btn big on-dark-primary" href="students.html#early">Get early access</a>
+          <a class="btn big on-dark-primary" href="{{app}}#start=student" data-students="open" hidden>Start your free week</a>
+          <a class="btn big on-dark-primary" href="students.html#early" data-students="closed">Get early access</a>
           <a class="btn big on-dark" href="{{app}}#start=tutor">Try it free as a tutor</a>
         </div>
       </div>
