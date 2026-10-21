@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld('studybridge', {
   ...info,
   focus: () => ipcRenderer.invoke('app:focus'),
   restart: () => ipcRenderer.invoke('app:restart'),
+  // "Continue with Google": signs in through the normal browser and comes back here
+  google: {
+    redirect: () => ipcRenderer.invoke('auth:redirect'),
+    signIn: (url) => ipcRenderer.invoke('auth:google', url),
+  },
   setBadge: (n) => ipcRenderer.invoke('app:badge', n),
   keepInBackground: (on) => ipcRenderer.invoke('app:background', on),
   askMedia: () => ipcRenderer.invoke('media:ask'),

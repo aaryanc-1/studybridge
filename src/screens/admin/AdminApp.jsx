@@ -6,23 +6,19 @@ import * as api from '../../lib/api.js';
 import Shell from '../shared/Shell.jsx';
 import { LookupsProvider } from '../shared/lookups.jsx';
 import Settings from '../shared/Settings.jsx';
-import { TutorsPage, SharedBankPage, PlatformPage, LogPage } from './Admin.jsx';
+import { TutorsPage, PlatformPage, LogPage } from './Admin.jsx';
 import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPage } from './AdminPages.jsx';
-import PapersAdmin from './PapersAdmin.jsx';
 import SellingPage from './Selling.jsx';
 import StudentsPage from './Students.jsx';
 import ContentPage from './Content.jsx';
-import { useProfJobs } from '../tutor/Prof.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
-  if (n.kind === 'prof' && r.bank) return '/bank';
   if (n.kind === 'tutor_signup') return '/tutors';
   if (n.kind === 'prof_limit' && r.user_id) return `/tutors/${r.user_id}`;
-  if (n.kind === 'prof_credit') return '/prof';
+  if (n.kind === 'prof_credit' || n.kind === 'prof') return '/prof';
   if (n.kind === 'problem') return '/problems';
   if (n.kind === 'feedback') return '/inbox';
-  if (n.kind === 'prof' && r.paper_id) return '/papers';
   if (n.kind === 'content_report' || n.kind === 'content_check') return '/content';
   return '/';
 }
@@ -30,13 +26,11 @@ function notificationTarget(n) {
 export default function AdminApp() {
   const route = useRoute();
   const tutors = useQuery('admin-tutors', api.adminTutors, { poll: 60000 });
-  const bank = useQuery('bank', api.listBank, { poll: 120000 });
   const overview = useQuery('admin-overview', api.adminOverview, { poll: 60000 });
+  // StudyBridge's own content (for students on their own and for tutors): what needs the Owner
   const content = useQuery('admin-content', api.adminContentReview, { poll: 120000 }).data;
   const contentOpen = content ? content.questions.length + content.lessons.length + content.reports.length : 0;
-  useProfJobs(); // keeps Prof's shared-question jobs moving
   const waiting = (tutors.data || []).filter((t) => t.status === 'pending').length;
-  const toReview = (bank.data || []).filter((b) => b.owner_id === null && b.status === 'review').length;
   const o = overview.data || {};
   const nav = [
     { to: '/', label: 'Overview', icon: 'home' },
@@ -47,8 +41,6 @@ export default function AdminApp() {
     { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
     { to: '/prof', label: 'Prof', icon: 'cap', tone: 'claude' },
     { to: '/announcements', label: 'Announcements', icon: 'send' },
-    { to: '/papers', label: 'StudyBridge papers', icon: 'clipboard' },
-    { to: '/bank', label: 'StudyBridge questions', icon: 'cap', count: toReview, tone: 'claude' },
     { to: '/platform', label: 'StudyBridge settings', icon: 'shield' },
     { to: '/selling', label: 'Selling', icon: 'star' },
     { to: '/log', label: 'What’s been done', icon: 'file' },
@@ -64,8 +56,6 @@ export default function AdminApp() {
   else if (a === 'problems') page = <ProblemsPage />;
   else if (a === 'announcements') page = <AnnouncementsPage />;
   else if (a === 'prof') page = <ProfPage />;
-  else if (a === 'papers') page = <PapersAdmin />;
-  else if (a === 'bank') page = <SharedBankPage />;
   else if (a === 'platform') page = <PlatformPage />;
   else if (a === 'selling') page = <SellingPage />;
   else if (a === 'log') page = <LogPage />;

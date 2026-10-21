@@ -1,7 +1,8 @@
 // Admin → Content: StudyBridge's own lessons and questions that need the Owner. Questions whose second check
 // disagreed or that failed the plain checks wait here; students' reports come here too (the item stays up for
 // students until the Owner sorts it, so nobody thinks it was fixed when it wasn't). "Browse everything" lists all
-// of StudyBridge's own content, by subject, to search, hide, approve or remove.
+// of StudyBridge's own content, by subject, to search, hide, approve or remove. It's the one StudyBridge library:
+// students on their own get all of it, tutors its checked practice questions and practice papers.
 import { useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Loading, Markdown, Page, Seg, go, useConfirm, useDebounced, useRoute, useToast } from '../../ui/kit.jsx';
@@ -314,7 +315,7 @@ export default function ContentPage() {
       title="Content"
       subtitle={
         tab === 'browse'
-          ? 'Everything StudyBridge has made for students: practice questions, lessons, flashcards and practice papers.'
+          ? 'Everything StudyBridge has made: practice questions, lessons, flashcards and practice papers. Students on their own get it all; tutors get the practice questions and papers for their subjects’ exams.'
           : 'StudyBridge’s own lessons and questions that need you: what students reported, and anything that didn’t pass its checks.'
       }
     >

@@ -44,7 +44,39 @@ export const changePassword = (password) => run(sb().auth.updateUser({ password 
 export const WEB_APP = 'https://gostudybridge.com/app/';
 const webHome = () => (typeof location !== 'undefined' && location.protocol.startsWith('http') && !window.studybridge ? location.origin + location.pathname : WEB_APP);
 export const sendPasswordReset = (email) => run(sb().auth.resetPasswordForEmail(email.trim(), { redirectTo: webHome() }));
-export const signInWithGoogle = () => run(sb().auth.signInWithOAuth({ provider: 'google', options: { redirectTo: webHome() } }));
+// "Continue with Google". On the web the page goes to Google and comes back signed in (sessionFromLink). In the
+// desktop app Google opens in the normal browser and the sign-in comes back to the app (electron/main.cjs).
+export async function signInWithGoogle() {
+  const g = window.studybridge?.google;
+  if (!g) return run(sb().auth.signInWithOAuth({ provider: 'google', options: { redirectTo: webHome() } }));
+  const d = await run(sb().auth.signInWithOAuth({ provider: 'google', options: { redirectTo: await g.redirect(), skipBrowserRedirect: true } }));
+  const r = await g.signIn(d.url);
+  if (r?.error) throw new Error(r.error);
+  const s = await run(sb().auth.setSession({ access_token: r.access_token, refresh_token: r.refresh_token }));
+  return { user: s.user };
+}
+// Is Google switched on in Supabase itself (Admin → Selling shows it)?
+export async function googleReady() {
+  const s = getServer();
+  const r = await fetch(`${s.url}/auth/v1/settings`, { headers: { apikey: s.key } });
+  return !!(await r.json())?.external?.google;
+}
+// What a new account will be, kept while the page is away at Google (who they said they are, a grade, a code)
+const SETUP = 'sb.pendingSetup';
+export function savePendingSetup(o) {
+  try {
+    localStorage.setItem(SETUP, JSON.stringify({ ...o, at: Date.now() }));
+  } catch {}
+}
+export function takePendingSetup() {
+  try {
+    const o = JSON.parse(localStorage.getItem(SETUP) || 'null');
+    localStorage.removeItem(SETUP);
+    return o && Date.now() - o.at < 30 * 60 * 1000 ? o : null;
+  } catch {
+    return null;
+  }
+}
 // After a link in an email (password reset) or Google sign-in: the sign-in arrives in the address
 export async function sessionFromLink() {
   const h = typeof location !== 'undefined' ? location.hash || '' : '';
@@ -702,35 +734,11 @@ export async function calendarLink(reset = false) {
   const s = getServer();
   return s && token ? `${s.url}/functions/v1/prof?calendar=${token}` : null;
 }
-// ---------------- StudyBridge practice papers ----------------
-export const adminPapers = () => run(sb().rpc('admin_papers'));
-export const adminPaperPlan = (board, codes, labels) => run(sb().rpc('admin_paper_plan', { p_board: board, p_codes: codes, p_labels: labels })).then((r) => (callProf().catch(() => {}), r));
-export const adminWritePapers = (slots) => run(sb().rpc('admin_write_papers', { p_slots: slots })).then((r) => (callProf().catch(() => {}), r));
-export const adminPaperStatus = (ids, status) => run(sb().rpc('admin_paper_status', { p_ids: ids, p_status: status }));
-export const adminDeletePaper = (id) => run(sb().rpc('admin_delete_paper', { p_id: id }));
-export const adminPaperItem = (id, index, patch) => run(sb().rpc('admin_paper_item', { p_id: id, p_index: index, p_patch: patch }));
-export const getSbPaper = (id) => run(sb().from('sb_papers').select('*').eq('id', id).maybeSingle());
-export const listSbPapers = (board, code) => run(sb().from('sb_papers').select('id,board,code,level,paper,number,title,duration_min,total_marks,status').eq('board', board).eq('code', code).eq('status', 'approved').order('paper').order('number'));
-// A StudyBridge paper → a draft test of the tutor's own (they check it, then give it to learners)
-export async function assignmentFromPaper(paper, { subject_id = null, topicIdFor = () => null } = {}) {
-  const a = await save('assignments', {
-    title: paper.title || 'StudyBridge practice paper', kind: 'test', subject_id, visibility: 'hidden', draft: true,
-    time_limit_min: paper.duration_min || null, instructions_md: paper.instructions_md || '', show_answers: true, source: 'studybridge',
-  });
-  await addQuestionsToAssignment(
-    a.id,
-    (paper.items || []).map((x) => ({
-      type: x.type === 'upload' ? 'upload' : x.type,
-      prompt_md: `${x.stem ? x.stem + '\n\n' : ''}**${x.label}** ${x.prompt}`,
-      options: x.options || [],
-      marks: x.marks,
-      topic_id: topicIdFor(x.topic),
-      key: { answer: x.answer || {}, mark_scheme_md: x.mark_scheme || '', solution_md: x.solution || '' },
-    })),
-  );
-  sb().rpc('paper_used', { p_id: paper.id }).then(() => {}, () => {});
-  return a;
-}
+// ---------------- StudyBridge practice papers (made on the content account, checked twice) ----------------
+// For one exam ('cie:0607'): the papers that are up, with their questions, answers and mark schemes (tutors only)
+export const studybridgePapers = (exam) => run(sb().rpc('studybridge_papers', { p_exam: exam }));
+// A copy as a draft test of the tutor's own (they check it, then give it to learners); gives the new test's id
+export const copyStudybridgePaper = (id) => run(sb().rpc('copy_studybridge_paper', { p_assignment: id }));
 export const saveSelfMarks = (attemptId, marks) => run(sb().rpc('save_self_marks', { p_attempt: attemptId, p_marks: marks }));
 
 // ---------------- syllabus & coverage ----------------

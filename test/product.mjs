@@ -610,23 +610,6 @@ try {
   await P.close();
   await C.close();
 
-  step('Admin adds shared StudyBridge questions; every tutor gets them once approved');
-  await nav(ADM, 'StudyBridge questions').click();
-  await ADM.getByRole('heading', { name: 'StudyBridge questions' }).waitFor();
-  await ADM.getByRole('button', { name: 'Ask Prof for shared questions' }).click();
-  const sh = ADM.getByRole('dialog', { name: 'Add shared StudyBridge questions' });
-  await sh.getByRole('button', { name: 'Algebra', exact: true }).click();
-  await sh.getByLabel('How many').fill('3');
-  await sh.getByRole('button', { name: /Write 3 questions/ }).click();
-  await ADM.getByText('Shared questions to review').waitFor({ timeout: 60000 });
-  await shot(ADM, 'admin-shared-bank');
-  await ADM.getByRole('button', { name: 'Approve 2 the check agreed with' }).click();
-  await ADM.getByText('0607 · Algebra: 2').waitFor();
-  await nav(B, 'Library').click();
-  await B.getByRole('button', { name: 'Question bank' }).click();
-  await B.locator('.bank-q', { hasText: 'StudyBridge' }).first().waitFor();
-  assert.equal(await B.locator('.bank-q').count(), 2, 'the other tutor sees only the approved shared questions');
-
   step('Admin pauses the other tutor: she can’t sign in, nothing is deleted');
   await nav(ADM, 'Tutors').click();
   await ADM.locator('.tutor-row', { hasText: 'Maria Banda' }).getByRole('button', { name: 'Pause' }).click();
@@ -643,40 +626,6 @@ try {
   await nav(ADM, 'What’s been done').click();
   await ADM.locator('.item', { hasText: 'maria@example.com' }).filter({ hasText: 'Paused' }).waitFor();
   await shot(ADM, 'admin-log');
-
-  step('StudyBridge papers: Prof works out 0607’s papers, writes one in the background, admin approves; the tutor copies it into a test');
-  await nav(ADM, 'StudyBridge papers').click();
-  await ADM.getByRole('button', { name: 'Clear' }).click();
-  await ADM.locator('.subject-picks .pick', { hasText: '0607 Mathematics – International' }).locator('input').check();
-  await ADM.getByRole('button', { name: 'Work out their papers' }).click();
-  await ADM.getByRole('cell', { name: 'Paper 4 (Extended)' }).waitFor({ timeout: 60000 });
-  await ADM.getByLabel('How many for 0607 Paper 2 (Core)').selectOption('1');
-  await ADM.getByLabel('How many for 0607 Paper 4 (Extended)').selectOption('0');
-  await ADM.getByRole('button', { name: 'Write 1 paper' }).click();
-  await ADM.getByRole('dialog').getByRole('button', { name: 'Start writing' }).click();
-  const sbRow = ADM.locator('.item', { hasText: 'SB 1' }).filter({ hasText: 'check flagged 1' });
-  await sbRow.waitFor({ timeout: 90000 });
-  await shot(ADM, 'admin-papers');
-  await sbRow.getByRole('button', { name: 'Open' }).click();
-  await ADM.getByText(/The automatic check flagged 1/).waitFor();
-  await ADM.getByRole('button', { name: 'Fix this part' }).click();
-  await ADM.getByLabel('Correct answer').fill('21');
-  await ADM.getByRole('button', { name: 'Save fix' }).click();
-  await ADM.getByText('Fixed', { exact: true }).waitFor();
-  await ADM.getByText(/The automatic check flagged/).waitFor({ state: 'detached' });
-  await shot(ADM, 'admin-paper-review');
-  await ADM.getByRole('dialog').getByRole('button', { name: 'Approve' }).click();
-  await ADM.getByText('Approved: every tutor sees it now').waitFor();
-  await nav(A, 'Library').click();
-  await A.getByRole('button', { name: 'Past papers' }).click();
-  await A.locator('.sb-shelf .paper-chip', { hasText: 'SB 1' }).click();
-  await A.getByRole('dialog').getByText('written by StudyBridge in this paper’s format').waitFor();
-  await A.getByRole('dialog').getByRole('button', { name: 'Use with my learners' }).click();
-  await A.getByText('A StudyBridge practice paper, copied for you').waitFor();
-  await shot(A, 'tutor-sb-paper-copied');
-  const copied = (await tc.from('assignments').select('*').eq('source', 'studybridge').single()).data;
-  assert.equal(copied.draft, true);
-  assert.equal((await tc.from('questions').select('id').eq('assignment_id', copied.id)).data.length, 8);
 
   step('Admin overview, a tutor’s message and the reply, an announcement, a crash report');
   await nav(A, 'Learners').waitFor();
@@ -748,7 +697,7 @@ try {
   await Z.getByRole('button', { name: 'Create account' }).click();
   await Z.getByText(/, Zara!/).waitFor();
 
-  step('Students on their own: the Owner picks the content account and opens sign-up; a student signs up, sets up and gets a plan; the Owner records their payment');
+  step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
   await cc.rpc('become_tutor', { p_name: 'StudyBridge', p_timezone: 'UTC' });
@@ -758,13 +707,77 @@ try {
   await ADM.getByText('Content account set').waitFor();
   await ADM.getByRole('button', { name: /Add every subject/ }).click();
   await ADM.getByText(/^Added \d+ subjects$/).waitFor();
-  // students can sign up as soon as a subject is open; the switch only pauses it
-  assert.equal(await ADM.getByRole('switch', { name: 'Students can sign up' }).getAttribute('aria-checked'), 'true');
+  // students can sign up as soon as a subject is open (there's no switch: opening a subject is what opens sign-up)
+  assert.equal(await ADM.getByRole('switch', { name: 'Students can sign up' }).count(), 0);
+  await ADM.getByText(/Students can sign up as soon as a subject is open/).waitFor();
   // the content account opens 0607 and sets out its syllabus
   const sub0607 = (await cc.from('subjects').select('id').eq('catalogue', 'cambridge:igcse:0607').single()).data;
   assert.ok(sub0607, 'every subject is in the content account');
   await cc.from('subjects').update({ live: true }).eq('id', sub0607.id);
   await cc.from('topics').insert(['Number', 'Algebra', 'Functions', 'Geometry', 'Statistics'].map((name, position) => ({ subject_id: sub0607.id, name, position })));
+
+  step('One StudyBridge library: the content account makes 0607 questions and a practice paper, each checked twice; the tutor finds the questions in her bank and copies the paper into a test');
+  // what Claude Desktop does through the connector, signed in as the content account
+  const libQs = (
+    await cc.rpc('content_add_questions', {
+      p_subject: sub0607.id,
+      p_items: [
+        { topic: 'Algebra', type: 'numeric', prompt: 'Solve $x + 5 = 12$.', answer: { value: '7', tolerance: '0' }, hint: 'Take 5 from both sides.', solution: '$x = 12 - 5 = 7$' },
+        { topic: 'Algebra', type: 'numeric', prompt: 'Solve $3x = 21$.', answer: { value: '7', tolerance: '0' }, hint: 'Divide both sides by 3.', solution: '$x = 21 \\div 3 = 7$' },
+      ],
+    })
+  ).data;
+  assert.equal(libQs.waiting_for_check, 2);
+  const libPaper = (
+    await cc.rpc('content_add_paper', {
+      p_subject: sub0607.id,
+      p_title: 'StudyBridge practice paper 1',
+      p_minutes: 45,
+      p_instructions: 'Answer all the questions.',
+      p_items: [
+        { topic: 'Number', type: 'numeric', prompt: 'Work out $15 \\times 4$.', answer: { value: '60' }, solution: '$15 \\times 4 = 60$', mark_scheme: 'B1 60', marks: 1 },
+        { topic: 'Algebra', type: 'steps', prompt: 'Solve $3x - 2 = 10$, showing your working.', answer: { final: 'x = 4' }, solution: '$3x = 12$ so $x = 4$', mark_scheme: 'M1 add 2 to both sides, A1 x = 4', marks: 2 },
+      ],
+    })
+  ).data;
+  assert.equal(libPaper.waiting_for_check, 2);
+  // the second check, in a fresh chat that never sees the answers: all four agree, so they go up
+  const libWaiting = (await cc.rpc('content_to_check', { p_limit: 10 })).data.questions;
+  assert.equal(libWaiting.length, 4);
+  const solved = (x) => (/x \+ 5/.test(x.prompt) || /3x = 21/.test(x.prompt) ? { value: '7' } : /15 \\times 4/.test(x.prompt) ? { value: '60' } : { final: 'x=4' });
+  const libChecked = (await cc.rpc('content_submit_checks', { p_items: libWaiting.map((x) => ({ kind: x.kind, id: x.id, answer: solved(x) })) })).data;
+  assert.deepEqual([libChecked.passed, libChecked.failed], [4, 0]);
+  // the tutor (her Mathematics is for 0607): StudyBridge's checked questions are in her question bank, to use, not to change
+  await nav(A, 'Library').click();
+  await A.getByRole('button', { name: 'Question bank' }).click();
+  const sbQs = A.locator('.bank-q', { has: A.locator('.pill', { hasText: /^StudyBridge$/ }) });
+  await sbQs.first().waitFor();
+  assert.equal(await sbQs.count(), 2, 'StudyBridge’s two checked 0607 questions');
+  assert.equal(await sbQs.getByRole('button', { name: 'Edit' }).count(), 0, 'hers to use, not to change');
+  await sbQs.first().locator('.grow').first().click();
+  await sbQs.first().getByText(/Checked twice/).waitFor();
+  await shot(A, 'tutor-bank-studybridge');
+  // ...and its practice paper is in Past papers: she looks through it and copies it into a test of her own
+  await A.getByRole('button', { name: 'Past papers' }).click();
+  await A.locator('.sb-shelf').getByRole('button', { name: 'Open StudyBridge practice paper 1' }).click();
+  const pv = A.getByRole('dialog', { name: 'StudyBridge practice paper 1' });
+  await pv.getByText('Answer all the questions.').waitFor();
+  await pv.getByText(/Not affiliated with or endorsed by Cambridge/).waitFor();
+  await pv.getByLabel('Show answers and mark schemes').check();
+  await pv.getByText('M1 add 2 to both sides, A1 x = 4').waitFor();
+  await shot(A, 'tutor-sb-paper');
+  await pv.getByRole('button', { name: 'Copy into a test' }).click();
+  await A.getByText('A StudyBridge practice paper, copied for you').waitFor();
+  await shot(A, 'tutor-sb-paper-copied');
+  const copied = (await tc.from('assignments').select('*').eq('source', 'studybridge').single()).data;
+  assert.deepEqual([copied.kind, copied.draft, copied.visibility], ['test', true, 'hidden']);
+  assert.match(copied.instructions_md, /Not affiliated with or endorsed by Cambridge/);
+  assert.equal((await tc.from('questions').select('id').eq('assignment_id', copied.id)).data.length, 2);
+  assert.deepEqual((await tc.from('question_keys').select('answer').in('question_id', (await tc.from('questions').select('id').eq('assignment_id', copied.id)).data.map((x) => x.id))).data.map((k) => k.answer).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [{ final: 'x = 4' }, { value: '60' }]);
+  await A.getByText('All changes saved').waitFor();
+  await nav(A, 'Library').click();
+
+  step('A student on their own signs up, sets up and gets a plan; the Owner records their payment');
   const SL = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'Africa/Lusaka' })).newPage();
   watch(SL, 'student');
   await SL.goto(web.url);
@@ -786,7 +799,7 @@ try {
   await SL.getByRole('button', { name: 'Next' }).click();
   await SL.getByRole('button', { name: '6 hours' }).click();
   await SL.getByRole('button', { name: 'Make my plan' }).click();
-  // straight after the setup: the starting check (0607 already has shared practice questions); it can wait
+  // straight after the setup: the starting check (0607 already has StudyBridge's checked practice questions); it can wait
   await SL.getByRole('heading', { name: 'A quick starting check' }).waitFor();
   await shot(SL, 'student-starting-check-offer');
   await SL.getByRole('button', { name: 'Skip for now' }).click();
@@ -943,13 +956,11 @@ try {
   await KID.close();
   await PP.close();
 
-  // the Owner tries StudyBridge as a test student, even with sign-up paused, and sees subjects that aren't open yet
+  // the Owner tries StudyBridge as a test student, and sees subjects that aren't open yet
   await nav(ADM, 'Students').click();
   await ADM.getByLabel('Test student’s email').fill('aaryan+student@example.com');
   await ADM.locator('#test-students').getByRole('button', { name: 'Add' }).click();
   await ADM.locator('#test-students').getByText('aaryan+student@example.com').waitFor();
-  await ADM.getByRole('switch', { name: 'Students can sign up' }).click();
-  await ADM.getByText('New student sign-ups are paused').waitFor();
   await a11y(ADM, 'Admin → Students');
   const TS = await (await browser.newContext({ viewport: { width: 1280, height: 820 } })).newPage();
   watch(TS, 'test student');
@@ -965,8 +976,37 @@ try {
   await TS.getByRole('button', { name: /^IGCSE/ }).click();
   await TS.getByRole('button', { name: /Physics.*not open yet/ }).first().waitFor();
   await TS.close();
-  await ADM.getByRole('switch', { name: 'Students can sign up' }).click();
-  await ADM.getByText('Students can sign up', { exact: true }).first().waitFor();
+
+  // back from "Continue with Google": the new account becomes what they chose before they left (here a student in
+  // grade 10; the same happens for a tutor or a parent). Google itself can't run in a test, so the account is made
+  // without a role and the choice is waiting on the device, exactly as after Google's redirect.
+  const gc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
+  await gc.auth.signUp({ email: 'googler@example.com', password: 'secret123', options: { data: { name: 'Gloria Mwale' } } });
+  const GS = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(GS, 'student from Google');
+  await GS.goto(web.url);
+  await GS.evaluate(() => localStorage.setItem('sb.pendingSetup', JSON.stringify({ role: 'student', grade: 10, country: 'Zambia', at: Date.now() })));
+  await GS.getByText(/already have an account|Sign in/).first().click().catch(() => {});
+  await GS.getByLabel('Email').fill('googler@example.com');
+  await GS.getByLabel('Password').fill('secret123');
+  await GS.getByRole('button', { name: 'Sign in' }).click();
+  await GS.getByText('Let’s set up your plan').waitFor();
+  assert.equal(await GS.evaluate(() => localStorage.getItem('sb.pendingSetup')), null, 'used once');
+  await GS.close();
+  // someone who used Google on the sign-in page with no account yet chooses on "Almost there"
+  await gc.auth.signUp({ email: 'newparent@example.com', password: 'secret123', options: { data: { name: 'Neo' } } });
+  const NP = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(NP, 'parent from Google');
+  await NP.goto(web.url);
+  await NP.getByText(/already have an account|Sign in/).first().click().catch(() => {});
+  await NP.getByLabel('Email').fill('newparent@example.com');
+  await NP.getByLabel('Password').fill('secret123');
+  await NP.getByRole('button', { name: 'Sign in' }).click();
+  await NP.getByRole('heading', { name: 'Almost there' }).waitFor();
+  await NP.getByRole('heading', { name: 'I’m studying on my own' }).waitFor();
+  await NP.getByRole('button', { name: 'Set up a parent account' }).click();
+  await NP.getByRole('heading', { name: 'Set up your child to study on their own' }).waitFor();
+  await NP.close();
   // the tutor's main screens pass the same accessibility basics
   for (const [hash, where] of [['#/', 'the tutor’s Home'], ['#/assignments', 'Assignments'], ['#/marking', 'Marking'], ['#/learners', 'Learners'], ['#/settings', 'the tutor’s Settings']]) {
     await A.evaluate((h) => (location.hash = h), hash);

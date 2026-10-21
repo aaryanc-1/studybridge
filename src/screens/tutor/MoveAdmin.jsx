@@ -28,7 +28,7 @@ export function MoveAdmin() {
     }
   }
   return (
-    <Page title="Admin has its own account now" size="narrow" subtitle="Your tutor account is for teaching. Approving tutors, StudyBridge’s keys and the shared questions now live in a separate admin account. You sign in to it on the same sign-in page, with its own email and password.">
+    <Page title="Admin has its own account now" size="narrow" subtitle="Your tutor account is for teaching. Approving tutors, StudyBridge’s keys and StudyBridge’s own content now live in a separate admin account. You sign in to it on the same sign-in page, with its own email and password.">
       <div className="card">
         {waiting ? (
           <>

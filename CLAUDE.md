@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (91)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (92)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -204,7 +204,7 @@ Updater bug (10 Oct 2026): after the shell downloads a new bundle (state 'ready'
 finds nothing newer than the pending one and sets 'up-to-date', which hid the restart bar while the old version kept running.
 Fixed in the app, not the shell (a shell change forces everyone to reinstall): `restartWaiting(st)` in Shell.jsx (status still
 has kind 'restart' and the waiting version, newer than `current`) shows the bar and Settings' "Restart now" (`desktop.restart()`).
-Next time electron/ changes anyway, make updater.cjs's check() keep 'ready' when `s.pending` is newer than `status.current`.
+Done 21 Oct 2026 with the Google sign-in shell change.
 From Aaryan's testing (10 Oct 2026): "Time each day" (Progress.jsx) has a scale with round halves, the time on each bar
 (a week), and a hover/tap card with the day's subjects (`learner_summary` by_day now carries `subjects`); the formula sheet sits
 under Practice on Study with "Start with my topics"; "Mistake cards" are "Cards from mistakes", explained, and the tutor can
@@ -282,6 +282,27 @@ students.html, index.html and the countdown show "Start your free week" once any
 early-access ones until then (`data-students="closed"`). Submit https://gostudybridge.com/sitemap.xml to Google Search Console.
 `copyText` (kit.jsx) copies with the old copy command first and only then the newer clipboard, and never throws (the CI sweep
 found "Write permission denied" errors); the sweep refuses the newer clipboard on purpose to keep it that way.
+Google sign-in works everywhere (21 Oct 2026, Aaryan: "make continue with google work, no hiding"). Web/phone: `signInWithGoogle()`
+goes to Google and back (`sessionFromLink` takes the tokens from the address). Desktop: `desktop.google.signIn(url)` (preload →
+main.cjs `auth:google`): Google opens in the normal browser (Google refuses sign-in inside apps) and returns to a one-time page on
+`http://127.0.0.1:53682/auth/callback`, which hands the tokens to the app (`setSession`). That address and
+`https://gostudybridge.com/app/**` must be in Supabase → Authentication → URL Configuration → Redirect URLs. The button is on the
+sign-in page and on every sign-up path (`GoogleButton prepare`): what the new account will be (tutor, student with grade/country/
+parent code, parent) waits in `sb.pendingSetup` (localStorage, 30 min) and App.jsx's loadProfile finishes it after Google; errors
+show on "Almost there" (FinishSetup, which now also offers studying on your own and a parent account). Admin → Selling →
+Google sign-in lists the Google Cloud and Supabase steps and checks Supabase live (`api.googleReady()`: /auth/v1/settings).
+This changed the desktop shell (main.cjs, preload.cjs): one automatic reinstall. Same shell change: updater.cjs's check() keeps
+'ready' when a downloaded version is still waiting (no more "up to date" while one waits). The "Students can sign up" switch is
+gone from Admin → Students: sign-up opens only when a subject is opened to students (`students_paused` stays false).
+One StudyBridge library (same update): everything StudyBridge makes comes from the content account (Claude Desktop, checked
+twice). Admin's "StudyBridge papers" and "Shared question bank" pages are gone (PapersAdmin.jsx deleted; `sb_papers` and
+`prof_bank(p_shared)` left in place, unused; tutors can't read old shared questions or sb_papers). Tutors get the content
+account's approved questions for the exams set on their subjects (`bank_studybridge_read`, `_sb_library()`: active tutors; the
+Plus-plan check goes there later; `content_add_questions` now sets `exam_code`/`exam_board` from `_subject_exam()`), shown as
+"StudyBridge" in their bank, and its practice papers in Library → Past papers (`studybridge_papers(p_exam)`,
+`copy_studybridge_paper` → a hidden draft test in the tutor's account, keeping the not-affiliated line). Rule kept: with a tutor a
+person approves everything, so StudyBridge questions never go into a tutored learner's practice by themselves (`start_practice`
+and `practice_topics` use only the tutor's own bank); the tutor uses them by putting them in work they post.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

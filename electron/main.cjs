@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, shell, session, desktopCapturer, systemPreferences, dialog, Tray, Menu, nativeImage, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const http = require('node:http');
 const { createUpdater } = require('./updater.cjs');
 
 if (process.env.SB_USER_DATA) app.setPath('userData', process.env.SB_USER_DATA);
@@ -199,6 +200,50 @@ ipcMain.handle('update:check', () => updater.check());
 ipcMain.handle('update:apply', () => updater.apply());
 ipcMain.handle('update:ok', () => updater.confirm());
 ipcMain.handle('app:focus', () => showWindow());
+// "Continue with Google" in the desktop app. Google doesn't allow signing in inside apps, so its page opens in the
+// normal browser and comes back to a small page on this computer (127.0.0.1, only for that moment), which hands the
+// sign-in to StudyBridge. The address must be in Supabase → Authentication → URL Configuration → Redirect URLs.
+const OAUTH_PORT = 53682;
+const OAUTH_BACK = `http://127.0.0.1:${OAUTH_PORT}/auth/callback`;
+let oauthWaiting = null;
+ipcMain.handle('auth:redirect', () => OAUTH_BACK);
+ipcMain.handle('auth:google', (_e, url) => {
+  if (!/^https:\/\//.test(String(url || ''))) return { error: 'That isn’t a sign-in address.' };
+  oauthWaiting?.({ error: 'Another sign-in started.' });
+  return new Promise((resolve) => {
+    const page = (title, line) =>
+      `<!doctype html><meta charset="utf-8"><title>StudyBridge</title><body style="font-family:system-ui,sans-serif;padding:48px 24px;text-align:center;color:#1C1F23"><h2>${title}</h2><p>${line}</p></body>`;
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, `http://127.0.0.1:${OAUTH_PORT}`);
+      res.writeHead(u.pathname.startsWith('/auth/') ? 200 : 404, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      // the sign-in comes after the # in the address, which only the page can read: it sends it straight back here
+      if (u.pathname === '/auth/callback')
+        return res.end(page('Signing you in…', '') + `<script>location.replace('/auth/done?' + (location.hash.slice(1) || location.search.slice(1)))</script>`);
+      if (u.pathname === '/auth/done') {
+        const p = Object.fromEntries(u.searchParams);
+        const ok = !!(p.access_token && p.refresh_token);
+        res.end(ok ? page('You’re signed in to StudyBridge', 'You can close this tab and go back to the app.') : page('Google sign-in didn’t finish', 'Go back to StudyBridge and try again.'));
+        return finish(ok ? { access_token: p.access_token, refresh_token: p.refresh_token } : { error: p.error_description || 'Google sign-in didn’t finish. Try again.' });
+      }
+      res.end();
+    });
+    const timer = setTimeout(() => finish({ error: 'Google sign-in took too long. Try again.' }), 5 * 60 * 1000);
+    let done = false;
+    function finish(r) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      oauthWaiting = null;
+      setTimeout(() => server.close(), 1000);
+      if (!r.error) showWindow();
+      resolve(r);
+    }
+    oauthWaiting = finish;
+    server.on('error', () => finish({ error: 'StudyBridge couldn’t wait for Google here (another app is using the same port). Restart your computer and try again.' }));
+    server.listen(OAUTH_PORT, '127.0.0.1', () => shell.openExternal(url));
+  });
+});
+
 // "StudyBridge was updated: restart" (never during a locked exam)
 ipcMain.handle('app:restart', () => {
   if (lock.on) return { error: 'Finish the exam first.' };

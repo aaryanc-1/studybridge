@@ -454,6 +454,17 @@ function Account({ role, test = false, onBack }) {
           {busy ? 'One moment…' : mode === 'new' ? 'Create account' : 'Sign in'}
         </button>
       </div>
+      <GoogleButton
+        divider
+        prepare={() => {
+          if (role === 'tutor') return { role: 'tutor', about: mode === 'new' ? about : null };
+          if (role === 'parent-self') return { role: 'parent-self' };
+          if (role !== 'student' || mode !== 'new') return null; // an invite waiting from before is used as usual
+          if (!student.grade) return { error: 'Choose your grade first, then continue with Google.' };
+          if (young && student.code.replace(/\D/g, '').length !== 8) return { error: 'Type the 8-digit code from your parent first, then continue with Google.' };
+          return { role: 'student', grade: Number(student.grade), country: student.country.trim(), code: young ? student.code : null };
+        }}
+      />
     </form>
   );
 }
@@ -490,20 +501,47 @@ function ForgotPassword({ email: start }) {
   );
 }
 
-// "Continue with Google": only once the StudyBridge admin has switched it on, and not in the desktop app
-// (the sign-in opens in the browser there, so the phone/web version is the place for it)
-function GoogleButton() {
+// "Continue with Google", once the Owner switches it on in Admin → Selling. `prepare` says what a new account will be
+// (checked first, and kept while the page is away at Google). In the desktop app Google opens in the normal browser
+// and the sign-in comes back to the app; on the web the page goes to Google and comes back signed in.
+function GoogleButton({ prepare = null, divider = false }) {
+  const app = useApp();
   const [on, setOn] = useState(false);
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (!desktop) api.publicSettings().then((s) => setOn(!!s?.google_on));
+    if (!desktop || desktop.google) api.publicSettings().then((s) => setOn(!!s?.google_on));
   }, []);
   if (!on) return null;
+  async function go() {
+    setErr('');
+    const setup = prepare ? prepare() : null;
+    if (setup?.error) return setErr(setup.error);
+    if (setup) api.savePendingSetup(setup);
+    setBusy(true);
+    try {
+      const r = await api.signInWithGoogle();
+      // the desktop app is signed in right here (the web version has gone to Google and comes back)
+      if (r?.user) {
+        localStorage.setItem('sb.seen', '1');
+        await app.signedIn(r.user);
+      }
+    } catch (e) {
+      setErr(/provider is not enabled|unsupported provider/i.test(e.message) ? 'Google sign-in isn’t switched on in StudyBridge’s server yet. Use your email for now.' : e.message);
+      setBusy(false);
+    }
+  }
   return (
     <>
-      <button type="button" className="btn big google" onClick={() => api.signInWithGoogle().catch((e) => setErr(e.message))}>
-        <span className="g">G</span> Continue with Google
+      {divider && (
+        <div className="or-line" aria-hidden="true">
+          <span>or</span>
+        </div>
+      )}
+      <button type="button" className="btn big google" disabled={busy} onClick={go}>
+        <span className="g">G</span> {busy ? 'Waiting for Google…' : 'Continue with Google'}
       </button>
+      {busy && desktop && <div className="small muted">Google has opened in your browser. Sign in there, then come back here.</div>}
       {err && <div className="error">{err}</div>}
     </>
   );

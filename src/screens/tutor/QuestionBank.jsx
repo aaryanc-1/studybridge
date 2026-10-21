@@ -21,8 +21,13 @@ export const topicMatcher = (lk, subjectId) => (name) => {
 const groupOf = (b, lk) =>
   b.exam_code ? { key: 'x:' + b.exam_code, label: X.syllabusLabel(b.exam_board || 'cie', b.exam_code) } : b.subject_id ? { key: 's:' + b.subject_id, label: lk.subject(b.subject_id)?.name || 'Subject' } : { key: 'none', label: 'No subject' };
 
+// StudyBridge's questions belong to its content account; everything else the tutor sees is their own
+const isStudyBridge = (b, me) => b.owner_id !== me.id;
+// The tutor's own subject for a bank question: its subject if it's theirs, else their subject for its exam
+const subjectFor = (b, lk) => (b.subject_id && lk.subject(b.subject_id) ? b.subject_id : (b.exam_code && lk.subjects.find((s) => s.exam && s.exam.split(':')[1] === b.exam_code)?.id) || null);
+
 // ---------------------------------------------------------------------------
-// The question bank: your questions, and StudyBridge's shared exam-style ones
+// The question bank: your questions, and StudyBridge's checked exam-style ones for your subjects' exams
 // ---------------------------------------------------------------------------
 export default function QuestionBank() {
   const bank = useQuery('bank', api.listBank);
@@ -34,14 +39,14 @@ export default function QuestionBank() {
   const mine = all.filter((b) => b.owner_id === app.me.id);
   const waiting = mine.filter((b) => b.status === 'review');
   const rejected = mine.filter((b) => b.status === 'rejected');
-  const usable = all.filter((b) => b.status === 'approved' && (b.owner_id === app.me.id || b.owner_id === null));
+  const usable = all.filter((b) => b.status === 'approved');
 
   if (!bank.data) return <Loading />;
   return (
     <div className="stack lg">
       <div className="row wrap between">
         <div className="small muted">
-          {usable.length} question{usable.length === 1 ? '' : 's'} ready to use · yours and StudyBridge’s shared exam-style questions. Learners never see the bank, only the work you set from it.
+          {usable.length} question{usable.length === 1 ? '' : 's'} ready to use · yours, and StudyBridge’s exam-style questions for your subjects’ exams (each checked twice). Learners never see the bank, only the work you set from it.
         </div>
         <div className="row wrap">
           <button className="btn" onClick={() => setWriting(true)}>
@@ -218,7 +223,7 @@ export function BankBrowser({ rows, picking = null, onPick }) {
   const topics = [...new Set(inGroup.map((b) => b.topic).filter(Boolean))].sort();
   const list = inGroup.filter(
     (b) =>
-      (source === 'all' || (source === 'mine' ? b.owner_id === app.me.id : b.owner_id === null)) &&
+      (source === 'all' || (source === 'mine' ? !isStudyBridge(b, app.me) : isStudyBridge(b, app.me))) &&
       (!topic || b.topic === topic) &&
       (!diff || String(b.difficulty) === diff) &&
       (!text || (b.prompt_md + ' ' + (b.topic || '')).toLowerCase().includes(text.toLowerCase())),
@@ -265,7 +270,9 @@ export function BankBrowser({ rows, picking = null, onPick }) {
 
       {list.length === 0 ? (
         <Empty title={rows.length ? 'Nothing matches' : 'No questions yet'}>
-          {rows.length ? 'Try other filters.' : 'Save questions from any assignment (“Save to bank”), or ask Prof to write some. StudyBridge’s shared questions appear here as they’re approved.'}
+          {rows.length
+            ? 'Try other filters.'
+            : 'Save questions from any assignment (“Save to bank”), or ask Prof to write some. StudyBridge’s questions for your subjects’ exams appear here too, once you’ve said which exam each subject is for (Subjects → edit a subject → Exam).'}
         </Empty>
       ) : (
         <>
@@ -302,7 +309,7 @@ export function BankBrowser({ rows, picking = null, onPick }) {
                   <div className="grow stack sm" onClick={() => setOpen(open === b.id ? null : b.id)} style={{ cursor: 'pointer' }}>
                     <Markdown src={b.prompt_md} />
                     <div className="row wrap tiny muted" style={{ gap: 8 }}>
-                      <span className={'pill ' + (b.owner_id ? '' : 'accent')}>{b.owner_id ? 'Yours' : 'StudyBridge'}</span>
+                      <span className={'pill ' + (isStudyBridge(b, app.me) ? 'accent' : '')}>{isStudyBridge(b, app.me) ? 'StudyBridge' : 'Yours'}</span>
                       {b.topic && <span>{b.topic}</span>}
                       {b.difficulty && <span>{X.DIFFICULTY[b.difficulty]}</span>}
                       <span>{typeLabel[b.type]}</span>
@@ -375,17 +382,31 @@ function BankDetail({ b }) {
           <Markdown src={b.solution_md} />
         </div>
       )}
-      {b.check_result && (
-        <div className={'small ' + (b.check_result.ok ? 'good-text' : 'bad-text')}>
-          <Icon name={b.check_result.ok ? 'check' : 'alert'} size={14} /> Automatic check: {b.check_result.ok ? 'agrees with the answer' : `doesn’t agree — ${b.check_result.note || `it got ${b.check_result.my_answer}`}`}
+      {b.hint_md && (
+        <div className="small">
+          <b>Hint:</b> <Markdown className="inline" src={b.hint_md} />
         </div>
+      )}
+      {b.check_result?.state ? (
+        // StudyBridge's questions: checked twice before anyone gets them
+        ['passed', 'approved'].includes(b.check_result.state) && (
+          <div className="small good-text">
+            <Icon name="check" size={14} /> {b.check_result.state === 'passed' ? 'Checked twice: a second, separate solve agreed with the answer' : 'Checked by StudyBridge'}
+          </div>
+        )
+      ) : (
+        b.check_result && (
+          <div className={'small ' + (b.check_result.ok ? 'good-text' : 'bad-text')}>
+            <Icon name={b.check_result.ok ? 'check' : 'alert'} size={14} /> Automatic check: {b.check_result.ok ? 'agrees with the answer' : `doesn’t agree — ${b.check_result.note || `it got ${b.check_result.my_answer}`}`}
+          </div>
+        )
       )}
       {b.source_ref && <div className="tiny muted">From {b.source_ref}</div>}
     </div>
   );
 }
 
-// Approve or reject questions Prof wrote (your own, or — for the admin — the shared ones)
+// Approve or reject questions Prof wrote for you
 export function ReviewQueue({ rows, title, batch = 20 }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -646,7 +667,7 @@ function MakeAssignment({ rows, onClose }) {
     const t = [...new Set(rows.map((b) => b.topic).filter(Boolean))];
     return t.length === 1 ? `${t[0]} practice` : 'Practice questions';
   });
-  const [subject, setSubject] = useState(rows.find((b) => b.subject_id)?.subject_id || '');
+  const [subject, setSubject] = useState(rows.map((b) => subjectFor(b, lk)).find(Boolean) || '');
   const [busy, setBusy] = useState(false);
   async function make() {
     setBusy(true);
@@ -704,12 +725,12 @@ function MakeAssignment({ rows, onClose }) {
   );
 }
 
-function AskProf({ onClose, shared = false }) {
+function AskProf({ onClose }) {
   const lk = useLookups();
   const toast = useToast();
   const settings = useQuery('tutor_settings', api.getSettings);
   const exams = [...new Set([...lk.subjects.map((s) => s.exam).filter(Boolean), ...(settings.data?.exam_subjects || [])])].filter((k) => k.startsWith('cie:') || k.startsWith('ib:'));
-  const [where, setWhere] = useState(shared ? 'cie:0607' : exams[0] || (lk.subjects[0] ? 's:' + lk.subjects[0].id : ''));
+  const [where, setWhere] = useState(exams[0] || (lk.subjects[0] ? 's:' + lk.subjects[0].id : ''));
   const [topic, setTopic] = useState('');
   const [count, setCount] = useState(10);
   const [diff, setDiff] = useState('');
@@ -727,7 +748,6 @@ function AskProf({ onClose, shared = false }) {
         topic: topic.trim(),
         count: Number(count),
         difficulty: diff ? Number(diff) : null,
-        shared,
       });
       toast({ title: 'Prof is writing them', body: 'They’ll wait here for your approval, each with an automatic second check.' });
       onClose();
@@ -738,7 +758,7 @@ function AskProf({ onClose, shared = false }) {
   }
   return (
     <Modal
-      title={shared ? 'Add shared StudyBridge questions' : 'Ask Prof for bank questions'}
+      title="Ask Prof for bank questions"
       onClose={onClose}
       foot={
         <>
@@ -753,7 +773,7 @@ function AskProf({ onClose, shared = false }) {
     >
       <Field label="Syllabus or subject">
         <select className="select" value={where} onChange={(e) => (setWhere(e.target.value), setTopic(''))}>
-          {!shared && lk.subjects.length > 0 && (
+          {lk.subjects.length > 0 && (
             <optgroup label="Your subjects">
               {lk.subjects.map((s) => (
                 <option key={s.id} value={'s:' + s.id}>
@@ -803,17 +823,15 @@ function AskProf({ onClose, shared = false }) {
           </select>
         </Field>
       </div>
-      <div className="tiny muted">Prof writes original exam-style questions, then a second automatic check re-solves each one. Nothing is used until {shared ? 'you approve it for every tutor' : 'you approve it'}.</div>
+      <div className="tiny muted">Prof writes original exam-style questions, then a second automatic check re-solves each one. Nothing is used until you approve it.</div>
     </Modal>
   );
 }
-export { AskProf };
 
 // For the assignment editor: pick questions from the bank
 export function BankPicker({ onClose, onPick }) {
   const bank = useQuery('bank', api.listBank);
-  const app = useApp();
-  const rows = (bank.data || []).filter((b) => b.status === 'approved' && (b.owner_id === app.me.id || b.owner_id === null));
+  const rows = (bank.data || []).filter((b) => b.status === 'approved');
   return (
     <Modal title="Add questions from the bank" wide onClose={onClose}>
       {!bank.data ? <Loading /> : <BankBrowser rows={rows} picking="Add" onPick={onPick} />}

@@ -880,6 +880,11 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 /* Continue with Google */
 .btn.google { background: var(--card); border-color: var(--btn-line); gap: 10px; }
 .btn.google .g { font-weight: 800; color: #4285F4; font-size: 18px; }
+.or-line { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.or-line::before, .or-line::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+.note.good { background: var(--good-tint); color: var(--good-ink); border-color: transparent; }
+.note.warn { background: var(--amber-tint); color: var(--amber-ink); border-color: var(--amber-line); }
+.steps-list { margin: 0; padding-left: 20px; display: grid; gap: 8px; line-height: 1.5; }
 
 .plan-meter { height: 8px; background: var(--sunk); border-radius: 4px; overflow: hidden; border: 1px solid var(--line-soft); }
 .plan-meter span { display: block; height: 100%; background: var(--accent); }

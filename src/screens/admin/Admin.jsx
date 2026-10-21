@@ -8,8 +8,6 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, bytes, PLANS, planName } from '../../lib/format.js';
 import { easyPassword } from '../tutor/Learners.jsx';
-import { AskProf, ReviewQueue } from '../tutor/QuestionBank.jsx';
-import * as X from '../../lib/exams.js';
 
 export const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
 const MODELS = [
@@ -69,14 +67,6 @@ export function TutorsPage() {
       </div>
 
       <Unfinished />
-    </Page>
-  );
-}
-
-export function SharedBankPage() {
-  return (
-    <Page title="Shared question bank">
-      <SharedBank />
     </Page>
   );
 }
@@ -610,43 +600,6 @@ function Log({ always }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-// StudyBridge's own exam-style questions, shared with every tutor once approved here
-function SharedBank() {
-  const bank = useQuery('bank', api.listBank);
-  const [asking, setAsking] = useState(false);
-  const shared = (bank.data || []).filter((b) => b.owner_id === null);
-  const waiting = shared.filter((b) => b.status === 'review');
-  const live = shared.filter((b) => b.status === 'approved');
-  const byTopic = {};
-  for (const b of live) {
-    const k = `${b.exam_code || '—'} · ${b.topic || 'Other'}`;
-    byTopic[k] = (byTopic[k] || 0) + 1;
-  }
-  return (
-    <div className="card">
-      <div className="row wrap between">
-        <h2 style={{ margin: 0 }}>StudyBridge questions</h2>
-        <button className="btn claude sm" onClick={() => setAsking(true)}>
-          <Icon name="cap" size={16} /> Ask Prof for shared questions
-        </button>
-      </div>
-      <div className="small muted">
-        StudyBridge’s own exam-style questions. Prof writes them and a second automatic check re-solves each one; every tutor gets them only after you approve them here. This is StudyBridge content, not any tutor’s work.
-      </div>
-      <div className="row wrap" style={{ gap: 6 }}>
-        {Object.entries(byTopic).map(([k, n]) => (
-          <span key={k} className="pill">
-            {k}: {n}
-          </span>
-        ))}
-        {!live.length && <span className="small muted">None approved yet. Start with IGCSE 0607: {X.topicsFor('0607').slice(0, 4).join(', ')}…</span>}
-      </div>
-      {waiting.length > 0 && <ReviewQueue rows={waiting} title="Shared questions to review" />}
-      {asking && <AskProf shared onClose={() => setAsking(false)} />}
     </div>
   );
 }

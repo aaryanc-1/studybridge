@@ -85,6 +85,19 @@ export default function App() {
     const cached = await store.get(`profile:${u.id}`);
     try {
       let p = await api.getProfile(u.id);
+      // Back from Google: a new account becomes what they chose before they left (a tutor, a student, a parent)
+      const setup = p && !p.role ? api.takePendingSetup() : null;
+      if (setup) {
+        const nm = setup.name || p.display_name || u.user_metadata?.full_name || u.user_metadata?.name || u.email?.split('@')[0] || '';
+        try {
+          if (setup.role === 'tutor') await api.becomeTutor(nm, setup.about || null);
+          else if (setup.role === 'student') await api.startSelfLearner(nm, setup.grade, setup.country || '', setup.code || null);
+          else if (setup.role === 'parent-self') await api.startParent(nm);
+          p = await api.getProfile(u.id);
+        } catch (e) {
+          sessionStorage.setItem('sb.setupError', e.message); // shown on the "Almost there" screen, where they can try again
+        }
+      }
       // A pending invite from before sign-in
       const pending = sessionStorage.getItem('sb.pendingInvite');
       if (p && !p.role && pending) {

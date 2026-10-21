@@ -97,14 +97,9 @@ export default function StudentsPage() {
 
       <PayLinks links={d.pay_links || {}} run={run} busy={busy} />
 
-      <div className="card">
-        <Toggle
-          checked={!!d.open}
-          disabled={!c || !!busy}
-          onChange={(v) => run('open', () => api.adminStudentsOpen(v), v ? 'Students can sign up' : 'New student sign-ups are paused')}
-          title="Students can sign up"
-          sub="On: “I’m studying on my own” shows in the app as soon as a subject is open to students. Turn it off to pause new sign-ups."
-        />
+      <div className="note small">
+        Students can sign up as soon as a subject is open to them: switch to the content account, then Subjects → tick “Open to students”. Until then,
+        “I’m studying on my own” doesn’t show anywhere.
       </div>
 
       <TestStudents emails={d.test_emails || []} run={run} busy={busy} />

@@ -167,7 +167,11 @@ function createUpdater({ getWindow, isLocked }) {
         const s = read();
         const have = s.pending || status.current;
         if (m.shell === SHELL) {
-          if (!m.bundle || !newer(m.version, have) || (s.bad || []).includes(m.version)) return set({ state: 'up-to-date', checkedAt: Date.now() });
+          if (!m.bundle || !newer(m.version, have) || (s.bad || []).includes(m.version)) {
+            // a version downloaded earlier is still waiting for a restart: say so, not "up to date"
+            if (s.pending && newer(s.pending, status.current)) return set({ state: 'ready', kind: 'restart', version: s.pending, checkedAt: Date.now() });
+            return set({ state: 'up-to-date', checkedAt: Date.now() });
+          }
           set({ state: 'downloading', version: m.version });
           const buf = await fetchBuf(base + m.bundle.file);
           if (sha512(buf) !== m.bundle.sha512) throw new Error('The update didn’t download properly.');

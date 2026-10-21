@@ -552,8 +552,9 @@ end $$;
 create index if not exists idx_prof_jobs_tutor on public.prof_jobs (tutor_id, created_at desc);
 create index if not exists idx_prof_jobs_status on public.prof_jobs (status, created_at);
 
--- The question bank: questions a tutor keeps to reuse (their own), and StudyBridge's shared exam-style
--- questions (owner_id null), which every tutor can use once the StudyBridge admin has approved them.
+-- The question bank: questions a tutor keeps to reuse (their own). StudyBridge's exam-style questions are the
+-- content account's own bank questions; tutors read the checked ones for their exams (bank_studybridge_read).
+-- (owner_id null was the old shared bank, no longer handed to tutors.)
 -- Answers live here too, so learners never read this table; questions are copied into assignments.
 create table if not exists public.bank_questions (
   id uuid primary key default gen_random_uuid(),
@@ -736,11 +737,10 @@ create policy files_tutor on public.files for all using (tutor_id = auth.uid()) 
 create policy files_learner on public.files for select
   using (public.can_learner_see(tutor_id, learner_ids, subject_id, visibility, visible_from));
 create policy lessons_tutor on public.lessons for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
--- question bank: a tutor's own questions; shared ones once approved; the admin reviews shared ones
+-- question bank: a tutor's own questions (StudyBridge's checked ones are read through bank_studybridge_read,
+-- in the "one StudyBridge library" block near the end)
 create policy bank_own on public.bank_questions for all
   using (owner_id = auth.uid()) with check (owner_id = auth.uid() and public.my_role() = 'tutor');
-create policy bank_shared_read on public.bank_questions for select
-  using (owner_id is null and status = 'approved' and public._tutor_active());
 -- parent reports: the learner's choice and contact are changed only through set_parent_reports / set_learner_exam
 create policy learner_reports_read on public.learner_reports for select using (learner_id = auth.uid() or (tutor_id = auth.uid() and public.is_my_learner(learner_id)));
 create policy parent_reports_tutor on public.parent_reports for all
@@ -2294,12 +2294,13 @@ begin
   return jsonb_build_object('id', v_id);
 end $$;
 
--- Counts how often bank questions are used (shared ones can't be edited by tutors)
+-- Counts how often bank questions are used (StudyBridge's can't be edited by tutors)
 create or replace function public.bank_used(p_ids uuid[])
-returns void language sql security definer set search_path = public as $$
+returns void language plpgsql security definer set search_path = public as $$
+begin
   update public.bank_questions set uses = uses + 1
-   where id = any(p_ids) and (owner_id = auth.uid() or (owner_id is null and status = 'approved' and public._tutor_active()))
-$$;
+   where id = any(p_ids) and (owner_id = auth.uid() or (status = 'approved' and owner_id = public._sb_library()));
+end $$;
 
 -- The tutor's app sends the book pages Prof asked for
 create or replace function public.prof_pages(p_job uuid, p_pages jsonb)
@@ -2883,8 +2884,8 @@ begin
 end $$;
 
 -- ---------------- practice the learner starts themselves ----------------
--- Built from the tutor's approved question bank (their own questions + StudyBridge's shared ones),
--- auto-marked questions only, any number of tries, answers shown straight away.
+-- Built from the tutor's approved question bank (their own questions + StudyBridge's checked ones for the
+-- exams their subjects are for), auto-marked questions only, any number of tries, answers shown straight away.
 create or replace function public.start_practice(p_mode text, p_subject uuid default null, p_topic text default null,
   p_count int default 5, p_minutes int default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -2903,10 +2904,15 @@ declare
   b public.bank_questions;
   qid uuid;
   i int := 0;
+  v_sb uuid;
 begin
   select * into me from public.profiles where id = auth.uid();
   if me.role is distinct from 'learner' then raise exception 'For learners.'; end if;
   if not public._tutor_active(me.tutor_id) then raise exception 'Practice isn’t available right now.'; end if;
+  -- StudyBridge's library never goes into a tutor's learners' practice by itself: with a tutor, a person approves
+  -- everything a learner gets (the tutor uses StudyBridge questions by putting them in work they post). Students on
+  -- their own already have it: it's their "tutor's". (A tutor choosing to switch it on for practice can come later.)
+  v_sb := null;
   if p_mode not in ('daily', 'topic', 'learn', 'drill', 'check') then raise exception 'Unknown practice.'; end if;
   v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = me.timezone), 'UTC'))::date;
   -- one daily quiz a day
@@ -2938,7 +2944,7 @@ begin
   -- worked example first: one with a written solution
   if p_mode = 'learn' then
     select bq.* into v_ex from public.bank_questions bq
-     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or (bq.owner_id = v_sb and bq.exam_code = any (coalesce(v_codes, '{}'))))
        and bq.type in ('mcq', 'numeric') and bq.image_path is null
        and ((v_subject is null and (bq.subject_id = any (coalesce(v_subjects, '{}')) or bq.exam_code = any (coalesce(v_codes, '{}'))))
             or (v_subject is not null and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))))
@@ -2956,7 +2962,7 @@ begin
     select z.id, row_number() over (order by z.first desc, z.r) from (
       select bq.id, row_number() over (partition by lower(coalesce(bq.topic, '')) order by random()) = 1 as first, random() as r
         from public.bank_questions bq
-       where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+       where bq.status = 'approved' and (bq.owner_id = me.tutor_id or (bq.owner_id = v_sb and bq.exam_code = any (coalesce(v_codes, '{}'))))
          and bq.type in ('mcq', 'numeric') and bq.image_path is null
          and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))) z
      order by z.first desc, z.r limit n;
@@ -2964,7 +2970,7 @@ begin
   insert into _picked
   select bq.id, row_number() over () from (
     select bq.id from public.bank_questions bq
-     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or bq.owner_id is null)
+     where bq.status = 'approved' and (bq.owner_id = me.tutor_id or (bq.owner_id = v_sb and bq.exam_code = any (coalesce(v_codes, '{}'))))
        and bq.type in ('mcq', 'numeric') and bq.image_path is null
        and ((v_subject is null and (bq.subject_id = any (coalesce(v_subjects, '{}')) or bq.exam_code = any (coalesce(v_codes, '{}'))))
             or (v_subject is not null and (bq.subject_id = v_subject or bq.exam_code = any (coalesce(v_codes, '{}')))))
@@ -2979,7 +2985,9 @@ begin
                               else 'There aren’t any practice questions for this yet. Ask your tutor to add some to the question bank.' end;
   end if;
   if v_subject is null then
-    select coalesce(bq.subject_id, (select s.id from public.subjects s where s.id = any (coalesce(v_subjects, '{}')) and split_part(s.exam, ':', 2) = bq.exam_code limit 1))
+    -- (a StudyBridge question's own subject is the content account's: the learner's is found by its exam)
+    select coalesce(case when bq.owner_id = me.tutor_id then bq.subject_id end,
+                    (select s.id from public.subjects s where s.id = any (coalesce(v_subjects, '{}')) and split_part(s.exam, ':', 2) = bq.exam_code limit 1))
       into v_subject from public.bank_questions bq join _picked p on p.bid = bq.id order by p.ord limit 1;
   end if;
   v_title := case p_mode
@@ -3011,19 +3019,24 @@ begin
   return jsonb_build_object('assignment_id', v_id, 'questions', i);
 end $$;
 
--- Topics a learner can practise (from the bank their tutor approved), per subject
+-- Topics a learner can practise (from the bank their tutor approved), per subject. StudyBridge's questions reach a
+-- tutor's learners only through work the tutor posts (see start_practice)
 create or replace function public.practice_topics()
-returns jsonb language sql stable security definer set search_path = public as $$
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_sb uuid := null;
+begin
+  return (
   select coalesce(jsonb_agg(jsonb_build_object('subject_id', z.subject_id, 'topic', z.topic, 'questions', z.n, 'examples', z.ex) order by z.topic), '[]')
   from (
     select s.id subject_id, bq.topic, count(*) n, count(*) filter (where nullif(bq.solution_md, '') is not null) ex
       from public.learner_subjects ls
       join public.subjects s on s.id = ls.subject_id
       join public.bank_questions bq on (bq.subject_id = s.id or (s.exam is not null and bq.exam_code = split_part(s.exam, ':', 2)))
-     where ls.learner_id = auth.uid() and bq.status = 'approved' and (bq.owner_id = public.my_tutor() or bq.owner_id is null)
+     where ls.learner_id = auth.uid() and bq.status = 'approved'
+       and (bq.owner_id = public.my_tutor() or (bq.owner_id = v_sb and s.exam is not null and bq.exam_code = split_part(s.exam, ':', 2)))
        and bq.type in ('mcq', 'numeric') and bq.image_path is null and bq.topic is not null and public.my_role() = 'learner'
-     group by s.id, bq.topic) z
-$$;
+     group by s.id, bq.topic) z);
+end $$;
 
 -- The learner's own marks for a self-marked hand-in (before the tutor checks it)
 create or replace function public.save_self_marks(p_attempt uuid, p_marks jsonb)
@@ -3199,6 +3212,7 @@ end $$;
 -- 1.4: StudyBridge practice papers. Original papers Prof writes in the exact format of each
 -- exam paper (never copies of real papers), approved by the StudyBridge admin, then shared
 -- with every tutor. Written in the background, one job per paper, with an automatic check.
+-- No longer used by the app (20 Oct 2026): StudyBridge's papers now come from the content account.
 -- =====================================================================
 create table if not exists public.sb_paper_plans (
   board text not null,
@@ -3235,7 +3249,9 @@ revoke all on public.sb_paper_plans from anon, authenticated;
 revoke all on public.sb_papers from anon, authenticated;
 grant select on public.sb_papers to authenticated;
 drop policy if exists sb_papers_read on public.sb_papers;
-create policy sb_papers_read on public.sb_papers for select using (public.is_platform_admin() or (status = 'approved' and public._tutor_active()));
+-- No longer handed to tutors (20 Oct 2026): StudyBridge's practice papers come from the content account now
+-- (studybridge_papers, in the "one StudyBridge library" block near the end)
+create policy sb_papers_read on public.sb_papers for select using (public.is_platform_admin());
 
 create or replace function public._admin_prof() returns uuid
 language plpgsql stable security definer set search_path = public as $$
@@ -5728,11 +5744,14 @@ declare
   bad jsonb := '[]'::jsonb;
   v_type text;
   v_marks numeric;
+  v_exam text;
 begin
   select * into s from public.subjects where id = p_subject and tutor_id = c;
   if s.id is null then raise exception 'Unknown subject.'; end if;
   if jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then raise exception 'Send at least one question.'; end if;
   if jsonb_array_length(p_items) > 50 then raise exception 'Send up to 50 questions at a time.'; end if;
+  -- the subject's exam ('cie:0607'), so tutors teaching that exam get the questions too
+  v_exam := public._subject_exam(s);
   -- every topic must be in the syllabus, so practice and the plan line up (checked first: nothing half-saves)
   for i in select * from jsonb_array_elements(p_items) loop
     perform public._content_topic(s.id, i ->> 'topic');
@@ -5745,9 +5764,9 @@ begin
     probs := public._content_problems(v_type, i ->> 'prompt', coalesce(i -> 'options', '[]'), coalesce(i -> 'answer', '{}'),
                i ->> 'solution', i ->> 'hint', i ->> 'mark_scheme', v_marks, true);
     if v_type not in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing') then v_type := 'short'; end if;
-    insert into public.bank_questions (owner_id, status, exam_board, subject_id, topic, difficulty, type, prompt_md, options, marks,
+    insert into public.bank_questions (owner_id, status, exam_board, exam_code, subject_id, topic, difficulty, type, prompt_md, options, marks,
        answer, mark_scheme_md, solution_md, hint_md, source, check_result)
-    values (c, 'review', s.board, s.id, t.name,
+    values (c, 'review', coalesce(split_part(v_exam, ':', 1), s.board), split_part(v_exam, ':', 2), s.id, t.name,
        case when coalesce(i ->> 'difficulty', '') ~ '^[123]$' then (i ->> 'difficulty')::int end,
        v_type, coalesce(i ->> 'prompt', ''), coalesce(i -> 'options', '[]'), v_marks, coalesce(i -> 'answer', '{}'),
        nullif(i ->> 'mark_scheme', ''), nullif(i ->> 'solution', ''), nullif(i ->> 'hint', ''), 'studybridge',
@@ -6885,6 +6904,120 @@ begin
     update public.push_outbox set lease_until = null, error = left(coalesce(nullif(p_error, ''), 'Push service said ' || coalesce(p_status, 0)), 300)
      where id = p_id;
   end if;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- One StudyBridge library (20 Oct 2026): everything StudyBridge makes comes from the content account (made in
+-- Claude Desktop, checked twice), for students on their own and for tutors. Tutors find its checked practice
+-- questions in their question bank (for the exams their subjects are for; they can't change them), their learners
+-- practise with them, and its practice papers can be copied into a draft test. The old shared bank (owner_id null)
+-- and Prof's StudyBridge papers (sb_papers) no longer reach tutors.
+-- ---------------------------------------------------------------------
+-- The exam a content subject is for, as 'cie:0607' or 'ib:math-aa' (the codes tutors pick for their subjects): its
+-- own exam, else its Cambridge code, else (IB) its name in the app's IB list (src/lib/exams.js)
+create or replace function public._subject_exam(s public.subjects) returns text
+language sql stable set search_path = public as $$
+  select coalesce(s.exam,
+    case when coalesce(s.board, '') ilike 'cambridge%' and btrim(coalesce(s.code, '')) ~* '^[0-9a-z]{4}$' then 'cie:' || lower(btrim(s.code)) end,
+    case when coalesce(s.board, '') ilike 'ib%' or coalesce(s.catalogue, '') like 'ib:%' then
+      (select 'ib:' || x.code from (values
+          ('math-aa', 'mathematics: analysis and approaches'), ('math-ai', 'mathematics: applications and interpretation'),
+          ('physics', 'physics'), ('chemistry', 'chemistry'), ('biology', 'biology'), ('computer-science', 'computer science'),
+          ('design-tech', 'design technology'), ('sehs', 'sports, exercise and health science'), ('ess', 'environmental systems and societies'),
+          ('economics', 'economics'), ('business', 'business management'), ('geography', 'geography'), ('history', 'history'),
+          ('psychology', 'psychology'), ('global-politics', 'global politics'), ('digital-society', 'digital society'),
+          ('philosophy', 'philosophy'), ('sca', 'social and cultural anthropology'), ('world-religions', 'world religions'),
+          ('english-a-lit', 'english a: literature'), ('english-a-langlit', 'english a: language and literature'), ('english-b', 'english b'),
+          ('french-b', 'french b'), ('spanish-b', 'spanish b'), ('german-b', 'german b'), ('mandarin-b', 'mandarin b'),
+          ('french-ab', 'french ab initio'), ('spanish-ab', 'spanish ab initio'), ('mandarin-ab', 'mandarin ab initio'),
+          ('visual-arts', 'visual arts'), ('music', 'music'), ('theatre', 'theatre'), ('film', 'film')) x(code, name)
+        where x.name = lower(regexp_replace(btrim(s.name), '^IB\s+', '', 'i'))) end)
+$$;
+
+-- Who gets StudyBridge's library: every active tutor for now (not the content account itself: it's its own content).
+-- Later only tutors on the Plus plan: check the tutor's plan here. Gives the content account to read from, or null.
+create or replace function public._sb_library(p_tutor uuid default null) returns uuid
+language sql stable security definer set search_path = public as $$
+  select c from (select public._studybridge_account() as c) x
+   where c is not null and c is distinct from coalesce(p_tutor, auth.uid()) and public._tutor_active(coalesce(p_tutor, auth.uid()))
+$$;
+
+-- Content questions carry their subject's exam, so tutors' subjects match them; older ones are filled in here
+update public.bank_questions b
+   set exam_code = split_part(public._subject_exam(s), ':', 2), exam_board = split_part(public._subject_exam(s), ':', 1)
+  from public.subjects s
+ where b.exam_code is null and b.owner_id = public._studybridge_account() and s.id = b.subject_id and s.tutor_id = b.owner_id
+   and public._subject_exam(s) is not null;
+
+-- Tutors read StudyBridge's checked questions for the exams their subjects are for. Reading only: bank_own lets a
+-- tutor change just their own questions.
+drop policy if exists bank_studybridge_read on public.bank_questions;
+create policy bank_studybridge_read on public.bank_questions for select
+  using (status = 'approved' and owner_id = public._sb_library()
+         and exam_code in (select split_part(s.exam, ':', 2) from public.subjects s where s.tutor_id = auth.uid() and s.exam is not null));
+
+-- StudyBridge's practice papers for one exam ('cie:0607' or just '0607'), for a tutor to look through and copy: the
+-- ones that are up for students (every question passed its checks, or the Owner put it up), with answers and mark schemes
+create or replace function public.studybridge_papers(p_exam text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  c uuid := public._sb_library();
+  v_exam text := lower(btrim(coalesce(p_exam, '')));
+begin
+  if not public._tutor_active() then raise exception 'StudyBridge’s practice papers are for tutors.'; end if;
+  if c is null or v_exam = '' then return '[]'::jsonb; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'minutes', a.time_limit_min,
+      'instructions', a.instructions_md, 'subject', s.name, 'exam', public._subject_exam(s), 'created_at', a.created_at,
+      'marks', (select coalesce(sum(q.marks), 0) from public.questions q where q.assignment_id = a.id),
+      'questions', coalesce((select jsonb_agg(jsonb_build_object('number', q.position + 1, 'type', q.type, 'prompt', q.prompt_md,
+          'options', q.options, 'marks', q.marks, 'topic', tp.name, 'answer', k.answer, 'mark_scheme', k.mark_scheme_md,
+          'solution', k.solution_md) order by q.position)
+        from public.questions q left join public.question_keys k on k.question_id = q.id left join public.topics tp on tp.id = q.topic_id
+       where q.assignment_id = a.id), '[]'::jsonb))
+    order by a.created_at)
+    from public.assignments a join public.subjects s on s.id = a.subject_id
+   where a.tutor_id = c and a.source = 'studybridge' and not a.draft and a.visibility = 'visible'
+     and exists (select 1 from public.questions q where q.assignment_id = a.id)
+     and (public._subject_exam(s) = v_exam or split_part(public._subject_exam(s), ':', 2) = v_exam)), '[]'::jsonb);
+end $$;
+
+-- Copy one into a draft test of the tutor's own (hidden until they check and post it), in their subject for that
+-- exam: the questions with their answers, mark schemes and worked solutions. The tutor marks it, so the "mark it
+-- yourself" line goes; the "Not affiliated with or endorsed by" line stays.
+create or replace function public.copy_studybridge_paper(p_assignment uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := auth.uid();
+  c uuid := public._sb_library();
+  a public.assignments;
+  v_code text;
+  v_subject uuid;
+  v_id uuid;
+  q record;
+  qid uuid;
+begin
+  if not public._tutor_active() then raise exception 'StudyBridge’s practice papers are for tutors.'; end if;
+  select * into a from public.assignments
+   where id = p_assignment and c is not null and tutor_id = c and source = 'studybridge' and not draft and visibility = 'visible';
+  if a.id is null then raise exception 'That practice paper isn’t available.'; end if;
+  select split_part(public._subject_exam(s), ':', 2) into v_code from public.subjects s where s.id = a.subject_id;
+  select id into v_subject from public.subjects
+   where tutor_id = me and exam is not null and split_part(exam, ':', 2) = v_code order by position, created_at limit 1;
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, visibility, draft, source, show_answers, time_limit_min)
+  values (me, 'test', a.title, btrim(replace(a.instructions_md, ' When you hand it in, mark it yourself with the mark scheme.', '')),
+          v_subject, 'hidden', true, 'studybridge', true, a.time_limit_min)
+  returning id into v_id;
+  for q in select q2.position, q2.type, q2.prompt_md, q2.options, q2.marks, tp.name as topic, k.answer, k.mark_scheme_md, k.solution_md
+             from public.questions q2 left join public.question_keys k on k.question_id = q2.id left join public.topics tp on tp.id = q2.topic_id
+            where q2.assignment_id = a.id order by q2.position loop
+    insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+    values (v_id, me, q.position, q.type, q.prompt_md, q.options, q.marks,
+            (select t.id from public.topics t where t.tutor_id = me and t.subject_id = v_subject and lower(t.name) = lower(q.topic) limit 1))
+    returning id into qid;
+    insert into public.question_keys (question_id, tutor_id, answer, mark_scheme_md, solution_md)
+    values (qid, me, coalesce(q.answer, '{}'::jsonb), q.mark_scheme_md, q.solution_md);
+  end loop;
+  return v_id;
 end $$;
 
 grant execute on all functions in schema public to authenticated;

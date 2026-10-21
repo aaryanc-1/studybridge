@@ -164,12 +164,12 @@ export default function PastPapers() {
         </Empty>
       ) : board === 'cie' ? (
         <>
-          <SbPaperShelf board="cie" code={code} />
+          <SbPaperShelf exam={key} />
           <CieSyllabus code={code} mine={mine.filter((f) => f.exam_board === 'cie' && f.exam_code === code)} onOpen={setPanel} />
         </>
       ) : (
         <>
-          <SbPaperShelf board="ib" code={code} />
+          <SbPaperShelf exam={key} />
           <IbSyllabus syl={syl} mine={mine.filter((f) => f.exam_board === 'ib' && f.exam_code === code)} onOpen={setPanel} />
           <BoundariesCard exam={key} />
         </>

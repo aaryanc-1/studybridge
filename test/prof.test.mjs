@@ -259,7 +259,8 @@ test('Prof writes question-bank questions, checks them, and they wait for approv
   assert.match(bad[0].check_result.note, /should be 14/);
   assert.ok(seen.some((x) => x.body.tools?.[0]?.name === 'submit_checks'), 'a second, independent check ran');
 
-  // Another tutor: can't ask for shared questions, can't see them until approved
+  // Another tutor: can't ask for shared questions, and never gets them, even approved: StudyBridge's questions for
+  // tutors now come from the content account, checked twice (test/db.test.mjs, "one StudyBridge library")
   const T2 = client();
   await q(T2.auth.signUp({ email: 'tutor2@x.com', password: 'secret123' }));
   await q(T2.rpc('become_tutor', { p_name: 'Maria' }));
@@ -268,14 +269,12 @@ test('Prof writes question-bank questions, checks them, and they wait for approv
   const no = await T2.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Number', p_count: 5, p_shared: true });
   assert.match(no.error.message, /Only the StudyBridge admin/);
   assert.equal((await q(T2.from('bank_questions').select('id'))).length, 0);
-  // The admin approves the good ones and rejects the flagged one
   await q(Ad.from('bank_questions').update({ status: 'approved' }).in('id', rows.filter((r) => r.check_result?.ok).map((r) => r.id)));
-  await q(Ad.from('bank_questions').update({ status: 'rejected' }).eq('id', bad[0].id));
-  assert.equal((await q(T2.from('bank_questions').select('id'))).length, 9, 'every tutor can use approved shared questions');
+  assert.equal((await q(T2.from('bank_questions').select('id'))).length, 0, 'the old shared bank no longer reaches tutors');
   const tried = await T2.from('bank_questions').update({ prompt_md: 'changed' }).eq('id', rows[0].id).select();
-  assert.equal(tried.data.length, 0, 'tutors can’t change shared questions');
+  assert.equal(tried.data.length, 0, 'tutors can’t change them');
   await q(T2.rpc('bank_used', { p_ids: [rows[0].id] }));
-  assert.equal((await q(Ad.from('bank_questions').select('uses').eq('id', rows[0].id).single())).uses, 1);
+  assert.equal((await q(Ad.from('bank_questions').select('uses').eq('id', rows[0].id).single())).uses, 0);
 
   // A tutor's own bank questions from Prof wait for that tutor
   const mine = await q(T.rpc('prof_bank', { p_board: 'cie', p_code: '0607', p_topic: 'Algebra', p_count: 3 }));
@@ -454,7 +453,7 @@ test('calendar link: lessons and due dates as a calendar feed; private per perso
   void me;
 });
 
-test('StudyBridge practice papers: Prof works out the papers, writes them in the background, checks them; tutors see only approved ones', async () => {
+test('Prof’s StudyBridge practice papers (no longer used by the app): Prof works out the papers, writes them in the background, checks them; tutors never get them', async () => {
   const A = await admin();
   const T = client();
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
@@ -477,11 +476,11 @@ test('StudyBridge practice papers: Prof works out the papers, writes them in the
   assert.equal(ps[0].flagged, 1, 'the deliberately wrong answer is flagged');
   assert.match(ps[0].check_note, /^3:/);
   assert.ok(Number(all.avg_cents) > 0, 'what a paper costs, for the next estimate');
-  // tutors see nothing until approved
+  // tutors get nothing, even approved: StudyBridge's papers for tutors now come from the content account
   assert.equal((await q(T.from('sb_papers').select('id'))).length, 0);
   await q(A.rpc('admin_paper_status', { p_ids: [ps[0].id], p_status: 'approved' }));
-  const seen = await q(T.from('sb_papers').select('*'));
-  assert.equal(seen.length, 1);
+  assert.equal((await q(T.from('sb_papers').select('*'))).length, 0);
+  const seen = await q(A.from('sb_papers').select('*').eq('id', ps[0].id));
   assert.equal(seen[0].items.length, 8);
   assert.equal(seen[0].items[0].answer.value, '7');
   await q(T.rpc('paper_used', { p_id: ps[0].id }));

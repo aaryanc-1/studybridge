@@ -5,6 +5,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Field, Page, Toggle, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
+import { getServer } from '../../lib/config.js';
 
 const PRICES = [
   ['starter_month', 'Starter, monthly ($15)'],
@@ -115,13 +116,7 @@ export default function SellingPage() {
         </div>
       </div>
 
-      <div className="card">
-        <h2>Google sign-in</h2>
-        <div className="small muted">
-          Set it up first in Google Cloud (an OAuth client) and Supabase → Authentication → Sign In / Providers → Google. Then switch it on here: “Continue with Google” appears on the sign-in page of the phone and web version.
-        </div>
-        <Toggle checked={s.google_on} onChange={(v) => save({ google: v }, v ? 'Google sign-in is on' : 'Google sign-in is off')} icon="globe" title="Show “Continue with Google”" />
-      </div>
+      <GoogleSetup on={s.google_on} save={save} />
       <WebsiteMessages />
       <EarlyAccess />
       <div className="tiny muted">
@@ -261,6 +256,54 @@ function EarlyAccess() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// Google sign-in: the steps (in Google Cloud and Supabase's own dashboards: nothing to paste here), and a live check
+// that Supabase has Google switched on, so the button never leads anywhere broken without the Owner knowing
+function GoogleSetup({ on, save }) {
+  const ready = useQuery('google-ready', api.googleReady);
+  const host = (() => {
+    try {
+      return new URL(getServer().url).host;
+    } catch {
+      return 'your-project.supabase.co';
+    }
+  })();
+  const code = (t) => (
+    <span className="code-box" style={{ display: 'inline', padding: '2px 6px' }}>
+      {t}
+    </span>
+  );
+  return (
+    <div className="card stack sm">
+      <h2>Google sign-in</h2>
+      <div className={'note small ' + (ready.data ? 'good' : 'warn')}>
+        {ready.data === undefined
+          ? 'Checking Supabase…'
+          : ready.data
+            ? 'Supabase has Google sign-in switched on. “Continue with Google” works on the web, on phones and in the desktop app.'
+            : 'Supabase doesn’t have Google switched on yet, so “Continue with Google” would show an error. Do the steps below first.'}
+      </div>
+      <ol className="small steps-list">
+        <li>
+          Google Cloud Console → a project called StudyBridge → Google Auth Platform → Branding: app name StudyBridge, your support email, home page
+          {' '}{code('https://gostudybridge.com')}, privacy {code('https://gostudybridge.com/privacy')}, terms {code('https://gostudybridge.com/terms')}, authorised
+          domains {code('gostudybridge.com')} and {code('supabase.co')}. Audience: External, then Publish app.
+        </li>
+        <li>
+          Clients → Create client → Web application. Authorised JavaScript origins: {code('https://gostudybridge.com')}. Authorised redirect URIs:{' '}
+          {code(`https://${host}/auth/v1/callback`)}. Keep the Client ID and Client secret it shows.
+        </li>
+        <li>Supabase → Authentication → Sign In / Providers → Google: switch it on, put in the Client ID and Client secret, Save.</li>
+        <li>
+          Supabase → Authentication → URL Configuration → Redirect URLs: add {code('https://gostudybridge.com/app/**')} and, for the desktop app,{' '}
+          {code('http://127.0.0.1:53682/**')}.
+        </li>
+        <li>Switch it on below. The check above turns green when Supabase is ready.</li>
+      </ol>
+      <Toggle checked={on} onChange={(v) => save({ google: v }, v ? 'Google sign-in is on' : 'Google sign-in is off')} icon="globe" title="Show “Continue with Google”" />
     </div>
   );
 }

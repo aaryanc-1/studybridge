@@ -324,7 +324,7 @@ test('practice: any number of tries, marked instantly, the tutor isn\'t pinged; 
     assert.equal(s.released, true);
   }
   assert.equal((await as('T', `select id from notifications where kind = 'submitted'`)).length, before, 'no ping per practice try');
-  // the bank holds answers: learners can't read it, even shared questions
+  // the bank holds answers: learners can't read it, not even StudyBridge's questions
   await as('T', `insert into bank_questions (owner_id, type, prompt_md, answer) values (auth.uid(), 'numeric', 'x', '{"value":"1"}')`);
   assert.equal((await as('L', `select id from bank_questions`)).length, 0);
   await fails(as('L', `insert into bank_questions (owner_id, type, prompt_md) values (auth.uid(), 'numeric', 'x')`), /row-level security/);
@@ -1021,7 +1021,7 @@ test('calendar: only the server reads a feed', async () => {
   assert.equal(JSON.stringify(await as('LC', `select * from profiles`)).includes(tok), false);
 });
 
-test('StudyBridge papers: only approved ones reach tutors; only the admin writes or fixes them', async () => {
+test('Prof’s StudyBridge papers (no longer used): never handed to tutors, even approved; only the admin writes or fixes them', async () => {
   const pid = (await db.query(`insert into sb_papers (board, code, paper, number, status, items) values ('cie', '0607', '2', 9, 'review', $1) returning id`,
     [JSON.stringify([{ label: '1', prompt: 'x', type: 'numeric', answer: { value: '1' }, marks: 1, check: { ok: false, note: 'wrong' } }])])).rows[0].id;
   assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 0);
@@ -1035,8 +1035,9 @@ test('StudyBridge papers: only approved ones reach tutors; only the admin writes
   assert.equal(fixed.items[0].owner, undefined, 'only answer/mark scheme/solution/prompt/marks can change');
   assert.equal(fixed.flagged, 0);
   await as('A', `select admin_paper_status($1, 'approved')`, [[pid]]);
-  assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 1);
-  assert.equal((await as('LC', `select * from sb_papers where id = $1`, [pid])).length, 0, 'learners get papers only through their tutor');
+  assert.equal((await as('TC', `select * from sb_papers where id = $1`, [pid])).length, 0, 'StudyBridge’s papers for tutors come from the content account now');
+  assert.equal((await as('LC', `select * from sb_papers where id = $1`, [pid])).length, 0);
+  assert.equal((await as('A', `select * from sb_papers where id = $1`, [pid])).length, 1, 'the admin still sees them');
   await fails(as('TC', `select * from sb_paper_plans`), /permission denied/);
   // A paper whose job fails (or is stopped) shows as failed, not "writing" for ever; trying again restarts it
   const wp = (await db.query(`insert into sb_papers (board, code, paper, number) values ('cie', '0607', '4', 1) returning id`)).rows[0].id;
@@ -2068,6 +2069,100 @@ test('emails to students on their own and their parents: welcome, the free week 
   // only the server sends these
   await fails(as('S5', `select public._student_emails_tick()`), /permission denied/);
   await fails(as('S5', `select public._student_paid_by_card($1, 'pass', 12)`, [U.S5]), /permission denied/);
+});
+
+test('one StudyBridge library: tutors get the content account’s checked questions and practice papers for their exams; their learners only through the tutor', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  await mk('TB', 'library-tutor@x.com');
+  await mk('LB', 'library-learner@x.com');
+  await one('TB', `select * from become_tutor('Library Tutor', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.TB]);
+  const subj = async (key) => (await db.query(`select id from subjects where tutor_id = $1 and catalogue = $2`, [U.C, key])).rows[0].id;
+  const maths = await subj('cambridge:igcse:0607');
+  const phys = await subj('ib:sl-and-hl:physics');
+
+  // StudyBridge's subjects know their exam (Cambridge by its code, the IB by its name), and so do its questions;
+  // older questions without one are filled in when setup.sql runs again
+  const exams = await db.query(`select public._subject_exam(s) e from subjects s where s.id = any($1) order by s.position`, [[maths, phys]]);
+  assert.deepEqual(exams.rows.map((r) => r.e), ['cie:0607', 'ib:physics']);
+  const live = (await db.query(`select id, exam_board, exam_code, uses from bank_questions where owner_id = $1 and status = 'approved'`, [U.C])).rows;
+  assert.ok(live.length >= 4 && live.every((b) => b.exam_board === 'cie' && b.exam_code === '0607'), JSON.stringify(live));
+  await db.query(`update bank_questions set exam_code = null, exam_board = 'Cambridge' where id = $1`, [live[0].id]);
+  await db.exec(SETUP);
+  assert.deepEqual((await db.query(`select exam_board, exam_code from bank_questions where id = $1`, [live[0].id])).rows[0], { exam_board: 'cie', exam_code: '0607' });
+  // one question waits for its check and one has problems: tutors get neither
+  const added = await val('C', `select content_add_questions($1, $2)`, [
+    maths,
+    JSON.stringify([
+      { topic: 'Number', type: 'numeric', prompt: 'Work out $5 \\times 5$.', answer: { value: '25' }, hint: 'Five fives.', solution: '$5 \\times 5 = 25$' },
+      { topic: 'Number', type: 'numeric', prompt: 'Work out $3 + 3', answer: { value: 'six' }, hint: '', solution: '' },
+    ]),
+  ]);
+  assert.deepEqual([added.waiting_for_check, added.with_problems.length], [1, 1]);
+
+  // a tutor's question bank: StudyBridge's checked questions for the exams their subjects are for
+  const sub = await val('TB', `insert into subjects (name) values ('IGCSE Maths') returning id`);
+  const num = await val('TB', `insert into topics (subject_id, name) values ($1, 'Number') returning id`, [sub]);
+  const alg = await val('TB', `insert into topics (subject_id, name) values ($1, 'Algebra') returning id`, [sub]);
+  const sbBank = async (who) => (await as(who, `select id from bank_questions where owner_id = $1`, [U.C])).map((b) => b.id).sort();
+  assert.deepEqual(await sbBank('TB'), [], 'nothing until a subject says which exam it’s for');
+  await as('TB', `update subjects set exam = 'cie:0607' where id = $1`, [sub]);
+  assert.deepEqual(await sbBank('TB'), live.map((b) => b.id).sort(), 'the checked ones, not those waiting or with problems');
+  assert.deepEqual(await sbBank('T'), [], 'a tutor with no subject for 0607 gets none');
+  // ...to use, never to change
+  assert.equal((await as('TB', `update bank_questions set prompt_md = 'changed' where owner_id = $1 returning id`, [U.C])).length, 0);
+  assert.equal((await as('TB', `delete from bank_questions where owner_id = $1 returning id`, [U.C])).length, 0);
+  await fails(as('TB', `insert into bank_questions (owner_id, type, prompt_md) values ($1, 'numeric', 'x')`, [U.C]), /row-level security/);
+  await as('TB', `select bank_used($1)`, [[live[0].id]]);
+  assert.equal((await db.query(`select uses from bank_questions where id = $1`, [live[0].id])).rows[0].uses, live[0].uses + 1, 'uses are counted');
+
+  // with a tutor, a person approves everything a learner gets: StudyBridge's questions never go into the learner's
+  // practice by themselves (the tutor uses them in work they post)
+  const code = await val('TB', `insert into invites (name, subject_ids) values ('Lib', $1) returning code`, [[sub]]);
+  await one('LB', `select * from accept_invite($1, 'Lib')`, [code]);
+  assert.deepEqual(await val('LB', `select practice_topics()`), [], 'nothing to practise until the tutor approves questions');
+  await fails(as('LB', `select start_practice('topic', $1, 'Number', 6)`, [sub]), /aren’t any practice questions/);
+  assert.equal((await as('LB', `select id from bank_questions`)).length, 0, 'learners never read the bank');
+
+  // StudyBridge's practice papers for that exam: only the ones that are up for students
+  const waiting = await val('C', `select content_add_paper($1, 'Practice paper 3', 30, null, $2)`, [
+    maths,
+    JSON.stringify([{ type: 'numeric', prompt: 'Work out $4 \\times 4$.', answer: { value: '16' }, solution: '$4 \\times 4 = 16$', mark_scheme: 'B1 16', marks: 1 }]),
+  ]);
+  const papers = await val('TB', `select studybridge_papers('cie:0607')`);
+  assert.deepEqual(papers.map((p) => p.title), ['Practice paper 1'], 'not one still waiting for its checks');
+  const p1 = papers[0];
+  assert.deepEqual([p1.questions.length, Number(p1.marks), p1.minutes], [2, 3, 45]);
+  assert.deepEqual(p1.questions[1].answer, { final: 'x = 4' });
+  assert.match(p1.instructions, /Not affiliated with or endorsed by Cambridge/);
+  assert.deepEqual((await val('TB', `select studybridge_papers('0607')`)).map((p) => p.id), [p1.id], 'the code on its own works too');
+  assert.deepEqual(await val('TB', `select studybridge_papers('cie:0580')`), []);
+  // copied into a draft test of the tutor's own, keys and all; the tutor marks it, and "not affiliated" stays
+  const copy = await val('TB', `select copy_studybridge_paper($1)`, [p1.id]);
+  const ca = await one('TB', `select * from assignments where id = $1`, [copy]);
+  assert.deepEqual([ca.tutor_id, ca.kind, ca.draft, ca.visibility, ca.source, ca.subject_id, ca.self_mark, ca.time_limit_min], [U.TB, 'test', true, 'hidden', 'studybridge', sub, false, 45]);
+  assert.match(ca.instructions_md, /Not affiliated with or endorsed by Cambridge/);
+  assert.doesNotMatch(ca.instructions_md, /mark it yourself/);
+  const keys = await as('TB', `select q.topic_id, q.marks, k.answer, k.mark_scheme_md, k.solution_md from questions q join question_keys k on k.question_id = q.id
+     where q.assignment_id = $1 order by q.position`, [copy]);
+  assert.deepEqual(keys.map((k) => k.answer), [{ value: '56' }, { final: 'x = 4' }]);
+  assert.deepEqual(keys.map((k) => k.mark_scheme_md), ['B1 56', 'M1 add 2, A1 x = 4']);
+  assert.match(keys[1].solution_md, /x = 4/);
+  assert.equal(keys[1].topic_id, alg, 'the tutor’s own topic');
+  assert.equal((await as('LB', `select id from assignments where id = $1`, [copy])).length, 0, 'the learner sees it once the tutor posts it');
+  assert.equal((await val('C', `select content_status($1)`, [maths]))[0].papers_live, 1, 'the copy is the tutor’s, not StudyBridge’s');
+  await fails(as('TB', `select copy_studybridge_paper($1)`, [waiting.id]), /isn’t available/);
+  await fails(as('TB', `select copy_studybridge_paper($1)`, [copy]), /isn’t available/);
+  // tutors only: not their learners, students on their own or parents; the content account has its own already
+  for (const who of ['LB', 'S', 'PR']) {
+    await fails(as(who, `select studybridge_papers('cie:0607')`), /for tutors/);
+    await fails(as(who, `select copy_studybridge_paper($1)`, [p1.id]), /for tutors/);
+  }
+  assert.deepEqual(await val('C', `select studybridge_papers('cie:0607')`), []);
+  await fails(as('C', `select copy_studybridge_paper($1)`, [p1.id]), /isn’t available/);
 });
 
 test('daily study reminder: once a day at the learner’s own time in their own time zone, never after studying that day; devices only through their own functions', async () => {
