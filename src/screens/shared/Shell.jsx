@@ -280,6 +280,11 @@ function useAnnouncer(target) {
     if (fresh.some((n) => ['submitted', 'note', 'marked', 'message', 'auto_submitted', 'attempt_cancelled'].includes(n.kind))) invalidate('attempts', 'comments', 'myattempts');
     // a parent joined or was removed; a report was approved (parent accounts)
     if (fresh.some((n) => ['parent_joined', 'parent_removed', 'report'].includes(n.kind))) invalidate('my-parents', 'parents', 'parent-counts', 'parent-children', 'parent-view');
+    // a learner joined (they show in lists and pickers straight away); a learner was put in a class (its work shows);
+    // a centre changed
+    if (fresh.some((n) => n.kind === 'joined')) invalidate('learners', 'learner_subjects', 'invites', 'accounts', 'class_members');
+    if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions');
+    if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
 }

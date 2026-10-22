@@ -182,9 +182,20 @@ export function TutorRow({ t }) {
         </div>
       )}
       <div className="facts">
+        {(t.org?.kind === 'centre' || t.org?.kind === 'school') && (
+          <span>
+            {t.org.kind === 'school' ? 'School' : 'Centre'}: <b>{t.org.name}</b> · {t.org.role} ({t.org.tutors} tutor{Number(t.org.tutors) === 1 ? '' : 's'})
+          </span>
+        )}
+        {t.org?.kind === 'studybridge' && <span>StudyBridge’s own</span>}
         <span>
           Plan <b>{planName(t)}</b>
         </span>
+        {!pending && (
+          <span>
+            Classes <b>{t.classes ?? 0}</b>
+          </span>
+        )}
         <span>
           Prof <b>{money(t.ai_cents)}</b> of {money(t.ai_limit_cents)}
           {t.ai_limit_custom ? '' : ' (default)'}

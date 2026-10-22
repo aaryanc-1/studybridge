@@ -10,7 +10,7 @@ import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
-export default function Learners() {
+export default function Learners({ tab = 'learners' }) {
   const lk = useLookups();
   const confirm = useConfirm();
   const toast = useToast();
@@ -19,20 +19,42 @@ export default function Learners() {
   const accounts = useQuery('accounts', api.learnerAccounts).data || [];
   const [inviting, setInviting] = useState(false);
   const [shown, setShown] = useState(null);
+  const [editingClass, setEditingClass] = useState(null); // {} for a new class
+  const [inClass, setInClass] = useState(''); // show only one class's learners
   const open = (invites.data || []).filter((i) => !i.accepted_by && !i.revoked);
   const weekStr = ymd(weekRange(0).from);
+  const filterClass = lk.activeClasses.find((c) => c.id === inClass);
+  const learners = filterClass ? lk.learners.filter((l) => filterClass.members.includes(l.id)) : lk.learners;
+  // the classes someone joins when they use the invite
+  const joinsOf = (i) => (i.class_ids || []).map((id) => lk.klass(id)?.name).filter(Boolean);
 
   return (
     <Page
       title="Learners"
-      subtitle="Add learners as you go. Each one joins with their own invite."
+      subtitle={tab === 'classes' ? 'Group learners who learn together, then set things for the whole class at once.' : 'Add learners as you go. Each one joins with their own invite.'}
       actions={
-        <button className="btn primary" onClick={() => setInviting(true)}>
-          <Icon name="plus" size={18} /> Invite a learner
-        </button>
+        tab === 'classes' ? (
+          <button className="btn primary" onClick={() => setEditingClass({})}>
+            <Icon name="plus" size={18} /> New class
+          </button>
+        ) : (
+          <button className="btn primary" onClick={() => setInviting(true)}>
+            <Icon name="plus" size={18} /> Invite a learner
+          </button>
+        )
       }
     >
-      {lk.learners.length === 0 ? (
+      <Seg
+        value={tab}
+        onChange={(t) => go(t === 'classes' ? '/learners/classes' : '/learners', { replace: true })}
+        options={[
+          { value: 'learners', label: 'Learners', icon: 'user' },
+          { value: 'classes', label: 'Classes', icon: 'users' },
+        ]}
+      />
+      {tab === 'classes' ? (
+        <Classes onNew={() => setEditingClass({})} onEdit={setEditingClass} />
+      ) : lk.learners.length === 0 ? (
         <Empty
           title="No learners yet"
           action={
@@ -44,38 +66,66 @@ export default function Learners() {
           Create an invite, send it to your learner, and they paste it into StudyBridge to join.
         </Empty>
       ) : (
-        <div className="grid g3">
-          {lk.learners.map((l) => {
-            const subs = lk.subjectsOfLearner(l.id);
-            const secs = activity.filter((x) => x.learner_id === l.id && x.day >= weekStr).reduce((s, x) => s + x.seconds, 0);
-            return (
-              <Link key={l.id} to={`/learners/${l.id}`} className="card" style={{ textDecoration: 'none', color: 'inherit' }}>
-                <div className="row">
-                  <Avatar person={l} size="lg" />
-                  <div className="grow">
-                    <div className="strong" style={{ fontSize: 17 }}>{l.display_name}</div>
-                    <div className="muted small">{lk.programme(l.programme_id)?.name || 'No programme'}</div>
-                  </div>
-                </div>
-                <div className="chips small">
-                  {subs.length ? subs.map((s) => <span key={s} className="pill"><SubjectTag id={s} /></span>) : <span className="muted small">No subjects yet</span>}
-                </div>
-                <div className="muted small">{dur(secs)} studied this week</div>
-                {(() => {
-                  const acct = accounts.find((x) => x.id === l.id);
-                  return acct ? (
-                    <div className="tiny muted" style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}>
-                      {acct.email} · {acct.last_sign_in_at ? `last signed in ${ago(acct.last_sign_in_at)}` : 'hasn’t signed in yet'}
+        <>
+          {lk.activeClasses.length > 0 && (
+            <div className="row wrap">
+              <label className="small muted" htmlFor="learners-class">
+                Class
+              </label>
+              <select id="learners-class" className="select" style={{ width: 'auto', minHeight: 36 }} value={inClass} onChange={(e) => setInClass(e.target.value)}>
+                <option value="">All learners</option>
+                {lk.activeClasses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {learners.length === 0 && filterClass && <Empty>Nobody is in {filterClass.name} yet.</Empty>}
+          <div className="grid g3">
+            {learners.map((l) => {
+              const subs = lk.subjectsOfLearner(l.id);
+              const classes = lk.classesOf(l.id).filter((c) => !c.archived);
+              const secs = activity.filter((x) => x.learner_id === l.id && x.day >= weekStr).reduce((s, x) => s + x.seconds, 0);
+              return (
+                <Link key={l.id} to={`/learners/${l.id}`} className="card" style={{ textDecoration: 'none', color: 'inherit' }}>
+                  <div className="row">
+                    <Avatar person={l} size="lg" />
+                    <div className="grow">
+                      <div className="strong" style={{ fontSize: 17 }}>{l.display_name}</div>
+                      <div className="muted small">{lk.programme(l.programme_id)?.name || 'No programme'}</div>
                     </div>
-                  ) : null;
-                })()}
-              </Link>
-            );
-          })}
-        </div>
+                  </div>
+                  <div className="chips small">
+                    {subs.length ? subs.map((s) => <span key={s} className="pill"><SubjectTag id={s} /></span>) : <span className="muted small">No subjects yet</span>}
+                  </div>
+                  {classes.length > 0 && (
+                    <div className="chips">
+                      {classes.map((c) => (
+                        <span key={c.id} className="pill accent">
+                          <Icon name="users" size={12} /> {c.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="muted small">{dur(secs)} studied this week</div>
+                  {(() => {
+                    const acct = accounts.find((x) => x.id === l.id);
+                    return acct ? (
+                      <div className="tiny muted" style={{ borderTop: '1px solid var(--line-soft)', paddingTop: 10 }}>
+                        {acct.email} · {acct.last_sign_in_at ? `last signed in ${ago(acct.last_sign_in_at)}` : 'hasn’t signed in yet'}
+                      </div>
+                    ) : null;
+                  })()}
+                </Link>
+              );
+            })}
+          </div>
+        </>
       )}
 
-      {open.length > 0 && (
+      {tab !== 'classes' && open.length > 0 && (
         <div className="card">
           <h2>Invites waiting to be used</h2>
           <div className="list">
@@ -86,6 +136,7 @@ export default function Learners() {
                   <span className="name">{i.name || 'Unnamed invite'}</span>
                   <span className="meta">
                     Code {prettyCode(i.code)} · created {ago(i.created_at)}
+                    {joinsOf(i).length > 0 && ` · joins ${joinsOf(i).join(', ')}`}
                   </span>
                 </span>
                 <button className="btn sm" onClick={() => setShown(i)}>
@@ -122,7 +173,194 @@ export default function Learners() {
         />
       )}
       {shown && <InviteShow invite={shown} onClose={() => setShown(null)} />}
+      {editingClass && <ClassForm klass={editingClass} onClose={() => setEditingClass(null)} />}
     </Page>
+  );
+}
+
+// After a class changes, so does who sees everything set for it
+const classesChanged = () => invalidate('classes', 'class_members', 'assignments', 'lessons', 'files', 'sessions');
+
+// Classes: learners taught together. Anything set for a class goes to whoever is in it, now or later.
+function Classes({ onNew, onEdit }) {
+  const lk = useLookups();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const away = lk.classes.filter((c) => c.archived);
+  const size = (c) => lk.membersOf(c.id).filter((id) => lk.learner(id)).length;
+
+  async function putAway(c, archived = true) {
+    try {
+      await api.archiveClass(c.id, archived);
+      classesChanged();
+      toast(archived ? { title: `${c.name} is put away`, body: 'It stays on everything it was used for. Bring it back any time.' } : `${c.name} is back`);
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    }
+  }
+  async function del(c) {
+    if (!(await confirm({ title: `Delete ${c.name}?`, body: 'Work, lesson notes and lessons set for it keep the learners they have now. Anything set only for it while nobody was in it is hidden.', ok: 'Delete', danger: true }))) return;
+    try {
+      await api.deleteClass(c.id);
+      classesChanged();
+      toast(`${c.name} is deleted`);
+    } catch (e) {
+      toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
+    }
+  }
+
+  return (
+    <>
+      {lk.activeClasses.length === 0 ? (
+        <Empty
+          title={away.length ? 'No classes in use' : 'No classes yet'}
+          action={
+            <button className="btn primary" onClick={onNew}>
+              <Icon name="plus" size={18} /> New class
+            </button>
+          }
+        >
+          Group learners who learn together. Set work, lesson notes, files and live lessons for a class, and anyone who joins it later gets them too.
+        </Empty>
+      ) : (
+        <div className="grid g3">
+          {lk.activeClasses.map((c) => {
+            const people = lk.learners.filter((l) => c.members.includes(l.id));
+            return (
+              <div key={c.id} className="card">
+                <div className="stack sm">
+                  <div className="strong" style={{ fontSize: 17 }}>{c.name}</div>
+                  <div className="row wrap small muted" style={{ gap: 8 }}>
+                    {c.subject_id && <SubjectTag id={c.subject_id} />}
+                    <span>{people.length ? `${people.length} learner${people.length === 1 ? '' : 's'}` : 'Nobody in it yet'}</span>
+                  </div>
+                </div>
+                {people.length > 0 && (
+                  <div className="chips">
+                    {people.map((l) => (
+                      <Link key={l.id} to={`/learners/${l.id}`} className="pill" style={{ textDecoration: 'none' }}>
+                        {l.display_name}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+                <div className="row wrap" style={{ gap: 6, marginTop: 'auto' }}>
+                  <button className="btn sm" onClick={() => onEdit(c)} aria-label={`Edit ${c.name}`}>
+                    <Icon name="pen" size={15} /> Edit
+                  </button>
+                  <button className="btn sm" onClick={() => putAway(c)} aria-label={`Put away ${c.name}`}>
+                    Put away
+                  </button>
+                  <button className="btn sm ghost icon" onClick={() => del(c)} aria-label={`Delete ${c.name}`}>
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {away.length > 0 && (
+        <div className="card">
+          <h2>Put away</h2>
+          <div className="small muted">They stay on everything they were used for. Bring one back to use it again.</div>
+          <div className="list">
+            {away.map((c) => (
+              <div key={c.id} className="item">
+                <Icon name="users" style={{ color: 'var(--muted)' }} />
+                <span className="grow">
+                  <span className="name">{c.name}</span>
+                  <span className="meta">
+                    {c.subject_id && <SubjectTag id={c.subject_id} />}
+                    <span>
+                      {size(c)} learner{size(c) === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                </span>
+                <button className="btn sm" onClick={() => putAway(c, false)} aria-label={`Bring back ${c.name}`}>
+                  Bring back
+                </button>
+                <button className="btn sm ghost icon" onClick={() => del(c)} aria-label={`Delete ${c.name}`}>
+                  <Icon name="trash" size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Make or change a class: its name, its subject (if it has one) and who's in it
+function ClassForm({ klass, onClose }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const isNew = !klass.id;
+  const [name, setName] = useState(klass.name || '');
+  const [subject, setSubject] = useState(klass.subject_id || '');
+  const [ids, setIds] = useState(() => (isNew ? [] : lk.membersOf(klass.id).filter((id) => lk.learner(id))));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  // learners who take the class's subject come first
+  const takes = (l) => !!subject && lk.subjectsOfLearner(l.id).includes(subject);
+  const people = [...lk.learners].sort((x, y) => takes(y) - takes(x));
+  async function submit(e) {
+    e.preventDefault();
+    if (!name.trim()) return setErr('Give the class a name.');
+    setBusy(true);
+    try {
+      await api.saveClass({ id: klass.id, name: name.trim(), subject_id: subject || null, learner_ids: ids });
+      classesChanged();
+      toast(isNew ? 'Class made. Anyone you add is told.' : 'Class saved');
+      onClose();
+    } catch (x) {
+      setErr(x.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={isNew ? 'New class' : `Edit ${klass.name}`} onClose={onClose}>
+      <form className="stack" onSubmit={submit}>
+        <Field label="Name">
+          <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Year 10 maths" maxLength={80} />
+        </Field>
+        <Field label="Subject (optional)">
+          <select className="select" value={subject} onChange={(e) => setSubject(e.target.value)}>
+            <option value="">No subject</option>
+            {lk.subjects.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Learners" hint={lk.learners.length ? 'Anything you set for the class goes to whoever is in it, including people you add later.' : undefined}>
+          {lk.learners.length === 0 ? (
+            <div className="note small">You don’t have any learners yet. Make the class now and add learners when they join. When you invite someone, you can choose their classes too.</div>
+          ) : (
+            <div className="stack sm" style={{ maxHeight: 300, overflowY: 'auto' }}>
+              {people.map((l) => (
+                <label key={l.id} className="check">
+                  <input type="checkbox" checked={ids.includes(l.id)} onChange={(e) => setIds(e.target.checked ? [...ids, l.id] : ids.filter((x) => x !== l.id))} />
+                  <span className="t">{l.display_name}</span>
+                  {subject && !takes(l) && <span className="s">Doesn’t take {lk.subject(subject)?.name}</span>}
+                </label>
+              ))}
+            </div>
+          )}
+        </Field>
+        {err && <div className="error">{err}</div>}
+        <div className="foot row end">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -131,13 +369,19 @@ function InviteForm({ onClose, onCreated }) {
   const [name, setName] = useState('');
   const [programme, setProgramme] = useState(lk.programmes[0]?.id || '');
   const [subjects, setSubjects] = useState([]);
+  const [classIds, setClassIds] = useState([]);
   const [err, setErr] = useState('');
   const avail = programme ? lk.subjects.filter((s) => s.programme_id === programme || !s.programme_id) : lk.subjects;
+  // a class's subject comes with it
+  const pickClass = (c, on) => {
+    setClassIds(on ? [...classIds, c.id] : classIds.filter((x) => x !== c.id));
+    if (on && c.subject_id && !subjects.includes(c.subject_id) && avail.some((s) => s.id === c.subject_id)) setSubjects([...subjects, c.subject_id]);
+  };
   async function submit(e) {
     e.preventDefault();
     if (!name.trim()) return setErr('Add the learner’s name.');
     try {
-      const inv = await api.createInvite({ name: name.trim(), programme_id: programme || null, subject_ids: subjects });
+      const inv = await api.createInvite({ name: name.trim(), programme_id: programme || null, subject_ids: subjects, ...(classIds.length ? { class_ids: classIds } : {}) });
       onCreated(inv);
     } catch (x) {
       setErr(x.message);
@@ -177,6 +421,19 @@ function InviteForm({ onClose, onCreated }) {
             </div>
           )}
         </Field>
+        {lk.activeClasses.length > 0 && (
+          <Field label="Classes (optional)" hint="They join these classes as soon as they use the code.">
+            <div className="stack sm">
+              {lk.activeClasses.map((c) => (
+                <label key={c.id} className="check">
+                  <input type="checkbox" checked={classIds.includes(c.id)} onChange={(e) => pickClass(c, e.target.checked)} />
+                  <span className="t">{c.name}</span>
+                  {c.subject_id && <span className="s">{lk.subject(c.subject_id)?.name}</span>}
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
         {err && <div className="error">{err}</div>}
         <div className="foot row end">
           <button type="button" className="btn" onClick={onClose}>
@@ -390,9 +647,11 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const [editing, setEditing] = useState(false);
   const [account, setAccount] = useState(false);
+  const [classing, setClassing] = useState(false);
   if (!l) return <Page title="Learner">{lk.ready ? <Empty>This learner isn’t in your list any more.</Empty> : null}</Page>;
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const subs = lk.subjectsOfLearner(id);
+  const classes = lk.classesOf(id).filter((c) => !c.archived);
 
   return (
     <Page
@@ -409,14 +668,25 @@ export function LearnerDetail({ id, tab = 'progress' }) {
         </span>
       }
       subtitle={
-        <span className="row wrap" style={{ gap: 8, marginTop: 6 }}>
-          <span>{lk.programme(l.programme_id)?.name || 'No programme'}</span>
-          {subs.map((s) => (
-            <span key={s} className="pill">
-              <SubjectTag id={s} />
+        <>
+          <span className="row wrap" style={{ gap: 8, marginTop: 6 }}>
+            <span>{lk.programme(l.programme_id)?.name || 'No programme'}</span>
+            {subs.map((s) => (
+              <span key={s} className="pill">
+                <SubjectTag id={s} />
+              </span>
+            ))}
+          </span>
+          {lk.activeClasses.length > 0 && (
+            <span className="row wrap small" style={{ gap: 8, marginTop: 8 }}>
+              <Icon name="users" size={15} />
+              <span>{classes.length ? `Classes: ${classes.map((c) => c.name).join(', ')}` : 'Not in a class'}</span>
+              <button className="linkbtn small" onClick={() => setClassing(true)} aria-label="Change classes">
+                Change
+              </button>
             </span>
-          ))}
-        </span>
+          )}
+        </>
       }
       actions={
         <>
@@ -433,6 +703,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       }
     >
       {account && <AccountModal l={l} onClose={() => setAccount(false)} />}
+      {classing && <LearnerClasses l={l} onClose={() => setClassing(false)} />}
       <Seg
         value={tab}
         onChange={(t) => go(`/learners/${id}/${t}`, { replace: true })}
@@ -507,6 +778,63 @@ export function LearnerDetail({ id, tab = 'progress' }) {
         />
       )}
     </Page>
+  );
+}
+
+// The classes one learner is in. Each class changed keeps its name, subject and everyone else in it.
+function LearnerClasses({ l, onClose }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const first = l.display_name.split(' ')[0];
+  const [ids, setIds] = useState(() => lk.activeClasses.filter((c) => c.members.includes(l.id)).map((c) => c.id));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      for (const c of lk.activeClasses) {
+        const was = c.members.includes(l.id);
+        if (was === ids.includes(c.id)) continue;
+        const others = c.members.filter((x) => x !== l.id && lk.learner(x));
+        await api.saveClass({ id: c.id, name: c.name, subject_id: c.subject_id, learner_ids: was ? others : [...others, l.id] });
+      }
+      classesChanged();
+      toast(`${first}’s classes are saved`);
+      onClose();
+    } catch (x) {
+      classesChanged(); // some may have saved
+      setErr(x.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={`${first}’s classes`} onClose={onClose}>
+      <form className="stack" onSubmit={submit}>
+        <div className="stack sm">
+          {lk.activeClasses.map((c) => {
+            const n = c.members.filter((x) => lk.learner(x)).length;
+            return (
+              <label key={c.id} className="check">
+                <input type="checkbox" checked={ids.includes(c.id)} onChange={(e) => setIds(e.target.checked ? [...ids, c.id] : ids.filter((x) => x !== c.id))} />
+                <span className="t">{c.name}</span>
+                <span className="s">{[lk.subject(c.subject_id)?.name, `${n} learner${n === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="small muted">{first} gets the work, lesson notes, files and coming live lessons set for these classes.</div>
+        {err && <div className="error">{err}</div>}
+        <div className="foot row end">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

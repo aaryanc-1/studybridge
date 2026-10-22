@@ -4884,7 +4884,7 @@ begin
   if me.role = 'tutor' then
     foreach t in array array['programmes', 'subjects', 'topics', 'invites', 'files', 'lessons', 'assignments', 'questions', 'question_keys',
                              'attempts', 'responses', 'comments', 'sessions', 'lesson_series', 'parent_reports', 'learner_reports', 'cards',
-                             'mocks', 'grade_boundaries', 'teaching_plans', 'taught_topics', 'parent_invites', 'activity'] loop
+                             'mocks', 'grade_boundaries', 'teaching_plans', 'taught_topics', 'parent_invites', 'activity', 'classes'] loop
       if to_regclass('public.' || t) is not null then
         execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]'') from public.%I x where x.tutor_id = $1', t) into rows using me.id;
         v := v || jsonb_build_object(t, rows);
@@ -4895,6 +4895,11 @@ begin
                      'subjects', (select coalesce(jsonb_agg(ls.subject_id), '[]') from public.learner_subjects ls where ls.learner_id = l.id))), '[]')
                      from public.profiles l where l.tutor_id = me.id and l.role = 'learner'),
       'question_bank', (select coalesce(jsonb_agg(to_jsonb(b)), '[]') from public.bank_questions b where b.owner_id = me.id));
+    if to_regclass('public.class_members') is not null then
+      execute 'select coalesce(jsonb_agg(to_jsonb(m)), ''[]'') from public.class_members m join public.classes c on c.id = m.class_id where c.tutor_id = $1'
+        into rows using me.id;
+      v := v || jsonb_build_object('class_members', rows);
+    end if;
   elsif me.role = 'learner' then
     v := v || jsonb_build_object(
       'tutor', (select display_name from public.profiles where id = me.tutor_id),
@@ -7020,6 +7025,542 @@ begin
   return v_id;
 end $$;
 
+-- =====================================================================
+-- Launch 2, part 1 (22 Oct 2026): organisations and classes.
+-- Organisations sit underneath everything. Every tutor is in one (their own, made for them); a tuition centre is
+-- one with several tutors and a centre manager; students on their own are in StudyBridge's (their "tutor" is the
+-- content account). A learner belongs to their tutor's organisation. Approval doesn't change: in a centre each
+-- tutor approves everything for their own learners, and the manager only looks.
+-- Classes are a tutor's teaching groups. Work, lesson notes, files and live lessons can be for a class: whoever is
+-- in it gets them (joining later included). learner_ids is kept in step, so every rule that reads it still works.
+-- =====================================================================
+create table if not exists public.organisations (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  kind text not null default 'tutor' check (kind in ('tutor', 'centre', 'school', 'studybridge')),
+  join_code text unique,
+  created_at timestamptz not null default now()
+);
+create table if not exists public.org_members (
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  role text not null default 'tutor' check (role in ('manager', 'tutor')),
+  joined_at timestamptz not null default now(),
+  primary key (org_id, user_id)
+);
+create unique index if not exists org_members_one_each on public.org_members (user_id); -- one organisation each, for now
+alter table public.organisations enable row level security;
+alter table public.org_members enable row level security;
+revoke all on public.organisations, public.org_members from public, anon, authenticated; -- only through the functions below
+
+create table if not exists public.classes (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  name text not null,
+  subject_id uuid references public.subjects (id) on delete set null,
+  archived boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create table if not exists public.class_members (
+  class_id uuid not null references public.classes (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  added_at timestamptz not null default now(),
+  primary key (class_id, learner_id)
+);
+create index if not exists class_members_learner on public.class_members (learner_id);
+alter table public.classes enable row level security;
+alter table public.class_members enable row level security;
+revoke all on public.classes, public.class_members from public, anon, authenticated;
+grant select on public.classes, public.class_members to authenticated; -- changes go through save_class and the rest
+
+create or replace function public._class_tutor(p_class uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select tutor_id from public.classes where id = p_class
+$$;
+create or replace function public._in_class(p_class uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.class_members where class_id = p_class and learner_id = auth.uid())
+$$;
+drop policy if exists classes_tutor on public.classes;
+create policy classes_tutor on public.classes for select using (tutor_id = auth.uid());
+drop policy if exists classes_learner on public.classes;
+create policy classes_learner on public.classes for select using (public._in_class(id));
+drop policy if exists class_members_tutor on public.class_members;
+create policy class_members_tutor on public.class_members for select using (public._class_tutor(class_id) = auth.uid());
+drop policy if exists class_members_learner on public.class_members;
+create policy class_members_learner on public.class_members for select using (learner_id = auth.uid()); -- never the others in it
+
+alter table public.assignments add column if not exists class_id uuid references public.classes (id) on delete set null;
+alter table public.lessons add column if not exists class_id uuid references public.classes (id) on delete set null;
+alter table public.files add column if not exists class_id uuid references public.classes (id) on delete set null;
+alter table public.sessions add column if not exists class_id uuid references public.classes (id) on delete set null;
+alter table public.lesson_series add column if not exists class_id uuid references public.classes (id) on delete set null;
+alter table public.invites add column if not exists class_ids uuid[] not null default '{}';
+
+-- ---------------- organisations ----------------
+-- The organisation someone is in: a tutor's own, a learner's tutor's
+create or replace function public._org_of(p_user uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select m.org_id from public.org_members m
+   where m.user_id = (select case when p.role = 'learner' then p.tutor_id else p.id end from public.profiles p where p.id = p_user)
+$$;
+
+create or replace function public._org_manager(p_org uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id
+                  where m.org_id = p_org and m.user_id = auth.uid() and m.role = 'manager' and p.role = 'tutor')
+$$;
+
+-- Every tutor has an organisation: their own, made the first time it's needed
+create or replace function public._ensure_org(p_tutor uuid) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v uuid; p public.profiles;
+begin
+  select org_id into v from public.org_members where user_id = p_tutor;
+  if v is not null then return v; end if;
+  select * into p from public.profiles where id = p_tutor;
+  if p.id is null or p.role is distinct from 'tutor' then return null; end if;
+  insert into public.organisations (name, kind)
+  values (case when p.is_studybridge then 'StudyBridge' else coalesce(nullif(trim(p.display_name), ''), 'My') || '’s tutoring' end,
+          case when p.is_studybridge then 'studybridge' else 'tutor' end)
+  returning id into v;
+  insert into public.org_members (org_id, user_id, role) values (v, p_tutor, 'manager');
+  return v;
+end $$;
+
+-- 8 digits, like a learner's code, never the same as one
+create or replace function public._new_org_code() returns text
+language plpgsql volatile security definer set search_path = public as $$
+declare b bytea; c text;
+begin
+  loop
+    b := extensions.gen_random_bytes(4);
+    c := lpad(((get_byte(b, 0)::bigint * 16777216 + get_byte(b, 1) * 65536 + get_byte(b, 2) * 256 + get_byte(b, 3)) % 100000000)::text, 8, '0');
+    exit when not exists (select 1 from public.organisations where join_code = c) and not exists (select 1 from public.invites where code = c);
+  end loop;
+  return c;
+end $$;
+
+-- A new tutor gets their own organisation; the content account's is StudyBridge's; a learner who leaves their
+-- tutor leaves that tutor's classes
+create or replace function public._profile_org() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  if new.role = 'tutor' then
+    v := public._ensure_org(new.id);
+    if tg_op = 'UPDATE' and new.is_studybridge is distinct from old.is_studybridge
+       and (select count(*) from public.org_members where org_id = v) = 1 then
+      update public.organisations
+         set kind = case when new.is_studybridge then 'studybridge' else 'tutor' end,
+             name = case when new.is_studybridge then 'StudyBridge' else coalesce(nullif(trim(new.display_name), ''), 'My') || '’s tutoring' end,
+             join_code = null
+       where id = v;
+    end if;
+  end if;
+  if tg_op = 'UPDATE' and new.tutor_id is distinct from old.tutor_id then
+    delete from public.class_members m using public.classes c
+     where m.learner_id = new.id and c.id = m.class_id and c.tutor_id is distinct from new.tutor_id;
+  end if;
+  return null;
+end $$;
+drop trigger if exists profiles_org on public.profiles;
+create trigger profiles_org after insert or update of role, tutor_id, is_studybridge on public.profiles
+  for each row execute function public._profile_org();
+
+-- An organisation with nobody left goes; one with no manager left gets its longest-standing tutor as manager
+create or replace function public._org_tidy() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.org_members where org_id = old.org_id) then
+    delete from public.organisations where id = old.org_id;
+  elsif not exists (select 1 from public.org_members where org_id = old.org_id and role = 'manager') then
+    update public.org_members set role = 'manager'
+     where org_id = old.org_id and user_id = (select user_id from public.org_members where org_id = old.org_id order by joined_at limit 1);
+  end if;
+  return null;
+end $$;
+drop trigger if exists org_members_tidy on public.org_members;
+create trigger org_members_tidy after delete on public.org_members for each row execute function public._org_tidy();
+
+-- Tutors who were here before organisations get theirs now
+do $$
+declare r record;
+begin
+  for r in select id from public.profiles where role = 'tutor' loop
+    perform public._ensure_org(r.id);
+  end loop;
+end $$;
+
+-- A tutor's organisation: its name and kind, who's in it, and (for its managers) the code other tutors join with
+create or replace function public.my_org() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v uuid; o public.organisations; v_role text;
+begin
+  if public.my_role() is distinct from 'tutor' then return null; end if;
+  v := public._ensure_org(auth.uid());
+  select * into o from public.organisations where id = v;
+  select role into v_role from public.org_members where org_id = v and user_id = auth.uid();
+  return jsonb_build_object('id', o.id, 'name', o.name, 'kind', o.kind, 'role', v_role,
+    'code', case when v_role = 'manager' and o.kind in ('centre', 'school') then o.join_code end,
+    'members', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'role', m.role, 'joined_at', m.joined_at,
+                   'me', p.id = auth.uid(), 'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'))
+                   order by m.role = 'manager' desc, p.display_name), '[]')
+                  from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = v));
+end $$;
+
+create or replace function public._org_mine_to_change() returns public.organisations
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations;
+begin
+  select * into o from public.organisations where id = public._org_of(auth.uid());
+  if o.id is null or public.my_role() is distinct from 'tutor' or not public._org_manager(o.id) then
+    raise exception 'Only the manager can change this.';
+  end if;
+  if o.kind = 'studybridge' then raise exception 'StudyBridge’s own organisation stays as it is.'; end if;
+  return o;
+end $$;
+
+create or replace function public.org_rename(p_name text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if nullif(trim(coalesce(p_name, '')), '') is null then raise exception 'Give it a name.'; end if;
+  update public.organisations set name = left(trim(p_name), 80) where id = o.id;
+  return public.my_org();
+end $$;
+
+-- A tutor's own organisation becomes a tuition centre: other tutors join it with its code, and its managers see
+-- every tutor and learner in it
+create or replace function public.org_make_centre(p_name text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if not public._tutor_active() then raise exception 'Your account isn’t approved yet.'; end if;
+  update public.organisations
+     set kind = case when kind = 'tutor' then 'centre' else kind end,
+         name = coalesce(left(nullif(trim(coalesce(p_name, '')), ''), 80), name),
+         join_code = coalesce(join_code, public._new_org_code())
+   where id = o.id;
+  return public.my_org();
+end $$;
+
+-- A new code (the old one stops working)
+create or replace function public.org_new_code() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if o.kind not in ('centre', 'school') then raise exception 'Make it a centre first.'; end if;
+  update public.organisations set join_code = public._new_org_code() where id = o.id;
+  return public.my_org();
+end $$;
+
+-- A tutor joins a centre with its code, bringing their learners, classes and work (nothing moves or changes hands).
+-- A wrong code is counted like a wrong learner code and returns nothing (an error would undo the count).
+create or replace function public.org_join(p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c text := regexp_replace(coalesce(p_code, ''), '[^0-9]', '', 'g');
+  o public.organisations;
+  mine uuid;
+  me text := (select display_name from public.profiles where id = auth.uid());
+begin
+  if not public._tutor_active() then raise exception 'Only an approved tutor can join a centre.'; end if;
+  if (select count(*) from public.invite_tries where user_id = auth.uid() and at > now() - interval '1 hour') >= 10 then
+    raise exception 'Too many wrong codes. Wait an hour, or ask the centre for its code again.';
+  end if;
+  select * into o from public.organisations where join_code = c and length(c) = 8 and kind in ('centre', 'school');
+  if o.id is null then
+    insert into public.invite_tries (user_id) values (auth.uid());
+    return null;
+  end if;
+  mine := public._ensure_org(auth.uid());
+  if mine = o.id then return public.my_org(); end if;
+  if (select kind from public.organisations where id = mine) = 'studybridge' then
+    raise exception 'The StudyBridge content account stays in StudyBridge’s own organisation.';
+  end if;
+  if exists (select 1 from public.org_members where org_id = mine and user_id <> auth.uid()) then
+    raise exception 'Other tutors are in your centre. Leave it first (Settings → Your organisation).';
+  end if;
+  delete from public.org_members where user_id = auth.uid();
+  insert into public.org_members (org_id, user_id, role) values (o.id, auth.uid(), 'tutor');
+  perform public.notify_user(m.user_id, 'org', me || ' joined ' || o.name, 'They’re a tutor in your centre now. See them in Centre.', jsonb_build_object('org_id', o.id))
+     from public.org_members m where m.org_id = o.id and m.role = 'manager' and m.user_id <> auth.uid();
+  return public.my_org();
+end $$;
+
+-- Leave a centre: the tutor goes back to an organisation of their own, with their learners and work.
+-- The last one in a centre turns it back into their own.
+create or replace function public.org_leave() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations; v_role text; me text := (select display_name from public.profiles where id = auth.uid());
+begin
+  select * into o from public.organisations where id = public._org_of(auth.uid());
+  if o.id is null or public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
+  if o.kind not in ('centre', 'school') then raise exception 'This is your own organisation.'; end if;
+  select role into v_role from public.org_members where org_id = o.id and user_id = auth.uid();
+  if not exists (select 1 from public.org_members where org_id = o.id and user_id <> auth.uid()) then
+    update public.organisations set kind = 'tutor', join_code = null where id = o.id;
+    return public.my_org();
+  end if;
+  if v_role = 'manager' and not exists (select 1 from public.org_members where org_id = o.id and role = 'manager' and user_id <> auth.uid()) then
+    raise exception 'You’re its only manager. Make another tutor a manager first.';
+  end if;
+  delete from public.org_members where org_id = o.id and user_id = auth.uid();
+  perform public._ensure_org(auth.uid());
+  perform public.notify_user(m.user_id, 'org', me || ' left ' || o.name, 'Their learners and work went with them.', jsonb_build_object('org_id', o.id))
+     from public.org_members m where m.org_id = o.id and m.role = 'manager';
+  return public.my_org();
+end $$;
+
+-- A manager takes a tutor out of the centre (they keep their learners and work, in an organisation of their own),
+-- or makes them a manager too (or not)
+create or replace function public.org_remove(p_user uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if p_user = auth.uid() then raise exception 'To leave, use Leave the centre.'; end if;
+  delete from public.org_members where org_id = o.id and user_id = p_user;
+  if not found then raise exception 'They aren’t in your centre.'; end if;
+  perform public._ensure_org(p_user);
+  perform public.notify_user(p_user, 'org', 'You’re no longer in ' || o.name, 'Your learners, classes and work stay with you.', '{}');
+  return public.my_org();
+end $$;
+
+create or replace function public.org_set_role(p_user uuid, p_role text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if p_role not in ('manager', 'tutor') then raise exception 'Unknown role.'; end if;
+  if p_role = 'tutor' and not exists (select 1 from public.org_members where org_id = o.id and role = 'manager' and user_id <> p_user) then
+    raise exception 'A centre needs at least one manager.';
+  end if;
+  update public.org_members set role = p_role where org_id = o.id and user_id = p_user;
+  if not found then raise exception 'They aren’t in your centre.'; end if;
+  return public.my_org();
+end $$;
+
+-- What a centre's manager sees: every tutor and every learner in the centre, with how they're getting on.
+-- Read-only: no work, answers, marks or messages, and nothing to approve (each tutor does that for their own learners).
+create or replace function public.org_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid := public._org_of(auth.uid()); wk date := (now() - interval '6 days')::date;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._org_manager(v)
+     or (select kind from public.organisations where id = v) not in ('centre', 'school') then
+    raise exception 'Only a centre’s manager can see this.';
+  end if;
+  return jsonb_build_object(
+    'name', (select name from public.organisations where id = v),
+    'tutors', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'role', m.role, 'last_seen_at', p.last_seen_at,
+                  'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+                  'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived),
+                  'to_mark', (select count(*) from public.attempts a where a.tutor_id = p.id and a.status = 'submitted'))
+                  order by m.role = 'manager' desc, p.display_name), '[]')
+                 from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = v),
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'tutor_id', l.tutor_id, 'joined_at', l.created_at,
+                  'subjects', (select coalesce(jsonb_agg(s.name order by s.name), '[]') from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = l.id),
+                  'classes', (select coalesce(jsonb_agg(c.name order by c.name), '[]') from public.class_members cm join public.classes c on c.id = cm.class_id where cm.learner_id = l.id and not c.archived),
+                  'week_min', (select coalesce(sum(x.seconds), 0) / 60 from public.activity x where x.learner_id = l.id and x.day >= wk),
+                  'last_active', (select max(x.day) from public.activity x where x.learner_id = l.id),
+                  'handed_in_week', (select count(*) from public.attempts a where a.learner_id = l.id and a.submitted_at >= now() - interval '7 days'))
+                  order by l.display_name), '[]')
+                 from public.profiles l join public.org_members m on m.user_id = l.tutor_id where m.org_id = v and l.role = 'learner'));
+end $$;
+
+-- ---------------- classes ----------------
+-- An item for a class is for whoever is in it now. Work someone has already started stays theirs after they leave,
+-- and past live lessons keep who was there. An empty class means nobody yet (an empty list would mean everyone).
+create or replace function public._class_audience() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_ids uuid[];
+begin
+  if new.class_id is null then return new; end if;
+  if public._class_tutor(new.class_id) is distinct from new.tutor_id then raise exception 'Unknown class.'; end if;
+  if tg_table_name = 'sessions' and tg_op = 'UPDATE' then
+    if old.starts_at <= now() then return new; end if; -- (only sessions have a start)
+  end if;
+  select coalesce(array_agg(m.learner_id order by m.added_at), '{}') into v_ids from public.class_members m where m.class_id = new.class_id;
+  if tg_table_name = 'assignments' and tg_op = 'UPDATE' then
+    select coalesce(array_agg(x order by x), '{}') into v_ids from (
+      select unnest(v_ids) x
+      union
+      select distinct t.learner_id from public.attempts t where t.assignment_id = new.id and t.learner_id = any (coalesce(old.learner_ids, '{}'))) y;
+  end if;
+  if cardinality(v_ids) = 0 and tg_table_name in ('assignments', 'lessons', 'files') then v_ids := array[new.class_id]; end if;
+  new.learner_ids := v_ids;
+  return new;
+end $$;
+do $$
+declare t text;
+begin
+  foreach t in array array['assignments', 'lessons', 'files', 'sessions', 'lesson_series'] loop
+    execute format('drop trigger if exists %I on public.%I', t || '_class', t);
+    execute format('create trigger %I before insert or update on public.%I for each row execute function public._class_audience()', t || '_class', t);
+  end loop;
+end $$;
+
+-- Someone joins or leaves a class: everything for the class follows (coming live lessons only)
+create or replace function public._class_sync() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare c uuid := coalesce(new.class_id, old.class_id);
+begin
+  if not exists (select 1 from public.classes where id = c) then return null; end if; -- the class itself is being deleted
+  update public.assignments set class_id = class_id where class_id = c;
+  update public.lessons set class_id = class_id where class_id = c;
+  update public.files set class_id = class_id where class_id = c;
+  update public.sessions set class_id = class_id where class_id = c and starts_at > now();
+  update public.lesson_series set class_id = class_id where class_id = c and (ends_on is null or ends_on >= current_date);
+  update public.sessions s set learner_ids = r.learner_ids from public.lesson_series r
+   where s.series_id = r.id and r.class_id = c and s.starts_at > now() and s.learner_ids is distinct from r.learner_ids;
+  return null;
+end $$;
+drop trigger if exists class_members_sync on public.class_members;
+create trigger class_members_sync after insert or delete on public.class_members for each row execute function public._class_sync();
+
+-- Make or change a class: its name, subject (optional) and who's in it. Learners added are told.
+create or replace function public.save_class(p_id uuid, p_name text, p_subject uuid, p_learner_ids uuid[]) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_id uuid := p_id; v_name text := left(trim(coalesce(p_name, '')), 80); l uuid;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  if v_name = '' then raise exception 'Give the class a name.'; end if;
+  if p_subject is not null and not exists (select 1 from public.subjects where id = p_subject and tutor_id = auth.uid()) then
+    raise exception 'Unknown subject.';
+  end if;
+  foreach l in array coalesce(p_learner_ids, '{}') loop
+    if not public.is_my_learner(l) then raise exception 'Not your learner.'; end if;
+  end loop;
+  if v_id is null then
+    insert into public.classes (tutor_id, name, subject_id) values (auth.uid(), v_name, p_subject) returning id into v_id;
+  else
+    update public.classes set name = v_name, subject_id = p_subject where id = v_id and tutor_id = auth.uid();
+    if not found then raise exception 'Not your class.'; end if;
+  end if;
+  delete from public.class_members where class_id = v_id and not learner_id = any (coalesce(p_learner_ids, '{}'));
+  for l in select distinct x from unnest(coalesce(p_learner_ids, '{}')) x
+            where not exists (select 1 from public.class_members m where m.class_id = v_id and m.learner_id = x) loop
+    insert into public.class_members (class_id, learner_id) values (v_id, l);
+    perform public.notify_user(l, 'class', 'You’re in ' || v_name || ' now',
+      'Work, lesson notes and live lessons for this class show in StudyBridge.', jsonb_build_object('class_id', v_id));
+  end loop;
+  return v_id;
+end $$;
+
+-- Put a class away (it stays on everything it was used for) or bring it back
+create or replace function public.archive_class(p_id uuid, p_archived boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.classes set archived = coalesce(p_archived, true) where id = p_id and tutor_id = auth.uid();
+  if not found then raise exception 'Not your class.'; end if;
+end $$;
+
+-- Delete a class. Everything that was for it keeps the learners it has; anything only for an empty class is hidden
+-- (so it never turns into "everyone").
+create or replace function public.delete_class(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if public._class_tutor(p_id) is distinct from auth.uid() then raise exception 'Not your class.'; end if;
+  update public.assignments set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  update public.lessons set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  update public.files set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  delete from public.classes where id = p_id;
+end $$;
+
+-- A learner who joins with an invite that names classes goes straight into them
+create or replace function public._invite_classes() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.accepted_by is not null and old.accepted_by is null and cardinality(new.class_ids) > 0 then
+    insert into public.class_members (class_id, learner_id)
+      select c.id, new.accepted_by from public.classes c where c.id = any (new.class_ids) and c.tutor_id = new.tutor_id
+    on conflict do nothing;
+  end if;
+  return null;
+end $$;
+drop trigger if exists invites_classes on public.invites;
+create trigger invites_classes after update of accepted_by on public.invites for each row execute function public._invite_classes();
+
+-- Weekly lessons for a class: the same as before, with the class's learners (and whoever joins it later)
+drop function if exists public.create_lesson_series(text, timestamptz, int, uuid[], text, date, text);
+drop function if exists public.change_lesson_series(uuid, text, timestamptz, int, uuid[], text, date, text, timestamptz);
+create or replace function public._series_learners(p_class uuid, p_learner_ids uuid[]) returns uuid[]
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid[];
+begin
+  if p_class is null then return p_learner_ids; end if;
+  if public._class_tutor(p_class) is distinct from auth.uid() then raise exception 'Unknown class.'; end if;
+  select coalesce(array_agg(learner_id order by added_at), '{}') into v from public.class_members where class_id = p_class;
+  if cardinality(v) = 0 then raise exception 'Nobody is in this class yet. Add learners to it first.'; end if;
+  return v;
+end $$;
+
+create or replace function public.create_lesson_series(p_title text, p_first timestamptz, p_duration int, p_learner_ids uuid[],
+  p_timezone text, p_until date default null, p_notes text default null, p_class uuid default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare v_local timestamp; v_tz text; v_id uuid; v_ids uuid[] := public._series_learners(p_class, p_learner_ids);
+begin
+  v_local := public._series_check(p_title, p_first, v_ids, p_timezone, p_until);
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  insert into public.lesson_series (tutor_id, title, learner_ids, class_id, weekday, start_time, timezone, duration_min, starts_on, ends_on, notes_md)
+  values (auth.uid(), trim(p_title), v_ids, p_class, extract(dow from v_local)::int, v_local::time, v_tz,
+          greatest(10, least(coalesce(p_duration, 60), 480)), v_local::date, p_until, nullif(trim(coalesce(p_notes, '')), ''))
+  returning id into v_id;
+  perform public._fill_series(v_id);
+  perform public._series_notify(v_id, 'Weekly lesson: ');
+  return v_id;
+end $$;
+
+-- Change a weekly lesson from now on (time, day, length, learners or class, title). Lessons before p_from
+-- (default: now) stay as they are.
+create or replace function public.change_lesson_series(p_series uuid, p_title text, p_first timestamptz, p_duration int, p_learner_ids uuid[],
+  p_timezone text, p_until date default null, p_notes text default null, p_from timestamptz default null, p_class uuid default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_local timestamp; v_tz text; v_old uuid[]; l uuid; v_ids uuid[] := public._series_learners(p_class, p_learner_ids);
+begin
+  select learner_ids into v_old from public.lesson_series where id = p_series and tutor_id = auth.uid();
+  if not found then raise exception 'Not your lesson.'; end if;
+  v_local := public._series_check(p_title, p_first, v_ids, p_timezone, p_until);
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  update public.lesson_series set title = trim(p_title), learner_ids = v_ids, class_id = p_class, weekday = extract(dow from v_local)::int,
+    start_time = v_local::time, timezone = v_tz, duration_min = greatest(10, least(coalesce(p_duration, 60), 480)),
+    starts_on = v_local::date, ends_on = p_until, notes_md = nullif(trim(coalesce(p_notes, '')), '')
+   where id = p_series;
+  delete from public.sessions where series_id = p_series and starts_at > now() and starts_at >= coalesce(p_from, now());
+  perform public._fill_series(p_series);
+  perform public._series_notify(p_series, 'Weekly lesson changed: ');
+  foreach l in array v_old loop
+    if not l = any (v_ids) then
+      perform public.notify_user(l, 'session', 'Weekly lesson stopped: ' || trim(p_title), 'This weekly lesson no longer includes you.', '{}');
+    end if;
+  end loop;
+end $$;
+
+-- Admin → Tutors shows each tutor's organisation too
+create or replace function public.admin_tutors() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', p.id, 'name', p.display_name, 'email', coalesce(u.email::text, p.email), 'status', p.status, 'plan', p.plan,
+      'plan_learners', p.plan_learners, 'plan_until', p.plan_until, 'plan_limit', public._tutor_limit(p.id),
+      'joined_at', coalesce(u.created_at, p.created_at), 'last_sign_in_at', u.last_sign_in_at,
+      'is_admin', exists (select 1 from public.platform_admins a where a.user_id = p.id),
+      'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+      'storage_bytes', public._storage_bytes(p.id),
+      'ai_cents', public._prof_month_cents(p.id),
+      'ai_limit_cents', public._prof_limit(p.id),
+      'ai_limit_custom', exists (select 1 from public.prof_limits pl where pl.tutor_id = p.id),
+      'signup', p.signup, 'app_version', p.app_version, 'last_seen_at', p.last_seen_at,
+      'org', (select jsonb_build_object('name', o.name, 'kind', o.kind, 'role', m.role,
+                                        'tutors', (select count(*) from public.org_members x where x.org_id = o.id))
+                from public.org_members m join public.organisations o on o.id = m.org_id where m.user_id = p.id),
+      'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived)
+    ) order by (p.status = 'pending') desc, p.created_at)
+    from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor'), '[]');
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -7078,6 +7619,16 @@ revoke execute on function public._email_all_set(uuid) from public, anon, authen
 revoke execute on function public._student_emails_tick() from public, anon, authenticated;
 revoke execute on function public._student_paid_by_card(uuid, text, int, text) from public, anon, authenticated;
 revoke execute on function public._student_renewed(text) from public, anon, authenticated;
+revoke execute on function public._org_of(uuid) from public, anon, authenticated;
+revoke execute on function public._ensure_org(uuid) from public, anon, authenticated;
+revoke execute on function public._new_org_code() from public, anon, authenticated;
+revoke execute on function public._profile_org() from public, anon, authenticated;
+revoke execute on function public._org_tidy() from public, anon, authenticated;
+revoke execute on function public._org_mine_to_change() from public, anon, authenticated;
+revoke execute on function public._class_audience() from public, anon, authenticated;
+revoke execute on function public._class_sync() from public, anon, authenticated;
+revoke execute on function public._invite_classes() from public, anon, authenticated;
+revoke execute on function public._series_learners(uuid, uuid[]) from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

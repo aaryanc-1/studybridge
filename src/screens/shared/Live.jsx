@@ -141,6 +141,12 @@ export default function Live({ sessionId }) {
       })
       .filter(Boolean)
       .join(', ');
+  // a class's name first: "Year 10 maths: Sis Tue 16:00 Lusaka, Sam" (a weekly lesson's class is on the weekly lesson)
+  const forWho = (s) => {
+    const c = lk.klass(s.class_id || seriesList.find((x) => x.id === s.series_id)?.class_id);
+    const names = learnerTimes(s);
+    return c ? `${c.name}${names ? `: ${names}` : ' (nobody yet)'}` : names;
+  };
   const upcoming = list.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > now);
   const past = list.filter((s) => !s.cancelled && new Date(s.starts_at).getTime() + s.duration_min * 60000 <= now).reverse().slice(0, 10);
   const notesFor = (s) => lessons.find((l) => l.session_id === s.id);
@@ -215,7 +221,7 @@ export default function Live({ sessionId }) {
                   <span className="grow">
                     <span className="name">{x.title}</span>
                     <span className="meta">
-                      {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${learnerTimes(next)}` : skipped ? 'The lessons coming up are skipped' : 'No lessons coming up'}
+                      {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${forWho(next)}` : skipped ? 'The lessons coming up are skipped' : 'No lessons coming up'}
                       {x.ends_on && ` · last one ${day(x.ends_on + 'T12:00')}`}
                     </span>
                   </span>
@@ -256,7 +262,7 @@ export default function Live({ sessionId }) {
                     <span className="meta">
                       {when(s.starts_at)}
                       {isTutor && ' your time'} · {s.duration_min} min
-                      {isTutor && ` · ${learnerTimes(s)}`}
+                      {isTutor && ` · ${forWho(s)}`}
                     </span>
                   </span>
                   {isTutor && s.cancelled && (
@@ -423,27 +429,33 @@ function afterLastLesson(x, sessions) {
   const d = mine.length ? new Date(mine[mine.length - 1].starts_at) : new Date(`${x.starts_on}T${x.start_time}`);
   if (mine.length) d.setDate(d.getDate() + 7);
   while (d.getTime() <= Date.now()) d.setDate(d.getDate() + 7);
-  return { title: x.title, starts_at: d.toISOString(), duration_min: x.duration_min, learner_ids: x.learner_ids || [], notes_md: x.notes_md, series_id: x.id };
+  return { title: x.title, starts_at: d.toISOString(), duration_min: x.duration_min, learner_ids: x.learner_ids || [], class_id: x.class_id || null, notes_md: x.notes_md, series_id: x.id };
 }
 
 function SessionForm({ initial, series, onClose }) {
   const lk = useLookups();
   const toast = useToast();
-  const [s, setS] = useState({ repeat: false, ...initial, until: initial.until || series?.ends_on || '' });
+  // a weekly lesson's class is on the weekly lesson itself
+  const [s, setS] = useState({ repeat: false, ...initial, class_id: (initial.series_id && series ? series.class_id : initial.class_id) || null, until: initial.until || series?.ends_on || '' });
   const [scope, setScope] = useState(initial.scope || 'one'); // a weekly lesson: just this one, or this and every week after
   const [err, setErr] = useState('');
   // seriesOnly: the weekly lesson itself, with no lesson of its own to change (all the coming ones were skipped)
   const isNew = !s.id && !initial.seriesOnly;
   const weekly = !!s.series_id;
   const allWeeks = (isNew && s.repeat) || (weekly && scope === 'all');
+  // For a class: whoever is in it, now and later (not for one lesson of a weekly lesson)
+  const canPickClass = (lk.activeClasses.length > 0 || !!s.class_id) && !(weekly && scope === 'one');
+  const klass = canPickClass && s.class_id ? lk.klass(s.class_id) : null;
+  const ids = klass ? lk.membersOf(klass.id).filter((id) => lk.learner(id)) : s.learner_ids;
   const myTz = myTimezone();
-  const chosen = lk.learners.filter((l) => s.learner_ids.includes(l.id) && l.timezone && timeIn(s.starts_at, l.timezone) !== timeIn(s.starts_at, myTz));
+  const chosen = lk.learners.filter((l) => ids.includes(l.id) && l.timezone && timeIn(s.starts_at, l.timezone) !== timeIn(s.starts_at, myTz));
   const moving = allWeeks ? chosen.filter((l) => movesWithClocks(s.starts_at, l.timezone)) : [];
   async function submit(e) {
     e.preventDefault();
     if (!s.title.trim()) return setErr('Give the lesson a title.');
-    if (!s.learner_ids.length) return setErr('Choose at least one learner.');
-    const row = { title: s.title.trim(), starts_at: s.starts_at, duration_min: Number(s.duration_min) || 60, learner_ids: s.learner_ids, notes_md: s.notes_md || null, until: allWeeks ? s.until || null : null };
+    if (klass && !ids.length) return setErr('Nobody is in this class yet. Add learners to it first.');
+    if (!ids.length) return setErr('Choose at least one learner.');
+    const row = { title: s.title.trim(), starts_at: s.starts_at, duration_min: Number(s.duration_min) || 60, learner_ids: ids, class_id: klass?.id || null, notes_md: s.notes_md || null, until: allWeeks ? s.until || null : null };
     try {
       if (isNew && s.repeat) {
         await api.createSeries(row);
@@ -452,7 +464,8 @@ function SessionForm({ initial, series, onClose }) {
         await api.changeSeries(s.series_id, row, initial.starts_at);
         toast('Changed from this lesson on. Your learners have been told.');
       } else {
-        await api.save('sessions', { ...(s.id ? { id: s.id } : {}), title: row.title, starts_at: row.starts_at, duration_min: row.duration_min, learner_ids: row.learner_ids, notes_md: row.notes_md });
+        // one lesson of a weekly lesson keeps the weekly lesson's class
+        await api.save('sessions', { ...(s.id ? { id: s.id } : {}), title: row.title, starts_at: row.starts_at, duration_min: row.duration_min, learner_ids: row.learner_ids, notes_md: row.notes_md, ...(weekly ? {} : { class_id: row.class_id }) });
       }
       invalidate('sessions');
       onClose();
@@ -504,16 +517,50 @@ function SessionForm({ initial, series, onClose }) {
             It stays at {time(s.starts_at)} your time every week. {moving.map((l) => l.display_name).join(' and ')}’s time moves by an hour when the clocks change.
           </div>
         )}
+        {canPickClass && (
+          <Field label="Who">
+            <select
+              className="select"
+              value={klass ? klass.id : ''}
+              onChange={(e) => {
+                const c = lk.klass(e.target.value);
+                setS({ ...s, class_id: c ? c.id : null, learner_ids: c ? lk.membersOf(c.id).filter((id) => lk.learner(id)) : ids });
+              }}
+            >
+              <option value="">Choose learners</option>
+              {lk.activeClasses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.members.length} {c.members.length === 1 ? 'learner' : 'learners'})
+                </option>
+              ))}
+              {klass?.archived && <option value={klass.id}>{klass.name} (put away)</option>}
+            </select>
+          </Field>
+        )}
         <Field label="Learners" hint="They get a message with the time in their own time zone, and reminders a day and 15 minutes before.">
-          <div className="stack sm">
-            {lk.learners.map((l) => (
-              <label key={l.id} className="check">
-                <input type="checkbox" checked={s.learner_ids.includes(l.id)} onChange={(e) => setS({ ...s, learner_ids: e.target.checked ? [...s.learner_ids, l.id] : s.learner_ids.filter((x) => x !== l.id) })} />
-                <span className="t">{l.display_name}</span>
-                <span className="s">{placeOf(l.timezone)}</span>
-              </label>
-            ))}
-          </div>
+          {klass ? (
+            <>
+              {ids.length ? (
+                <div className="small">
+                  {ids.map((id) => lk.learner(id).display_name).join(', ')}, and anyone who joins the class later.
+                </div>
+              ) : (
+                <div className="small" style={{ color: 'var(--amber-ink)' }}>
+                  Nobody is in this class yet.
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="stack sm">
+              {lk.learners.map((l) => (
+                <label key={l.id} className="check">
+                  <input type="checkbox" checked={s.learner_ids.includes(l.id)} onChange={(e) => setS({ ...s, learner_ids: e.target.checked ? [...s.learner_ids, l.id] : s.learner_ids.filter((x) => x !== l.id) })} />
+                  <span className="t">{l.display_name}</span>
+                  <span className="s">{placeOf(l.timezone)}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </Field>
         <Field label="Notes (optional)">
           <textarea className="textarea" style={{ minHeight: 60 }} value={s.notes_md || ''} onChange={(e) => setS({ ...s, notes_md: e.target.value })} placeholder="What to bring or revise" />

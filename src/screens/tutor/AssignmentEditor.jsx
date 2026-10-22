@@ -136,6 +136,7 @@ export default function AssignmentEditor({ id }) {
           visibility,
           visible_from: visibility === 'scheduled' ? a.visible_from : null,
           learner_ids: a.learner_ids?.length ? a.learner_ids : null,
+          class_id: a.class_id || null, // the server keeps a class's learners in step
           lockdown: !!a.lockdown,
           leave_warnings: Math.max(0, Math.min(5, Number(a.leave_warnings ?? 1))),
           camera: !!a.camera,
@@ -179,7 +180,8 @@ export default function AssignmentEditor({ id }) {
         if ((post || publish) && wasLive) toast('Changes saved. Learners see the new version.');
         else if (post || publish) {
           const who = lk.audience(s).map((l) => l.display_name);
-          const whoText = who.length ? who.join(', ') : 'nobody yet (no learners take this subject)';
+          const cls = s.class_id && lk.klass(s.class_id);
+          const whoText = who.length ? (cls ? `${cls.name}: ${who.join(', ')}` : who.join(', ')) : cls ? `nobody yet (nobody is in ${cls.name})` : 'nobody yet (no learners take this subject)';
           toast(
             s.visibility === 'scheduled'
               ? { title: `Scheduled: ${s.title}`, body: `${whoText} will see it from ${new Date(s.visible_from).toLocaleString()}.` }
@@ -406,7 +408,7 @@ export default function AssignmentEditor({ id }) {
             <h3>Who sees it</h3>
             {a.draft && <div className="small" style={{ color: 'var(--claude)' }}>Nobody yet: a draft stays hidden until you press Approve & post. Then it follows this setting.</div>}
             <VisibilityPicker value={a.visibility} from={a.visible_from} onChange={(v, from) => setField({ visibility: v, visible_from: from })} />
-            <AudiencePicker learners={lk.learners} value={a.learner_ids} onChange={(ids) => setField({ learner_ids: ids })} />
+            <AudiencePicker learners={lk.learners} value={a.learner_ids} onChange={(ids, cls) => setField({ learner_ids: ids, class_id: cls })} classes={lk.activeClasses} classId={a.class_id} />
             <AudienceNames item={a} />
             <Field label="Due">
               <input className="input" type="datetime-local" value={toLocalInput(a.due_at)} onChange={(e) => setField({ due_at: fromLocalInput(e.target.value) })} />
@@ -713,17 +715,28 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate }
   );
 }
 
+// "Year 10 maths (3 learners)" for something set for a class (null if it isn't, or the class was deleted)
+function classText(lk, item) {
+  const c = item.class_id && lk.klass(item.class_id);
+  if (!c) return null;
+  const n = lk.audience(item).length;
+  return `${c.name} (${n ? `${n} learner${n === 1 ? '' : 's'}` : 'nobody yet'})`;
+}
+
 // "Goes to: Aranya, Sam" (each learner still gets their own private copy)
 export function AudienceNames({ item }) {
   const lk = useLookups();
   const who = lk.audience(item).map((l) => l.display_name);
+  const cls = classText(lk, item);
   return (
     <div className="small" style={{ color: who.length ? 'var(--ink-2)' : 'var(--amber-ink)' }}>
       {who.length ? (
         <>
-          <b>Goes to:</b> {who.join(', ')}
+          <b>Goes to:</b> {cls || who.join(', ')}
           {who.length > 1 && <span className="muted"> · each works on their own copy</span>}
         </>
+      ) : cls ? (
+        `Nobody is in ${lk.klass(item.class_id).name} yet. Whoever you add to it gets this.`
       ) : item.subject_id ? (
         'Nobody takes this subject yet. Add it to a learner, or choose learners.'
       ) : (

@@ -697,6 +697,102 @@ try {
   await Z.getByRole('button', { name: 'Create account' }).click();
   await Z.getByText(/, Zara!/).waitFor();
 
+  step('Classes and a tuition centre: work for a class reaches whoever is in it, joining later too; the tutor makes hers a centre and another tutor joins with its code');
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Classes', exact: true }).click();
+  await A.getByText('No classes yet').waitFor();
+  await A.getByRole('button', { name: 'New class' }).first().click();
+  const cf = A.getByRole('dialog');
+  await cf.getByLabel('Name').fill('Year 10 maths');
+  await cf.getByLabel('Subject (optional)').selectOption({ label: 'Mathematics' });
+  await cf.getByRole('checkbox', { name: /Anaya/ }).check();
+  await cf.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Class made. Anyone you add is told.').waitFor();
+  await A.locator('.card', { hasText: 'Year 10 maths' }).getByText('1 learner', { exact: true }).waitFor();
+  // homework for the class: Anaya has it, Zara (not in the class) doesn't
+  const klass = (await tc.from('classes').select('*').eq('name', 'Year 10 maths').single()).data;
+  const chw = (await tc.from('assignments').insert({ title: 'Class homework: fractions', kind: 'homework', subject_id: maths.id, class_id: klass.id, visibility: 'visible' }).select().single()).data;
+  assert.deepEqual(chw.learner_ids.length, 1, 'for whoever is in the class');
+  await A.goto(web.url + '#/assignments/' + chw.id);
+  assert.equal(await A.getByLabel('Class', { exact: true }).inputValue(), klass.id, 'the editor shows it’s for the class');
+  await A.getByText('For Anaya, and anyone who joins the class later.').waitFor();
+  await Z.goto(web.url + '#/work');
+  await Z.getByRole('heading', { name: 'My work' }).waitFor();
+  assert.equal(await Z.getByText('Class homework: fractions').count(), 0, 'not in the class');
+  // Zara joins the class: she gets its homework, and is told
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Classes', exact: true }).click();
+  await A.getByRole('button', { name: 'Edit Year 10 maths' }).click();
+  await A.getByRole('dialog').getByRole('checkbox', { name: /Zara/ }).check();
+  await A.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Class saved').waitFor();
+  await A.locator('.card', { hasText: 'Year 10 maths' }).getByText('2 learners', { exact: true }).waitFor();
+  await shot(A, 'tutor-classes');
+  await a11y(A, 'Learners → Classes');
+  await Z.reload();
+  await Z.getByText('Class homework: fractions').waitFor();
+  // a live lesson for the class
+  await nav(A, 'Live').click();
+  await A.getByRole('button', { name: 'Schedule' }).click();
+  const lf = A.getByRole('dialog');
+  await lf.getByLabel('Title').fill('Fractions together');
+  await lf.getByLabel('Who').selectOption({ label: 'Year 10 maths (2 learners)' });
+  await lf.getByText('Anaya, Zara, and anyone who joins the class later.').waitFor();
+  await lf.getByRole('button', { name: /Schedule|Save/ }).last().click();
+  await A.getByText(/Year 10 maths: Anaya.*Zara/).first().waitFor(); // each learner's own time shows when it differs
+  assert.equal((await tc.from('sessions').select('class_id').eq('title', 'Fractions together').single()).data.class_id, klass.id);
+
+  // her own organisation becomes a tuition centre; Tom signs up, is approved and joins with its code
+  await A.goto(web.url + '#/settings?s=org');
+  const org = A.locator('#set-org');
+  await org.getByRole('heading', { name: 'Your organisation' }).waitFor();
+  await org.getByText('Aaryan Chouhan’s tutoring').first().waitFor();
+  await org.getByRole('button', { name: 'Make it a tuition centre' }).click();
+  await A.getByText('Aaryan Chouhan’s tutoring is a tuition centre now').waitFor();
+  await org.getByLabel('Name').fill('Bright Minds Centre');
+  await org.getByRole('button', { name: 'Save', exact: true }).click();
+  await A.getByText('Name saved').waitFor();
+  const ccode = (await org.locator('.code-show').innerText()).replace(/\s/g, '');
+  assert.match(ccode, /^\d{8}$/, 'an 8-digit code for tutors to join');
+  await shot(A, 'tutor-centre-code');
+  const T3 = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'Africa/Lusaka' })).newPage();
+  watch(T3, 'tutor (joins the centre)');
+  await signUpTutor(T3, 'Tom Phiri', 'tom@example.com');
+  await T3.getByText('Waiting for approval', { exact: true }).waitFor();
+  await nav(ADM, 'Tutors').click();
+  await ADM.getByRole('heading', { name: 'Waiting for approval' }).waitFor();
+  await ADM.getByRole('button', { name: 'Approve' }).click();
+  await ADM.getByText('Tom Phiri approved').waitFor();
+  await T3.getByRole('button', { name: 'Check again' }).click();
+  await nav(T3, 'Learners').waitFor();
+  assert.equal(await nav(T3, 'Centre').count(), 0, 'only a centre’s managers have Centre');
+  await T3.goto(web.url + '#/settings?s=org');
+  const torg = T3.locator('#set-org');
+  await torg.getByLabel('Code from the centre').fill('1111 2222');
+  await torg.getByRole('button', { name: 'Join the centre' }).click();
+  await T3.getByText(/That code isn’t right/).waitFor();
+  await torg.getByLabel('Code from the centre').fill(ccode.slice(0, 4) + ' ' + ccode.slice(4));
+  await torg.getByRole('button', { name: 'Join the centre' }).click();
+  await T3.getByText('You’re in Bright Minds Centre now').waitFor();
+  await torg.getByRole('heading', { name: 'Tutors in the centre' }).waitFor();
+  await torg.getByText('Aaryan Chouhan', { exact: true }).waitFor();
+  assert.equal(await torg.getByRole('button', { name: 'Take out of the centre' }).count(), 0, 'only managers take tutors out');
+  await a11y(T3, 'Settings → Your organisation');
+  // the manager's Centre page: every tutor and learner, read-only
+  await A.reload();
+  await nav(A, 'Centre').click();
+  await A.getByRole('heading', { name: 'Centre' }).first().waitFor();
+  await A.getByText('Tom Phiri').first().waitFor();
+  await A.getByText('Anaya').first().waitFor();
+  await A.getByText('Zara').first().waitFor();
+  await A.getByLabel('Find a learner').fill('Zara');
+  assert.equal(await A.getByText('Anaya', { exact: true }).count(), 0, 'the search narrows the learners');
+  await shot(A, 'tutor-centre');
+  await a11y(A, 'Centre');
+  await nav(ADM, 'Tutors').click();
+  await ADM.locator('.tutor-row', { hasText: 'Aaryan Chouhan' }).getByText('Bright Minds Centre').waitFor();
+  await T3.close();
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });

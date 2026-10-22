@@ -125,6 +125,7 @@ export default function Assignments() {
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{a.practice ? 'Practice' : kindLabel[a.kind]}</span>
                     {a.mock_id && mockTitle(a.mock_id) && <span className="pill accent">Mock: {mockTitle(a.mock_id)}</span>}
+                    {a.class_id && lk.klass(a.class_id) && <span className="pill accent"><Icon name="users" size={12} /> {lk.klass(a.class_id).name}</span>}
                     {a.draft && <span className="pill claude"><Icon name={a.source === 'prof' ? 'cap' : 'spark'} size={12} /> Draft from {a.source === 'prof' ? 'Prof' : 'Claude'}</span>}
                     {a.lockdown && <span className="pill dark"><Icon name="lock" size={12} /> Lockdown</span>}
                     {a.camera && <span className="pill dark"><Icon name="camera" size={12} /> Camera</span>}
@@ -164,6 +165,7 @@ function sections(list, stats) {
 
 // Tapping an assignment: edit it, post it (or hide it again), see what's handed in, copy it, or delete it
 function AssignmentOptions({ a, stats, onClose }) {
+  const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
   const discard = useDiscardDraft();
@@ -185,10 +187,11 @@ function AssignmentOptions({ a, stats, onClose }) {
       const s = await quickPost(a, files);
       invalidate('assignments');
       const who = stats.who.map((l) => l.display_name);
+      const cls = a.class_id && lk.klass(a.class_id);
       toast(
         s.visibility === 'scheduled'
           ? { title: `Scheduled: ${a.title}`, body: `Learners see it from ${new Date(s.visible_from).toLocaleString()}.` }
-          : { title: `Posted: ${a.title}`, body: who.length ? `Sent to ${who.join(', ')}.` : 'Nobody takes this subject yet.' },
+          : { title: `Posted: ${a.title}`, body: who.length ? `Sent to ${who.join(', ')}.` : cls ? `Nobody is in ${cls.name} yet. Whoever you add to it gets it.` : 'Nobody takes this subject yet.' },
       );
       onClose();
     });

@@ -32,6 +32,7 @@ export default function Settings() {
   return (
     <Page title="Settings" size="narrow">
       <Account />
+      {isTutor && <YourOrganisation />}
       {(isTutor || isLearner) && <CalendarLink />}
       {isTutor && <PhoneAlerts />}
       {isTutor && <PhoneApp />}
@@ -152,6 +153,217 @@ function Account() {
         </button>
       </form>
       <AccountSwitcher full />
+    </Section>
+  );
+}
+
+// A tutor's organisation: their own, or a tuition centre other tutors join with its code. Each tutor keeps their
+// own learners, classes and work and approves everything for them; a centre's managers also see everyone in Centre.
+function YourOrganisation() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('org', api.myOrg);
+  const o = q.data;
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (o?.name) setName(o.name);
+  }, [o?.name]);
+  if (!o) return null;
+  const centre = o.kind === 'centre' || o.kind === 'school';
+  const manager = o.role === 'manager';
+  const members = o.members || [];
+  const tutors = `${members.length} tutor${members.length === 1 ? '' : 's'}`;
+  const about = {
+    tutor: 'Your own organisation: your learners, classes and work are in it.',
+    centre: `A tuition centre with ${tutors}. Each tutor marks and approves everything for their own learners.`,
+    school: `A school with ${tutors}. Each tutor marks and approves everything for their own learners.`,
+    studybridge: 'StudyBridge’s own organisation. Students studying on their own are in it.',
+  }[o.kind];
+  const shownCode = o.code ? `${o.code.slice(0, 4)} ${o.code.slice(4)}` : '';
+  // every change comes back as the organisation as it is now
+  async function act(fn, done) {
+    setBusy(true);
+    try {
+      const r = await fn();
+      q.mutate(r);
+      invalidate('org', 'org-overview'); // the menu shows Centre only to a centre's managers
+      toast(typeof done === 'function' ? done(r) : done);
+      return true;
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Section id="org" icon="users" title="Your organisation">
+      <div>
+        <div className="strong">{o.name}</div>
+        <div className="small muted">{about}</div>
+      </div>
+      {o.kind !== 'studybridge' && (
+        <>
+          {manager && (
+            <form
+              className="row wrap"
+              style={{ alignItems: 'flex-end' }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                act(() => api.orgRename(name.trim()), 'Name saved');
+              }}
+            >
+              <div className="grow" style={{ maxWidth: 360 }}>
+                <Field label="Name">
+                  <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+                </Field>
+              </div>
+              <button className="btn" disabled={busy || !name.trim() || name.trim() === o.name}>
+                Save
+              </button>
+            </form>
+          )}
+
+          {o.kind === 'tutor' && (
+            <>
+              {manager && (
+                <>
+                  <hr />
+                  <div className="stack sm">
+                    <h3>Run a tuition centre?</h3>
+                    <div className="small muted">
+                      Make this a tuition centre and other tutors can join it with a code. They keep their own learners and work, and still mark and approve everything for them. You see every tutor and learner in a Centre page.
+                    </div>
+                    <div>
+                      <button className="btn" disabled={busy} onClick={() => act(() => api.orgMakeCentre(), (r) => ({ title: `${r.name} is a tuition centre now`, body: 'Send its code to the tutors who’ll join.' }))}>
+                        Make it a tuition centre
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+              <hr />
+              <div className="stack sm">
+                <h3>Join a centre</h3>
+                <div className="small muted">Got a code from a tuition centre? Your learners, classes and work come with you, and you still mark and approve everything for your own learners.</div>
+                <form
+                  className="row wrap"
+                  style={{ alignItems: 'flex-end' }}
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (await act(() => api.orgJoin(code), (r) => `You’re in ${r.name} now`)) setCode('');
+                  }}
+                >
+                  <div style={{ maxWidth: 240 }}>
+                    <Field label="Code from the centre">
+                      <input className="input code-in" value={code} onChange={(e) => setCode(e.target.value)} placeholder="4829 1375" inputMode="numeric" autoComplete="off" spellCheck={false} />
+                    </Field>
+                  </div>
+                  <button className="btn primary" disabled={busy || !code.trim()}>
+                    Join the centre
+                  </button>
+                </form>
+              </div>
+            </>
+          )}
+
+          {centre && manager && o.code && (
+            <div className="code-card">
+              <span className="small">Code for tutors to join</span>
+              <b className="code-show">{shownCode}</b>
+              <span className="small muted">They type it in Settings → Your organisation → Join a centre.</span>
+              <span className="row wrap" style={{ gap: 8 }}>
+                <button
+                  className="btn sm"
+                  onClick={() => {
+                    copyText(`Join ${o.name} on StudyBridge: open StudyBridge, go to Settings → Your organisation → Join a centre, and type ${shownCode}.`);
+                    toast('Message copied');
+                  }}
+                >
+                  <Icon name="copy" size={14} /> Copy message
+                </button>
+                <button
+                  className="btn sm ghost"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (await confirm({ title: 'Make a new code?', body: 'The old one stops working.', ok: 'New code' })) act(() => api.orgNewCode(), 'New code made');
+                  }}
+                >
+                  <Icon name="refresh" size={14} /> New code
+                </button>
+              </span>
+            </div>
+          )}
+
+          {centre && (
+            <>
+              <hr />
+              <div className="stack sm">
+                <h3>Tutors in the centre</h3>
+                <div className="list">
+                  {members.map((m) => (
+                    <div key={m.id} className="item" style={{ flexWrap: 'wrap' }}>
+                      <Avatar person={{ id: m.id, display_name: m.name }} size="sm" />
+                      <span className="grow">
+                        <span className="name">
+                          {m.name}
+                          {m.me ? ' (you)' : ''}
+                        </span>
+                        <span className="meta">
+                          <span className={'pill' + (m.role === 'manager' ? ' accent' : '')}>{m.role === 'manager' ? 'Manager' : 'Tutor'}</span>
+                          <span>
+                            {m.learners} learner{Number(m.learners) === 1 ? '' : 's'}
+                          </span>
+                        </span>
+                      </span>
+                      {manager && !m.me && (
+                        <span className="row wrap" style={{ gap: 6 }}>
+                          <button
+                            className="btn sm"
+                            disabled={busy}
+                            onClick={() =>
+                              m.role === 'manager'
+                                ? act(() => api.orgSetRole(m.id, 'tutor'), `${m.name} isn’t a manager any more`)
+                                : act(() => api.orgSetRole(m.id, 'manager'), `${m.name} is a manager now`)
+                            }
+                          >
+                            {m.role === 'manager' ? 'Make tutor' : 'Make manager'}
+                          </button>
+                          <button
+                            className="btn sm ghost"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (await confirm({ title: `Take ${m.name} out of ${o.name}?`, body: 'They keep their learners, classes and work.', ok: 'Take them out', danger: true }))
+                                act(() => api.orgRemove(m.id), `${m.name} is no longer in ${o.name}`);
+                            }}
+                          >
+                            Take out of the centre
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <button
+                    className="btn danger ghost"
+                    disabled={busy}
+                    onClick={async () => {
+                      const alone = members.length === 1;
+                      const body = alone ? 'You’re the only tutor in it, so it goes back to being your own organisation and its code stops working.' : 'Your learners, classes and work come with you.';
+                      if (await confirm({ title: `Leave ${o.name}?`, body, ok: 'Leave', danger: true })) act(() => api.orgLeave(), alone ? `${o.name} is your own organisation again` : `You left ${o.name}`);
+                    }}
+                  >
+                    Leave the centre
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
     </Section>
   );
 }

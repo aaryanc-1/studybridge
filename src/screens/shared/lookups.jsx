@@ -12,6 +12,8 @@ export function LookupsProvider({ children, tutor }) {
   const learners = useQuery(tutor ? 'learners' : null, api.listLearners);
   // a tutor gets every learner's subjects; a learner only their own
   const links = useQuery('learner_subjects', api.listLearnerSubjects);
+  const classes = useQuery(tutor ? 'classes' : null, api.listClasses);
+  const members = useQuery(tutor ? 'class_members' : null, api.listClassMembers);
 
   const value = useMemo(() => {
     const s = subjects.data || [];
@@ -19,6 +21,9 @@ export function LookupsProvider({ children, tutor }) {
     const p = programmes.data || [];
     const l = learners.data || [];
     const ls = links.data || [];
+    const c = classes.data || [];
+    const cm = members.data || [];
+    const membersOf = (cid) => cm.filter((m) => m.class_id === cid).map((m) => m.learner_id);
     return {
       subjects: s,
       // the subjects this person works in: all of them for a tutor, the ones a learner takes
@@ -34,6 +39,12 @@ export function LookupsProvider({ children, tutor }) {
       topicsOf: (sid) => t.filter((x) => x.subject_id === sid),
       subjectsOfLearner: (lid) => ls.filter((x) => x.learner_id === lid).map((x) => x.subject_id),
       learnersOfSubject: (sid) => ls.filter((x) => x.subject_id === sid).map((x) => x.learner_id),
+      // Classes (a tutor's teaching groups): all of them, the ones in use (with who's in each), one, who's in one
+      classes: c,
+      activeClasses: c.filter((x) => !x.archived).map((x) => ({ ...x, members: membersOf(x.id) })),
+      klass: (id) => c.find((x) => x.id === id),
+      membersOf,
+      classesOf: (lid) => c.filter((x) => cm.some((m) => m.class_id === x.id && m.learner_id === lid)),
       // Learners an item is for (chosen, or everyone taking the subject)
       audience: (item) => {
         if (item.learner_ids && item.learner_ids.length) return l.filter((x) => item.learner_ids.includes(x.id));
@@ -46,10 +57,12 @@ export function LookupsProvider({ children, tutor }) {
         programmes.refresh();
         learners.refresh();
         links.refresh();
+        classes.refresh();
+        members.refresh();
       },
       ready: subjects.data !== undefined,
     };
-  }, [subjects.data, topics.data, programmes.data, learners.data, links.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [subjects.data, topics.data, programmes.data, learners.data, links.data, classes.data, members.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

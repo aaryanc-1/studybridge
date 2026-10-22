@@ -337,21 +337,47 @@ export function VisibilityPill({ item }) {
 }
 
 // Everyone taking the subject, or chosen learners
-export function AudiencePicker({ learners, value, onChange }) {
+// Who something is for. `classes` (optional) are the tutor's classes in use, each with its `members`; choosing one
+// calls onChange(the class's learners, class id), and anything else calls onChange(ids, null)
+export function AudiencePicker({ learners, value, onChange, classes = [], classId = null }) {
   const chosen = value || [];
-  const everyone = chosen.length === 0;
+  const mode = classId ? 'class' : chosen.length === 0 ? 'all' : 'some';
+  const pickClass = (id) => {
+    const c = classes.find((x) => x.id === id);
+    if (c) onChange(c.members, c.id);
+  };
   return (
     <div className="stack sm">
       <Seg
         label="Audience"
-        value={everyone ? 'all' : 'some'}
-        onChange={(v) => onChange(v === 'all' ? [] : learners.slice(0, 1).map((l) => l.id))}
+        value={mode}
+        onChange={(v) => (v === 'class' ? pickClass(classes[0]?.id) : onChange(v === 'all' ? [] : learners.slice(0, 1).map((l) => l.id), null))}
         options={[
           { value: 'all', label: 'Everyone in the subject' },
+          ...(classes.length || classId ? [{ value: 'class', label: 'A class' }] : []),
           { value: 'some', label: 'Chosen learners' },
         ]}
       />
-      {!everyone && (
+      {mode === 'class' && (
+        <div className="stack sm">
+          <select className="select" aria-label="Class" value={classId || ''} onChange={(e) => pickClass(e.target.value)}>
+            {!classes.some((c) => c.id === classId) && <option value={classId || ''}>A class you put away</option>}
+            {classes.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.members.length} {c.members.length === 1 ? 'learner' : 'learners'})
+              </option>
+            ))}
+          </select>
+          <div className="small muted">
+            {(() => {
+              const c = classes.find((x) => x.id === classId);
+              const names = c ? learners.filter((l) => c.members.includes(l.id)).map((l) => l.display_name) : [];
+              return names.length ? `For ${names.join(', ')}, and anyone who joins the class later.` : 'Nobody is in this class yet: whoever you add later gets it.';
+            })()}
+          </div>
+        </div>
+      )}
+      {mode === 'some' && (
         <div className="chips">
           {learners.map((l) => {
             const on = chosen.includes(l.id);
@@ -362,7 +388,7 @@ export function AudiencePicker({ learners, value, onChange }) {
                 className={'pill ' + (on ? 'accent' : '')}
                 style={{ cursor: 'pointer', border: 0, padding: '6px 12px' }}
                 aria-pressed={on}
-                onClick={() => onChange(on ? chosen.filter((x) => x !== l.id) : [...chosen, l.id])}
+                onClick={() => onChange(on ? chosen.filter((x) => x !== l.id) : [...chosen, l.id], null)}
               >
                 {on && <Icon name="check" size={13} />}
                 {l.display_name}

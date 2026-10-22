@@ -130,6 +130,29 @@ export const setLearner = (id, name, programme, subjects) =>
   run(sb().rpc('set_learner', { p_learner: id, p_name: name, p_programme: programme || null, p_subject_ids: subjects }));
 export const removeLearner = (id) => run(sb().rpc('remove_learner', { p_learner: id }));
 export const listInvites = () => run(sb().from('invites').select('*').order('created_at', { ascending: false }));
+
+// ---------------- organisations and classes ----------------
+// Every tutor is in an organisation (their own, or a tuition centre they joined with its code)
+export const myOrg = () => run(sb().rpc('my_org'));
+export const orgRename = (name) => run(sb().rpc('org_rename', { p_name: name }));
+export const orgMakeCentre = (name = null) => run(sb().rpc('org_make_centre', { p_name: name }));
+export const orgNewCode = () => run(sb().rpc('org_new_code'));
+export async function orgJoin(code) {
+  const r = await run(sb().rpc('org_join', { p_code: code }));
+  if (!r) throw new Error('That code isn’t right. Check it with the centre and try again.');
+  return r;
+}
+export const orgLeave = () => run(sb().rpc('org_leave'));
+export const orgRemove = (userId) => run(sb().rpc('org_remove', { p_user: userId }));
+export const orgSetRole = (userId, role) => run(sb().rpc('org_set_role', { p_user: userId, p_role: role }));
+export const orgOverview = () => run(sb().rpc('org_overview'));
+// Classes: a tutor's teaching groups (empty until the server has them)
+export const listClasses = () => run(sb().from('classes').select('*').order('name')).catch((e) => (e.offline ? Promise.reject(e) : []));
+export const listClassMembers = () => run(sb().from('class_members').select('*')).catch((e) => (e.offline ? Promise.reject(e) : []));
+export const saveClass = (c) =>
+  run(sb().rpc('save_class', { p_id: c.id || null, p_name: c.name, p_subject: c.subject_id || null, p_learner_ids: c.learner_ids || [] }));
+export const archiveClass = (id, archived = true) => run(sb().rpc('archive_class', { p_id: id, p_archived: archived }));
+export const deleteClass = (id) => run(sb().rpc('delete_class', { p_id: id }));
 export const createInvite = (inv) => run(sb().from('invites').insert(inv).select().maybeSingle());
 export const revokeInvite = (id) => run(sb().from('invites').update({ revoked: true }).eq('id', id));
 
@@ -593,6 +616,7 @@ const seriesArgs = (s) => ({
   p_timezone: timezone(),
   p_until: s.until || null,
   p_notes: s.notes_md || null,
+  p_class: s.class_id || null,
 });
 export const createSeries = (s) => run(sb().rpc('create_lesson_series', seriesArgs(s)));
 export const changeSeries = (id, s, from = null) => run(sb().rpc('change_lesson_series', { p_series: id, ...seriesArgs(s), p_from: from }));

@@ -176,7 +176,7 @@ function Files() {
                   <td data-label="Who sees it">
                     <div className="row wrap" style={{ gap: 6 }}>
                       <VisibilityPill item={f} />
-                      {f.visibility !== 'hidden' && <span className="tiny muted">{f.learner_ids?.length ? lk.audience(f).map((l) => l.display_name).join(', ') : 'Everyone in the subject'}</span>}
+                      {f.visibility !== 'hidden' && <span className="tiny muted">{classText(lk, f) || (f.learner_ids?.length ? lk.audience(f).map((l) => l.display_name).join(', ') : 'Everyone in the subject')}</span>}
                     </div>
                   </td>
                   <td data-label="Size" className="muted">{bytes(f.size)}</td>
@@ -224,6 +224,7 @@ export function FileSettings({ file, onClose }) {
         visibility: f.visibility,
         visible_from: f.visibility === 'scheduled' ? f.visible_from : null,
         learner_ids: f.learner_ids?.length ? f.learner_ids : null,
+        class_id: f.class_id || null,
       });
       invalidate('files');
       onClose();
@@ -294,15 +295,31 @@ export function FileSettings({ file, onClose }) {
         <VisibilityPicker value={f.visibility} from={f.visible_from} onChange={(v, from) => set({ visibility: v, visible_from: from })} />
       </Field>
       <Field label="Who">
-        <AudiencePicker learners={f.subject_id ? lk.learners : lk.learners} value={f.learner_ids} onChange={(ids) => set({ learner_ids: ids })} />
+        <AudiencePicker learners={lk.learners} value={f.learner_ids} onChange={(ids, cls) => set({ learner_ids: ids, class_id: cls })} classes={lk.activeClasses} classId={f.class_id} />
       </Field>
-      {!f.subject_id && !(f.learner_ids || []).length && f.visibility !== 'hidden' && <div className="note small">No subject chosen, so all your learners will see it.</div>}
+      {!f.subject_id && !f.class_id && !(f.learner_ids || []).length && f.visibility !== 'hidden' && <div className="note small">No subject chosen, so all your learners will see it.</div>}
       {err && <div className="error">{err}</div>}
     </Modal>
   );
 }
 
 const lessonWaiting = (l) => l.draft || l.visibility === 'hidden' || (l.visibility === 'scheduled' && l.visible_from && new Date(l.visible_from) > new Date());
+
+// Who posted lesson notes are for: "For Year 10 maths: Aranya, Sam."
+function forText(lk, l) {
+  const who = lk.audience(l).map((x) => x.display_name);
+  const c = l.class_id && lk.klass(l.class_id);
+  if (c) return who.length ? `For ${c.name}: ${who.join(', ')}.` : `Nobody is in ${c.name} yet. Whoever you add to it gets them.`;
+  return who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.';
+}
+
+// "Year 10 maths (3 learners)" for something set for a class (null if it isn't, or the class was deleted)
+function classText(lk, item) {
+  const c = item.class_id && lk.klass(item.class_id);
+  if (!c) return null;
+  const n = lk.audience(item).length;
+  return `${c.name} (${n ? `${n} learner${n === 1 ? '' : 's'}` : 'nobody yet'})`;
+}
 
 // Tapping lesson notes: edit, post (or hide again), or delete
 function LessonOptions({ l, onClose }) {
@@ -329,8 +346,7 @@ function LessonOptions({ l, onClose }) {
       await api.ensureCloudIds(l.file_ids || [], files);
       await api.save('lessons', { id: l.id, visibility, visible_from: visibility === 'scheduled' ? l.visible_from : null, draft: false, updated_at: new Date().toISOString() });
       invalidate('lessons', 'drafts');
-      const who = lk.audience(l).map((x) => x.display_name);
-      toast({ title: `Posted: ${l.title}`, body: who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.' });
+      toast({ title: `Posted: ${l.title}`, body: forText(lk, l) });
       onClose();
     });
   const hide = () =>
@@ -411,6 +427,7 @@ function Lessons() {
                         <span className="meta">
                           {l.subject_id && <SubjectTag id={l.subject_id} />}
                           {l.topic_id && <span>{lk.topic(l.topic_id)?.name}</span>}
+                          {classText(lk, l) && <span>{classText(lk, l)}</span>}
                           <span>Updated {ago(l.updated_at)}</span>
                         </span>
                       </span>
@@ -435,7 +452,7 @@ export function LessonEditor({ id }) {
   const lessons = useQuery('lessons', api.listLessons);
   const files = useQuery('files', api.listFiles).data || [];
   const isNew = id === 'new';
-  const [l, setL] = useState(isNew ? { title: '', body_md: '', visibility: 'hidden', file_ids: [], learner_ids: [] } : null);
+  const [l, setL] = useState(isNew ? { title: '', body_md: '', visibility: 'hidden', file_ids: [], learner_ids: [], class_id: null } : null);
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -454,7 +471,7 @@ export function LessonEditor({ id }) {
   }, [lessons.data, id, isNew, l]);
   useEffect(() => {
     if (!fromSession || !forSession || !l || l.session_id || dirty) return;
-    setL((x) => ({ ...x, title: x.title || `${forSession.title} (${day(forSession.starts_at)})`, learner_ids: forSession.learner_ids || [], session_id: forSession.id }));
+    setL((x) => ({ ...x, title: x.title || `${forSession.title} (${day(forSession.starts_at)})`, learner_ids: forSession.learner_ids || [], class_id: forSession.class_id || null, session_id: forSession.id }));
   }, [fromSession, forSession, l, dirty]);
   if (!l) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes no longer exist.</Empty> : null}</Page>;
   const set = (patch) => (setL((x) => ({ ...x, ...patch })), setDirty(true));
@@ -475,6 +492,7 @@ export function LessonEditor({ id }) {
         visibility,
         visible_from: visibility === 'scheduled' ? l.visible_from : null,
         learner_ids: l.learner_ids?.length ? l.learner_ids : null,
+        class_id: l.class_id || null,
         draft: post ? false : !!l.draft,
         updated_at: new Date().toISOString(),
         ...(l.session_id ? { session_id: l.session_id } : {}), // written for a live lesson
@@ -494,8 +512,7 @@ export function LessonEditor({ id }) {
         return;
       }
       if (post) {
-        const who = lk.audience(saved).map((x) => x.display_name);
-        toast({ title: saved.visibility === 'scheduled' ? `Scheduled: ${saved.title}` : `Posted: ${saved.title}`, body: who.length ? `For ${who.join(', ')}.` : 'No learners take this subject yet.' });
+        toast({ title: saved.visibility === 'scheduled' ? `Scheduled: ${saved.title}` : `Posted: ${saved.title}`, body: forText(lk, saved) });
         go('/library/lessons', { force: true });
         return;
       }
@@ -617,7 +634,7 @@ export function LessonEditor({ id }) {
           <div className="card">
             <h3>Who sees it</h3>
             <VisibilityPicker value={l.visibility} from={l.visible_from} onChange={(v, from) => set({ visibility: v, visible_from: from })} />
-            <AudiencePicker learners={lk.learners} value={l.learner_ids} onChange={(ids) => set({ learner_ids: ids })} />
+            <AudiencePicker learners={lk.learners} value={l.learner_ids} onChange={(ids, cls) => set({ learner_ids: ids, class_id: cls })} classes={lk.activeClasses} classId={l.class_id} />
           </div>
           <div className="card">
             <h3>Subject</h3>

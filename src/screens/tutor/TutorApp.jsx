@@ -21,6 +21,7 @@ import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import { OfficialView } from './PastPapers.jsx';
 import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
+import Centre from './Centre.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -35,6 +36,7 @@ function notificationTarget(n) {
   if (n.kind === 'prof' && r.cards) return `/library/cards?subject=${r.subject_id}`;
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'feedback_reply') return '/settings?s=contact';
+  if (n.kind === 'org') return '/settings?s=org';
   if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/reports';
   return '/';
 }
@@ -49,6 +51,9 @@ export default function TutorApp() {
   const draftCount = useDraftCounts();
   useProfJobs(); // keeps Prof's requests moving (e.g. sending book pages) on every page
   const reportsToSend = useWeeklyReports(); // drafts last week's parent reports
+  // a tuition centre's managers get a Centre page: every tutor and learner in it
+  const org = useQuery('org', api.myOrg).data;
+  const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
 
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
@@ -61,6 +66,7 @@ export default function TutorApp() {
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
     { to: '/structure', label: 'Subjects', icon: 'layers' },
     { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
+    ...(manager ? [{ to: '/centre', label: 'Centre', icon: 'chart' }] : []),
     ...(app.me.admin_to_move ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: 1 }] : []),
   ];
   const tabs = [nav[0], nav[2], nav[3], nav[5], nav[1]];
@@ -68,6 +74,7 @@ export default function TutorApp() {
   const [a, b, c] = route.parts;
   let page;
   if (!a) page = <Home />;
+  else if (a === 'learners' && b === 'classes') page = <Learners tab="classes" />;
   else if (a === 'learners' && b) page = <LearnerDetail id={b} tab={c} />;
   else if (a === 'learners') page = <Learners />;
   else if (a === 'structure') page = <Structure />;
@@ -88,6 +95,7 @@ export default function TutorApp() {
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;
   else if (a === 'settings') page = <Settings />;
+  else if (a === 'centre' && manager) page = <Centre />;
   else page = <Home />;
 
   return (

@@ -2269,3 +2269,150 @@ test('daily study reminder: once a day at the learner’s own time in their own 
   assert.deepEqual([off.on, off.time, off.devices], [false, '18:30', 0]);
   assert.equal(await run('2031-01-19 16:40Z'), 0);
 });
+
+test('organisations and classes: every tutor has one, a tutor makes it a centre and others join with its code; classes get their work as people join and leave', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  for (const k of ['OM', 'OT', 'OL1', 'OL2', 'OL3', 'OL4']) await mk(k, k.toLowerCase() + '@org.x');
+  await one('OM', `select * from become_tutor('Mary Banda', 'Africa/Lusaka')`);
+  await one('OT', `select * from become_tutor('Tom Phiri', 'Africa/Lusaka')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.OM]);
+  await as('A', `select admin_set_status($1, 'active')`, [U.OT]);
+  const join = async (tutor, learner, extra = {}) => {
+    const code = await val(tutor, `insert into invites (name, class_ids) values ($1, $2) returning code`, [learner, extra.classes || []]);
+    await one(learner, `select * from accept_invite($1, $2)`, [code, learner]);
+  };
+
+  // every tutor has an organisation of their own (tutors from before got one when setup.sql ran); the content
+  // account's is StudyBridge's own, where students on their own are
+  const om = await val('OM', `select my_org()`);
+  assert.deepEqual([om.name, om.kind, om.role, om.code, om.members.length], ['Mary Banda’s tutoring', 'tutor', 'manager', null, 1]);
+  assert.equal((await val('T', `select my_org()`)).kind, 'tutor');
+  const sb = await val('C', `select my_org()`);
+  assert.deepEqual([sb.name, sb.kind], ['StudyBridge', 'studybridge']);
+  const selfLearner = (await db.query(`select id from profiles where tutor_id = $1 and role = 'learner' limit 1`, [U.C])).rows[0];
+  if (selfLearner) assert.equal((await db.query(`select _org_of($1) o`, [selfLearner.id])).rows[0].o, sb.id);
+  await fails(as('C', `select org_make_centre('Mine')`), /stays as it is/);
+  await fails(as('OM', `select * from organisations`), /permission denied/);
+  await fails(as('OM', `select * from org_members`), /permission denied/);
+  await fails(as('OM', `select _ensure_org($1)`, [U.OT]), /permission denied/);
+
+  // Mary makes hers a tuition centre; Tom joins with its code (a wrong one is counted and joins nothing)
+  const centre = await val('OM', `select org_make_centre('Bright Minds Centre')`);
+  assert.deepEqual([centre.name, centre.kind], ['Bright Minds Centre', 'centre']);
+  assert.match(centre.code, /^\d{8}$/);
+  assert.equal(await val('OT', `select org_join('1234 5678')`), null);
+  assert.equal((await db.query(`select count(*)::int n from invite_tries where user_id = $1`, [U.OT])).rows[0].n, 1);
+  await fails(as('OT', `select org_overview()`), /Only a centre’s manager/);
+  const tom = await val('OT', `select org_join($1)`, [centre.code.slice(0, 4) + ' ' + centre.code.slice(4)]);
+  assert.deepEqual([tom.name, tom.kind, tom.role, tom.code, tom.members.length], ['Bright Minds Centre', 'centre', 'tutor', null, 2]);
+  assert.equal(await val('OM', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'org' and title = 'Tom Phiri joined Bright Minds Centre'`), 1);
+  assert.equal(await db.query(`select count(*)::int n from organisations where name = 'Tom Phiri’s tutoring'`).then((r) => r.rows[0].n), 0, 'his own one went');
+  await fails(as('OT', `select org_rename('Mine now')`), /Only the manager/);
+  await fails(as('OT', `select org_new_code()`), /Only the manager/);
+  await fails(as('OT', `select org_remove($1)`, [U.OM]), /Only the manager/);
+
+  // each tutor's learners stay theirs; the manager sees every tutor and learner in the centre, read-only
+  await join('OM', 'OL1');
+  await join('OT', 'OL2');
+  const ov = await val('OM', `select org_overview()`);
+  assert.deepEqual(ov.tutors.map((t) => [t.name, t.role, t.learners]), [['Mary Banda', 'manager', 1], ['Tom Phiri', 'tutor', 1]]);
+  assert.deepEqual(ov.learners.map((l) => [l.name, l.tutor_id]), [['OL1', U.OM], ['OL2', U.OT]]);
+  assert.equal((await as('OM', `select id from profiles where id = $1`, [U.OL2])).length, 0, 'the manager can’t open another tutor’s learner');
+  await fails(as('OL1', `select org_overview()`), /Only a centre’s manager/);
+  assert.equal(await val('OL1', `select my_org()`), null);
+  assert.equal((await db.query(`select _org_of($1) o`, [U.OL2])).rows[0].o, centre.id, 'a learner is in their tutor’s organisation');
+
+  // managers: there's always at least one
+  await fails(as('OM', `select org_set_role($1, 'tutor')`, [U.OM]), /at least one manager/);
+  await fails(as('OM', `select org_leave()`), /only manager/);
+  assert.equal((await val('OM', `select org_set_role($1, 'manager')`, [U.OT])).members.filter((m) => m.role === 'manager').length, 2);
+  await val('OT', `select org_set_role($1, 'tutor')`, [U.OT]);
+  // Tom leaves (his learner goes with him), comes back, and is taken out by Mary
+  const back = await val('OT', `select org_leave()`);
+  assert.deepEqual([back.name, back.kind, back.role], ['Tom Phiri’s tutoring', 'tutor', 'manager']);
+  assert.equal(await val('OL2', `select tutor_id from profiles where id = auth.uid()`), U.OT);
+  assert.equal((await val('OM', `select org_overview()`)).learners.length, 1);
+  await fails(as('OT', `select org_leave()`), /your own organisation/);
+  const code2 = (await val('OM', `select org_new_code()`)).code;
+  assert.notEqual(code2, centre.code);
+  assert.equal(await val('OT', `select org_join($1)`, [centre.code]), null, 'the old code stopped working');
+  await val('OT', `select org_join($1)`, [code2]);
+  assert.equal((await val('OM', `select org_remove($1)`, [U.OT])).members.length, 1);
+  assert.equal((await val('OT', `select my_org()`)).kind, 'tutor');
+  assert.equal(await val('OT', `select count(*)::int from notifications where user_id = auth.uid() and title = 'You’re no longer in Bright Minds Centre'`), 1);
+  assert.equal((await val('OM', `select org_rename('Bright Minds')`)).name, 'Bright Minds');
+  // Admin → Tutors shows each tutor's organisation
+  const at = (await val('A', `select admin_tutors()`)).find((t) => t.id === U.OM);
+  assert.deepEqual([at.org.name, at.org.kind, at.org.role, at.org.tutors], ['Bright Minds', 'centre', 'manager', 1]);
+
+  // ---------------- classes ----------------
+  await join('OM', 'OL3');
+  const sub = await val('OM', `insert into subjects (name) values ('IGCSE Maths') returning id`);
+  await fails(as('OM', `insert into classes (name) values ('x')`), /permission denied/);
+  await fails(as('OM', `select save_class(null, 'Y10', null, $1)`, [[U.OL2]]), /Not your learner/);
+  await fails(as('OM', `select save_class(null, '  ', null, '{}')`), /name/);
+  const y10 = await val('OM', `select save_class(null, 'Year 10 maths', $1, $2)`, [sub, [U.OL1]]);
+  assert.equal(await val('OL1', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'class' and title = 'You’re in Year 10 maths now'`), 1);
+  // work, lesson notes and files for the class: whoever is in it
+  const hw = await val('OM', `insert into assignments (title, kind, subject_id, class_id, visibility) values ('Class homework', 'homework', $1, $2, 'visible') returning id`, [sub, y10]);
+  const notes = await val('OM', `insert into lessons (title, subject_id, class_id, visibility) values ('Class notes', $1, $2, 'visible') returning id`, [sub, y10]);
+  assert.deepEqual(await val('OM', `select learner_ids from assignments where id = $1`, [hw]), [U.OL1]);
+  const sees = async (who, table, id) => (await as(who, `select id from ${table} where id = $1`, [id])).length === 1;
+  assert.equal(await sees('OL1', 'assignments', hw), true);
+  assert.equal(await sees('OL3', 'assignments', hw), false, 'not in the class');
+  assert.equal(await sees('OL3', 'lessons', notes), false);
+  assert.equal(await val('OL1', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New homework: Class homework'`), 1);
+  // a live lesson and a weekly lesson for the class
+  const live = await val('OM', `insert into sessions (title, starts_at, class_id) values ('Class lesson', now() + interval '3 days', $1) returning id`, [y10]);
+  assert.deepEqual(await val('OM', `select learner_ids from sessions where id = $1`, [live]), [U.OL1]);
+  const series = await val('OM', `select create_lesson_series('Weekly class', now() + interval '1 day', 60, '{}', 'Africa/Lusaka', null, null, $1)`, [y10]);
+  const seriesWho = async () => (await db.query(`select distinct learner_ids from sessions where series_id = $1 and starts_at > now()`, [series])).rows.map((r) => r.learner_ids);
+  assert.deepEqual(await seriesWho(), [[U.OL1]]);
+  // someone joins the class later: they get all of it
+  await val('OM', `select save_class($1, 'Year 10 maths', $2, $3)`, [y10, sub, [U.OL1, U.OL3]]);
+  assert.equal(await sees('OL3', 'assignments', hw), true);
+  assert.equal(await sees('OL3', 'lessons', notes), true);
+  assert.equal(await sees('OL3', 'sessions', live), true);
+  assert.deepEqual((await seriesWho()).map((x) => [...x].sort()), [[U.OL1, U.OL3].sort()]);
+  // a learner sees their own classes and their own place in them, never who else is in them
+  assert.deepEqual((await as('OL3', `select name from classes`)).map((c) => c.name), ['Year 10 maths']);
+  assert.deepEqual((await as('OL3', `select learner_id from class_members`)).map((m) => m.learner_id), [U.OL3]);
+  // someone leaves: work they started stays theirs, the rest goes (past live lessons keep who was there)
+  await as('OL1', `select start_attempt($1)`, [hw]);
+  await db.query(`update sessions set starts_at = now() - interval '1 hour' where id = $1`, [live]);
+  await val('OM', `select save_class($1, 'Year 10 maths', $2, $3)`, [y10, sub, [U.OL3]]);
+  assert.equal(await sees('OL1', 'assignments', hw), true, 'started, so it stays');
+  assert.equal(await sees('OL1', 'lessons', notes), false);
+  assert.deepEqual([...(await val('OM', `select learner_ids from sessions where id = $1`, [live]))].sort(), [U.OL1, U.OL3].sort(), 'a past lesson keeps who was there');
+  assert.deepEqual(await seriesWho(), [[U.OL3]]);
+  // another tutor can't point their work at this class, or change it
+  await fails(as('OT', `insert into assignments (title, class_id) values ('x', $1)`, [y10]), /Unknown class/);
+  await fails(as('OT', `select save_class($1, 'Mine', null, '{}')`, [y10]), /Not your class/);
+  // an invite can put a new learner straight into classes
+  await join('OM', 'OL4', { classes: [y10] });
+  assert.equal(await sees('OL4', 'assignments', hw), true);
+  // leaving the tutor means leaving their classes
+  await as('OM', `select remove_learner($1)`, [U.OL4]);
+  assert.equal(await db.query(`select count(*)::int n from class_members where learner_id = $1`, [U.OL4]).then((r) => r.rows[0].n), 0);
+  // an empty class means nobody yet, never everyone; deleting it hides what was only for it
+  const empty = await val('OM', `select save_class(null, 'Starting soon', $1, '{}')`, [sub]);
+  const hw2 = await val('OM', `insert into assignments (title, subject_id, class_id, visibility) values ('Waiting', $1, $2, 'visible') returning id`, [sub, empty]);
+  assert.equal(await sees('OL3', 'assignments', hw2), false);
+  await fails(as('OM', `select create_lesson_series('Nobody', now() + interval '1 day', 60, '{}', 'UTC', null, null, $1)`, [empty]), /Nobody is in this class/);
+  await as('OM', `select delete_class($1)`, [empty]);
+  assert.deepEqual(await one('OM', `select class_id, learner_ids, visibility from assignments where id = $1`, [hw2]), { class_id: null, learner_ids: null, visibility: 'hidden' });
+  // put away and back; deleting a class with people in it leaves its work with them
+  await as('OM', `select archive_class($1, true)`, [y10]);
+  assert.equal(await val('OM', `select archived from classes where id = $1`, [y10]), true);
+  await as('OM', `select archive_class($1, false)`, [y10]);
+  await as('OM', `select delete_class($1)`, [y10]);
+  assert.equal(await sees('OL3', 'assignments', hw), true);
+  assert.equal(await val('OM', `select class_id from assignments where id = $1`, [hw]), null);
+  // a tutor's data download has their classes
+  await val('OM', `select save_class(null, 'Year 11', null, $1)`, [[U.OL3]]);
+  const ex = await val('OM', `select export_my_data()`);
+  assert.deepEqual([ex.classes.map((c) => c.name), ex.class_members.length], [['Year 11'], 1]);
+});
