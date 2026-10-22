@@ -54,7 +54,13 @@ export function rememberAccount(p) {
   const session = currentSession();
   if (!session?.refresh_token) return;
   const next = [{ id: p.id, email: p.email || session.user?.email || '', name: p.display_name || '', role: p.role, server: here(), session }, ...list.filter((a) => a.id !== p.id)];
-  write(next.slice(0, 8));
+  write(keep(next));
+}
+// Up to 16 remembered, and never the admin account pushed out (opening the demo's accounts adds several)
+function keep(list) {
+  const kept = list.slice(0, 16);
+  for (const a of list) if (a.role === 'admin' && !kept.includes(a)) kept.push(a);
+  return kept;
 }
 // The sign-in is refreshed now and then: keep the remembered copy of the current account up to date
 function saveCurrent(currentId) {
@@ -72,6 +78,14 @@ export function switchTo(currentId, id) {
   if (!target?.session) return;
   saveCurrent(currentId);
   localStorage.setItem(AUTH, JSON.stringify(target.session));
+  window.location.hash = '#/';
+  window.location.reload();
+}
+// Open an account with a sign-in made elsewhere (the demo's "Open as"), keeping the current one remembered
+export function switchToSession(currentId, account, session) {
+  saveCurrent(currentId);
+  write(keep([{ ...account, server: here(), session }, ...read().filter((a) => a.id !== account.id)]));
+  localStorage.setItem(AUTH, JSON.stringify(session));
   window.location.hash = '#/';
   window.location.reload();
 }

@@ -1110,6 +1110,38 @@ try {
     await a11y(A, where);
   }
 
+  step('The demo: the Owner makes a pretend centre, opens it as the centre manager and as a parent, comes back, and removes it');
+  await nav(ADM, 'Demo').click();
+  await ADM.getByRole('heading', { name: 'Make the demo' }).waitFor();
+  await ADM.getByRole('button', { name: 'Make the demo' }).click();
+  await ADM.getByText('The demo is ready').waitFor({ timeout: 60000 });
+  await ADM.getByRole('heading', { name: 'Open as…' }).waitFor();
+  assert.equal(await ADM.locator('.item').filter({ has: ADM.getByRole('button', { name: /^Open as / }) }).count(), 8, 'eight demo accounts');
+  await shot(ADM, 'admin-demo');
+  await a11y(ADM, 'Admin → Demo');
+  await ADM.getByRole('button', { name: 'Open as Grace' }).click();
+  await ADM.getByText(/Demo: you’re Grace Mwansa, the centre manager/).waitFor();
+  await nav(ADM, 'Centre').click();
+  await ADM.getByText('Riverside Tuition (demo)').first().waitFor();
+  for (const n of ['Chipo Banda', 'Tendai Moyo', 'Amara Phiri', 'Kofi Mensah', 'Daniel Okafor']) await ADM.getByText(n).first().waitFor();
+  await shot(ADM, 'demo-centre');
+  await ADM.getByRole('button', { name: 'Back to my account' }).click();
+  await nav(ADM, 'Demo').click();
+  await ADM.getByRole('button', { name: 'Open as Ruth' }).click();
+  await ADM.getByText(/Demo: you’re Ruth Banda, a parent/).waitFor();
+  await ADM.getByText(/Chipo/).first().waitFor();
+  await shot(ADM, 'demo-parent');
+  await ADM.getByRole('button', { name: 'Back to my account' }).click();
+  // the demo's tutors never show in Admin → Tutors
+  await nav(ADM, 'Tutors').click();
+  await ADM.locator('.tutor-row').first().waitFor();
+  assert.equal(await ADM.locator('.tutor-row', { hasText: 'Grace Mwansa' }).count(), 0, 'not in Admin’s tutors');
+  await nav(ADM, 'Demo').click();
+  await ADM.getByRole('button', { name: 'Remove the demo' }).click();
+  await ADM.getByRole('dialog').getByRole('button', { name: 'Remove the demo' }).click();
+  await ADM.getByText('The demo is removed').waitFor();
+  await ADM.getByRole('heading', { name: 'Make the demo' }).waitFor();
+
   step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
   await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();
@@ -1119,9 +1151,13 @@ try {
   const plan = A.locator('#set-plan');
   await plan.getByText(/Essentials from \$5 and Plus from \$8 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
-  const [zip] = await Promise.all([A.waitForEvent('download'), A.locator('#set-data').getByRole('button', { name: /Download my data/ }).click()]);
+  // (the message is watched for from the click on: it can come and go while the download is being caught)
+  const [zip] = await Promise.all([
+    A.waitForEvent('download'),
+    A.getByText('Your data is downloaded').waitFor(),
+    A.locator('#set-data').getByRole('button', { name: /Download my data/ }).click(),
+  ]);
   assert.match(zip.suggestedFilename(), /^studybridge-data-\d{4}-\d{2}-\d{2}\.zip$/);
-  await A.getByText('Your data is downloaded').waitFor();
   await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).click();
   assert.ok(await A.locator('#set-data').getByRole('button', { name: 'Delete my account' }).last().isDisabled(), 'nothing is deleted until DELETE is typed');
 

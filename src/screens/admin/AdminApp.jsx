@@ -11,6 +11,7 @@ import { Overview, TutorPage, ProblemsPage, InboxPage, AnnouncementsPage, ProfPa
 import SellingPage from './Selling.jsx';
 import StudentsPage from './Students.jsx';
 import ContentPage from './Content.jsx';
+import DemoPage from './Demo.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -44,6 +45,7 @@ export default function AdminApp() {
     { to: '/platform', label: 'StudyBridge settings', icon: 'shield' },
     { to: '/selling', label: 'Selling', icon: 'star' },
     { to: '/log', label: 'What’s been done', icon: 'file' },
+    { to: '/demo', label: 'Demo', icon: 'eye' },
   ];
   const tabs = [nav[0], nav[1], nav[2], nav[3]];
   const [a, b] = route.parts;
@@ -59,6 +61,7 @@ export default function AdminApp() {
   else if (a === 'platform') page = <PlatformPage />;
   else if (a === 'selling') page = <SellingPage />;
   else if (a === 'log') page = <LogPage />;
+  else if (a === 'demo') page = <DemoPage />;
   else if (a === 'settings') page = <Settings />;
   else page = <Overview />;
   return (

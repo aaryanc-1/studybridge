@@ -18,6 +18,14 @@ export function sb() {
   return client;
 }
 
+// A second connection that never keeps a sign-in (the demo uses it to make and open its accounts while the
+// Owner stays signed in here)
+export function sideClient() {
+  const s = getServer();
+  if (!s) throw new Error('No server set up yet.');
+  return createClient(s.url, s.key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'sb.side' } });
+}
+
 export function resetClient() {
   client = null;
   clientFor = '';

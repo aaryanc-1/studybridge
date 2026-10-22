@@ -2416,3 +2416,77 @@ test('organisations and classes: every tutor has one, a tutor makes it a centre 
   const ex = await val('OM', `select export_my_data()`);
   assert.deepEqual([ex.classes.map((c) => c.name), ex.class_members.length], [['Year 11'], 1]);
 });
+
+test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend centre, opens any of them, and removes it; it never shows in Admin', async () => {
+  const roles = ['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'];
+  const make = async () => {
+    const ids = {};
+    for (const r of roles) {
+      const email = `demo-${r}-${crypto.randomBytes(3).toString('hex')}@gostudybridge.com`;
+      ids[r] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, '{}') returning id`, [email])).rows[0].id;
+    }
+    return ids;
+  };
+  const ids = await make();
+  const before = await val('A', `select admin_overview()`);
+  await fails(as('T', `select admin_demo_build($1)`, [ids]), /admins only/i);
+  await fails(as('T', `select admin_demo_open($1)`, [ids.manager]), /admins only/i);
+  // only brand-new demo accounts: never a real one
+  await fails(as('A', `select admin_demo_build($1)`, [{ ...ids, learner4: U.L2 }]), /isn’t a new demo account/);
+  assert.equal(await db.query(`select count(*)::int n from profiles where demo`).then((r) => r.rows[0].n), 0, 'nothing half-made');
+  const d = await val('A', `select admin_demo_build($1)`, [ids]);
+  assert.deepEqual(d.accounts.map((a) => [a.label, a.role]), [
+    ['manager', 'tutor'], ['tutor', 'tutor'], ['learner1', 'learner'], ['learner2', 'learner'], ['learner3', 'learner'], ['learner4', 'learner'],
+    ['parent', 'parent'], ['student', 'learner'],
+  ]);
+  await fails(as('A', `select admin_demo_build($1)`, [await make()]), /demo already/);
+
+  // a sign-in for any demo account, never anyone else's
+  const open = async (label) => {
+    const o = await val('A', `select admin_demo_open($1)`, [ids[label]]);
+    assert.equal((await db.query(`select encrypted_password = extensions.crypt($2, encrypted_password) ok from auth.users where id = $1`, [ids[label], o.password])).rows[0].ok, true);
+    U['demo_' + label] = ids[label];
+    return 'demo_' + label;
+  };
+  await fails(as('A', `select admin_demo_open($1)`, [U.T]), /isn’t a demo account/);
+  const M = await open('manager');
+  const org = await val(M, `select my_org()`);
+  assert.deepEqual([org.name, org.kind, org.role, org.members.length], ['Riverside Tuition (demo)', 'centre', 'manager', 2]);
+  const ov = await val(M, `select org_overview()`);
+  assert.deepEqual(ov.learners.map((l) => l.name), ['Amara Phiri', 'Chipo Banda', 'Kofi Mensah', 'Tendai Moyo']);
+  assert.ok(ov.learners.every((l) => l.classes.length === 1 && l.subjects.length === 1));
+  // Chipo: the class's homework (marked and back), its notes, a weekly lesson, her mock grade, a message
+  const L1 = await open('learner1');
+  const hw = await one(L1, `select id, learner_ids from assignments where title = 'Simultaneous equations'`);
+  assert.ok(hw.learner_ids.length === 2, 'the class');
+  const back = (await val(L1, `select my_attempts($1)`, [hw.id]))[0];
+  assert.deepEqual([back.status, back.released, Number(back.score)], ['returned', true, 3]);
+  assert.equal((await as(L1, `select id from lessons`)).length, 1);
+  assert.ok((await as(L1, `select id from sessions where starts_at > now()`)).length >= 4, 'weekly lessons ahead');
+  const mocks = await val(L1, `select my_mocks()`);
+  assert.deepEqual([mocks[0].title, mocks[0].grade], ['Term 1 mock', 'B']);
+  assert.equal((await as(L1, `select id from comments`)).length, 2);
+  // Daniel has Amara's quiz to mark; Ruth sees Chipo's approved report and the student on her own
+  const T = await open('tutor');
+  assert.equal((await as(T, `select id from attempts where status = 'submitted'`)).length, 1);
+  const P = await open('parent');
+  const kids = await val(P, `select parent_children()`);
+  assert.deepEqual(kids.map((k) => k.name).sort(), ['Chipo Banda', 'Lina Haddad']);
+  const S = await open('student');
+  const me = await one(S, `select self_learner, test_student, setup_done from profiles where id = auth.uid()`);
+  assert.deepEqual(me, { self_learner: true, test_student: true, setup_done: true });
+
+  // fenced off: not in Admin's tutors, students or numbers
+  assert.ok(!(await val('A', `select admin_tutors()`)).some((t) => t.id === ids.manager || t.id === ids.tutor));
+  assert.ok(!(await val('A', `select admin_students()`)).students.some((s) => s.id === ids.student));
+  const after = await val('A', `select admin_overview()`);
+  assert.deepEqual([after.tutors, after.learners], [before.tutors, before.learners]);
+  assert.equal((await val('A', `select admin_demo()`)).accounts.length, 8);
+
+  // remove: the accounts and everything in them go
+  assert.equal(await val('A', `select admin_demo_remove()`), 8);
+  assert.equal(await db.query(`select count(*)::int n from profiles where demo or id = any($1)`, [Object.values(ids)]).then((r) => r.rows[0].n), 0);
+  assert.equal(await db.query(`select count(*)::int n from organisations where name = 'Riverside Tuition (demo)'`).then((r) => r.rows[0].n), 0);
+  assert.equal(await db.query(`select count(*)::int n from assignments where title = 'Simultaneous equations'`).then((r) => r.rows[0].n), 0);
+  assert.equal((await val('A', `select admin_demo()`)).accounts.length, 0);
+});

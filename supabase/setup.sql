@@ -35,6 +35,10 @@ begin
   return new;
 end $$;
 
+-- The demo StudyBridge's fake accounts (see admin_demo_build): fenced off from Admin's numbers, lists and emails
+alter table public.profiles add column if not exists demo boolean not null default false;
+alter table public.profiles add column if not exists demo_label text;
+
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
@@ -3675,10 +3679,10 @@ begin
   exception when others then v_storage := null;
   end;
   return jsonb_build_object(
-    'tutors', (select count(*) from public.profiles where role = 'tutor' and status = 'active'),
-    'pending', (select count(*) from public.profiles where role = 'tutor' and status = 'pending'),
-    'learners', (select count(*) from public.profiles where role = 'learner'),
-    'active_7d', (select count(*) from public.profiles where role in ('tutor', 'learner') and last_seen_at > now() - interval '7 days'),
+    'tutors', (select count(*) from public.profiles where role = 'tutor' and status = 'active' and not demo),
+    'pending', (select count(*) from public.profiles where role = 'tutor' and status = 'pending' and not demo),
+    'learners', (select count(*) from public.profiles where role = 'learner' and not demo),
+    'active_7d', (select count(*) from public.profiles where role in ('tutor', 'learner') and last_seen_at > now() - interval '7 days' and not demo),
     'signins_7d', (select count(*) from auth.users where last_sign_in_at > now() - interval '7 days'),
     'assignments_30d', (select count(*) from public.assignments where created_at > now() - interval '30 days' and not draft),
     'handins_30d', (select count(*) from public.attempts where submitted_at > now() - interval '30 days'),
@@ -5345,7 +5349,7 @@ begin
         'parents', (select count(*) from public.parent_links pl where pl.learner_id = p.id),
         'subjects', (select coalesce(jsonb_agg(s.name order by s.position), '[]'::jsonb)
                        from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = p.id))
-      order by p.created_at desc) from public.profiles p where p.self_learner), '[]'::jsonb));
+      order by p.created_at desc) from public.profiles p where p.self_learner and not p.demo), '[]'::jsonb));
 end $$;
 
 -- The Owner records a payment taken by hand (monthly, or an exam pass), or takes it away
@@ -7558,7 +7562,234 @@ begin
                 from public.org_members m join public.organisations o on o.id = m.org_id where m.user_id = p.id),
       'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived)
     ) order by (p.status = 'pending') desc, p.created_at)
-    from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor'), '[]');
+    from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor' and not p.demo), '[]');
+end $$;
+
+-- =====================================================================
+-- The demo StudyBridge (22 Oct 2026): for the Owner only, a pretend tuition centre made of fake accounts with
+-- sample work, to see every kind of user's screens. The app makes the accounts (plain sign-ups with throwaway
+-- passwords, emails demo-<who>-<random>@gostudybridge.com), then admin_demo_build fills them in. Demo accounts are
+-- fenced off: marked profiles.demo, never in Admin's numbers or lists, never emailed, and the Owner opens them with
+-- a fresh password made here (only ever for a demo account). Remove deletes them and everything in them.
+-- =====================================================================
+-- Admin → Demo: the demo accounts (if made) and whether a student on their own can be part of it
+create or replace function public.admin_demo() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return jsonb_build_object(
+    'accounts', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'label', p.demo_label, 'role', p.role, 'name', p.display_name, 'email', p.email)
+                           order by array_position(array['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'], p.demo_label))
+                          from public.profiles p where p.demo), '[]'),
+    'made_at', (select min(created_at) from public.profiles where demo),
+    'content', public._studybridge_account() is not null);
+end $$;
+
+-- Fill in the accounts the app just made. p_accounts: {"manager": id, "tutor": id, "learner1".."learner4": id, "parent": id,
+-- "student": id (optional)}. Each must be a brand-new account with no role yet and a demo address.
+create or replace function public.admin_demo_build(p_accounts jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  k text;
+  v_id uuid;
+  m uuid := (p_accounts ->> 'manager')::uuid;
+  t uuid := (p_accounts ->> 'tutor')::uuid;
+  l1 uuid := (p_accounts ->> 'learner1')::uuid;
+  l2 uuid := (p_accounts ->> 'learner2')::uuid;
+  l3 uuid := (p_accounts ->> 'learner3')::uuid;
+  l4 uuid := (p_accounts ->> 'learner4')::uuid;
+  par uuid := (p_accounts ->> 'parent')::uuid;
+  stu uuid := (p_accounts ->> 'student')::uuid;
+  c uuid := public._studybridge_account();
+  org uuid;
+  maths uuid; phys uuid; t_alg uuid; t_num uuid; t_geo uuid; t_stat uuid; t_mot uuid; t_elec uuid;
+  y10 uuid; y11 uuid;
+  hw uuid; quiz uuid; paper uuid; mock uuid; notes uuid; series uuid;
+  q1 uuid; q2 uuid; q3 uuid; pq1 uuid; pq2 uuid; qq1 uuid; qq2 uuid;
+  a1 uuid; a3 uuid; ma uuid;
+  wk date := (date_trunc('week', now()) - interval '7 days')::date;
+  d int;
+  sub uuid;
+begin
+  perform public._admin();
+  if exists (select 1 from public.profiles where demo) then raise exception 'There’s a demo already. Remove it first, or use Reset.'; end if;
+  foreach k in array array['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'] loop
+    v_id := (p_accounts ->> k)::uuid;
+    if v_id is null then
+      if k = 'student' then continue; end if;
+      raise exception 'The demo needs a % account.', k;
+    end if;
+    if not exists (select 1 from public.profiles p where p.id = v_id and p.role is null and p.email like 'demo-%'
+                     and p.created_at > now() - interval '1 hour') then
+      raise exception 'That isn’t a new demo account.';
+    end if;
+    update public.profiles set demo = true, demo_label = k where id = v_id;
+  end loop;
+
+  -- the centre: a manager and a second tutor, both approved, on a plan with room
+  update public.profiles set display_name = 'Grace Mwansa', timezone = 'Africa/Lusaka' where id = m;
+  update public.profiles set display_name = 'Daniel Okafor', timezone = 'Africa/Lusaka' where id = t;
+  update public.profiles set role = 'tutor', status = 'active', plan = 'custom', plan_learners = 50 where id in (m, t);
+  org := public._ensure_org(m);
+  update public.organisations set kind = 'centre', name = 'Riverside Tuition (demo)', join_code = public._new_org_code() where id = org;
+  delete from public.org_members where user_id = t;
+  insert into public.org_members (org_id, user_id, role) values (org, t, 'tutor');
+
+  -- subjects and topics
+  insert into public.subjects (tutor_id, name, color, exam) values (m, 'IGCSE Maths', '#0E6B6B', 'cie:0607') returning id into maths;
+  insert into public.topics (tutor_id, subject_id, name, position) values (m, maths, 'Number', 1) returning id into t_num;
+  insert into public.topics (tutor_id, subject_id, name, position) values (m, maths, 'Algebra', 2) returning id into t_alg;
+  insert into public.topics (tutor_id, subject_id, name, position) values (m, maths, 'Geometry', 3) returning id into t_geo;
+  insert into public.topics (tutor_id, subject_id, name, position) values (m, maths, 'Statistics', 4) returning id into t_stat;
+  insert into public.subjects (tutor_id, name, color, exam) values (t, 'IGCSE Physics', '#2F5C9A', 'cie:0625') returning id into phys;
+  insert into public.topics (tutor_id, subject_id, name, position) values (t, phys, 'Motion and forces', 1) returning id into t_mot;
+  insert into public.topics (tutor_id, subject_id, name, position) values (t, phys, 'Electricity', 2) returning id into t_elec;
+
+  -- learners: two each, in Lusaka
+  update public.profiles set role = 'learner', tutor_id = m, timezone = 'Africa/Lusaka', display_name = 'Chipo Banda' where id = l1;
+  update public.profiles set role = 'learner', tutor_id = m, timezone = 'Africa/Lusaka', display_name = 'Tendai Moyo' where id = l2;
+  update public.profiles set role = 'learner', tutor_id = t, timezone = 'Africa/Lusaka', display_name = 'Amara Phiri' where id = l3;
+  update public.profiles set role = 'learner', tutor_id = t, timezone = 'Africa/Lusaka', display_name = 'Kofi Mensah' where id = l4;
+  insert into public.learner_subjects (learner_id, subject_id, tutor_id) values (l1, maths, m), (l2, maths, m), (l3, phys, t), (l4, phys, t);
+
+  -- a class each
+  insert into public.classes (tutor_id, name, subject_id) values (m, 'Year 10 maths', maths) returning id into y10;
+  insert into public.class_members (class_id, learner_id) values (y10, l1), (y10, l2);
+  insert into public.classes (tutor_id, name, subject_id) values (t, 'Year 11 physics', phys) returning id into y11;
+  insert into public.class_members (class_id, learner_id) values (y11, l3), (y11, l4);
+
+  -- homework for Year 10: Chipo handed it in and has it back, marked; Tendai hasn't started
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, topic_id, class_id, visibility, due_at)
+  values (m, 'homework', 'Simultaneous equations', 'Show your working for each one.', maths, t_alg, y10, 'visible', now() + interval '3 days')
+  returning id into hw;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (hw, m, 1, 'numeric', 'Solve $2x + 3 = 11$. What is $x$?', 1, t_alg) returning id into q1;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (hw, m, 2, 'numeric', '$x + y = 10$ and $x - y = 4$. What is $x$?', 2, t_alg) returning id into q2;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+  values (hw, m, 3, 'mcq', 'Which pair solves $x + 2y = 5$ and $x - y = 2$?', '["x = 1, y = 2", "x = 3, y = 1", "x = 2, y = 3"]', 1, t_alg) returning id into q3;
+  insert into public.question_keys (question_id, tutor_id, answer, solution_md) values
+    (q1, m, '{"value": "4"}', '$2x = 8$, so $x = 4$.'),
+    (q2, m, '{"value": "7"}', 'Add the equations: $2x = 14$, so $x = 7$.'),
+    (q3, m, '{"choice": 1}', 'Subtract: $3y = 3$, so $y = 1$ and $x = 3$.');
+  insert into public.attempts (assignment_id, learner_id, tutor_id, status, started_at, submitted_at, time_spent_sec, score, max_score, released, released_at, feedback_md)
+  values (hw, l1, m, 'returned', now() - interval '26 hours', now() - interval '25 hours', 1260, 3, 4, true, now() - interval '20 hours',
+          'Good work, Chipo. Question 2: add the two equations first, then $x$ falls out.')
+  returning id into a1;
+  insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, auto_marks, marks, feedback_md) values
+    (a1, q1, l1, m, '{"value": "4"}', 1, 1, null),
+    (a1, q2, l1, m, '{"value": "6"}', 0, 1, 'Right method, one slip at the end: $14 \div 2 = 7$.'),
+    (a1, q3, l1, m, '{"choice": 1}', 1, 1, null);
+
+  -- lesson notes for the class, and a weekly lesson
+  insert into public.lessons (tutor_id, title, body_md, subject_id, topic_id, class_id, visibility)
+  values (m, 'Simultaneous equations: elimination', E'## Elimination\n\nAdd or subtract the equations so one letter disappears.\n\n**Example:** $x + y = 10$ and $x - y = 4$. Adding gives $2x = 14$, so $x = 7$ and $y = 3$.',
+          maths, t_alg, y10, 'visible')
+  returning id into notes;
+  insert into public.lesson_series (tutor_id, title, learner_ids, class_id, weekday, start_time, timezone, duration_min, starts_on)
+  values (m, 'Year 10 maths', array[l1, l2], y10, extract(dow from current_date + 1)::int, '16:00', 'Africa/Lusaka', 60, current_date + 1)
+  returning id into series;
+  perform public._fill_series(series);
+
+  -- a mock: Chipo's grade is back (the boundaries stay Grace's own)
+  insert into public.grade_boundaries (tutor_id, exam, session, option_label, max_mark, grades)
+  values (m, 'cie:0607', 'June 2025', 'Extended', 100,
+          '[{"grade": "A*", "min": 80}, {"grade": "A", "min": 70}, {"grade": "B", "min": 60}, {"grade": "C", "min": 50}, {"grade": "D", "min": 40}, {"grade": "E", "min": 30}]');
+  insert into public.mocks (tutor_id, title, subject_id, exam) values (m, 'Term 1 mock', maths, 'cie:0607') returning id into mock;
+  insert into public.assignments (tutor_id, kind, title, subject_id, class_id, visibility, mock_id, mock_position, time_limit_min)
+  values (m, 'test', 'Term 1 mock · Paper 2', maths, y10, 'visible', mock, 1, 90) returning id into paper;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (paper, m, 1, 'short', 'Number and algebra (section A)', 25, t_num) returning id into pq1;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (paper, m, 2, 'short', 'Geometry and statistics (section B)', 25, t_geo) returning id into pq2;
+  insert into public.attempts (assignment_id, learner_id, tutor_id, status, started_at, submitted_at, time_spent_sec, score, max_score, released, released_at)
+  values (paper, l1, m, 'returned', now() - interval '4 days', now() - interval '4 days' + interval '85 minutes', 5100, 34, 50, true, now() - interval '3 days')
+  returning id into ma;
+  insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, marks) values
+    (ma, pq1, l1, m, '{"text": "(answers written on paper)"}', 19),
+    (ma, pq2, l1, m, '{"text": "(answers written on paper)"}', 15);
+
+  -- Year 11 physics: a quiz Amara has handed in, waiting for Daniel to mark
+  insert into public.assignments (tutor_id, kind, title, subject_id, topic_id, class_id, visibility, due_at)
+  values (t, 'quiz', 'Speed, distance and time', phys, t_mot, y11, 'visible', now() + interval '2 days') returning id into quiz;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (quiz, t, 1, 'numeric', 'A cyclist travels 120 m in 20 s. What is their speed in m/s?', 1, t_mot) returning id into qq1;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (quiz, t, 2, 'short', 'Explain why a ball thrown upwards slows down.', 2, t_mot) returning id into qq2;
+  insert into public.question_keys (question_id, tutor_id, answer) values (qq1, t, '{"value": "6"}'), (qq2, t, '{}');
+  insert into public.attempts (assignment_id, learner_id, tutor_id, status, started_at, submitted_at, time_spent_sec, score, max_score)
+  values (quiz, l3, t, 'submitted', now() - interval '3 hours', now() - interval '2 hours', 640, null, 3) returning id into a3;
+  insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, auto_marks) values
+    (a3, qq1, l3, t, '{"value": "6"}', 1),
+    (a3, qq2, l3, t, '{"text": "Gravity pulls it down, against the way it is moving, so it loses speed."}', null);
+
+  -- messages between Grace and Chipo
+  insert into public.comments (tutor_id, learner_id, author_id, body, created_at) values
+    (m, l1, l1, 'I got stuck on question 2. Do I add or take away?', now() - interval '27 hours'),
+    (m, l1, m, 'Add them: the $y$s cancel out. Then try it again!', now() - interval '26 hours');
+
+  -- time studied over the last week
+  for d in 0..6 loop
+    insert into public.activity (learner_id, tutor_id, kind, subject_id, seconds, day) values
+      (l1, m, 'study', maths, 1200 + d * 180, current_date - d),
+      (l2, m, 'study', maths, case when d % 2 = 0 then 900 else 0 end, current_date - d),
+      (l3, t, 'study', phys, 1500, current_date - d),
+      (l4, t, 'study', phys, case when d < 3 then 600 else 0 end, current_date - d);
+  end loop;
+  delete from public.activity where seconds = 0 and learner_id in (l1, l2, l3, l4);
+
+  -- Chipo's mum, Ruth: a parent account with last week's report, approved by Grace
+  update public.profiles set role = 'parent', display_name = 'Ruth Banda', timezone = 'Africa/Lusaka' where id = par;
+  insert into public.parent_links (parent_id, learner_id, tutor_id) values (par, l1, m);
+  insert into public.parent_reports (tutor_id, learner_id, week_start, status, data, comment, next_week, sent_at, sent_via)
+  values (m, l1, wk, 'sent', public._report_numbers(m, l1, wk::timestamptz, (wk + 7)::timestamptz),
+          'Chipo worked steadily this week and her algebra is getting much stronger.', 'More practice with elimination, then the mock review.',
+          now() - interval '2 days', 'parent');
+
+  -- a student on their own (a test student: they never pay), studying the first open subject (0607 if there is one)
+  if stu is not null then
+    if c is null then raise exception 'Pick the content account first (Admin → Students), or make the demo without a student.'; end if;
+    select id into sub from public.subjects where tutor_id = c
+     order by (catalogue = 'cambridge:igcse:0607') desc, live desc, position, created_at limit 1;
+    update public.profiles
+       set role = 'learner', tutor_id = c, self_learner = true, test_student = true, display_name = 'Lina Haddad', timezone = 'Africa/Lusaka',
+           grade = 10, country = 'Zambia', trial_until = now() + interval '7 days', study_board = 'Cambridge', study_level = 'IGCSE',
+           exam_date = make_date(extract(year from now() + interval '6 months')::int, 5, 1), exam_label = 'May/June',
+           study_hours = 4, study_goal_min = 34, plan_start = current_date, setup_done = true
+     where id = stu;
+    if sub is not null then insert into public.learner_subjects (learner_id, subject_id, tutor_id) values (stu, sub, c) on conflict do nothing; end if;
+    insert into public.parent_links (parent_id, learner_id, tutor_id) values (par, stu, c) on conflict do nothing;
+  end if;
+
+  perform public._admin_log('demo_made', null, jsonb_build_object('accounts', p_accounts));
+  return public.admin_demo();
+end $$;
+
+-- Open a demo account: a fresh password for it (only ever a demo account), which the Owner's app signs in with
+create or replace function public.admin_demo_open(p_user uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare p public.profiles; pw text := encode(extensions.gen_random_bytes(18), 'hex');
+begin
+  perform public._admin();
+  select * into p from public.profiles where id = p_user and demo;
+  if p.id is null then raise exception 'That isn’t a demo account.'; end if;
+  update auth.users set encrypted_password = extensions.crypt(pw, extensions.gen_salt('bf')) where id = p_user;
+  return jsonb_build_object('id', p.id, 'email', p.email, 'password', pw, 'role', p.role, 'name', p.display_name);
+end $$;
+
+-- Remove the demo: its accounts and everything in them
+create or replace function public.admin_demo_remove() returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  perform public._admin();
+  delete from auth.users where id in (select id from public.profiles where demo);
+  get diagnostics n = row_count;
+  -- and any demo sign-ups left half-made (the app stopped before they were filled in)
+  delete from auth.users where id in (select id from public.profiles where role is null and email like 'demo-%@gostudybridge.com');
+  delete from public.profiles where demo; -- (if the account itself had already gone)
+  perform public._admin_log('demo_removed', null, jsonb_build_object('accounts', n));
+  return n;
 end $$;
 
 grant execute on all functions in schema public to authenticated;

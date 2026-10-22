@@ -100,6 +100,7 @@ hr { border: 0; border-top: 1px solid var(--line-soft); margin: 4px 0; width: 10
 .banner { display: flex; align-items: center; gap: 10px; padding: 9px 16px; font-size: 14px; font-weight: 500; border-bottom: 1px solid; }
 .banner.off { background: var(--amber-tint); color: var(--amber-ink); border-color: var(--amber-line); }
 .banner.lock { background: var(--ink); color: #fff; border-color: var(--ink); }
+.banner.demo { background: var(--accent-tint); color: var(--accent-ink); border-color: var(--accent-line); }
 .banner .grow { flex: 1; }
 
 .tabbar { display: none; }

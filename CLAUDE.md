@@ -323,6 +323,9 @@ a learner with a school and a tutor at once (still one tutor each), one bill for
 Decided 22 Oct 2026 (Aaryan): next the new Home and shorter menu, then "option A": in centres and schools learners belong to the
 organisation, a manager makes a class (name, subject, teacher(s), learners) and a teacher sees, marks and approves only the learners
 in their classes; independent tutors work as now; this is also what lets a learner have a school and a private tutor at once.
+Also agreed 22 Oct: "See it as your learner" (a tutor previews their own work, notes and a learner's Today as the learner sees it)
+goes in the next build with the new Home; a demo StudyBridge (Admin: a fenced demo centre of fake accounts and sample work, "Open
+as…" each role, Reset) was proposed and waits for "go". Screen gallery from the tests: https://claude.ai/artifact/UqRwAq1RiH36xQhjAaRSFt
 Website fix (same day): in dark mode a later rule painted the early-access fields dark while their text stayed dark, and the open
 dropdowns took dark colours inside a white box; the fix is a block at the end of website/site.css (`.early-box` fields always light,
 `color-scheme: light`, option colours). Only "A student" is asked the age question (`#ea-age`), and the thank-you line fits the role.

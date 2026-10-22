@@ -87,6 +87,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
           </div>
         )}
         {banner}
+        {app.me.demo && <DemoBar />}
         {app.me.role !== 'admin' && <Announcements />}
         <SlowConnectionTip />
         <UpdateBanner pending={pending} />
@@ -107,6 +108,30 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
   );
 }
 
+
+// In the demo StudyBridge: who you are in it, and the way back to the Owner's own account
+const DEMO_WHO = { manager: 'the centre manager', tutor: 'a tutor', parent: 'a parent', student: 'a student on their own' };
+function DemoBar() {
+  const app = useApp();
+  const admin = otherAccounts(app.me.id).find((a) => a.role === 'admin');
+  return (
+    <div className="banner demo" role="status">
+      <Icon name="eye" size={18} />
+      <span className="grow">
+        Demo: you’re {app.me.display_name}, {DEMO_WHO[app.me.demo_label] || 'a learner'}. Nothing here is real.
+      </span>
+      {admin ? (
+        <button type="button" className="btn sm" onClick={() => switchTo(app.me.id, admin.id)}>
+          Back to my account
+        </button>
+      ) : (
+        <button type="button" className="btn sm" onClick={app.signOut}>
+          Sign out of the demo
+        </button>
+      )}
+    </div>
+  );
+}
 
 // The account button on every screen: Settings, other accounts on this device (admin's device only) and Sign out.
 // In the sidebar the menu floats above the button (fixed), so the scrolling sidebar can't clip it.

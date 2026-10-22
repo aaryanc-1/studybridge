@@ -1,5 +1,6 @@
 // Everything the app asks the server, in one place.
-import { sb, run, isOffline } from './supabase.js';
+import { sb, run, isOffline, sideClient, friendly } from './supabase.js';
+import { switchToSession } from './accounts.js';
 import { sendOrQueue } from './outbox.js';
 import * as store from './store.js';
 import { timezone, getServer, desktop } from './config.js';
@@ -130,6 +131,33 @@ export const setLearner = (id, name, programme, subjects) =>
   run(sb().rpc('set_learner', { p_learner: id, p_name: name, p_programme: programme || null, p_subject_ids: subjects }));
 export const removeLearner = (id) => run(sb().rpc('remove_learner', { p_learner: id }));
 export const listInvites = () => run(sb().from('invites').select('*').order('created_at', { ascending: false }));
+
+// ---------------- the demo StudyBridge (Admin → Demo, the Owner only) ----------------
+export const DEMO_ACCOUNTS = ['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'];
+export const adminDemo = () => run(sb().rpc('admin_demo'));
+// The demo's accounts are plain sign-ups made on a side connection (the Owner stays signed in here) with passwords
+// nobody keeps; then the server fills them in as a pretend centre
+export async function makeDemo({ student = true } = {}) {
+  const side = sideClient();
+  const tag = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, '0')).join('');
+  const ids = {};
+  for (const who of DEMO_ACCOUNTS) {
+    if (who === 'student' && !student) continue;
+    const password = Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0')).join('');
+    const { data, error } = await side.auth.signUp({ email: `demo-${who}-${tag}@gostudybridge.com`, password });
+    if (error || !data?.user?.id) throw new Error(error ? friendly(error) : 'StudyBridge couldn’t make the demo’s accounts.');
+    ids[who] = data.user.id;
+  }
+  return run(sb().rpc('admin_demo_build', { p_accounts: ids }));
+}
+// "Open as": a fresh sign-in for that demo account (the server only makes one for a demo account), then switch to it
+export async function openDemo(currentId, userId) {
+  const a = await run(sb().rpc('admin_demo_open', { p_user: userId }));
+  const { data, error } = await sideClient().auth.signInWithPassword({ email: a.email, password: a.password });
+  if (error || !data?.session) throw new Error(error ? friendly(error) : 'That demo account wouldn’t open.');
+  switchToSession(currentId, { id: a.id, email: a.email, name: a.name, role: a.role }, data.session);
+}
+export const removeDemo = () => run(sb().rpc('admin_demo_remove'));
 
 // ---------------- organisations and classes ----------------
 // Every tutor is in an organisation (their own, or a tuition centre they joined with its code)
