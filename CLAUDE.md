@@ -22,7 +22,7 @@ the only tutor and his sister is a test learner. It's meant to become a paid pro
 - **Logo:** `brand/` → `npm run icons` (scripts/make-icons.py) makes every icon.
 
 ## Tests (run before every commit)
-- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (92)
+- `npm test` — PGlite runs the real setup.sql (`test/db.test.mjs`), fake Supabase/Claude/Stripe/Resend, Prof, website (93)
 - `npm run product` and `npm run walkthrough` — Playwright end-to-end, screenshots in `test/screenshots`
 
 ## Rules Aaryan set (always)
@@ -303,6 +303,23 @@ Plus-plan check goes there later; `content_add_questions` now sets `exam_code`/`
 `copy_studybridge_paper` → a hidden draft test in the tutor's account, keeping the not-affiliated line). Rule kept: with a tutor a
 person approves everything, so StudyBridge questions never go into a tutored learner's practice by themselves (`start_practice`
 and `practice_topics` use only the tutor's own bank); the tutor uses them by putting them in work they post.
+
+Launch 2 part 1 (22 Oct 2026, app 1.1.76; Aaryan: "start launch 2 with organisations and classes; go"), organisations and classes.
+Every tutor is in one organisation (`organisations` kind tutor|centre|school|studybridge, `org_members` role manager|tutor, one each
+for now; made by `_ensure_org` from the `profiles_org` trigger: their own is "<name>’s tutoring"; the content account's is StudyBridge's
+own, where students on their own are). A learner is in their tutor's (`_org_of`). Settings → Your organisation (`my_org`): rename,
+Make it a tuition centre (`org_make_centre`, an 8-digit `join_code`), Join a centre (`org_join`; wrong codes counted in `invite_tries`,
+returns null), New code, Make manager/tutor (`org_set_role`, always one manager), Take out of the centre (`org_remove`), Leave the
+centre (`org_leave`); `_org_tidy` drops an empty organisation and promotes a manager if none is left. A centre's managers get Centre
+(`org_overview`, src/screens/tutor/Centre.jsx: every tutor and learner, read-only: subjects, classes, time this week, hand-ins; never
+work, marks or messages). Nothing moves between tutors and each tutor still approves everything for their own learners. Admin → Tutors
+shows each tutor's centre and classes. Classes (`classes`, `class_members`; changed only through `save_class`, `archive_class` ("Put
+away"), `delete_class`): Learners → Classes tab (`/learners/classes`), a learner's classes on their card and page, invites with
+`class_ids` (`_invite_classes` puts them in on accepting). Assignments, lessons, files, sessions and lesson_series have `class_id`:
+`_class_audience` (BEFORE trigger) sets `learner_ids` to the class's members (work already started stays; past live lessons keep who
+was there; an empty class gives `[class id]`, meaning nobody, never everyone) and `_class_sync` re-runs it when someone joins or leaves.
+AudiencePicker has "A class" (`onChange(ids, classId)`); Live's form has "Who"; `create/change_lesson_series(..., p_class)`. Not yet:
+a learner with a school and a tutor at once (still one tutor each), one bill for a centre.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
