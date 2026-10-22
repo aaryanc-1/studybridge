@@ -291,7 +291,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 - **Weekly reports are refreshed by the server every hour or so** (needs pg\_cron, already set up); sending is one tap on WhatsApp, or straight from StudyBridge by email once email is switched on in Admin → Selling.
 - Live video showed "invalid API key" on 1 Oct; new LiveKit keys were pasted into Admin and Settings. Confirm a live lesson works.
 - **Forgot-password emails** come from Supabase's built-in sender: only a few an hour and they may land in spam. Add Resend's SMTP details in Supabase once there's a domain.
-- **Payments, StudyBridge email and Google sign-in are tested against stand-ins, not the real services;** check each once when switching it on (Admin → Selling has the steps).
+- **Payments and StudyBridge email are tested against stand-ins, not the real services** (Google sign-in was set up and confirmed working on the web on 22 Oct 2026; Google's branding check waits on verifying gostudybridge.com in Search Console); check each once when switching it on (Admin → Selling has the steps).
 - Prof reading a whole book needs StudyBridge open on the tutor's laptop; if it's closed, Prof waits.
 - Macs show a security warning on first open and can't take silent shell updates (no Apple Developer account).
 - **Prices are set but untested with tutors:** still worth asking 3–5 tutors. Kwacha and rupee prices are straight conversions (K295 and ₹1,445 for Starter), not lower local prices; decide whether Zambia and India get their own.
