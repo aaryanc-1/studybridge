@@ -38,8 +38,17 @@ jobs:
       - run: npm ci
         working-directory: connector
       - run: npx playwright install --with-deps chromium
+      # A failing test's message also goes up as an annotation, which can be read without signing in to GitHub
       - name: Database, server, Prof, maths checker and Claude connector tests
-        run: npm test
+        run: |
+          set +e
+          npm test 2>&1 | tee unit.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            msg=$(sed -n '/failing tests/,$p' unit.txt | grep -vE '^[[:space:]]+at ' | head -80 | tr -d '\r' | awk '{ gsub(/%/, "%25"); printf "%s%%0A", $0 }')
+            echo "::error title=Unit tests failed::$msg"
+          fi
+          exit $status
       - run: npm run build
       - name: Full walkthrough in the browser (tutor + learner + phone + offline)
         run: node test/walkthrough.mjs
