@@ -320,6 +320,12 @@ away"), `delete_class`): Learners → Classes tab (`/learners/classes`), a learn
 was there; an empty class gives `[class id]`, meaning nobody, never everyone) and `_class_sync` re-runs it when someone joins or leaves.
 AudiencePicker has "A class" (`onChange(ids, classId)`); Live's form has "Who"; `create/change_lesson_series(..., p_class)`. Not yet:
 a learner with a school and a tutor at once (still one tutor each), one bill for a centre.
+Decided 22 Oct 2026 (Aaryan): next the new Home and shorter menu, then "option A": in centres and schools learners belong to the
+organisation, a manager makes a class (name, subject, teacher(s), learners) and a teacher sees, marks and approves only the learners
+in their classes; independent tutors work as now; this is also what lets a learner have a school and a private tutor at once.
+Website fix (same day): in dark mode a later rule painted the early-access fields dark while their text stayed dark, and the open
+dropdowns took dark colours inside a white box; the fix is a block at the end of website/site.css (`.early-box` fields always light,
+`color-scheme: light`, option colours). Only "A student" is asked the age question (`#ea-age`), and the thank-you line fits the role.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

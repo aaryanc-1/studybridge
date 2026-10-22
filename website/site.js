@@ -415,16 +415,22 @@
       var f = form.elements, msg = $('#ea-msg');
       msg.className = 'ea-msg';
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(f.email.value.trim())) { msg.className = 'ea-msg bad'; msg.textContent = 'Please check your email address.'; f.email.focus(); return; }
-      if (!f.age.checked) { msg.className = 'ea-msg bad'; msg.textContent = 'Please tick the box. If you’re under 13, ask a parent to sign up for you.'; return; }
+      if (f.role.value === 'student' && !f.age.checked) { msg.className = 'ea-msg bad'; msg.textContent = 'Please tick the box. If you’re under 13, ask a parent to sign up for you.'; return; }
       var btn = $('button[type=submit]', form);
       btn.disabled = true;
       msg.textContent = 'Saving…';
       join({ p_email: f.email.value, p_role: f.role.value, p_curriculum: f.curriculum.value, p_subjects: f.subjects.value, p_exam: f.exam.value, p_country: f.country.value, p_note: f.note.value })
         .then(function () {
-          form.innerHTML = '<div class="ea-done" role="status"><b>You’re on the list.</b>We’ll email ' + esc(f.email.value.trim()) + ' when the student version opens. Thank you!</div>';
+          var who = { student: 'when the student version opens', parent: 'when your child can start', tutor: 'about StudyBridge for tutors',
+            centre: 'about StudyBridge for tuition centres', school: 'about StudyBridge for schools' }[f.role.value] || 'when it opens';
+          form.innerHTML = '<div class="ea-done" role="status"><b>You’re on the list.</b>We’ll email ' + esc(f.email.value.trim()) + ' ' + who + '. Thank you!</div>';
         }, function (err) { btn.disabled = false; msg.className = 'ea-msg bad'; msg.textContent = err.message; });
     });
     if (form.dataset.defaultRole) form.elements.role.value = form.dataset.defaultRole;
+    // only a student is asked their age: parents, tutors, centres and schools are grown-ups signing up for themselves
+    var ageBox = function () { $('#ea-age').hidden = form.elements.role.value !== 'student'; };
+    form.elements.role.addEventListener('change', ageBox);
+    ageBox();
     // From the subjects page or a "tell us" link: fill in what we already know
     var q = new URLSearchParams(location.search);
     if (q.get('request')) {
@@ -432,7 +438,7 @@
       setTimeout(function () { document.getElementById('early').scrollIntoView(); }, 50);
     }
     $$('[data-role]').forEach(function (a) {
-      a.addEventListener('click', function () { form.elements.role.value = a.dataset.role; });
+      a.addEventListener('click', function () { form.elements.role.value = a.dataset.role; ageBox(); });
     });
   }
   // Contact page

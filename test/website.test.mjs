@@ -47,6 +47,11 @@ test('website: every page builds with nothing left unfilled', async () => {
     for (const b of c.boards) assert.ok(students.includes(`data-board="${b.id}"`) && students.includes(`id="panel-${b.id}"`), b.id);
     assert.match(students, /id="cd-session"/);
     assert.match(students, /data-default-role="student"/);
+    // only a student is asked their age (parents, tutors, centres and schools sign up for themselves), and the form's
+    // fields and dropdown lists stay readable in dark mode
+    assert.match(students, /<label class="check" id="ea-age"><input type="checkbox" name="age">/);
+    assert.match(read('site.js'), /\$\('#ea-age'\)\.hidden = form\.elements\.role\.value !== 'student'/);
+    assert.match(read('site.css'), /\.early-box input, \.early-box select, \.early-box textarea \{[^}]*color-scheme: light/);
     // tutors: plans and the calculator; parents and schools: their own early-access forms; downloads
     // pricing: its own page, one panel per kind of user, opened by the address (pricing.html#tutors)
     const pricing = read('pricing.html');

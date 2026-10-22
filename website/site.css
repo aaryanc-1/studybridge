@@ -942,3 +942,11 @@ a.tag:hover { text-decoration: underline; }
 
 /* Reduced motion wins over every reveal rule above: content sits in place from the start */
 @media (prefers-reduced-motion: reduce) { .js .reveal, .js .reveal.in { opacity: 1; transform: none; transition: none; } }
+
+/* Fields and dropdowns stay readable in dark mode (22 Oct 2026). The early-access box is always teal with white fields: a later
+   rule painted its fields dark while their text stayed dark, and its open dropdown lists took dark-mode colours inside a
+   white box (the highlighted choice went white on white). Every other dropdown's list matches its own box. */
+.early-box input, .early-box select, .early-box textarea { background: rgba(255,255,255,.96); color: #17201F; color-scheme: light; }
+.early-box input::placeholder, .early-box textarea::placeholder { color: #6B7573; opacity: 1; }
+.early-box option { background: #fff; color: #17201F; }
+select option { background-color: var(--bg); color: var(--ink); }
