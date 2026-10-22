@@ -324,8 +324,16 @@ Decided 22 Oct 2026 (Aaryan): next the new Home and shorter menu, then "option A
 organisation, a manager makes a class (name, subject, teacher(s), learners) and a teacher sees, marks and approves only the learners
 in their classes; independent tutors work as now; this is also what lets a learner have a school and a private tutor at once.
 Also agreed 22 Oct: "See it as your learner" (a tutor previews their own work, notes and a learner's Today as the learner sees it)
-goes in the next build with the new Home; a demo StudyBridge (Admin: a fenced demo centre of fake accounts and sample work, "Open
-as…" each role, Reset) was proposed and waits for "go". Screen gallery from the tests: https://claude.ai/artifact/UqRwAq1RiH36xQhjAaRSFt
+goes in the next build with the new Home. Screen gallery from the tests: https://claude.ai/artifact/UqRwAq1RiH36xQhjAaRSFt
+The demo StudyBridge (22 Oct 2026, app 1.1.79; Aaryan: "go, build the demo"): Admin → Demo (src/screens/admin/Demo.jsx). `api.makeDemo` signs up
+eight accounts on a side connection (`sideClient()` in supabase.js: never keeps a sign-in), emails demo-<who>-<tag>@gostudybridge.com
+with passwords nobody keeps, then `admin_demo_build(p_accounts)` (admin only; brand-new demo addresses with no role) fills them in:
+Riverside Tuition (demo), Grace Mwansa (manager) and Daniel Okafor (tutor), Chipo/Tendai/Amara/Kofi in Year 10 maths and Year 11 physics,
+homework marked and back, a quiz to mark, notes, a weekly lesson, a Term 1 mock (grade B), messages, Ruth Banda (parent, approved report)
+and Lina Haddad (test student). `profiles.demo`/`demo_label` fence them out of admin_overview, admin_tutors and admin_students. "Open as":
+`admin_demo_open` sets a fresh password (demo accounts only), the side connection signs in and `switchToSession` (accounts.js) switches;
+`DemoBar` in Shell.jsx says who you are with "Back to my account". `admin_demo_remove` deletes them (and half-made demo sign-ups).
+The device's account list keeps 16 and never drops the admin account. The sweep never opens, makes or resets the demo.
 Website fix (same day): in dark mode a later rule painted the early-access fields dark while their text stayed dark, and the open
 dropdowns took dark colours inside a white box; the fix is a block at the end of website/site.css (`.early-box` fields always light,
 `color-scheme: light`, option colours). Only "A student" is asked the age question (`#ea-age`), and the thank-you line fits the role.
