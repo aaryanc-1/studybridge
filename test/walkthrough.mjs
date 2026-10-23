@@ -89,7 +89,8 @@ try {
   await shot(T, 'tutor-home-empty');
 
   step('Programmes, subjects and topics');
-  await nav(T, 'Subjects').click();
+  await nav(T, 'Library').click();
+  await T.getByRole('button', { name: 'Subjects', exact: true }).click();
   await T.getByRole('button', { name: 'Programme' }).first().click();
   await T.getByLabel('Name').fill('IGCSE');
   await T.getByLabel('Description (optional)').fill('Cambridge IGCSE, exams in 2028');

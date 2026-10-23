@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo } from 'react';
+import { useApp } from '../../App.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 
@@ -6,6 +7,7 @@ import * as api from '../../lib/api.js';
 const Ctx = createContext(null);
 
 export function LookupsProvider({ children, tutor }) {
+  const app = useApp();
   const subjects = useQuery('subjects', api.listSubjects);
   const topics = useQuery('topics', api.listTopics);
   const programmes = useQuery('programmes', api.listProgrammes);
@@ -14,6 +16,7 @@ export function LookupsProvider({ children, tutor }) {
   const links = useQuery('learner_subjects', api.listLearnerSubjects);
   const classes = useQuery(tutor ? 'classes' : null, api.listClasses);
   const members = useQuery(tutor ? 'class_members' : null, api.listClassMembers);
+  const teachers = useQuery(tutor ? 'class_teachers' : null, api.listClassTeachers);
 
   const value = useMemo(() => {
     const s = subjects.data || [];
@@ -23,7 +26,12 @@ export function LookupsProvider({ children, tutor }) {
     const ls = links.data || [];
     const c = classes.data || [];
     const cm = members.data || [];
+    const ct = teachers.data || [];
     const membersOf = (cid) => cm.filter((m) => m.class_id === cid).map((m) => m.learner_id);
+    const teachersOf = (cid) => ct.filter((t) => t.class_id === cid).map((t) => t.teacher_id);
+    // the classes I teach (a centre's manager can also see everyone else's: orgClasses)
+    const mine = (x) => (ct.length ? teachersOf(x.id).includes(app?.me?.id) : x.tutor_id === app?.me?.id);
+    const full = (x) => ({ ...x, members: membersOf(x.id), teachers: teachersOf(x.id) });
     return {
       subjects: s,
       // the subjects this person works in: all of them for a tutor, the ones a learner takes
@@ -41,7 +49,9 @@ export function LookupsProvider({ children, tutor }) {
       learnersOfSubject: (sid) => ls.filter((x) => x.subject_id === sid).map((x) => x.learner_id),
       // Classes (a tutor's teaching groups): all of them, the ones in use (with who's in each), one, who's in one
       classes: c,
-      activeClasses: c.filter((x) => !x.archived).map((x) => ({ ...x, members: membersOf(x.id) })),
+      activeClasses: c.filter((x) => !x.archived && mine(x)).map(full),
+      orgClasses: c.filter((x) => !x.archived).map(full),
+      teachersOf,
       klass: (id) => c.find((x) => x.id === id),
       membersOf,
       classesOf: (lid) => c.filter((x) => cm.some((m) => m.class_id === x.id && m.learner_id === lid)),
@@ -59,10 +69,11 @@ export function LookupsProvider({ children, tutor }) {
         links.refresh();
         classes.refresh();
         members.refresh();
+        teachers.refresh();
       },
       ready: subjects.data !== undefined,
     };
-  }, [subjects.data, topics.data, programmes.data, learners.data, links.data, classes.data, members.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [subjects.data, topics.data, programmes.data, learners.data, links.data, classes.data, members.data, teachers.data, app?.me?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

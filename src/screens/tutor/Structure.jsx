@@ -7,7 +7,8 @@ import { palette } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import * as X from '../../lib/exams.js';
 
-export default function Structure() {
+export default function Structure({ embedded = false }) {
+  const Wrap = embedded ? Embedded : Page;
   const app = useApp();
   const lk = useLookups();
   const toast = useToast();
@@ -46,7 +47,7 @@ export default function Structure() {
   }
 
   return (
-    <Page
+    <Wrap
       title="Programmes & subjects"
       subtitle={
         app.me.is_studybridge
@@ -108,7 +109,7 @@ export default function Structure() {
       )}
       {editProg && <ProgrammeForm initial={editProg} onClose={() => setEditProg(null)} />}
       {editSubj && <SubjectForm initial={editSubj} onClose={() => setEditSubj(null)} />}
-    </Page>
+    </Wrap>
   );
 }
 
@@ -315,5 +316,21 @@ export function ExamSelect({ value, onChange, label = 'Exam', none = 'None' }) {
         </optgroup>
       ))}
     </select>
+  );
+}
+
+// Inside Library → Subjects: the same heading line and buttons, without a second page around them
+function Embedded({ title, subtitle, actions, children }) {
+  return (
+    <div className="stack">
+      <div className="row between wrap">
+        <div>
+          <h2>{title}</h2>
+          {subtitle && <div className="muted small">{subtitle}</div>}
+        </div>
+        <div className="row wrap">{actions}</div>
+      </div>
+      {children}
+    </div>
   );
 }

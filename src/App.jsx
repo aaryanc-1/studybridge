@@ -21,6 +21,12 @@ const vnum = (v) => (String(v || '').match(/^(\d+)\.(\d+)\.(\d+)/) || []).slice(
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
+// "See it as …": the learner's screens inside the tutor's app think they belong to that learner
+export function AsLearnerApp({ learner, children }) {
+  const app = useApp();
+  const value = useMemo(() => ({ ...app, me: learner, seeingAs: true }), [app, learner]);
+  return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
+}
 
 function storedUser() {
   try {

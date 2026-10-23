@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Markdown, Page, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Markdown, Page, Seg, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
@@ -15,6 +15,11 @@ export default function Messages({ learnerId }) {
   const assignments = useQuery(isTutor ? 'assignments' : 'assignments', api.listAssignments).data || [];
   const all = comments.data || [];
   const who = isTutor ? learnerId : app.me.id;
+  // A learner taught by more than one teacher (their tutor and a class's teacher) has a conversation with each
+  const teachers = useQuery(isTutor ? null : 'my-teachers', api.myTeachers).data || [];
+  const [teacherId, setTeacherId] = useState(null);
+  const teacher = teachers.length > 1 ? teachers.find((t) => t.id === teacherId) || teachers[0] : null;
+  const unreadFrom = (t) => all.filter((c) => c.tutor_id === t.id && c.author_id !== app.me.id && !c.read_at).length;
 
   const people = isTutor
     ? lk.learners
@@ -26,7 +31,16 @@ export default function Messages({ learnerId }) {
     : [];
 
   return (
-    <Page title="Messages" subtitle={isTutor ? 'Notes from learners arrive here instantly, with the question they’re about.' : 'Ask your tutor anything. Notes you leave on questions show up here too.'}>
+    <Page
+      title="Messages"
+      subtitle={
+        isTutor
+          ? 'Notes from learners arrive here instantly, with the question they’re about.'
+          : teacher
+            ? 'Ask your teachers anything. Notes you leave on questions show up here too.'
+            : 'Ask your tutor anything. Notes you leave on questions show up here too.'
+      }
+    >
       {isTutor ? (
         lk.learners.length === 0 ? (
           <Empty>No learners yet.</Empty>
@@ -48,18 +62,42 @@ export default function Messages({ learnerId }) {
           </div>
         )
       ) : (
-        <div className="card pad0 chat open" style={{ gridTemplateColumns: '1fr' }}>
-          <div className="pane">
-            <Thread learnerId={who} all={all} assignments={assignments} />
+        <>
+          {teacher && (
+            <Seg
+              label="Who to message"
+              value={teacher.id}
+              onChange={setTeacherId}
+              options={teachers.map((t) => {
+                const n = unreadFrom(t);
+                return {
+                  value: t.id,
+                  label: (
+                    <>
+                      {t.main ? `${t.name} (your tutor)` : t.classes?.length ? `${t.name} (${t.classes.join(', ')})` : t.name}
+                      {n > 0 && t.id !== teacher.id && <span className="pill accent">{n}</span>}
+                    </>
+                  ),
+                };
+              })}
+            />
+          )}
+          <div className="card pad0 chat open" style={{ gridTemplateColumns: '1fr' }}>
+            <div className="pane">
+              <Thread key={teacher?.id} learnerId={who} all={all} assignments={assignments} teacher={teacher} />
+            </div>
           </div>
-        </div>
+        </>
       )}
     </Page>
   );
 }
 
-export function Thread({ learnerId, all, assignments, assignmentId, questionId, compact }) {
+// teacher: for a learner with more than one teacher, the one this conversation is with
+export function Thread({ learnerId, all, assignments, assignmentId, questionId, compact, teacher }) {
   const app = useApp();
+  // (a learner whose only teacher is a class's teacher, with no tutor of their own)
+  const only = useQuery(app.me.role === 'learner' && !app.me.tutor_id ? 'my-teachers' : null, api.myTeachers).data?.[0];
   const lk = useLookups();
   const toast = useToast();
   const confirm = useConfirm();
@@ -68,7 +106,11 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
   const [sending, setSending] = useState(false);
   const end = useRef(null);
   const aById = useMemo(() => Object.fromEntries((assignments || []).map((a) => [a.id, a])), [assignments]);
-  const list = all.filter((c) => c.learner_id === learnerId && (!assignmentId || c.assignment_id === assignmentId) && (!questionId || c.question_id === questionId));
+  // a learner's note on a question goes to whoever set the work
+  const tutorId = isTutor ? app.me.id : (assignmentId && aById[assignmentId]?.tutor_id) || teacher?.id || app.me.tutor_id || only?.id;
+  const list = all.filter(
+    (c) => c.learner_id === learnerId && (!assignmentId || c.assignment_id === assignmentId) && (!questionId || c.question_id === questionId) && (!teacher || c.tutor_id === teacher.id),
+  );
   const [pending, setPending] = useState([]);
 
   // Mark what we've now seen as read
@@ -91,7 +133,7 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
     if (!body) return;
     setSending(true);
     const row = {
-      tutor_id: isTutor ? app.me.id : app.me.tutor_id,
+      tutor_id: tutorId,
       learner_id: learnerId,
       body,
       ...(assignmentId ? { assignment_id: assignmentId } : {}),
@@ -122,7 +164,7 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
       toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
     }
   }
-  const other = isTutor ? lk.learner(learnerId) : null;
+  const other = isTutor ? lk.learner(learnerId) : teacher ? { display_name: teacher.name } : null;
 
   return (
     <>
@@ -171,7 +213,17 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
               send();
             }
           }}
-          placeholder={isTutor ? 'Write a message…' : compact ? 'Leave a note for your tutor…' : 'Message your tutor…'}
+          placeholder={
+            isTutor
+              ? 'Write a message…'
+              : compact
+                ? tutorId === app.me.tutor_id
+                  ? 'Leave a note for your tutor…'
+                  : 'Leave a note for your teacher…'
+                : teacher && !teacher.main
+                  ? `Message ${teacher.name}…`
+                  : 'Message your tutor…'
+          }
           aria-label="Message"
         />
         <button className="btn primary icon" disabled={sending || !text.trim()} aria-label="Send">

@@ -52,7 +52,7 @@ export default function Syllabus() {
   if (!lk.subjects.length)
     return (
       <Empty title="Add a subject first">
-        Make your subjects in <a href="#/structure">Subjects</a>, then set up each one’s syllabus here.
+        Make your subjects in <a href="#/library/subjects">Library → Subjects</a>, then set up each one’s syllabus here.
       </Empty>
     );
   const [board, code] = (subject?.exam || '').split(':');

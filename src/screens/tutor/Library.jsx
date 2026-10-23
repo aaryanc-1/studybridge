@@ -9,6 +9,7 @@ import PastPapers, { OpenBooks } from './PastPapers.jsx';
 import QuestionBank from './QuestionBank.jsx';
 import Syllabus from './Syllabus.jsx';
 import Flashcards from './Flashcards.jsx';
+import Structure from './Structure.jsx';
 
 export default function Library({ tab = 'files' }) {
   return (
@@ -28,6 +29,7 @@ export default function Library({ tab = 'files' }) {
         onChange={(t) => go(`/library/${t}`, { replace: true })}
         options={[
           { value: 'files', label: 'My files', icon: 'file' },
+          { value: 'subjects', label: 'Subjects', icon: 'layers' },
           { value: 'syllabus', label: 'Syllabus', icon: 'target' },
           { value: 'papers', label: 'Past papers', icon: 'clipboard' },
           { value: 'bank', label: 'Question bank', icon: 'layers' },
@@ -36,7 +38,7 @@ export default function Library({ tab = 'files' }) {
           { value: 'lessons', label: 'Lesson notes', icon: 'pen' },
         ]}
       />
-      {tab === 'lessons' ? <Lessons /> : tab === 'syllabus' ? <Syllabus /> : tab === 'cards' ? <Flashcards /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
+      {tab === 'subjects' ? <Structure embedded /> : tab === 'lessons' ? <Lessons /> : tab === 'syllabus' ? <Syllabus /> : tab === 'cards' ? <Flashcards /> : tab === 'papers' ? <PastPapers /> : tab === 'bank' ? <QuestionBank /> : tab === 'textbooks' ? <OpenBooks /> : <Files />}
     </Page>
   );
 }

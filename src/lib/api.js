@@ -1,5 +1,6 @@
 // Everything the app asks the server, in one place.
 import { sb, run, isOffline, sideClient, friendly } from './supabase.js';
+import { asLearner, previewOpen } from './data.js';
 import { switchToSession } from './accounts.js';
 import { sendOrQueue } from './outbox.js';
 import * as store from './store.js';
@@ -126,14 +127,50 @@ export const remove = (table, id) => run(sb().from(table).delete().eq('id', id))
 
 // ---------------- learners ----------------
 export const listLearners = () => run(sb().from('profiles').select('*').eq('role', 'learner').order('display_name'));
-export const listLearnerSubjects = () => run(sb().from('learner_subjects').select('*'));
+export const listLearnerSubjects = () => {
+  const as = asLearner();
+  return run(as ? sb().from('learner_subjects').select('*').eq('learner_id', as) : sb().from('learner_subjects').select('*'));
+};
+
+// ---------------- "See it as …" (a tutor sees one learner's own screens) ----------------
+// The same rule the server uses for what a learner can see (can_learner_see): posted (or its time has come), not a
+// draft, and for them: chosen learners include them (a class is its learners), else the subject is one of theirs,
+// else everyone. Built from what the tutor can already read; nothing is done as the learner.
+async function seenBy(learner, rows) {
+  const mine = new Set(((await run(sb().from('learner_subjects').select('subject_id').eq('learner_id', learner))) || []).map((x) => x.subject_id));
+  const now = Date.now();
+  return (rows || []).filter(
+    (x) =>
+      !x.draft &&
+      (x.visibility === 'visible' || (x.visibility === 'scheduled' && x.visible_from && new Date(x.visible_from).getTime() <= now)) &&
+      (x.learner_ids?.length ? x.learner_ids.includes(learner) : x.subject_id ? mine.has(x.subject_id) : true),
+  );
+}
+// Their attempts as they see them (my_attempts): marks and feedback only once given back
+async function attemptsSeenBy(learner, aid) {
+  let q = sb().from('attempts').select('*').eq('learner_id', learner).order('started_at', { ascending: false });
+  if (aid) q = q.eq('assignment_id', aid);
+  const rows = (await run(q)) || [];
+  const ids = [...new Set(rows.map((t) => t.assignment_id))];
+  const as = ids.length ? (await run(sb().from('assignments').select('id,release_mode,release_at').in('id', ids))) || [] : [];
+  const byId = Object.fromEntries(as.map((a) => [a.id, a]));
+  return rows.map((t) => {
+    const a = byId[t.assignment_id];
+    const released = t.released || (a?.release_mode === 'at' && a.release_at && new Date(a.release_at) <= new Date() && ['marked', 'returned'].includes(t.status));
+    return {
+      id: t.id, assignment_id: t.assignment_id, number: t.number, status: t.status, started_at: t.started_at, submitted_at: t.submitted_at,
+      time_spent_sec: t.time_spent_sec, released, released_at: released ? t.released_at : null, score: released ? t.score : null,
+      max_score: t.max_score, feedback_md: released ? t.feedback_md : null,
+    };
+  });
+}
 export const setLearner = (id, name, programme, subjects) =>
   run(sb().rpc('set_learner', { p_learner: id, p_name: name, p_programme: programme || null, p_subject_ids: subjects }));
 export const removeLearner = (id) => run(sb().rpc('remove_learner', { p_learner: id }));
 export const listInvites = () => run(sb().from('invites').select('*').order('created_at', { ascending: false }));
 
 // ---------------- the demo StudyBridge (Admin → Demo, the Owner only) ----------------
-export const DEMO_ACCOUNTS = ['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'];
+export const DEMO_ACCOUNTS = ['manager', 'tutor1', 'tutor2', 'tutor3', 'learner1', 'learner2', 'learner3', 'learner4', 'learner5', 'learner6', 'parent', 'student'];
 export const adminDemo = () => run(sb().rpc('admin_demo'));
 // The demo's accounts are plain sign-ups made on a side connection (the Owner stays signed in here) with passwords
 // nobody keeps; then the server fills them in as a pretend centre
@@ -159,6 +196,12 @@ export async function openDemo(currentId, userId) {
 }
 export const removeDemo = () => run(sb().rpc('admin_demo_remove'));
 
+// ---------------- the tutor's Home ----------------
+// One card per learner: streak, last mark back, latest mock grade, exam, and this week in the teaching plan
+export const tutorHome = () => run(sb().rpc('tutor_home'));
+// A reminder to everyone it's for who hasn't handed it in (once in 12 hours); returns how many were told
+export const nudgeAssignment = (id) => run(sb().rpc('nudge_assignment', { p_assignment: id }));
+
 // ---------------- organisations and classes ----------------
 // Every tutor is in an organisation (their own, or a tuition centre they joined with its code)
 export const myOrg = () => run(sb().rpc('my_org'));
@@ -177,15 +220,32 @@ export const orgOverview = () => run(sb().rpc('org_overview'));
 // Classes: a tutor's teaching groups (empty until the server has them)
 export const listClasses = () => run(sb().from('classes').select('*').order('name')).catch((e) => (e.offline ? Promise.reject(e) : []));
 export const listClassMembers = () => run(sb().from('class_members').select('*')).catch((e) => (e.offline ? Promise.reject(e) : []));
+// teacher_ids: only a centre's manager chooses them (everyone else teaches their own classes)
 export const saveClass = (c) =>
-  run(sb().rpc('save_class', { p_id: c.id || null, p_name: c.name, p_subject: c.subject_id || null, p_learner_ids: c.learner_ids || [] }));
+  run(sb().rpc('save_class', { p_id: c.id || null, p_name: c.name, p_subject: c.subject_id || null, p_learner_ids: c.learner_ids || [], p_teacher_ids: c.teacher_ids || null }));
+export const listClassTeachers = () => run(sb().from('class_teachers').select('*')).catch((e) => (e.offline ? Promise.reject(e) : []));
+// Who can be put in a class: a manager, everyone in the centre; anyone else, their own learners and their classes'
+export const classPool = () => run(sb().rpc('class_pool'));
+// A class's code (made the first time; renew: a new one, the old one stops working)
+export const classCode = (id, renew = false) => run(sb().rpc('class_code', { p_class: id, p_new: renew }));
+export async function joinClass(code) {
+  const r = await run(sb().rpc('join_class', { p_code: code }));
+  if (!r) throw new Error('That code isn’t right. Check it with your teacher and try again.');
+  return r;
+}
+// A learner's teachers (their own tutor first), for Messages
+export const myTeachers = () => run(sb().rpc('my_teachers'));
 export const archiveClass = (id, archived = true) => run(sb().rpc('archive_class', { p_id: id, p_archived: archived }));
 export const deleteClass = (id) => run(sb().rpc('delete_class', { p_id: id }));
 export const createInvite = (inv) => run(sb().from('invites').insert(inv).select().maybeSingle());
 export const revokeInvite = (id) => run(sb().from('invites').update({ revoked: true }).eq('id', id));
 
 // ---------------- files ----------------
-export const listFiles = () => run(sb().from('files').select('*').order('created_at', { ascending: false }));
+export const listFiles = () => {
+  const as = asLearner();
+  const rows = run(sb().from('files').select('*').order('created_at', { ascending: false }));
+  return as ? rows.then((r) => seenBy(as, r)) : rows;
+};
 
 export async function uploadFile(file, meta = {}) {
   const path = `${uid()}/files/${uuid()}-${safeName(file.name)}`;
@@ -492,10 +552,18 @@ export async function isSavedOffline(bucket, path) {
 }
 
 // ---------------- lessons ----------------
-export const listLessons = () => run(sb().from('lessons').select('*').order('created_at', { ascending: false }));
+export const listLessons = () => {
+  const as = asLearner();
+  const rows = run(sb().from('lessons').select('*').order('created_at', { ascending: false }));
+  return as ? rows.then((r) => seenBy(as, r)) : rows;
+};
 
 // ---------------- assignments ----------------
-export const listAssignments = () => run(sb().from('assignments').select('*').order('created_at', { ascending: false }));
+export const listAssignments = () => {
+  const as = asLearner();
+  const rows = run(sb().from('assignments').select('*').order('created_at', { ascending: false }));
+  return as ? rows.then((r) => seenBy(as, r)) : rows;
+};
 export const getAssignment = (id) => run(sb().from('assignments').select('*').eq('id', id).maybeSingle());
 export const listQuestions = (aid) => run(sb().from('questions').select('*').eq('assignment_id', aid).order('position'));
 export const listKeys = (qids) => (qids.length ? run(sb().from('question_keys').select('*').in('question_id', qids)) : []);
@@ -582,7 +650,10 @@ export async function uploadAnnotation(learnerId, attemptId, questionId, blob) {
 }
 
 // ---------------- attempts (learner) ----------------
-export const myAttempts = (aid = null) => run(sb().rpc('my_attempts', { p_assignment: aid }));
+export const myAttempts = (aid = null) => {
+  const as = asLearner();
+  return as ? attemptsSeenBy(as, aid) : run(sb().rpc('my_attempts', { p_assignment: aid }));
+};
 export const startAttempt = (aid) => run(sb().rpc('start_attempt', { p_assignment: aid, p_client: window.studybridge ? 'desktop' : 'web' }));
 
 export async function saveAnswer(attemptId, questionId, answer) {
@@ -608,7 +679,7 @@ export async function submitAttempt(attemptId) {
   return r;
 }
 export const logTime = (kind, ref, seconds) =>
-  sendOrQueue({ kind: 'rpc', fn: 'log_time', args: { p_kind: kind, p_ref: ref, p_seconds: Math.round(seconds) } }).catch(() => {});
+  previewOpen() ? Promise.resolve(null) : sendOrQueue({ kind: 'rpc', fn: 'log_time', args: { p_kind: kind, p_ref: ref, p_seconds: Math.round(seconds) } }).catch(() => {});
 // A try to leave a locked-down exam: the server counts it, and hands the exam in after the tutor's warnings
 export const lockdownStrike = (attemptId, event) => run(sb().rpc('lockdown_strike', { p_attempt: attemptId, p_event: event }));
 // The tutor ends an exam early: 'hand_in' now, or 'cancel' so it can be started again
@@ -617,13 +688,14 @@ export const logLockdown = (attemptId, event) =>
   sendOrQueue({ kind: 'rpc', fn: 'log_lockdown_event', args: { p_attempt: attemptId, p_event: event } }).catch(() => {});
 
 // ---------------- notes & messages ----------------
-export const listComments = () => run(sb().from('comments').select('*').order('created_at', { ascending: true }).limit(2000));
+// (seen as a learner: their messages stay private, so none)
+export const listComments = () => (asLearner() ? Promise.resolve([]) : run(sb().from('comments').select('*').order('created_at', { ascending: true }).limit(2000)));
 export async function sendComment(row) {
   const full = { author_id: uid(), ...row };
   if (me.role === 'learner') return sendOrQueue({ kind: 'insert', table: 'comments', row: full });
   return run(sb().from('comments').insert(full));
 }
-export const markCommentsRead = (ids) => (ids.length ? run(sb().rpc('mark_comments_read', { p_ids: ids })) : null);
+export const markCommentsRead = (ids) => (ids.length && !previewOpen() ? run(sb().rpc('mark_comments_read', { p_ids: ids })) : null);
 
 // ---------------- notifications ----------------
 export const listNotifications = () => run(sb().from('notifications').select('*').order('created_at', { ascending: false }).limit(100));
@@ -632,7 +704,10 @@ export const markNotificationsRead = (ids) =>
 
 // ---------------- sessions / live ----------------
 // Skipped lessons are left out everywhere except the tutor's Live page (sessions:all)
-export const listSessions = () => run(sb().from('sessions').select('*').order('starts_at')).then((rows) => (rows || []).filter((s) => !s.cancelled));
+export const listSessions = () => {
+  const as = asLearner();
+  return run(sb().from('sessions').select('*').order('starts_at')).then((rows) => (rows || []).filter((s) => !s.cancelled && (!as || (s.learner_ids || []).includes(as))));
+};
 export const listAllSessions = () => run(sb().from('sessions').select('*').order('starts_at'));
 // Weekly lessons (empty until the 1.6 server update is in)
 export const listSeries = () => run(sb().from('lesson_series').select('*').order('created_at')).catch((e) => (e.offline ? Promise.reject(e) : []));
@@ -658,7 +733,12 @@ export const setLiveKeys = (url, key, secret) => run(sb().rpc('set_live_keys', {
 // ---------------- progress ----------------
 export const learnerProgress = (id) => run(sb().rpc('learner_progress', { p_learner: id }));
 export const learnerSummary = (id, from, to) => run(sb().rpc('learner_summary', { p_learner: id, p_from: from.toISOString(), p_to: to.toISOString() }));
-export const listActivity = () => run(sb().from('activity').select('learner_id,seconds,day,subject_id').order('day', { ascending: false }).limit(5000));
+export const listActivity = () => {
+  const as = asLearner();
+  let q = sb().from('activity').select('learner_id,seconds,day,subject_id').order('day', { ascending: false }).limit(5000);
+  if (as) q = q.eq('learner_id', as);
+  return run(q);
+};
 
 // ---------------- Claude drafts ----------------
 export const listDrafts = () => run(sb().from('claude_drafts').select('*').eq('status', 'pending').order('created_at', { ascending: false }));
@@ -774,7 +854,7 @@ export const profCards = (subjectId, topic, count = 12, note = '') =>
 export const startPractice = (mode, { subject = null, topic = null, count = 5, minutes = null } = {}) =>
   run(sb().rpc('start_practice', { p_mode: mode, p_subject: subject, p_topic: topic, p_count: count, p_minutes: minutes }));
 export const practiceTopics = () => run(sb().rpc('practice_topics'));
-export const studySummary = (learnerId = null) => run(sb().rpc('study_summary', { p_learner: learnerId }));
+export const studySummary = (learnerId = null) => run(sb().rpc('study_summary', { p_learner: learnerId || asLearner() }));
 export const setStudyGoal = (minutes) => run(sb().rpc('set_study_goal', { p_minutes: minutes }));
 export const myTopics = () => run(sb().rpc('my_topics'));
 export const getStudyNotes = (learnerId = null) => run(sb().from('study_notes').select('*').eq('learner_id', learnerId || uid()));

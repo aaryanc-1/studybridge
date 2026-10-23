@@ -12,12 +12,16 @@ import { ago } from '../../lib/format.js';
 
 // who each demo account is, and what they have to show
 const WHO = {
-  manager: ['Centre manager', 'Runs Riverside Tuition: her own learners, the Year 10 maths class and the Centre page'],
-  tutor: ['Tutor', 'Year 11 physics, with a quiz waiting to be marked'],
-  learner1: ['Learner', 'Homework marked and back, a mock grade, messages with Grace'],
-  learner2: ['Learner', 'Homework still to do'],
-  learner3: ['Learner', 'A quiz handed in, waiting for marks'],
-  learner4: ['Learner', 'Physics with Daniel'],
+  manager: ['Centre manager', 'Runs Riverside Tuition and doesn’t teach: the Centre page with every tutor and learner'],
+  tutor1: ['Tutor', 'Year 10 maths: homework marked, a mock, a teaching plan, messages, a weekly lesson'],
+  tutor2: ['Tutor', 'Year 11 physics, with a quiz waiting to be marked'],
+  tutor3: ['Tutor', 'Year 9 biology: homework nobody has started yet (try Nudge on Home)'],
+  learner1: ['Learner', 'Mercy’s class: homework marked and back, a mock grade, messages'],
+  learner2: ['Learner', 'Mercy’s class: homework still to do'],
+  learner3: ['Learner', 'Daniel’s class: a quiz handed in, waiting for marks'],
+  learner4: ['Learner', 'Daniel’s class: physics'],
+  learner5: ['Learner', 'Joseph’s class: biology homework to start'],
+  learner6: ['Learner', 'Joseph’s class: biology'],
   parent: ['Parent', 'Chipo’s mum: last week’s report, and she follows Lina too'],
   student: ['Student on their own', 'A plan to the exams (a test student: never pays)'],
 };
@@ -70,8 +74,8 @@ export default function DemoPage() {
           <h2>Make the demo</h2>
           <div className="small muted">It makes Riverside Tuition (demo), with:</div>
           <ul className="small" style={{ margin: 0, paddingLeft: 20 }}>
-            <li>Grace Mwansa, the centre manager, and Daniel Okafor, a tutor</li>
-            <li>Four learners in two classes, with homework, a quiz, lesson notes, a weekly lesson, a mock grade and messages</li>
+            <li>Grace Mwansa, the centre manager, and three tutors: Mercy Tembo (maths), Daniel Okafor (physics) and Joseph Lungu (biology)</li>
+            <li>Six learners in three classes, with homework, a quiz, lesson notes, a weekly lesson, a teaching plan, a mock grade and messages</li>
             <li>Ruth Banda, a parent, with last week’s report</li>
             <li>Lina Haddad, a student on their own</li>
           </ul>

@@ -6,7 +6,6 @@ import Shell from '../shared/Shell.jsx';
 import { LookupsProvider } from '../shared/lookups.jsx';
 import Home from './Home.jsx';
 import Learners, { LearnerDetail } from './Learners.jsx';
-import Structure from './Structure.jsx';
 import Library, { LessonEditor } from './Library.jsx';
 import Assignments from './Assignments.jsx';
 import AssignmentEditor from './AssignmentEditor.jsx';
@@ -22,6 +21,7 @@ import FileView from '../shared/FileView.jsx';
 import { OfficialView } from './PastPapers.jsx';
 import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 import Centre from './Centre.jsx';
+import SeeAs from './SeeAs.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -30,14 +30,14 @@ function notificationTarget(n) {
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
   if (n.kind === 'prof' && r.bank) return '/library/bank';
-  if (n.kind === 'prof' && r.report_id) return '/reports';
+  if (n.kind === 'prof' && r.report_id) return '/learners/reports';
   if (n.kind === 'prof' && r.boundaries) return `/library/papers?exam=${encodeURIComponent(r.exam || '')}`;
   if (n.kind === 'prof' && r.syllabus) return `/library/syllabus?subject=${r.subject_id}`;
   if (n.kind === 'prof' && r.cards) return `/library/cards?subject=${r.subject_id}`;
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'feedback_reply') return '/settings?s=contact';
   if (n.kind === 'org') return '/settings?s=org';
-  if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/reports';
+  if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/learners/reports';
   return '/';
 }
 
@@ -57,14 +57,12 @@ export default function TutorApp() {
 
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
-    { to: '/learners', label: 'Learners', icon: 'users' },
+    { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
     { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
-    { to: '/library', label: 'Library', icon: 'book', also: ['/file', '/lesson'] },
+    { to: '/library', label: 'Library', icon: 'book', also: ['/file', '/lesson', '/structure'] },
     { to: '/messages', label: 'Messages', icon: 'message', count: unreadNotes },
-    { to: '/reports', label: 'Reports', icon: 'send', count: reportsToSend },
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
-    { to: '/structure', label: 'Subjects', icon: 'layers' },
     { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
     ...(manager ? [{ to: '/centre', label: 'Centre', icon: 'chart' }] : []),
     ...(app.me.admin_to_move ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: 1 }] : []),
@@ -75,9 +73,11 @@ export default function TutorApp() {
   let page;
   if (!a) page = <Home />;
   else if (a === 'learners' && b === 'classes') page = <Learners tab="classes" />;
+  else if ((a === 'learners' && b === 'reports') || a === 'reports') page = <ParentReports />;
+  else if (a === 'see' && b) page = <SeeAs learnerId={b} tab={c} id={route.parts[3]} />;
   else if (a === 'learners' && b) page = <LearnerDetail id={b} tab={c} />;
   else if (a === 'learners') page = <Learners />;
-  else if (a === 'structure') page = <Structure />;
+  else if (a === 'structure') page = <Library tab="subjects" />;
   else if (a === 'library') page = <Library tab={b} />;
   else if (a === 'lesson') page = <LessonEditor id={b} />;
   else if (a === 'file') page = <FileView id={b} />;
@@ -90,7 +90,6 @@ export default function TutorApp() {
   else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;
   else if (a === 'admin' && app.me.admin_to_move) page = <MoveAdmin />;
-  else if (a === 'reports') page = <ParentReports />;
   else if (a === 'messages') page = <Messages learnerId={b} />;
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;

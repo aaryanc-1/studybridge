@@ -20,7 +20,7 @@ export default function Flashcards() {
   if (!lk.subjects.length)
     return (
       <Empty title="Add a subject first">
-        Make your subjects in <a href="#/structure">Subjects</a>.
+        Make your subjects in <a href="#/library/subjects">Library → Subjects</a>.
       </Empty>
     );
   const topics = lk.topicsOf(sid);

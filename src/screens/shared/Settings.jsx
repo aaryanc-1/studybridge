@@ -45,6 +45,7 @@ export default function Settings() {
       {app.me.role === 'parent' && <AddWithCode />}
       {isStudent && <ParentCodes />}
       {isLearner && <LinkedParents />}
+      {isLearner && !isStudent && <JoinClass />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <StudyReminder />}
@@ -898,6 +899,45 @@ function LinkedParents() {
           </div>
         ))}
       </div>
+    </Section>
+  );
+}
+
+// A class code from a teacher (at a school, a centre or another tutor): the learner joins that class and keeps their
+// own tutor too
+function JoinClass() {
+  const toast = useToast();
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setErr('');
+    try {
+      const r = await api.joinClass(code);
+      setCode('');
+      invalidate('assignments', 'lessons', 'files', 'sessions', 'subjects', 'topics', 'learner_subjects', 'my-teachers');
+      toast(r.already ? `You’re already in ${r.class}` : `You’re in ${r.class} now`);
+    } catch (x) {
+      setErr(x.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Section id="join-class" icon="users" title="Join a class" sub="Has a teacher given you a class code? Type it here to join their class. You keep your own tutor too.">
+      <form className="row wrap" style={{ alignItems: 'flex-end' }} onSubmit={submit}>
+        <div style={{ maxWidth: 240 }}>
+          <Field label="Class code">
+            <input className="input code-in" value={code} onChange={(e) => (setCode(e.target.value), setErr(''))} placeholder="4829 1375" inputMode="numeric" autoComplete="off" spellCheck={false} />
+          </Field>
+        </div>
+        <button className="btn primary" disabled={busy || !code.trim()}>
+          Join the class
+        </button>
+      </form>
+      {err && <div className="error">{err}</div>}
     </Section>
   );
 }

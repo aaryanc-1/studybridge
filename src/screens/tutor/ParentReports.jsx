@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { LearnerTabs } from './Learners.jsx';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
 import { Avatar, Empty, Field, Loading, Modal, Page, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
@@ -30,7 +31,7 @@ export default function ParentReports() {
   const parents = useQuery('parent-counts', api.myParentCounts).data || {};
   const [open, setOpen] = useState(null); // { learnerId, reportId? }
   const [exam, setExam] = useState(null);
-  if (!settings.data || !reports.data) return <Page title="Parent reports"><Loading /></Page>;
+  if (!settings.data || !reports.data) return <Page title="Learners"><LearnerTabs tab="reports" /><Loading /></Page>;
   const byLearner = Object.fromEntries(settings.data.map((r) => [r.learner_id, r]));
   const monday = thisMonday();
   // a finished week's report, for a learner who has reports on, waiting to be sent
@@ -39,7 +40,8 @@ export default function ParentReports() {
   const sent = reports.data.filter((r) => r.status === 'sent');
 
   return (
-    <Page title="Parent reports" subtitle="StudyBridge fills in every learner’s report from their week: lessons, work, marks, topics, mock grade and exam countdown. Add a comment if you like, and approve it: nothing reaches a parent until you do. It goes to parent accounts, and by WhatsApp or email when the learner switched that on.">
+    <Page title="Learners" subtitle="Parent reports: StudyBridge fills in every learner’s report from their week: lessons, work, marks, topics, mock grade and exam countdown. Add a comment if you like, and approve it: nothing reaches a parent until you do. It goes to parent accounts, and by WhatsApp or email when the learner switched that on.">
+      <LearnerTabs tab="reports" />
       {ready.length > 0 && (
         <div className="card claude">
           <h2>Ready for you to check and send</h2>

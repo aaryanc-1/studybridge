@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Field, Link, Loading, Modal, Page, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Link, Loading, Modal, Page, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import Whiteboard from '../../ui/Whiteboard.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -117,6 +117,16 @@ export default function Live({ sessionId }) {
   const [pastOpen, setPastOpen] = useState(null);
   // lesson notes written for a past lesson (Recent → the lesson → Open lesson notes)
   const lessons = useQuery(isTutor ? 'lessons' : null, api.listLessons).data || [];
+  // a new lesson: the next quarter hour, everyone
+  const newLesson = () => ({ title: '', starts_at: new Date(Math.ceil(Date.now() / 900000) * 900000).toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id), repeat: false });
+  // /live?schedule=1 (Home's "Book a lesson") opens the form straight away; a reload doesn't open it again
+  const route = useRoute();
+  const wantsSchedule = isTutor && !sessionId && route.query.get('schedule') === '1';
+  useEffect(() => {
+    if (!wantsSchedule) return;
+    setEditing(newLesson());
+    go('/live', { replace: true });
+  }, [wantsSchedule]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (sessionId) {
     const s = (sessions.data || []).find((x) => x.id === sessionId);
@@ -161,7 +171,7 @@ export default function Live({ sessionId }) {
       actions={
         isTutor && (
           <>
-            <button className="btn" onClick={() => setEditing({ title: '', starts_at: new Date(Math.ceil(now / 900000) * 900000).toISOString(), duration_min: 60, learner_ids: lk.learners.map((l) => l.id), repeat: false })}>
+            <button className="btn" onClick={() => setEditing(newLesson())}>
               <Icon name="calendar" size={18} /> Schedule
             </button>
             <button className="btn primary" disabled={!configured} onClick={() => setStarting(true)}>

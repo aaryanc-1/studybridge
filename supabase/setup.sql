@@ -948,6 +948,13 @@ begin
     raise exception 'Too many wrong codes. Wait an hour, or ask your tutor to send the code again.';
   end if;
   select * into inv from public.invites where code = c and not revoked for update;
+  if inv.id is null and to_regclass('public.class_teachers') is not null
+     and exists (select 1 from public.classes where join_code = c and not archived) then
+    perform public.join_class(c);
+    update public.profiles set display_name = coalesce(nullif(trim(p_name), ''), display_name), timezone = coalesce(p_timezone, timezone)
+     where id = auth.uid() returning * into v;
+    return v;
+  end if;
   if inv.id is null then
     insert into public.invite_tries (user_id) values (auth.uid());
     delete from public.invite_tries where at < now() - interval '1 day';
@@ -995,7 +1002,7 @@ create or replace function public.remove_learner(p_learner uuid)
 returns void language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
-  delete from public.learner_subjects where learner_id = p_learner;
+  delete from public.learner_subjects where learner_id = p_learner and tutor_id = auth.uid();
   delete from public.learner_reports where learner_id = p_learner; -- the parent's contact goes with the learner
   if to_regclass('public.parent_links') is not null then
     execute 'delete from public.parent_links where learner_id = $1' using p_learner; -- and parents lose access
@@ -3101,7 +3108,7 @@ declare
   streak int := 0;
   goal int;
 begin
-  if auth.uid() is null or v_l is null or not (v_l = auth.uid() or coalesce(public.is_my_learner(v_l), false)) then raise exception 'Not your learner.'; end if;
+  if auth.uid() is null or v_l is null or not (v_l = auth.uid() or coalesce(public._can_view_learner(v_l), false)) then raise exception 'Not your learner.'; end if;
   select * into p from public.profiles where id = v_l;
   goal := coalesce(p.study_goal_min, 10) * 60;
   v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = p.timezone), 'UTC'))::date;
@@ -7162,9 +7169,11 @@ begin
        where id = v;
     end if;
   end if;
-  if tg_op = 'UPDATE' and new.tutor_id is distinct from old.tutor_id then
+  if tg_op = 'UPDATE' and new.tutor_id is distinct from old.tutor_id and old.tutor_id is not null then
     delete from public.class_members m using public.classes c
-     where m.learner_id = new.id and c.id = m.class_id and c.tutor_id is distinct from new.tutor_id;
+     where m.learner_id = new.id and c.id = m.class_id
+       and (c.tutor_id = old.tutor_id or exists (select 1 from public.class_teachers ct where ct.class_id = c.id and ct.teacher_id = old.tutor_id))
+       and (new.tutor_id is null or not exists (select 1 from public.class_teachers ct where ct.class_id = c.id and ct.teacher_id = new.tutor_id));
   end if;
   return null;
 end $$;
@@ -7369,7 +7378,8 @@ begin
                   'last_active', (select max(x.day) from public.activity x where x.learner_id = l.id),
                   'handed_in_week', (select count(*) from public.attempts a where a.learner_id = l.id and a.submitted_at >= now() - interval '7 days'))
                   order by l.display_name), '[]')
-                 from public.profiles l join public.org_members m on m.user_id = l.tutor_id where m.org_id = v and l.role = 'learner'));
+                 from public.profiles l where l.role = 'learner' and (l.tutor_id in (select user_id from public.org_members where org_id = v)
+                   or l.id in (select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = v))));
 end $$;
 
 -- ---------------- classes ----------------
@@ -7476,9 +7486,9 @@ create or replace function public._invite_classes() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if new.accepted_by is not null and old.accepted_by is null and cardinality(new.class_ids) > 0 then
-    insert into public.class_members (class_id, learner_id)
-      select c.id, new.accepted_by from public.classes c where c.id = any (new.class_ids) and c.tutor_id = new.tutor_id
-    on conflict do nothing;
+    perform public._add_to_class(c.id, new.accepted_by) from public.classes c
+     where c.id = any (new.class_ids) and (c.tutor_id = new.tutor_id or exists (
+             select 1 from public.class_teachers ct where ct.class_id = c.id and ct.teacher_id = new.tutor_id));
   end if;
   return null;
 end $$;
@@ -7579,33 +7589,39 @@ begin
   perform public._admin();
   return jsonb_build_object(
     'accounts', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'label', p.demo_label, 'role', p.role, 'name', p.display_name, 'email', p.email)
-                           order by array_position(array['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'], p.demo_label))
+                           order by array_position(array['manager', 'tutor1', 'tutor2', 'tutor3', 'learner1', 'learner2', 'learner3', 'learner4', 'learner5', 'learner6', 'parent', 'student'], p.demo_label))
                           from public.profiles p where p.demo), '[]'),
     'made_at', (select min(created_at) from public.profiles where demo),
     'content', public._studybridge_account() is not null);
 end $$;
 
--- Fill in the accounts the app just made. p_accounts: {"manager": id, "tutor": id, "learner1".."learner4": id, "parent": id,
+-- Fill in the accounts the app just made. p_accounts: {"manager", "tutor1".."tutor3", "learner1".."learner6", "parent": id,
 -- "student": id (optional)}. Each must be a brand-new account with no role yet and a demo address.
+-- Riverside Tuition (demo): Grace runs it and doesn't teach; Mercy (maths), Daniel (physics) and Joseph (biology) each have a
+-- class of two.
 create or replace function public.admin_demo_build(p_accounts jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   k text;
   v_id uuid;
-  m uuid := (p_accounts ->> 'manager')::uuid;
-  t uuid := (p_accounts ->> 'tutor')::uuid;
+  g uuid := (p_accounts ->> 'manager')::uuid;
+  m uuid := (p_accounts ->> 'tutor1')::uuid;
+  t uuid := (p_accounts ->> 'tutor2')::uuid;
+  j uuid := (p_accounts ->> 'tutor3')::uuid;
   l1 uuid := (p_accounts ->> 'learner1')::uuid;
   l2 uuid := (p_accounts ->> 'learner2')::uuid;
   l3 uuid := (p_accounts ->> 'learner3')::uuid;
   l4 uuid := (p_accounts ->> 'learner4')::uuid;
+  l5 uuid := (p_accounts ->> 'learner5')::uuid;
+  l6 uuid := (p_accounts ->> 'learner6')::uuid;
   par uuid := (p_accounts ->> 'parent')::uuid;
   stu uuid := (p_accounts ->> 'student')::uuid;
   c uuid := public._studybridge_account();
   org uuid;
-  maths uuid; phys uuid; t_alg uuid; t_num uuid; t_geo uuid; t_stat uuid; t_mot uuid; t_elec uuid;
-  y10 uuid; y11 uuid;
-  hw uuid; quiz uuid; paper uuid; mock uuid; notes uuid; series uuid;
-  q1 uuid; q2 uuid; q3 uuid; pq1 uuid; pq2 uuid; qq1 uuid; qq2 uuid;
+  maths uuid; phys uuid; bio uuid; t_alg uuid; t_num uuid; t_geo uuid; t_stat uuid; t_mot uuid; t_elec uuid; t_cell uuid; t_eco uuid;
+  y10 uuid; y11 uuid; y9 uuid;
+  hw uuid; quiz uuid; paper uuid; mock uuid; series uuid; bhw uuid;
+  q1 uuid; q2 uuid; q3 uuid; pq1 uuid; pq2 uuid; qq1 uuid; qq2 uuid; bq1 uuid; bq2 uuid;
   a1 uuid; a3 uuid; ma uuid;
   wk date := (date_trunc('week', now()) - interval '7 days')::date;
   d int;
@@ -7613,7 +7629,7 @@ declare
 begin
   perform public._admin();
   if exists (select 1 from public.profiles where demo) then raise exception 'There’s a demo already. Remove it first, or use Reset.'; end if;
-  foreach k in array array['manager', 'tutor', 'learner1', 'learner2', 'learner3', 'learner4', 'parent', 'student'] loop
+  foreach k in array array['manager', 'tutor1', 'tutor2', 'tutor3', 'learner1', 'learner2', 'learner3', 'learner4', 'learner5', 'learner6', 'parent', 'student'] loop
     v_id := (p_accounts ->> k)::uuid;
     if v_id is null then
       if k = 'student' then continue; end if;
@@ -7626,14 +7642,16 @@ begin
     update public.profiles set demo = true, demo_label = k where id = v_id;
   end loop;
 
-  -- the centre: a manager and a second tutor, both approved, on a plan with room
-  update public.profiles set display_name = 'Grace Mwansa', timezone = 'Africa/Lusaka' where id = m;
+  -- the centre: Grace runs it; three tutors teach in it; all approved, on a plan with room
+  update public.profiles set display_name = 'Grace Mwansa', timezone = 'Africa/Lusaka' where id = g;
+  update public.profiles set display_name = 'Mercy Tembo', timezone = 'Africa/Lusaka' where id = m;
   update public.profiles set display_name = 'Daniel Okafor', timezone = 'Africa/Lusaka' where id = t;
-  update public.profiles set role = 'tutor', status = 'active', plan = 'custom', plan_learners = 50 where id in (m, t);
-  org := public._ensure_org(m);
+  update public.profiles set display_name = 'Joseph Lungu', timezone = 'Africa/Lusaka' where id = j;
+  update public.profiles set role = 'tutor', status = 'active', plan = 'custom', plan_learners = 50 where id in (g, m, t, j);
+  org := public._ensure_org(g);
   update public.organisations set kind = 'centre', name = 'Riverside Tuition (demo)', join_code = public._new_org_code() where id = org;
-  delete from public.org_members where user_id = t;
-  insert into public.org_members (org_id, user_id, role) values (org, t, 'tutor');
+  delete from public.org_members where user_id in (m, t, j);
+  insert into public.org_members (org_id, user_id, role) values (org, m, 'tutor'), (org, t, 'tutor'), (org, j, 'tutor');
 
   -- subjects and topics
   insert into public.subjects (tutor_id, name, color, exam) values (m, 'IGCSE Maths', '#0E6B6B', 'cie:0607') returning id into maths;
@@ -7644,21 +7662,41 @@ begin
   insert into public.subjects (tutor_id, name, color, exam) values (t, 'IGCSE Physics', '#2F5C9A', 'cie:0625') returning id into phys;
   insert into public.topics (tutor_id, subject_id, name, position) values (t, phys, 'Motion and forces', 1) returning id into t_mot;
   insert into public.topics (tutor_id, subject_id, name, position) values (t, phys, 'Electricity', 2) returning id into t_elec;
+  insert into public.subjects (tutor_id, name, color, exam) values (j, 'IGCSE Biology', '#3F7D3A', 'cie:0610') returning id into bio;
+  insert into public.topics (tutor_id, subject_id, name, position) values (j, bio, 'Cells', 1) returning id into t_cell;
+  insert into public.topics (tutor_id, subject_id, name, position) values (j, bio, 'Ecology', 2) returning id into t_eco;
 
-  -- learners: two each, in Lusaka
+  -- learners: two for each tutor, in Lusaka
   update public.profiles set role = 'learner', tutor_id = m, timezone = 'Africa/Lusaka', display_name = 'Chipo Banda' where id = l1;
   update public.profiles set role = 'learner', tutor_id = m, timezone = 'Africa/Lusaka', display_name = 'Tendai Moyo' where id = l2;
   update public.profiles set role = 'learner', tutor_id = t, timezone = 'Africa/Lusaka', display_name = 'Amara Phiri' where id = l3;
   update public.profiles set role = 'learner', tutor_id = t, timezone = 'Africa/Lusaka', display_name = 'Kofi Mensah' where id = l4;
-  insert into public.learner_subjects (learner_id, subject_id, tutor_id) values (l1, maths, m), (l2, maths, m), (l3, phys, t), (l4, phys, t);
+  update public.profiles set role = 'learner', tutor_id = j, timezone = 'Africa/Lusaka', display_name = 'Natasha Mwale' where id = l5;
+  update public.profiles set role = 'learner', tutor_id = j, timezone = 'Africa/Lusaka', display_name = 'Mwila Zulu' where id = l6;
+  insert into public.learner_subjects (learner_id, subject_id, tutor_id)
+  values (l1, maths, m), (l2, maths, m), (l3, phys, t), (l4, phys, t), (l5, bio, j), (l6, bio, j);
+  -- exams in the reports' countdown
+  insert into public.learner_reports (learner_id, tutor_id, exam_name, exam_date)
+  select x, tt, 'IGCSE (May/June)', make_date(extract(year from now() + interval '6 months')::int, 5, 4)
+    from (values (l1, m), (l2, m), (l3, t), (l4, t), (l5, j), (l6, j)) v (x, tt)
+  on conflict (learner_id) do update set tutor_id = excluded.tutor_id, exam_name = excluded.exam_name, exam_date = excluded.exam_date;
 
   -- a class each
   insert into public.classes (tutor_id, name, subject_id) values (m, 'Year 10 maths', maths) returning id into y10;
   insert into public.class_members (class_id, learner_id) values (y10, l1), (y10, l2);
   insert into public.classes (tutor_id, name, subject_id) values (t, 'Year 11 physics', phys) returning id into y11;
   insert into public.class_members (class_id, learner_id) values (y11, l3), (y11, l4);
+  insert into public.classes (tutor_id, name, subject_id) values (j, 'Year 9 biology', bio) returning id into y9;
+  insert into public.class_members (class_id, learner_id) values (y9, l5), (y9, l6);
 
-  -- homework for Year 10: Chipo handed it in and has it back, marked; Tendai hasn't started
+  -- Mercy's teaching plan: this week is algebra
+  insert into public.teaching_plans (tutor_id, subject_id, kind, starts_on, ends_on, items)
+  values (m, maths, 'week', date_trunc('week', now())::date - 7, date_trunc('week', now())::date + 20, jsonb_build_array(
+    jsonb_build_object('label', 'Last week', 'starts_on', date_trunc('week', now())::date - 7, 'ends_on', date_trunc('week', now())::date - 1, 'topics', jsonb_build_array('Number')),
+    jsonb_build_object('label', 'This week', 'starts_on', date_trunc('week', now())::date, 'ends_on', date_trunc('week', now())::date + 6, 'topics', jsonb_build_array('Algebra')),
+    jsonb_build_object('label', 'Next week', 'starts_on', date_trunc('week', now())::date + 7, 'ends_on', date_trunc('week', now())::date + 13, 'topics', jsonb_build_array('Geometry'))));
+
+  -- Mercy's homework for Year 10: Chipo handed it in and has it back, marked; Tendai hasn't started
   insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, topic_id, class_id, visibility, due_at)
   values (m, 'homework', 'Simultaneous equations', 'Show your working for each one.', maths, t_alg, y10, 'visible', now() + interval '3 days')
   returning id into hw;
@@ -7684,14 +7722,13 @@ begin
   -- lesson notes for the class, and a weekly lesson
   insert into public.lessons (tutor_id, title, body_md, subject_id, topic_id, class_id, visibility)
   values (m, 'Simultaneous equations: elimination', E'## Elimination\n\nAdd or subtract the equations so one letter disappears.\n\n**Example:** $x + y = 10$ and $x - y = 4$. Adding gives $2x = 14$, so $x = 7$ and $y = 3$.',
-          maths, t_alg, y10, 'visible')
-  returning id into notes;
+          maths, t_alg, y10, 'visible');
   insert into public.lesson_series (tutor_id, title, learner_ids, class_id, weekday, start_time, timezone, duration_min, starts_on)
   values (m, 'Year 10 maths', array[l1, l2], y10, extract(dow from current_date + 1)::int, '16:00', 'Africa/Lusaka', 60, current_date + 1)
   returning id into series;
   perform public._fill_series(series);
 
-  -- a mock: Chipo's grade is back (the boundaries stay Grace's own)
+  -- a mock: Chipo's grade is back (the boundaries stay Mercy's own)
   insert into public.grade_boundaries (tutor_id, exam, session, option_label, max_mark, grades)
   values (m, 'cie:0607', 'June 2025', 'Extended', 100,
           '[{"grade": "A*", "min": 80}, {"grade": "A", "min": 70}, {"grade": "B", "min": 60}, {"grade": "C", "min": 50}, {"grade": "D", "min": 40}, {"grade": "E", "min": 30}]');
@@ -7709,7 +7746,7 @@ begin
     (ma, pq1, l1, m, '{"text": "(answers written on paper)"}', 19),
     (ma, pq2, l1, m, '{"text": "(answers written on paper)"}', 15);
 
-  -- Year 11 physics: a quiz Amara has handed in, waiting for Daniel to mark
+  -- Daniel's Year 11 physics: a quiz Amara has handed in, waiting for him to mark
   insert into public.assignments (tutor_id, kind, title, subject_id, topic_id, class_id, visibility, due_at)
   values (t, 'quiz', 'Speed, distance and time', phys, t_mot, y11, 'visible', now() + interval '2 days') returning id into quiz;
   insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
@@ -7723,7 +7760,20 @@ begin
     (a3, qq1, l3, t, '{"value": "6"}', 1),
     (a3, qq2, l3, t, '{"text": "Gravity pulls it down, against the way it is moving, so it loses speed."}', null);
 
-  -- messages between Grace and Chipo
+  -- Joseph's Year 9 biology: homework nobody has started yet (try Nudge), and notes
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, topic_id, class_id, visibility, due_at)
+  values (j, 'homework', 'Cells and organelles', 'Label the diagram in your book, then answer these.', bio, t_cell, y9, 'visible', now() + interval '5 days')
+  returning id into bhw;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, options, marks, topic_id)
+  values (bhw, j, 1, 'mcq', 'Where does respiration happen?', '["Nucleus", "Mitochondria", "Cell wall"]', 1, t_cell) returning id into bq1;
+  insert into public.questions (assignment_id, tutor_id, position, type, prompt_md, marks, topic_id)
+  values (bhw, j, 2, 'short', 'Name two things a plant cell has that an animal cell doesn’t.', 2, t_cell) returning id into bq2;
+  insert into public.question_keys (question_id, tutor_id, answer) values (bq1, j, '{"choice": 1}'), (bq2, j, '{}');
+  insert into public.lessons (tutor_id, title, body_md, subject_id, topic_id, class_id, visibility)
+  values (j, 'Plant and animal cells', E'## What every cell has\n\nA cell membrane, cytoplasm, a nucleus and mitochondria.\n\n**Plant cells also have** a cell wall, chloroplasts and a large vacuole.',
+          bio, t_cell, y9, 'visible');
+
+  -- messages between Mercy and Chipo
   insert into public.comments (tutor_id, learner_id, author_id, body, created_at) values
     (m, l1, l1, 'I got stuck on question 2. Do I add or take away?', now() - interval '27 hours'),
     (m, l1, m, 'Add them: the $y$s cancel out. Then try it again!', now() - interval '26 hours');
@@ -7734,11 +7784,13 @@ begin
       (l1, m, 'study', maths, 1200 + d * 180, current_date - d),
       (l2, m, 'study', maths, case when d % 2 = 0 then 900 else 0 end, current_date - d),
       (l3, t, 'study', phys, 1500, current_date - d),
-      (l4, t, 'study', phys, case when d < 3 then 600 else 0 end, current_date - d);
+      (l4, t, 'study', phys, case when d < 3 then 600 else 0 end, current_date - d),
+      (l5, j, 'study', bio, case when d between 1 and 4 then 1100 else 0 end, current_date - d),
+      (l6, j, 'study', bio, case when d = 2 then 700 else 0 end, current_date - d);
   end loop;
-  delete from public.activity where seconds = 0 and learner_id in (l1, l2, l3, l4);
+  delete from public.activity where seconds = 0 and learner_id in (l1, l2, l3, l4, l5, l6);
 
-  -- Chipo's mum, Ruth: a parent account with last week's report, approved by Grace
+  -- Chipo's mum, Ruth: a parent account with last week's report, approved by Mercy
   update public.profiles set role = 'parent', display_name = 'Ruth Banda', timezone = 'Africa/Lusaka' where id = par;
   insert into public.parent_links (parent_id, learner_id, tutor_id) values (par, l1, m);
   insert into public.parent_reports (tutor_id, learner_id, week_start, status, data, comment, next_week, sent_at, sent_via)
@@ -7791,6 +7843,437 @@ begin
   perform public._admin_log('demo_removed', null, jsonb_build_object('accounts', n));
   return n;
 end $$;
+
+-- =====================================================================
+-- The new tutor Home (22 Oct 2026): one card per learner (their streak, last mark back, latest mock grade, weeks to
+-- their exam and what the teaching plan says for this week), and "Nudge" for work nobody has started.
+-- =====================================================================
+create or replace function public.tutor_home() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare me uuid := auth.uid(); v_today date;
+begin
+  if public.my_role() is distinct from 'tutor' then return null; end if;
+  v_today := (now() at time zone public._tz_of(me))::date;
+  return jsonb_build_object('learners', coalesce((select jsonb_agg(jsonb_build_object(
+      'id', l.id,
+      'streak', (public.study_summary(l.id) ->> 'streak')::int,
+      'last_mark', (select jsonb_build_object('title', a.title, 'score', t.score, 'max', t.max_score, 'attempt_id', t.id,
+                                              'at', coalesce(t.released_at, t.submitted_at))
+                      from public.attempts t join public.assignments a on a.id = t.assignment_id
+                     where t.learner_id = l.id and t.tutor_id = me and not a.practice and t.score is not null and public._is_released(t)
+                     order by coalesce(t.released_at, t.submitted_at) desc limit 1),
+      'mock', (select z.r from (select jsonb_build_object('title', m.title) || (public._mock_result(m.id, l.id, true) - 'papers') as r
+                                  from public.mocks m where m.tutor_id = me) z
+                where (z.r ->> 'released')::boolean and z.r ->> 'grade' is not null order by z.r ->> 'last_at' desc limit 1),
+      'exam', (select jsonb_build_object('name', r.exam_name, 'date', r.exam_date) from public.learner_reports r
+                where r.learner_id = l.id and r.tutor_id = me and r.exam_date is not null and r.exam_date >= v_today),
+      -- this week in the teaching plan of each subject they take
+      'plan', coalesce((select jsonb_agg(jsonb_build_object('subject_id', p.subject_id, 'label', i ->> 'label', 'topics', coalesce(i -> 'topics', '[]')))
+                          from public.teaching_plans p cross join lateral jsonb_array_elements(p.items) i
+                         where p.tutor_id = me and p.subject_id in (select ls.subject_id from public.learner_subjects ls where ls.learner_id = l.id)
+                           and (i ->> 'starts_on') is not null and (i ->> 'starts_on')::date <= v_today
+                           and coalesce((i ->> 'ends_on')::date, (i ->> 'starts_on')::date + 6) >= v_today), '[]')
+    ) order by l.display_name) from public.profiles l where l.id in (select public._home_learners())), '[]'));
+end $$;
+
+-- A reminder to everyone it's for who hasn't handed it in yet (once in 12 hours); returns how many were told
+alter table public.assignments add column if not exists nudged_at timestamptz;
+create or replace function public.nudge_assignment(p_assignment uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare a public.assignments; l uuid; n int := 0;
+begin
+  select * into a from public.assignments where id = p_assignment and tutor_id = auth.uid();
+  if a.id is null then raise exception 'Not your work.'; end if;
+  if a.draft or not (a.visibility = 'visible' or (a.visibility = 'scheduled' and a.visible_from <= now())) then
+    raise exception 'Learners can’t see this yet. Post it first.';
+  end if;
+  if a.nudged_at > now() - interval '12 hours' then raise exception 'You sent a reminder about this in the last 12 hours.'; end if;
+  for l in select public._audience(a.tutor_id, a.learner_ids, a.subject_id) loop
+    if not exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = l and t.status <> 'in_progress') then
+      perform public.notify_user(l, 'assignment', 'Reminder: ' || a.title,
+        case when a.due_at is not null then 'Due ' || to_char(a.due_at at time zone public._tz_of(l), 'Dy DD Mon, HH24:MI') || ' your time.'
+             else 'Your tutor sent a reminder.' end,
+        jsonb_build_object('assignment_id', a.id));
+      n := n + 1;
+    end if;
+  end loop;
+  update public.assignments set nudged_at = now() where id = a.id;
+  return n;
+end $$;
+
+-- =====================================================================
+-- Launch 2, part 2 (22 Oct 2026): classes with teachers. A class has one or more teachers. A learner is taught by
+-- their own tutor (profiles.tutor_id, as before) and by the teachers of every class they're in, even in another
+-- organisation: a school and a private tutor at once. Each teacher sees, marks and approves only what's theirs:
+-- their own learners, and the learners in the classes they teach. Only a learner's own tutor can change their
+-- account, subjects list, parents or reports. In a centre or school the manager makes classes for any of its
+-- teachers, from the organisation's learners; a class's code lets a learner from anywhere join it.
+-- =====================================================================
+create table if not exists public.class_teachers (
+  class_id uuid not null references public.classes (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  added_at timestamptz not null default now(),
+  primary key (class_id, teacher_id)
+);
+create index if not exists class_teachers_teacher on public.class_teachers (teacher_id);
+alter table public.class_teachers enable row level security;
+revoke all on public.class_teachers from public, anon, authenticated;
+grant select on public.class_teachers to authenticated;
+alter table public.classes add column if not exists org_id uuid references public.organisations (id) on delete set null;
+alter table public.classes add column if not exists join_code text unique;
+-- classes from before: the tutor who made it teaches it, in their organisation
+insert into public.class_teachers (class_id, teacher_id) select id, tutor_id from public.classes on conflict do nothing;
+update public.classes c set org_id = public._org_of(c.tutor_id) where org_id is null;
+
+-- However a class is made, whoever made it teaches it, in their organisation (a manager's save_class then sets the teachers)
+create or replace function public._class_made() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.class_teachers (class_id, teacher_id) values (new.id, new.tutor_id) on conflict do nothing;
+  if new.org_id is null then update public.classes set org_id = public._org_of(new.tutor_id) where id = new.id; end if;
+  return null;
+end $$;
+drop trigger if exists classes_made on public.classes;
+create trigger classes_made after insert on public.classes for each row execute function public._class_made();
+
+-- Does this teacher teach this learner (their own learner, or one in a class they teach)?
+create or replace function public._teaches(p_teacher uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = p_learner and tutor_id = p_teacher and role = 'learner')
+      or exists (select 1 from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id
+                  where ct.teacher_id = p_teacher and cm.learner_id = p_learner)
+$$;
+-- Everyone who teaches the signed-in learner
+create or replace function public._my_teachers() returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select tutor_id from public.profiles where id = auth.uid() and role = 'learner' and tutor_id is not null
+  union
+  select ct.teacher_id from public.class_members cm join public.class_teachers ct on ct.class_id = cm.class_id where cm.learner_id = auth.uid()
+$$;
+create or replace function public._teaches_class(p_class uuid, p_teacher uuid default null) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.class_teachers where class_id = p_class and teacher_id = coalesce(p_teacher, auth.uid()))
+$$;
+create or replace function public._class_org_manager(p_class uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._org_manager((select org_id from public.classes where id = p_class))
+$$;
+
+-- Who can read what about classes: their teachers and the organisation's managers; learners only their own place
+drop policy if exists classes_tutor on public.classes;
+create policy classes_tutor on public.classes for select
+  using (tutor_id = auth.uid() or public._teaches_class(id) or public._org_manager(org_id));
+drop policy if exists class_members_tutor on public.class_members;
+create policy class_members_tutor on public.class_members for select
+  using (public._teaches_class(class_id) or public._class_tutor(class_id) = auth.uid() or public._class_org_manager(class_id));
+drop policy if exists class_teachers_read on public.class_teachers;
+create policy class_teachers_read on public.class_teachers for select
+  using (teacher_id = auth.uid() or public._teaches_class(class_id) or public._class_org_manager(class_id) or public._in_class(class_id));
+
+-- A learner reads the subjects, topics and work of everyone who teaches them; a teacher reads their learners
+drop policy if exists profiles_read on public.profiles;
+create policy profiles_read on public.profiles for select
+  using (id = auth.uid() or tutor_id = auth.uid() or id = public.my_tutor()
+         or (role = 'learner' and public._teaches(auth.uid(), id))
+         or (role = 'tutor' and id in (select public._my_teachers())));
+drop policy if exists subjects_learner on public.subjects;
+create policy subjects_learner on public.subjects for select using (tutor_id in (select public._my_teachers()));
+drop policy if exists topics_learner on public.topics;
+create policy topics_learner on public.topics for select using (tutor_id in (select public._my_teachers()));
+drop policy if exists comments_tutor_write on public.comments;
+create policy comments_tutor_write on public.comments for insert
+  with check (tutor_id = auth.uid() and author_id = auth.uid() and public._teaches(auth.uid(), learner_id));
+drop policy if exists comments_learner_write on public.comments;
+create policy comments_learner_write on public.comments for insert
+  with check (learner_id = auth.uid() and author_id = auth.uid() and tutor_id in (select public._my_teachers()));
+
+create or replace function public.can_learner_see(
+  p_tutor uuid, p_learner_ids uuid[], p_subject uuid, p_visibility text, p_visible_from timestamptz
+) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles me where me.id = auth.uid() and me.role = 'learner')
+    and p_tutor in (select public._my_teachers())
+    and (p_visibility = 'visible' or (p_visibility = 'scheduled' and p_visible_from is not null and p_visible_from <= now()))
+    and (case
+           when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then auth.uid() = any (p_learner_ids)
+           when p_subject is not null then exists (
+             select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = p_subject)
+           else true
+         end)
+    and public._student_ok()
+$$;
+
+-- Progress, summaries, marking photos: anyone who teaches them
+create or replace function public._can_view_learner(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select p_learner = auth.uid() or public.is_my_learner(p_learner) or public._teaches(auth.uid(), p_learner)
+$$;
+create or replace function public.learner_work_paths(p_learner uuid)
+returns text[] language sql stable security definer set search_path = public as $$
+  select coalesce(array_agg(distinct p), '{}') from (
+    select f ->> 'path' as p from public.responses r, jsonb_array_elements(coalesce(r.answer -> 'files', '[]'::jsonb)) f
+     where r.learner_id = p_learner and r.tutor_id = auth.uid() and public._teaches(auth.uid(), p_learner)
+    union all
+    select annotation_path from public.responses where learner_id = p_learner and tutor_id = auth.uid() and public._teaches(auth.uid(), p_learner)
+    union all
+    select attachment_path from public.comments where learner_id = p_learner and tutor_id = auth.uid() and public._teaches(auth.uid(), p_learner)
+  ) x where p is not null
+$$;
+drop policy if exists sb_library_learner on storage.objects;
+create policy sb_library_learner on storage.objects for select to authenticated
+  using (bucket_id = 'library' and (storage.foldername(name))[1] in (select t::text from public._my_teachers() t) and (
+    (storage.foldername(name))[2] in ('questions', 'lessons')
+    or exists (select 1 from public.files f where f.storage_path = storage.objects.name
+               and public.can_learner_see(f.tutor_id, f.learner_ids, f.subject_id, f.visibility, f.visible_from))));
+drop policy if exists sb_work_tutor on storage.objects;
+create policy sb_work_tutor on storage.objects for all to authenticated
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid))
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid));
+
+-- Work for a class may be set by any of its teachers
+create or replace function public._class_audience() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_ids uuid[];
+begin
+  if new.class_id is null then return new; end if;
+  if not public._teaches_class(new.class_id, new.tutor_id) then raise exception 'Unknown class.'; end if;
+  if tg_table_name = 'sessions' and tg_op = 'UPDATE' then
+    if old.starts_at <= now() then return new; end if; -- (only sessions have a start)
+  end if;
+  select coalesce(array_agg(m.learner_id order by m.added_at), '{}') into v_ids from public.class_members m where m.class_id = new.class_id;
+  if tg_table_name = 'assignments' and tg_op = 'UPDATE' then
+    select coalesce(array_agg(x order by x), '{}') into v_ids from (
+      select unnest(v_ids) x
+      union
+      select distinct t.learner_id from public.attempts t where t.assignment_id = new.id and t.learner_id = any (coalesce(old.learner_ids, '{}'))) y;
+  end if;
+  if cardinality(v_ids) = 0 and tg_table_name in ('assignments', 'lessons', 'files') then v_ids := array[new.class_id]; end if;
+  new.learner_ids := v_ids;
+  return new;
+end $$;
+create or replace function public._series_learners(p_class uuid, p_learner_ids uuid[]) returns uuid[]
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid[];
+begin
+  if p_class is null then return p_learner_ids; end if;
+  if not public._teaches_class(p_class) then raise exception 'Unknown class.'; end if;
+  select coalesce(array_agg(learner_id order by added_at), '{}') into v from public.class_members where class_id = p_class;
+  if cardinality(v) = 0 then raise exception 'Nobody is in this class yet. Add learners to it first.'; end if;
+  return v;
+end $$;
+-- a weekly lesson for a class checks its learners against the class, not the tutor's own list
+create or replace function public._series_check(p_title text, p_first timestamptz, p_learner_ids uuid[], p_timezone text, p_until date)
+returns timestamp language plpgsql stable security definer set search_path = public as $$
+declare l uuid; v_tz text; v_local timestamp;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  if nullif(trim(coalesce(p_title, '')), '') is null then raise exception 'Give the lesson a title.'; end if;
+  if p_first is null then raise exception 'Choose when the first lesson is.'; end if;
+  if coalesce(array_length(p_learner_ids, 1), 0) = 0 then raise exception 'Choose at least one learner.'; end if;
+  foreach l in array p_learner_ids loop
+    if not public._teaches(auth.uid(), l) then raise exception 'Not your learner.'; end if;
+  end loop;
+  v_tz := coalesce((select name from pg_timezone_names where name = p_timezone), public._tz_of(auth.uid()));
+  v_local := date_trunc('minute', p_first at time zone v_tz);
+  if p_until is not null and p_until < v_local::date then raise exception 'The last date is before the first lesson.'; end if;
+  return v_local;
+end $$;
+
+-- The learners someone may put in a class: a manager, everyone in the organisation (its tutors' learners and anyone
+-- already in one of its classes); anyone else, their own learners and the learners already in their classes
+create or replace function public._class_pool(p_org uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l where l.role = 'learner' and l.tutor_id = auth.uid()
+  union
+  select cm.learner_id from public.class_members cm join public.class_teachers ct on ct.class_id = cm.class_id where ct.teacher_id = auth.uid()
+  union
+  select l.id from public.profiles l join public.org_members m on m.user_id = l.tutor_id
+   where public._org_manager(p_org) and m.org_id = p_org and l.role = 'learner'
+  union
+  select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id
+   where public._org_manager(p_org) and c.org_id = p_org
+$$;
+
+-- Everyone a manager (or a teacher) can put in a class, with their own tutor's name
+create or replace function public.class_pool() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if public.my_role() is distinct from 'tutor' then return '[]'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'tutor_id', l.tutor_id,
+            'tutor', (select display_name from public.profiles t where t.id = l.tutor_id)) order by l.display_name)
+          from public.profiles l where l.id in (select public._class_pool(v_org))), '[]');
+end $$;
+
+-- Make or change a class: name, subject (optional), teachers (a manager chooses; anyone else teaches their own
+-- classes) and who's in it. Learners added are told, and take the class's subject.
+drop function if exists public.save_class(uuid, text, uuid, uuid[]);
+create or replace function public.save_class(p_id uuid, p_name text, p_subject uuid, p_learner_ids uuid[], p_teacher_ids uuid[] default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid := p_id;
+  v_name text := left(trim(coalesce(p_name, '')), 80);
+  v_org uuid := public._org_of(auth.uid());
+  v_manager boolean := public._org_manager(public._org_of(auth.uid()));
+  v_teachers uuid[];
+  c public.classes;
+  l uuid;
+  t uuid;
+  v_sub_tutor uuid;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  if v_name = '' then raise exception 'Give the class a name.'; end if;
+  if v_id is not null then
+    select * into c from public.classes where id = v_id;
+    if c.id is null or not (c.tutor_id = auth.uid() or public._teaches_class(v_id) or public._org_manager(c.org_id)) then
+      raise exception 'Not your class.';
+    end if;
+    v_org := coalesce(c.org_id, v_org);
+    v_manager := public._org_manager(v_org);
+  end if;
+  -- teachers: a manager picks any of the organisation's tutors; otherwise it stays as it is (a new class: you)
+  if p_teacher_ids is not null and cardinality(p_teacher_ids) > 0 and v_manager then
+    foreach t in array p_teacher_ids loop
+      if not exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id
+                      where m.org_id = v_org and m.user_id = t and p.role = 'tutor') then
+        raise exception 'Teachers come from your centre’s tutors.';
+      end if;
+    end loop;
+    v_teachers := p_teacher_ids;
+  elsif v_id is null then
+    v_teachers := array[auth.uid()];
+  end if;
+  if p_subject is not null then
+    select tutor_id into v_sub_tutor from public.subjects where id = p_subject;
+    if v_sub_tutor is null or not (v_sub_tutor = any (coalesce(v_teachers, array(select teacher_id from public.class_teachers where class_id = v_id))) or v_sub_tutor = auth.uid()) then
+      raise exception 'The subject has to be one of its teacher’s.';
+    end if;
+  end if;
+  foreach l in array coalesce(p_learner_ids, '{}') loop
+    if not (l in (select public._class_pool(v_org)) or (v_id is not null and exists (select 1 from public.class_members where class_id = v_id and learner_id = l))) then
+      raise exception 'Not your learner.';
+    end if;
+  end loop;
+  if v_id is null then
+    insert into public.classes (tutor_id, name, subject_id, org_id) values (auth.uid(), v_name, p_subject, v_org) returning id into v_id;
+  else
+    update public.classes set name = v_name, subject_id = p_subject where id = v_id;
+  end if;
+  if v_teachers is not null then
+    delete from public.class_teachers where class_id = v_id and not teacher_id = any (v_teachers);
+    insert into public.class_teachers (class_id, teacher_id) select v_id, x from unnest(v_teachers) x on conflict do nothing;
+  end if;
+  delete from public.class_members where class_id = v_id and not learner_id = any (coalesce(p_learner_ids, '{}'));
+  for l in select distinct x from unnest(coalesce(p_learner_ids, '{}')) x
+            where not exists (select 1 from public.class_members m where m.class_id = v_id and m.learner_id = x) loop
+    perform public._add_to_class(v_id, l);
+  end loop;
+  return v_id;
+end $$;
+
+-- Put someone in a class: they take its subject, and are told
+create or replace function public._add_to_class(p_class uuid, p_learner uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare c public.classes;
+begin
+  select * into c from public.classes where id = p_class;
+  insert into public.class_members (class_id, learner_id) values (p_class, p_learner) on conflict do nothing;
+  if c.subject_id is not null then
+    insert into public.learner_subjects (learner_id, subject_id, tutor_id)
+    select p_learner, c.subject_id, s.tutor_id from public.subjects s where s.id = c.subject_id
+    on conflict do nothing;
+  end if;
+  perform public.notify_user(p_learner, 'class', 'You’re in ' || c.name || ' now',
+    'Work, lesson notes and live lessons for this class show in StudyBridge.', jsonb_build_object('class_id', p_class));
+end $$;
+
+create or replace function public.archive_class(p_id uuid, p_archived boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.classes set archived = coalesce(p_archived, true)
+   where id = p_id and (tutor_id = auth.uid() or public._teaches_class(id) or public._org_manager(org_id));
+  if not found then raise exception 'Not your class.'; end if;
+end $$;
+
+create or replace function public.delete_class(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.classes where id = p_id and (tutor_id = auth.uid() or public._teaches_class(id) or public._org_manager(org_id))) then
+    raise exception 'Not your class.';
+  end if;
+  update public.assignments set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  update public.lessons set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  update public.files set class_id = null, learner_ids = null, visibility = 'hidden' where class_id = p_id and learner_ids = array[p_id];
+  delete from public.classes where id = p_id;
+end $$;
+
+-- A class's code: anyone with it can join the class, from any tutor, centre or school (a new account becomes a
+-- learner of its first teacher)
+create or replace function public.class_code(p_class uuid, p_new boolean default false) returns text
+language plpgsql security definer set search_path = public as $$
+declare c public.classes;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not (c.tutor_id = auth.uid() or public._teaches_class(c.id) or public._org_manager(c.org_id)) then
+    raise exception 'Not your class.';
+  end if;
+  if c.join_code is null or p_new then
+    update public.classes set join_code = public._new_org_code() where id = c.id returning join_code into c.join_code;
+  end if;
+  return c.join_code;
+end $$;
+
+-- Join with a class code (Settings → Join a class). A wrong code is counted and returns nothing.
+create or replace function public.join_class(p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  k text := regexp_replace(coalesce(p_code, ''), '[^0-9]', '', 'g');
+  c public.classes;
+  me public.profiles;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null then raise exception 'Not signed in.'; end if;
+  if me.role is not null and me.role <> 'learner' then raise exception 'Only learners join classes.'; end if;
+  if (select count(*) from public.invite_tries where user_id = auth.uid() and at > now() - interval '1 hour') >= 10 then
+    raise exception 'Too many wrong codes. Wait an hour, or ask for the code again.';
+  end if;
+  select * into c from public.classes where join_code = k and length(k) = 8 and not archived;
+  if c.id is null then
+    insert into public.invite_tries (user_id) values (auth.uid());
+    return null;
+  end if;
+  if me.self_learner then raise exception 'This account studies on its own with StudyBridge. Use another account for a class.'; end if;
+  if me.role is null then
+    update public.profiles set role = 'learner',
+           tutor_id = (select teacher_id from public.class_teachers where class_id = c.id order by added_at limit 1)
+     where id = auth.uid();
+  end if;
+  if exists (select 1 from public.class_members where class_id = c.id and learner_id = auth.uid()) then
+    return jsonb_build_object('class', c.name, 'already', true);
+  end if;
+  perform public._add_to_class(c.id, auth.uid());
+  perform public.notify_user(ct.teacher_id, 'joined', coalesce(me.display_name, 'A learner') || ' joined ' || c.name, 'They used the class code.',
+    jsonb_build_object('learner_id', auth.uid())) from public.class_teachers ct where ct.class_id = c.id;
+  return jsonb_build_object('class', c.name, 'already', false);
+end $$;
+
+-- A learner's teachers, for their Messages (their own tutor first)
+create or replace function public.my_teachers() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'main', p.id = (select tutor_id from public.profiles where id = auth.uid()),
+           'classes', (select coalesce(jsonb_agg(c.name order by c.name), '[]') from public.class_teachers ct join public.classes c on c.id = ct.class_id
+                        join public.class_members cm on cm.class_id = c.id where ct.teacher_id = p.id and cm.learner_id = auth.uid()))
+         order by p.id = (select tutor_id from public.profiles where id = auth.uid()) desc, p.display_name), '[]')
+    from public.profiles p where p.id in (select public._my_teachers())
+$$;
+
+-- The tutor's Home: the learners in their classes have cards too
+create or replace function public._home_learners() returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select id from public.profiles where tutor_id = auth.uid() and role = 'learner'
+  union
+  select cm.learner_id from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id where ct.teacher_id = auth.uid()
+$$;
 
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
@@ -7860,6 +8343,10 @@ revoke execute on function public._class_audience() from public, anon, authentic
 revoke execute on function public._class_sync() from public, anon, authenticated;
 revoke execute on function public._invite_classes() from public, anon, authenticated;
 revoke execute on function public._series_learners(uuid, uuid[]) from public, anon, authenticated;
+revoke execute on function public._class_pool(uuid) from public, anon, authenticated;
+revoke execute on function public._add_to_class(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._home_learners() from public, anon, authenticated;
+revoke execute on function public._class_made() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

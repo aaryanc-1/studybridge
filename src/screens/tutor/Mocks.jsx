@@ -332,7 +332,7 @@ export default function MockPage({ id }) {
         </div>
         {!m.exam ? (
           <div className="note small">
-            This mock isn’t linked to an exam yet. Set its subject’s exam in <Link to="/structure">Subjects</Link>, or add boundaries just for this mock below.
+            This mock isn’t linked to an exam yet. Set its subject’s exam in <Link to="/library/subjects">Library → Subjects</Link>, or add boundaries just for this mock below.
           </div>
         ) : forExam.length === 0 ? (
           <div className="note small">No grade boundaries for {examName(m.exam, lk)} yet. Add them once and every mock for this exam uses them.</div>

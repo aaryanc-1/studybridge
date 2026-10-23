@@ -158,7 +158,7 @@ export default function PastPapers() {
             'Pick one of your learners’ exams above, or any other subject from the list.'
           ) : (
             <>
-              Tell StudyBridge which exam each of your subjects is for: <a href="#/structure">Subjects</a> → edit a subject → Exam. Then the papers for your learners’ exams show here first. You can still look at any subject from the list above, or import a folder of papers you have.
+              Tell StudyBridge which exam each of your subjects is for: <a href="#/library/subjects">Library → Subjects</a> → edit a subject → Exam. Then the papers for your learners’ exams show here first. You can still look at any subject from the list above, or import a folder of papers you have.
             </>
           )}
         </Empty>

@@ -1,53 +1,312 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Link, Page, go } from '../../ui/kit.jsx';
-import { useQuery } from '../../lib/data.js';
+import { Avatar, Empty, Link, Loading, Page, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { ago, dur, due, when, kindLabel, weekRange, ymd } from '../../lib/format.js';
+import { ago, dur, kindLabel, myTimezone, placeOf, time, timeIn, weekRange, when, ymd } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
+import { useDiscardDraft } from './ClaudeInbox.jsx';
 
 function greeting() {
   const h = new Date().getHours();
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 }
 
+const from = (src) => (src === 'prof' ? 'Prof' : src === 'claude' ? 'Claude Desktop' : 'you');
+const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+const DAY = 86400000;
+// the date somewhere else (to say "Sat 02:00" only when it's another day there)
+const dateIn = (d, tz) => {
+  try {
+    return new Date(d).toLocaleDateString('en-CA', { timeZone: tz || undefined });
+  } catch {
+    return '';
+  }
+};
+// "Today", "Tomorrow" or "Fri"
+const dayWord = (d) => {
+  const x = ymd(d);
+  const now = new Date();
+  if (x === ymd(now)) return 'Today';
+  if (x === ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1))) return 'Tomorrow';
+  return new Date(d).toLocaleDateString(undefined, { weekday: 'short' });
+};
+const weekLabel = (w) => `Week of ${new Date(String(w).slice(0, 10) + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+
 export default function Home() {
   const app = useApp();
   const lk = useLookups();
-  const attempts = useQuery('attempts', api.listAttempts).data || [];
+  const toast = useToast();
+  const confirm = useConfirm();
+  const discard = useDiscardDraft();
+  const attemptsQ = useQuery('attempts', api.listAttempts);
+  const commentsQ = useQuery('comments', api.listComments);
+  const draftsQ = useQuery('drafts', api.listDrafts);
+  const attempts = attemptsQ.data || [];
+  const comments = commentsQ.data || [];
+  const drafts = draftsQ.data || [];
   const assignments = useQuery('assignments', api.listAssignments).data || [];
-  const comments = useQuery('comments', api.listComments).data || [];
+  const lessons = useQuery('lessons', api.listLessons).data || [];
   const sessions = useQuery('sessions', api.listSessions).data || [];
   const activity = useQuery('activity', api.listActivity).data || [];
-  const files = useQuery('files', api.listFiles).data || [];
   const profJobs = useQuery('prof-jobs', api.profJobs).data || [];
+  const reportSettings = useQuery('learner-reports', api.listLearnerReports).data || [];
+  const reports = useQuery('parent-reports', api.listParentReports).data || [];
+  const parents = useQuery('parent-counts', api.myParentCounts).data || {};
+  const liveStatus = useQuery('live-status', api.liveStatus).data;
+  const home = useQuery('tutor-home', api.tutorHome).data;
+  // a tuition centre's managers get a line about the whole centre
+  const org = useQuery('org', api.myOrg).data;
+  const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
+  const centre = useQuery(manager ? 'org-overview' : null, api.orgOverview).data;
+  const [allNeeds, setAllNeeds] = useState(false);
+  const [nudging, setNudging] = useState(null);
 
   const aById = useMemo(() => Object.fromEntries(assignments.map((a) => [a.id, a])), [assignments]);
-  const toMark = attempts.filter((a) => a.status === 'submitted');
+  const firstName = (id) => (lk.learner(id)?.display_name || 'A learner').split(' ')[0];
+  const myTz = myTimezone();
+  const now = Date.now();
+
+  // ---------- Needs you: everything waiting on the tutor, each with its button ----------
+  const toMark = attempts.filter((t) => t.status === 'submitted');
+  const markingDrafts = drafts.filter((d) => d.kind === 'marking');
+  const profMarked = new Set(markingDrafts.map((d) => d.attempt_id));
   const liveNow = attempts.filter((t) => t.status === 'in_progress' && aById[t.assignment_id]?.camera);
-  const notes = comments.filter((c) => c.author_id !== app.me.id && !c.read_at).slice(-6).reverse();
-  const { from } = weekRange(0);
-  const weekStr = ymd(from);
-  const weekSeconds = (lid) => activity.filter((x) => (!lid || x.learner_id === lid) && x.day >= weekStr).reduce((s, x) => s + x.seconds, 0);
-  // Due in the next week, for the learners it's set for; work everyone has already handed in drops off
-  // (an empty class's placeholder isn't a learner)
-  const forWhom = (a) => lk.audience(a).map((l) => l.id);
+  // unread notes, one row per learner (the newest note's text)
+  const noteRows = [];
+  for (const c of comments.filter((x) => x.author_id !== app.me.id && !x.read_at).reverse()) {
+    const g = noteRows.find((x) => x.learner_id === c.learner_id);
+    if (g) g.n++;
+    else noteRows.push({ learner_id: c.learner_id, c, n: 1 });
+  }
+  // a finished week's parent report, for a learner with a parent or reports switched on (as on Reports)
+  const monday = ymd(weekRange(0).from);
+  const reportsOn = new Set([...reportSettings.filter((x) => x.enabled).map((x) => x.learner_id), ...Object.keys(parents).filter((k) => parents[k] > 0)]);
+  const reportsReady = reports.filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && reportsOn.has(r.learner_id));
+
+  async function discardSuggestion(d) {
+    if (d.kind !== 'note' && !(await confirm({ title: 'Discard this?', body: d.kind === 'message' ? 'It’s never sent.' : 'Nothing changes for your learner.', ok: 'Discard', danger: true }))) return;
+    try {
+      await api.discardDraft(d.id);
+      invalidate('drafts');
+      toast('Discarded');
+    } catch (e) {
+      toast({ title: 'Couldn’t discard it', body: e.message, tone: 'bad' });
+    }
+  }
+
+  const needs = [
+    ...liveNow.map((t) => ({
+      key: 'w' + t.id,
+      lead: <Avatar person={lk.learner(t.learner_id)} size="sm" />,
+      name: `${firstName(t.learner_id)} is doing ${aById[t.assignment_id]?.title || 'an exam'}`,
+      meta: (
+        <>
+          <span className="row" style={{ gap: 6 }}>
+            <span className="dot live" /> Camera on
+          </span>
+          <span>Started {ago(t.started_at)}</span>
+        </>
+      ),
+      acts: (
+        <button className="btn sm primary" onClick={() => go(`/watch/${t.id}`)}>
+          Watch
+        </button>
+      ),
+    })),
+    ...toMark.map((t) => {
+      const a = aById[t.assignment_id];
+      const late = a?.due_at && t.submitted_at && new Date(t.submitted_at) > new Date(a.due_at);
+      const alerts = (t.lockdown_events || []).length;
+      return {
+        key: 'm' + t.id,
+        lead: <Avatar person={lk.learner(t.learner_id)} size="sm" />,
+        name: `${firstName(t.learner_id)} handed in ${a?.title || 'their work'}`,
+        meta: (
+          <>
+            <span>
+              {a?.practice ? 'Practice' : kindLabel[a?.kind] || 'Work'} · {ago(t.submitted_at)}
+            </span>
+            {late && <span className="pill bad">Late</span>}
+            {alerts > 0 && <span className="pill warn">{plural(alerts, 'lockdown alert')}</span>}
+            {profMarked.has(t.id) && <span className="pill claude">Prof’s marks ready</span>}
+          </>
+        ),
+        acts: (
+          <button className="btn sm primary" onClick={() => go(`/marking/${t.id}`)}>
+            Mark
+          </button>
+        ),
+      };
+    }),
+    ...noteRows.map(({ learner_id, c, n }) => {
+      const on = c.assignment_id && aById[c.assignment_id];
+      return {
+        key: 'n' + learner_id,
+        lead: <Avatar person={lk.learner(learner_id)} size="sm" />,
+        name: `${firstName(learner_id)} left ${n === 1 ? 'a note' : `${n} notes`}${on ? ` on ${on.title}` : ''} · ${ago(c.created_at)}`,
+        meta: <span className="home-note ellipsis">{c.body}</span>,
+        acts: (
+          <button className="btn sm" onClick={() => go(`/messages/${learner_id}`)}>
+            Reply
+          </button>
+        ),
+      };
+    }),
+    ...assignments
+      .filter((a) => a.draft)
+      .map((a) => {
+        const who = lk.audience(a);
+        const by = from(a.source);
+        const kind = (kindLabel[a.kind] || 'Work').toLowerCase();
+        return {
+          key: 'a' + a.id,
+          lead: <Icon name={a.source === 'prof' ? 'cap' : 'clipboard'} style={{ color: 'var(--claude)' }} />,
+          name: by === 'you' ? `Draft ${kind}: ${a.title}` : `${by}’s ${kind}: ${a.title}`,
+          meta: (
+            <span>
+              Ready for you to check{who.length > 0 && ` · for ${who.map((l) => l.display_name.split(' ')[0]).join(', ')}`} · {ago(a.created_at)}
+            </span>
+          ),
+          acts: (
+            <>
+              <button className="btn sm ghost" onClick={() => discard('assignments', a)} aria-label={`Discard “${a.title}”`}>
+                Discard
+              </button>
+              <button className="btn sm" onClick={() => go(`/assignments/${a.id}`)}>
+                Review
+              </button>
+            </>
+          ),
+        };
+      }),
+    ...lessons
+      .filter((l) => l.draft)
+      .map((l) => {
+        const by = from(l.source);
+        return {
+          key: 'l' + l.id,
+          lead: <Icon name="book" style={{ color: 'var(--claude)' }} />,
+          name: by === 'you' ? `Draft lesson notes: ${l.title}` : `${by}’s lesson notes: ${l.title}`,
+          meta: <span>Ready for you to check · {ago(l.created_at)}</span>,
+          acts: (
+            <>
+              <button className="btn sm ghost" onClick={() => discard('lessons', l)} aria-label={`Discard “${l.title}”`}>
+                Discard
+              </button>
+              <button className="btn sm" onClick={() => go(`/lesson/${l.id}`)}>
+                Review
+              </button>
+            </>
+          ),
+        };
+      }),
+    // Prof's suggestions (marking for work already in the list above shows there instead)
+    ...drafts
+      .filter((d) => !(d.kind === 'marking' && toMark.some((t) => t.id === d.attempt_id)))
+      .map((d) => {
+        const by = from(d.source);
+        const t = d.kind === 'marking' && attempts.find((x) => x.id === d.attempt_id);
+        const title = t && aById[t.assignment_id]?.title;
+        const learner = d.learner_id || t?.learner_id;
+        const name =
+          d.kind === 'marking'
+            ? `${by}’s marking${title ? `: ${title}` : ''}`
+            : d.kind === 'message'
+              ? `${by}’s message to ${firstName(learner)}`
+              : `A note from ${by}`;
+        return {
+          key: 'd' + d.id,
+          lead: <Icon name="spark" style={{ color: 'var(--claude)' }} />,
+          name,
+          meta: d.kind === 'marking' ? <span>For {firstName(learner)} · {ago(d.created_at)}</span> : <span className="home-note ellipsis">{d.payload?.body || d.summary || ''}</span>,
+          acts: (
+            <>
+              <button className="btn sm ghost" onClick={() => discardSuggestion(d)} aria-label={`Discard ${name}`}>
+                Discard
+              </button>
+              <button className="btn sm" onClick={() => go(d.kind === 'marking' && d.attempt_id ? `/marking/${d.attempt_id}` : '/prof')}>
+                Review
+              </button>
+            </>
+          ),
+        };
+      }),
+    ...reportsReady.map((r) => ({
+      key: 'r' + r.id,
+      lead: <Icon name="send" style={{ color: 'var(--accent)' }} />,
+      name: `Weekly report for ${firstName(r.learner_id)}`,
+      meta: <span>{weekLabel(r.week_start)} · nothing reaches a parent until you approve it</span>,
+      acts: (
+        <button className="btn sm" onClick={() => go('/learners/reports')}>
+          Approve
+        </button>
+      ),
+    })),
+  ];
+  const needsReady = !!(attemptsQ.data && commentsQ.data && draftsQ.data);
+  const shownNeeds = allNeeds ? needs : needs.slice(0, 8);
+
+  // ---------- Today and this week: live lessons and due dates in the next 7 days ----------
+  const weekEnd = now + 7 * DAY;
+  // work everyone has already handed in drops off (an empty class's placeholder isn't a learner)
   const handedIn = (a, lid) => attempts.some((t) => t.assignment_id === a.id && t.learner_id === lid && t.status !== 'in_progress');
   const soon = assignments
-    .filter((a) => !a.draft && a.visibility !== 'hidden' && a.source !== 'self' && a.due_at && new Date(a.due_at) > new Date() && new Date(a.due_at) < new Date(Date.now() + 8 * 86400000))
+    .filter((a) => !a.draft && a.visibility !== 'hidden' && a.source !== 'self' && a.due_at && new Date(a.due_at) > new Date(now) && new Date(a.due_at) < new Date(weekEnd))
     .map((a) => {
-      const who = forWhom(a);
-      return { ...a, who: who.length, done: who.filter((lid) => handedIn(a, lid)).length };
+      const who = lk.audience(a).map((l) => l.id);
+      return { ...a, who, done: who.filter((lid) => handedIn(a, lid)).length };
     })
-    .filter((a) => !a.who || a.done < a.who)
-    .sort((x, y) => new Date(x.due_at) - new Date(y.due_at));
-  const upcoming = sessions.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > Date.now()).slice(0, 4);
+    .filter((a) => !a.who.length || a.done < a.who.length);
+  const lessonsSoon = sessions.filter((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > now && new Date(s.starts_at).getTime() < weekEnd);
+  const agenda = [...lessonsSoon.map((s) => ({ at: s.starts_at, s })), ...soon.map((a) => ({ at: a.due_at, a }))].sort((x, y) => new Date(x.at) - new Date(y.at));
+  const lessonsToday = sessions.filter((s) => ymd(s.starts_at) === ymd(new Date(now))).length;
 
-  // Getting started: each step says why it matters and goes straight to the right place
+  // "Year 10 maths · Sat 02:00 in Lusaka": who it's for, and their time when their clock differs
+  const lessonFor = (s) => {
+    const ids = s.learner_ids || [];
+    const c = s.class_id && lk.klass(s.class_id);
+    const names = ids.map(firstName);
+    const who = c ? c.name : names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
+    const zones = [...new Set(ids.map((id) => lk.learner(id)?.timezone).filter(Boolean))].filter((tz) => timeIn(s.starts_at, tz) !== timeIn(s.starts_at, myTz));
+    const theirs = zones.map((tz) => `${timeIn(s.starts_at, tz, { weekday: dateIn(s.starts_at, tz) !== dateIn(s.starts_at, myTz) })} in ${placeOf(tz)}`);
+    return [who, ...theirs].filter(Boolean).join(' · ');
+  };
+  const visibleNow = (a) => a.visibility === 'visible' || (a.visibility === 'scheduled' && (!a.visible_from || new Date(a.visible_from) <= new Date(now)));
+
+  async function nudge(a) {
+    setNudging(a.id);
+    try {
+      const n = await api.nudgeAssignment(a.id);
+      invalidate('assignments');
+      toast(n ? `Reminder sent to ${plural(n, 'learner')}` : 'Everyone has handed it in already');
+    } catch (e) {
+      toast({ title: 'Couldn’t send a reminder', body: e.message, tone: 'bad' });
+    } finally {
+      setNudging(null);
+    }
+  }
+
+  // ---------- each learner's week: seconds per day, Monday to Sunday ----------
+  const { from: monFrom } = weekRange(0);
+  const days = Array.from({ length: 7 }, (_, i) => new Date(monFrom.getFullYear(), monFrom.getMonth(), monFrom.getDate() + i));
+  const week = useMemo(() => {
+    const keys = new Set(days.map(ymd));
+    const out = {};
+    for (const x of activity) {
+      if (!keys.has(x.day)) continue;
+      out[x.learner_id] = out[x.learner_id] || {};
+      out[x.learner_id][x.day] = (out[x.learner_id][x.day] || 0) + x.seconds;
+    }
+    return out;
+  }, [activity, monday]); // eslint-disable-line react-hooks/exhaustive-deps
+  const facts = Object.fromEntries((home?.learners || []).map((x) => [x.id, x]));
+
+  // ---------- getting started: each step says why it matters and goes straight to the right place ----------
   const work = assignments.filter((a) => !a.draft && a.source !== 'self');
   const setup = [
-    { done: lk.subjects.length > 0, label: 'Add a subject', sub: 'e.g. Mathematics. Everything (work, papers, progress) is filed under it.', to: '/structure' },
+    { done: lk.subjects.length > 0, label: 'Add a subject', sub: 'e.g. Mathematics. Everything (work, papers, progress) is filed under it.', to: '/library/subjects' },
     {
       done: lk.subjects.length > 0 && lk.subjects.every((x) => x.exam),
       label: 'Say which exam it’s for',
@@ -70,15 +329,14 @@ export default function Home() {
   });
   const next = setup.find((s) => !s.done);
 
-  return (
-    <Page eyebrow={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} title={`${greeting()}, ${app.me.display_name.split(' ')[0]}`}>
-      <div className="kpi">
-        <Kpi n={toMark.length} l="Ready to mark" to="/marking" />
-        <Kpi n={notes.length} l="New notes" to="/messages" />
-        <Kpi n={soon.length} l="Due in the next week" to="/assignments" />
-        <Kpi n={dur(weekSeconds())} l={lk.learners.length === 1 ? `${lk.learners[0].display_name.split(' ')[0]} studied this week` : 'Your learners studied this week'} to={lk.learners.length === 1 ? `/learners/${lk.learners[0].id}` : '/learners'} />
-      </div>
+  // "2 lessons today · 4 things need you"
+  const todayLine = needsReady
+    ? `${lessonsToday ? `${plural(lessonsToday, 'lesson')} today` : 'No lessons today'} · ${needs.length ? `${needs.length} ${needs.length === 1 ? 'thing needs' : 'things need'} you` : 'you’re all caught up'}`
+    : undefined;
+  const centreToMark = (centre?.tutors || []).reduce((s, t) => s + Number(t.to_mark || 0), 0);
 
+  return (
+    <Page eyebrow={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} title={`${greeting()}, ${app.me.display_name.split(' ')[0]}`} subtitle={todayLine}>
       {setupLeft > 0 && !hideSetup && (
         <div className="card tint setup">
           <div className="card-head">
@@ -120,162 +378,280 @@ export default function Home() {
         </div>
       )}
 
-      {liveNow.length > 0 && (
-        <div className="card warn">
-          <div className="card-head">
-            <h2 className="row">
-              <span className="dot live" /> Working now with camera on
-            </h2>
+      {manager && (
+        <div className="card home-centre">
+          <div className="stack sm">
+            <h2>{centre?.name || org.name}</h2>
+            {centre && (
+              <div className="small muted">
+                {plural(centre.tutors.length, 'tutor')} · {plural(centre.learners.length, 'learner')} · {centreToMark} waiting to be marked
+              </div>
+            )}
           </div>
-          <div className="list">
-            {liveNow.map((t) => (
-              <Link key={t.id} to={`/watch/${t.id}`} className="item">
-                <Avatar person={lk.learner(t.learner_id)} size="sm" />
-                <span className="grow">
-                  <span className="name">
-                    {lk.learner(t.learner_id)?.display_name} · {aById[t.assignment_id]?.title}
-                  </span>
-                  <span className="meta">Started {ago(t.started_at)}</span>
-                </span>
-                <span className="btn sm primary">Watch</span>
-              </Link>
-            ))}
-          </div>
+          <button className="btn sm" onClick={() => go('/centre')}>
+            <Icon name="chart" size={16} /> Open Centre
+          </button>
         </div>
       )}
 
-      <div className="split">
-        <div className="stack lg">
-          <div className="card">
-            <div className="card-head">
-              <h2>Ready to mark</h2>
-              <Link to="/marking" className="small">
-                All marking
-              </Link>
-            </div>
-            {toMark.length === 0 ? (
-              <Empty>Nothing waiting. Submissions appear here the moment they come in.</Empty>
-            ) : (
+      <div className="split even">
+        <section className="card">
+          <h2>Needs you</h2>
+          {!needsReady ? (
+            <Loading />
+          ) : needs.length === 0 ? (
+            <div className="muted small">You’re all caught up. Work handed in, notes from learners and Prof’s drafts show up here.</div>
+          ) : (
+            <>
               <div className="list">
-                {toMark.slice(0, 6).map((t) => {
-                  const a = aById[t.assignment_id];
-                  const late = a?.due_at && t.submitted_at && new Date(t.submitted_at) > new Date(a.due_at);
-                  return (
-                    <Link key={t.id} to={`/marking/${t.id}`} className="item">
-                      <Avatar person={lk.learner(t.learner_id)} size="sm" />
-                      <span className="grow">
-                        <span className="name">{a?.title || 'Assignment'}</span>
-                        <span className="meta">
-                          {lk.learner(t.learner_id)?.display_name} · {kindLabel[a?.kind]} · submitted {ago(t.submitted_at)}
-                          {late && <span className="pill bad">Late</span>}
-                          {(t.lockdown_events || []).length > 0 && <span className="pill warn">{t.lockdown_events.length} lockdown alert{t.lockdown_events.length > 1 ? 's' : ''}</span>}
-                        </span>
-                      </span>
-                      <Icon name="right" size={18} />
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="card">
-            <div className="card-head">
-              <h2>Learners this week</h2>
-              <Link to="/learners" className="small">
-                All learners
-              </Link>
-            </div>
-            {lk.learners.length === 0 ? (
-              <Empty action={<button className="btn primary" onClick={() => go('/learners')}><Icon name="plus" size={18} /> Invite a learner</button>}>
-                No learners yet.
-              </Empty>
-            ) : (
-              <div className="list">
-                {lk.learners.map((l) => {
-                  const open = attempts.filter((t) => t.learner_id === l.id && t.status === 'in_progress').length;
-                  return (
-                    <Link key={l.id} to={`/learners/${l.id}`} className="item">
-                      <Avatar person={l} />
-                      <span className="grow">
-                        <span className="name">{l.display_name}</span>
-                        <span className="meta">
-                          {dur(weekSeconds(l.id))} studied this week
-                          {open > 0 && <span className="pill accent">{open} in progress</span>}
-                        </span>
-                      </span>
-                      <Icon name="right" size={18} />
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="stack lg">
-          <div className="card">
-            <div className="card-head">
-              <h2>New notes</h2>
-              <Link to="/messages" className="small">
-                Messages
-              </Link>
-            </div>
-            {notes.length === 0 ? (
-              <div className="muted small">No new notes from learners.</div>
-            ) : (
-              <div className="list">
-                {notes.map((c) => (
-                  <Link key={c.id} to={`/messages/${c.learner_id}`} className="item">
-                    <Avatar person={lk.learner(c.learner_id)} size="sm" />
+                {shownNeeds.map((n) => (
+                  <div key={n.key} className="item home-row">
+                    {n.lead}
                     <span className="grow">
-                      <span className="name">{lk.learner(c.learner_id)?.display_name}{c.assignment_id && aById[c.assignment_id] ? ` · ${aById[c.assignment_id].title}` : ''}</span>
-                      <span className="meta ellipsis" style={{ display: 'block' }}>{c.body}</span>
+                      <span className="name">{n.name}</span>
+                      <span className="meta">{n.meta}</span>
                     </span>
-                    <span className="tiny muted">{ago(c.created_at)}</span>
-                  </Link>
+                    <span className="home-acts">{n.acts}</span>
+                  </div>
                 ))}
               </div>
-            )}
-          </div>
-          <div className="card">
-            <h2>Coming up</h2>
-            {soon.length === 0 && upcoming.length === 0 && <div className="muted small">Nothing due in the next week.</div>}
+              {needs.length > shownNeeds.length && (
+                <div>
+                  <button className="linkbtn small" onClick={() => setAllNeeds(true)}>
+                    Show all {needs.length}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
+        <section className="card">
+          <h2>Today and this week</h2>
+          {agenda.length === 0 ? (
+            <div className="muted small">No lessons or due dates in the next 7 days.</div>
+          ) : (
             <div className="list">
-              {upcoming.map((s) => (
-                <Link key={s.id} to={`/live/${s.id}`} className="item">
-                  <Icon name="video" style={{ color: 'var(--accent)' }} />
-                  <span className="grow">
-                    <span className="name">{s.title}</span>
-                    <span className="meta">Live · {when(s.starts_at)}</span>
-                  </span>
-                </Link>
-              ))}
-              {soon.map((a) => (
-                <Link key={a.id} to={`/assignments/${a.id}`} className="item">
-                  <Icon name="clipboard" style={{ color: 'var(--muted)' }} />
-                  <span className="grow">
-                    <span className="name">{a.title}</span>
-                    <span className="meta">
-                      {due(a.due_at).text}
-                      {a.who > 1 ? ` · ${a.done} of ${a.who} handed in` : ''}
+              {agenda.map(({ at, s, a }) =>
+                s ? (
+                  <div key={'s' + s.id} className="item home-row">
+                    <When d={at} />
+                    <span className="grow">
+                      <span className="name">{s.title || 'Live lesson'}</span>
+                      <span className="meta">
+                        {new Date(s.starts_at).getTime() <= now ? <span className="pill good">On now</span> : <span>Live lesson</span>}
+                        <span>{lessonFor(s)}</span>
+                      </span>
                     </span>
-                  </span>
-                </Link>
-              ))}
+                    {new Date(s.starts_at).getTime() - 15 * 60000 < now && (
+                      <span className="home-acts">
+                        <button className="btn sm primary" disabled={liveStatus && !liveStatus.configured} onClick={() => go(`/live/${s.id}`)}>
+                          Join
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div key={'a' + a.id} className="item home-row">
+                    <When d={at} />
+                    <span className="grow">
+                      <Link to={`/assignments/${a.id}`} className="name home-link">
+                        {a.title}
+                      </Link>
+                      <span className="meta">
+                        <span>{kindLabel[a.kind] || 'Work'} due</span>
+                        {a.class_id && lk.klass(a.class_id) && <span>{lk.klass(a.class_id).name}</span>}
+                        <span>
+                          {!a.who.length
+                            ? 'Nobody to hand it in yet'
+                            : !visibleNow(a)
+                              ? `Learners see it from ${when(a.visible_from)}`
+                              : a.who.length === 1
+                                ? 'Not handed in yet'
+                                : `${a.done} of ${a.who.length} handed in`}
+                        </span>
+                        {a.nudged_at && <span>Reminded {ago(a.nudged_at)}</span>}
+                      </span>
+                    </span>
+                    {a.who.length > 0 && visibleNow(a) && (
+                      <span className="home-acts">
+                        <button className="btn sm" disabled={nudging === a.id} onClick={() => nudge(a)} title="Remind everyone who hasn’t handed it in">
+                          Nudge
+                        </button>
+                      </span>
+                    )}
+                  </div>
+                ),
+              )}
             </div>
-          </div>
+          )}
+        </section>
+      </div>
+
+      <section className="stack">
+        <div className="card-head">
+          <h2 className="home-h2">Your learners</h2>
+          {lk.learners.length > 0 && (
+            <Link to="/learners" className="small">
+              All learners
+            </Link>
+          )}
         </div>
+        {lk.learners.length === 0 ? (
+          <Empty
+            action={
+              <button className="btn primary" onClick={() => go('/learners?invite=1')}>
+                <Icon name="plus" size={18} /> Invite a learner
+              </button>
+            }
+          >
+            No learners yet.
+          </Empty>
+        ) : (
+          <div className="home-learners">
+            {lk.learners.map((l) => (
+              <LearnerCard key={l.id} l={l} days={days} secs={week[l.id] || {}} f={facts[l.id]} loaded={!!home} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <div className="home-quick" role="group" aria-label="Quick actions">
+        <button className="btn" onClick={() => go('/assignments?new=1')}>
+          <Icon name="clipboard" size={18} /> Set work
+        </button>
+        <button className="btn" onClick={() => go('/prof')}>
+          <Icon name="cap" size={18} /> Ask Prof
+        </button>
+        <button className="btn" onClick={() => go('/live?schedule=1')}>
+          <Icon name="calendar" size={18} /> Book a lesson
+        </button>
+        <button className="btn" onClick={() => go('/learners?invite=1')}>
+          <Icon name="plus" size={18} /> Invite
+        </button>
       </div>
     </Page>
   );
 }
 
-function Kpi({ n, l, to }) {
+// "Today" over "16:00", "Fri" over "17:00": the tutor's own time
+function When({ d }) {
   return (
-    <Link to={to} className="stat" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div className="n">{n}</div>
-      <div className="l">{l}</div>
-    </Link>
+    <span className="home-when" title="Your time">
+      <b>{dayWord(d)}</b>
+      <span>{time(d)}</span>
+    </span>
   );
+}
+
+// One learner: their week, streak, last mark, mock grade, exam countdown and this week in the teaching plan
+function LearnerCard({ l, days, secs, f, loaded }) {
+  const lk = useLookups();
+  const values = days.map((d) => secs[ymd(d)] || 0);
+  const total = values.reduce((s, x) => s + x, 0);
+  const top = Math.max(3600, ...values); // an hour fills a bar, more stretches the scale
+  const today = ymd(new Date());
+  const exam = f?.exam?.date && examIn(f.exam);
+  const plan = f?.plan || [];
+  const subjects = lk.subjectsOfLearner(l.id);
+  const setWork = (p) => {
+    const t = lk.topicsOf(p.subject_id).find((x) => x.name === (p.topics || [])[0]);
+    go(`/assignments?new=1&subject=${p.subject_id}${t ? `&topic=${t.id}` : ''}`);
+  };
+  return (
+    <article className="card home-learner">
+      <Link to={`/learners/${l.id}`} className="home-learner-name">
+        <Avatar person={l} />
+        <h3>{l.display_name}</h3>
+      </Link>
+      <div className="home-week-row">
+        <div className="home-week" role="img" aria-label={`${dur(total)} this week`}>
+          {days.map((d, i) => (
+            <span key={i} className={ymd(d) === today ? 'today' : ''} title={`${d.toLocaleDateString(undefined, { weekday: 'long' })}: ${dur(values[i])}`}>
+              <i>
+                <b style={{ height: `${Math.round((100 * values[i]) / top)}%` }} />
+              </i>
+              {d.toLocaleDateString(undefined, { weekday: 'narrow' })}
+            </span>
+          ))}
+        </div>
+        <div className="home-week-total" aria-hidden="true">
+          <b>{dur(total)}</b>
+          <span>this week</span>
+        </div>
+      </div>
+      {loaded && (
+        <ul className="home-facts">
+          {f?.streak > 0 && (
+            <li>
+              <Icon name="flame" size={16} className="flame" /> {f.streak}-day streak
+            </li>
+          )}
+          {f?.last_mark ? (
+            <li title={f.last_mark.title}>
+              <Icon name="check" size={16} />
+              <span className="ellipsis">
+                Last mark {+f.last_mark.score}/{+f.last_mark.max} <span className="muted">· {f.last_mark.title}</span>
+              </span>
+            </li>
+          ) : (
+            <li className="muted">
+              <Icon name="check" size={16} /> No marks back yet
+            </li>
+          )}
+          {f?.mock?.grade && (
+            <li title={f.mock.title}>
+              <Icon name="trophy" size={16} />
+              <span className="ellipsis">
+                Mock {f.mock.grade} <span className="muted">· {f.mock.title}</span>
+              </span>
+            </li>
+          )}
+          {exam && (
+            <li>
+              <Icon name="calendar" size={16} /> {exam}
+            </li>
+          )}
+        </ul>
+      )}
+      {loaded && (
+        <div className="home-plan">
+          {plan.length ? (
+            plan.map((p, i) => {
+              const what = (p.topics || []).length ? p.topics.join(', ') : p.label;
+              return (
+                <div key={p.subject_id + i} className="home-plan-row">
+                  <span className="grow small">
+                    <span className="muted">{plan.length > 1 && lk.subject(p.subject_id) ? `This week in ${lk.subject(p.subject_id).name}:` : 'This week:'}</span> <span className="strong">{what}</span>
+                  </span>
+                  <button className="btn sm" onClick={() => setWork(p)}>
+                    Set work for it
+                  </button>
+                </div>
+              );
+            })
+          ) : (
+            <div className="small muted">
+              No teaching plan for this week.{' '}
+              {subjects.length > 0 && (
+                <Link to={`/library/syllabus?subject=${subjects[0]}`} className="small">
+                  Plan the weeks
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// "31 weeks to IGCSE (May/June)", "9 days to the exams"
+function examIn(exam) {
+  const n = new Date();
+  const days = Math.round((new Date(String(exam.date).slice(0, 10) + 'T12:00:00') -new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12)) / DAY);
+  const name = exam.name || 'the exams';
+  if (days <= 0) return `${name}: today`;
+  if (days < 14) return `${plural(days, 'day')} to ${name}`;
+  return `${Math.floor(days / 7)} weeks to ${name}`;
 }

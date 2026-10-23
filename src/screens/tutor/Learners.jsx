@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { builtInServer, encodeInvite } from '../../lib/config.js';
@@ -11,13 +11,15 @@ import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
 export default function Learners({ tab = 'learners' }) {
+  const app = useApp();
   const lk = useLookups();
   const confirm = useConfirm();
   const toast = useToast();
   const invites = useQuery('invites', api.listInvites);
   const activity = useQuery('activity', api.listActivity).data || [];
   const accounts = useQuery('accounts', api.learnerAccounts).data || [];
-  const [inviting, setInviting] = useState(false);
+  const route = useRoute();
+  const [inviting, setInviting] = useState(() => route.query.get('invite') === '1'); // Home's Invite button
   const [shown, setShown] = useState(null);
   const [editingClass, setEditingClass] = useState(null); // {} for a new class
   const [inClass, setInClass] = useState(''); // show only one class's learners
@@ -44,14 +46,7 @@ export default function Learners({ tab = 'learners' }) {
         )
       }
     >
-      <Seg
-        value={tab}
-        onChange={(t) => go(t === 'classes' ? '/learners/classes' : '/learners', { replace: true })}
-        options={[
-          { value: 'learners', label: 'Learners', icon: 'user' },
-          { value: 'classes', label: 'Classes', icon: 'users' },
-        ]}
-      />
+      <LearnerTabs tab={tab} />
       {tab === 'classes' ? (
         <Classes onNew={() => setEditingClass({})} onEdit={setEditingClass} />
       ) : lk.learners.length === 0 ? (
@@ -94,7 +89,8 @@ export default function Learners({ tab = 'learners' }) {
                     <Avatar person={l} size="lg" />
                     <div className="grow">
                       <div className="strong" style={{ fontSize: 17 }}>{l.display_name}</div>
-                      <div className="muted small">{lk.programme(l.programme_id)?.name || 'No programme'}</div>
+                      {/* someone else's learner, here because they're in one of my classes */}
+                      <div className="muted small">{l.tutor_id === app.me.id ? lk.programme(l.programme_id)?.name || 'No programme' : <span className="pill">In your class</span>}</div>
                     </div>
                   </div>
                   <div className="chips small">
@@ -178,16 +174,56 @@ export default function Learners({ tab = 'learners' }) {
   );
 }
 
-// After a class changes, so does who sees everything set for it
-const classesChanged = () => invalidate('classes', 'class_members', 'assignments', 'lessons', 'files', 'sessions');
+// After a class changes, so does who sees everything set for it (and who's in my learners)
+const classesChanged = () => invalidate('classes', 'class_members', 'class_teachers', 'class-pool', 'learners', 'learner_subjects', 'assignments', 'lessons', 'files', 'sessions');
+
+// "you", "Ms Achieng" → "you and Ms Achieng"
+const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+
+// Who can go in a class and who teaches it. A centre's (or school's) manager makes and changes classes for any of
+// its tutors; everyone else makes classes they teach themselves.
+function useClassPeople() {
+  const app = useApp();
+  const lk = useLookups();
+  const org = useQuery('org', api.myOrg).data;
+  const poolQ = useQuery('class-pool', api.classPool);
+  const pool = poolQ.data || [];
+  const me = app.me.id;
+  const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
+  const teacherName = (id) => org?.members?.find((m) => m.id === id)?.name || pool.find((p) => p.tutor_id === id)?.tutor || 'another teacher';
+  return {
+    org,
+    manager,
+    pool,
+    poolReady: poolQ.data !== undefined,
+    tutors: org?.members || [],
+    learnerName: (id) => pool.find((p) => p.id === id)?.name || lk.learner(id)?.display_name,
+    // "Taught by you and Ms Achieng"
+    taughtBy: (c) => {
+      const ids = lk.teachersOf(c.id);
+      const names = (ids.length ? ids : [c.tutor_id]).sort((a, b) => (b === me) - (a === me)).map((id) => (id === me ? 'you' : teacherName(id)));
+      return `Taught by ${andList([...new Set(names)])}`;
+    },
+  };
+}
 
 // Classes: learners taught together. Anything set for a class goes to whoever is in it, now or later.
 function Classes({ onNew, onEdit }) {
+  const app = useApp();
   const lk = useLookups();
   const confirm = useConfirm();
   const toast = useToast();
-  const away = lk.classes.filter((c) => c.archived);
-  const size = (c) => lk.membersOf(c.id).filter((id) => lk.learner(id)).length;
+  const cp = useClassPeople();
+  const [codes, setCodes] = useState({}); // class id → its code, while it's shown
+  const me = app.me.id;
+  const teaches = (c) => {
+    const t = lk.teachersOf(c.id);
+    return t.length ? t.includes(me) : c.tutor_id === me;
+  };
+  // a manager sees every class in the centre; anyone else the classes they teach
+  const listed = cp.manager ? lk.orgClasses : lk.activeClasses;
+  const away = lk.classes.filter((c) => c.archived && (cp.manager || teaches(c)));
+  const size = (c) => lk.membersOf(c.id).length;
 
   async function putAway(c, archived = true) {
     try {
@@ -208,10 +244,33 @@ function Classes({ onNew, onEdit }) {
       toast({ title: 'Couldn’t delete it', body: e.message, tone: 'bad' });
     }
   }
+  // The code learners type to join the class (made the first time it's asked for)
+  async function showCode(c) {
+    if (codes[c.id]) return setCodes((x) => ({ ...x, [c.id]: null }));
+    try {
+      const code = await api.classCode(c.id);
+      setCodes((x) => ({ ...x, [c.id]: code }));
+    } catch (e) {
+      toast({ title: 'Couldn’t get the code', body: e.message, tone: 'bad' });
+    }
+  }
+  async function newCode(c) {
+    if (!(await confirm({ title: 'Make a new code?', body: 'The old one stops working.', ok: 'New code' }))) return;
+    try {
+      const code = await api.classCode(c.id, true);
+      setCodes((x) => ({ ...x, [c.id]: code }));
+      toast('New code made');
+    } catch (e) {
+      toast({ title: 'Couldn’t make a new code', body: e.message, tone: 'bad' });
+    }
+  }
+  const codeMessage = (c, code) =>
+    `Join ${c.name} on StudyBridge: open StudyBridge and type the code ${prettyCode(code)} (new accounts: “I have a code from my tutor”; already on StudyBridge: Settings → Join a class).`;
 
   return (
     <>
-      {lk.activeClasses.length === 0 ? (
+      {cp.manager && <div className="small muted">All the classes in {cp.org.name}</div>}
+      {listed.length === 0 ? (
         <Empty
           title={away.length ? 'No classes in use' : 'No classes yet'}
           action={
@@ -224,29 +283,62 @@ function Classes({ onNew, onEdit }) {
         </Empty>
       ) : (
         <div className="grid g3">
-          {lk.activeClasses.map((c) => {
-            const people = lk.learners.filter((l) => c.members.includes(l.id));
+          {listed.map((c) => {
+            const n = c.members.length;
+            const people = c.members
+              .map((id) => ({ id, name: cp.learnerName(id), open: !!lk.learner(id) }))
+              .filter((p) => p.name)
+              .sort((x, y) => x.name.localeCompare(y.name));
+            const code = codes[c.id];
             return (
               <div key={c.id} className="card">
                 <div className="stack sm">
                   <div className="strong" style={{ fontSize: 17 }}>{c.name}</div>
                   <div className="row wrap small muted" style={{ gap: 8 }}>
                     {c.subject_id && <SubjectTag id={c.subject_id} />}
-                    <span>{people.length ? `${people.length} learner${people.length === 1 ? '' : 's'}` : 'Nobody in it yet'}</span>
+                    <span>{n ? `${n} learner${n === 1 ? '' : 's'}` : 'Nobody in it yet'}</span>
+                  </div>
+                  <div className="row small muted" style={{ gap: 6 }}>
+                    <Icon name="user" size={14} />
+                    <span>{cp.taughtBy(c)}</span>
                   </div>
                 </div>
                 {people.length > 0 && (
                   <div className="chips">
-                    {people.map((l) => (
-                      <Link key={l.id} to={`/learners/${l.id}`} className="pill" style={{ textDecoration: 'none' }}>
-                        {l.display_name}
-                      </Link>
-                    ))}
+                    {people.map((p) =>
+                      p.open ? (
+                        <Link key={p.id} to={`/learners/${p.id}`} className="pill" style={{ textDecoration: 'none' }}>
+                          {p.name}
+                        </Link>
+                      ) : (
+                        <span key={p.id} className="pill">
+                          {p.name}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                )}
+                {code && (
+                  <div className="code-card">
+                    <span className="small">Class code</span>
+                    <b className="code-show">{prettyCode(code)}</b>
+                    <span className="small muted">Learners type it to join {c.name}.</span>
+                    <span className="row wrap" style={{ gap: 8 }}>
+                      <button className="btn sm" aria-label={`Copy message for ${c.name}`} onClick={() => (copyText(codeMessage(c, code)), toast({ title: 'Message copied', body: 'Paste it into WhatsApp, email or a text.' }))}>
+                        <Icon name="copy" size={14} /> Copy message
+                      </button>
+                      <button className="btn sm ghost" aria-label={`New code for ${c.name}`} onClick={() => newCode(c)}>
+                        <Icon name="refresh" size={14} /> New code
+                      </button>
+                    </span>
                   </div>
                 )}
                 <div className="row wrap" style={{ gap: 6, marginTop: 'auto' }}>
                   <button className="btn sm" onClick={() => onEdit(c)} aria-label={`Edit ${c.name}`}>
                     <Icon name="pen" size={15} /> Edit
+                  </button>
+                  <button className="btn sm" onClick={() => showCode(c)} aria-expanded={!!code} aria-label={`Class code for ${c.name}`}>
+                    Class code
                   </button>
                   <button className="btn sm" onClick={() => putAway(c)} aria-label={`Put away ${c.name}`}>
                     Put away
@@ -292,25 +384,35 @@ function Classes({ onNew, onEdit }) {
   );
 }
 
-// Make or change a class: its name, its subject (if it has one) and who's in it
+// Make or change a class: its name, its subject (if it has one), who teaches it (a manager chooses) and who's in it
 function ClassForm({ klass, onClose }) {
+  const app = useApp();
   const lk = useLookups();
   const toast = useToast();
+  const cp = useClassPeople();
+  const me = app.me.id;
   const isNew = !klass.id;
   const [name, setName] = useState(klass.name || '');
   const [subject, setSubject] = useState(klass.subject_id || '');
-  const [ids, setIds] = useState(() => (isNew ? [] : lk.membersOf(klass.id).filter((id) => lk.learner(id))));
+  const [ids, setIds] = useState(() => (isNew ? [] : lk.membersOf(klass.id)));
+  const [teachers, setTeachers] = useState(() => (isNew ? [me] : lk.teachersOf(klass.id).length ? lk.teachersOf(klass.id) : [klass.tutor_id]));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   // learners who take the class's subject come first
   const takes = (l) => !!subject && lk.subjectsOfLearner(l.id).includes(subject);
-  const people = [...lk.learners].sort((x, y) => takes(y) - takes(x));
+  const people = [...cp.pool].sort((x, y) => takes(y) - takes(x));
+  // the subject has to be one of its teachers' (or the manager's own); one we can't see stays as it is
+  const hidden = !!klass.subject_id && !lk.subject(klass.subject_id);
+  const othersClass = cp.manager && !teachers.includes(me);
+  const note = (p) =>
+    [p.tutor_id !== me && (p.tutor ? `${p.tutor}’s learner` : 'Another tutor’s learner'), lk.subject(subject) && !takes(p) && `Doesn’t take ${lk.subject(subject).name}`].filter(Boolean).join(' · ');
   async function submit(e) {
     e.preventDefault();
     if (!name.trim()) return setErr('Give the class a name.');
+    if (cp.manager && !teachers.length) return setErr('Choose at least one teacher.');
     setBusy(true);
     try {
-      await api.saveClass({ id: klass.id, name: name.trim(), subject_id: subject || null, learner_ids: ids });
+      await api.saveClass({ id: klass.id, name: name.trim(), subject_id: subject || null, learner_ids: ids, ...(cp.manager ? { teacher_ids: teachers } : {}) });
       classesChanged();
       toast(isNew ? 'Class made. Anyone you add is told.' : 'Class saved');
       onClose();
@@ -325,9 +427,26 @@ function ClassForm({ klass, onClose }) {
         <Field label="Name">
           <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Year 10 maths" maxLength={80} />
         </Field>
-        <Field label="Subject (optional)">
+        {cp.manager && (
+          <Field label="Teachers" hint="They see, mark and message the learners in this class.">
+            <div className="stack sm">
+              {cp.tutors.map((m) => (
+                <label key={m.id} className="check">
+                  <input type="checkbox" checked={teachers.includes(m.id)} onChange={(e) => setTeachers(e.target.checked ? [...teachers, m.id] : teachers.filter((x) => x !== m.id))} />
+                  <span className="t">
+                    {m.name}
+                    {m.me ? ' (you)' : ''}
+                  </span>
+                  {m.role === 'manager' && <span className="s">Manager</span>}
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
+        <Field label="Subject (optional)" hint={othersClass ? 'Leave it empty, or ask its teacher to add the subject.' : undefined}>
           <select className="select" value={subject} onChange={(e) => setSubject(e.target.value)}>
             <option value="">No subject</option>
+            {hidden && <option value={klass.subject_id}>Its current subject</option>}
             {lk.subjects.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -335,16 +454,18 @@ function ClassForm({ klass, onClose }) {
             ))}
           </select>
         </Field>
-        <Field label="Learners" hint={lk.learners.length ? 'Anything you set for the class goes to whoever is in it, including people you add later.' : undefined}>
-          {lk.learners.length === 0 ? (
+        <Field label="Learners" hint={cp.pool.length ? 'Anything you set for the class goes to whoever is in it, including people you add later.' : undefined}>
+          {!cp.poolReady ? (
+            <div className="muted small">Loading…</div>
+          ) : cp.pool.length === 0 ? (
             <div className="note small">You don’t have any learners yet. Make the class now and add learners when they join. When you invite someone, you can choose their classes too.</div>
           ) : (
             <div className="stack sm" style={{ maxHeight: 300, overflowY: 'auto' }}>
-              {people.map((l) => (
-                <label key={l.id} className="check">
-                  <input type="checkbox" checked={ids.includes(l.id)} onChange={(e) => setIds(e.target.checked ? [...ids, l.id] : ids.filter((x) => x !== l.id))} />
-                  <span className="t">{l.display_name}</span>
-                  {subject && !takes(l) && <span className="s">Doesn’t take {lk.subject(subject)?.name}</span>}
+              {people.map((p) => (
+                <label key={p.id} className="check">
+                  <input type="checkbox" checked={ids.includes(p.id)} onChange={(e) => setIds(e.target.checked ? [...ids, p.id] : ids.filter((x) => x !== p.id))} />
+                  <span className="t">{p.name}</span>
+                  {note(p) && <span className="s">{note(p)}</span>}
                 </label>
               ))}
             </div>
@@ -406,7 +527,7 @@ function InviteForm({ onClose, onCreated }) {
         <Field label="Subjects" hint="They’ll see work, lessons and files for these subjects. You can change this any time.">
           {avail.length === 0 ? (
             <div className="muted small">
-              No subjects yet. <Link to="/structure">Add subjects</Link> first, or add them to this learner later.
+              No subjects yet. <Link to="/library/subjects">Add subjects</Link> first, or add them to this learner later.
             </div>
           ) : (
             <div className="stack sm">
@@ -639,12 +760,14 @@ function InviteShow({ invite, onClose }) {
 }
 
 export function LearnerDetail({ id, tab = 'progress' }) {
+  const app = useApp();
   const lk = useLookups();
   const confirm = useConfirm();
   const toast = useToast();
   const l = lk.learner(id);
   const attempts = (useQuery('attempts', api.listAttempts).data || []).filter((t) => t.learner_id === id);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
+  const pool = useQuery('class-pool', api.classPool).data;
   const [editing, setEditing] = useState(false);
   const [account, setAccount] = useState(false);
   const [classing, setClassing] = useState(false);
@@ -652,6 +775,13 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const subs = lk.subjectsOfLearner(id);
   const classes = lk.classesOf(id).filter((c) => !c.archived);
+  const first = l.display_name.split(' ')[0];
+  // Someone else's learner in my classes: I teach, mark and message them, but only their own tutor changes their
+  // details, account and parents
+  const own = l.tutor_id === app.me.id;
+  if (!own && tab === 'parents') tab = 'progress';
+  const taught = lk.activeClasses.filter((c) => c.members.includes(id)).map((c) => c.name);
+  const theirTutor = pool && (pool.find((p) => p.id === id)?.tutor || 'another tutor');
 
   return (
     <Page
@@ -669,8 +799,15 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       }
       subtitle={
         <>
+          {!own && theirTutor && (
+            <span className="row wrap" style={{ gap: 8, marginTop: 6 }}>
+              <span>
+                {first} is {theirTutor}’s learner.{taught.length > 0 && ` You teach them in ${andList(taught)}.`}
+              </span>
+            </span>
+          )}
           <span className="row wrap" style={{ gap: 8, marginTop: 6 }}>
-            <span>{lk.programme(l.programme_id)?.name || 'No programme'}</span>
+            {(own || lk.programme(l.programme_id)) && <span>{lk.programme(l.programme_id)?.name || 'No programme'}</span>}
             {subs.map((s) => (
               <span key={s} className="pill">
                 <SubjectTag id={s} />
@@ -690,19 +827,26 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       }
       actions={
         <>
+          <button className="btn" onClick={() => go(`/see/${id}`)}>
+            <Icon name="eye" size={18} /> See it as {first}
+          </button>
           <button className="btn" onClick={() => go(`/messages/${id}`)}>
             <Icon name="message" size={18} /> Message
           </button>
-          <button className="btn" onClick={() => setEditing(true)}>
-            <Icon name="pen" size={18} /> Edit
-          </button>
-          <button className="btn" onClick={() => setAccount(true)}>
-            <Icon name="lock" size={18} /> Account
-          </button>
+          {own && (
+            <>
+              <button className="btn" onClick={() => setEditing(true)}>
+                <Icon name="pen" size={18} /> Edit
+              </button>
+              <button className="btn" onClick={() => setAccount(true)}>
+                <Icon name="lock" size={18} /> Account
+              </button>
+            </>
+          )}
         </>
       }
     >
-      {account && <AccountModal l={l} onClose={() => setAccount(false)} />}
+      {own && account && <AccountModal l={l} onClose={() => setAccount(false)} />}
       {classing && <LearnerClasses l={l} onClose={() => setClassing(false)} />}
       <Seg
         value={tab}
@@ -711,7 +855,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'progress', label: 'Progress & summaries' },
           { value: 'work', label: `Work (${attempts.length})` },
           { value: 'study', label: 'Study' },
-          { value: 'parents', label: 'Parents' },
+          ...(own ? [{ value: 'parents', label: 'Parents' }] : []),
         ]}
       />
       {tab === 'parents' ? (
@@ -761,7 +905,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       ) : (
         <ProgressView learnerId={id} name={l.display_name} />
       )}
-      {editing && (
+      {own && editing && (
         <EditLearner
           l={l}
           onClose={() => setEditing(false)}
@@ -1012,5 +1156,20 @@ function AccountModal({ l, onClose }) {
         )}
       </div>
     </Modal>
+  );
+}
+
+// Learners · Classes · Reports: the parent reports live with the learners they're about
+export function LearnerTabs({ tab }) {
+  return (
+    <Seg
+      value={tab}
+      onChange={(t) => go(t === 'learners' ? '/learners' : `/learners/${t}`, { replace: true })}
+      options={[
+        { value: 'learners', label: 'Learners', icon: 'user' },
+        { value: 'classes', label: 'Classes', icon: 'users' },
+        { value: 'reports', label: 'Reports', icon: 'send' },
+      ]}
+    />
   );
 }

@@ -110,7 +110,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
 
 
 // In the demo StudyBridge: who you are in it, and the way back to the Owner's own account
-const DEMO_WHO = { manager: 'the centre manager', tutor: 'a tutor', parent: 'a parent', student: 'a student on their own' };
+const DEMO_WHO = { manager: 'the centre manager', parent: 'a parent', student: 'a student on their own' };
 function DemoBar() {
   const app = useApp();
   const admin = otherAccounts(app.me.id).find((a) => a.role === 'admin');
@@ -118,7 +118,7 @@ function DemoBar() {
     <div className="banner demo" role="status">
       <Icon name="eye" size={18} />
       <span className="grow">
-        Demo: you’re {app.me.display_name}, {DEMO_WHO[app.me.demo_label] || 'a learner'}. Nothing here is real.
+        Demo: you’re {app.me.display_name}, {DEMO_WHO[app.me.demo_label] || (app.me.role === 'tutor' ? 'a tutor' : 'a learner')}. Nothing here is real.
       </span>
       {admin ? (
         <button type="button" className="btn sm" onClick={() => switchTo(app.me.id, admin.id)}>

@@ -986,3 +986,51 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 /* the options shown when you tap an item */
 .sheet-actions { display: grid; gap: 8px; }
 .sheet-actions .btn { justify-content: flex-start; }
+
+/* See it as … (a tutor sees one learner's own screens) */
+.see-as { display: grid; gap: 0; }
+.see-as-bar { position: sticky; top: 0; z-index: 5; }
+.see-as-tabs { padding: 12px 24px 0; }
+.see-as-page { border-radius: var(--radius); }
+.see-as-page button, .see-as-page [role=switch], .see-as-page input, .see-as-page select, .see-as-page textarea { cursor: not-allowed; }
+.see-as-page .seg button, .see-as-page [role=tab] { cursor: pointer; }
+@media (max-width: 700px) { .see-as-tabs { padding: 10px 12px 0; overflow-x: auto; } }
+
+/* New tutor Home */
+.home-h2 { font-size: 17px; font-weight: 600; }
+.home-row .grow { flex: 1; }
+.home-acts { display: flex; gap: 6px; flex-shrink: 0; }
+.home-note { display: block; max-width: 100%; color: var(--ink-2); }
+.home-link { display: block; color: inherit; text-decoration: none; }
+.home-link:hover { color: var(--accent); }
+.home-when { width: 70px; flex-shrink: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.home-when b { font-size: 14px; }
+.home-when span { font-size: 12px; color: var(--muted); }
+.home-centre { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.home-learners { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.home-learner { gap: 12px; }
+.home-learner-name { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
+.home-learner-name h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-learner-name:hover h3 { color: var(--accent); }
+.home-week-row { display: flex; align-items: flex-end; gap: 14px; }
+.home-week { flex: 1; max-width: 180px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.home-week > span { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10.5px; color: var(--muted); }
+.home-week > span.today { color: var(--ink); font-weight: 700; }
+.home-week i { position: relative; display: block; width: 100%; height: 34px; border-radius: 4px; background: var(--line-soft); overflow: hidden; }
+.home-week i b { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent); border-radius: 3px 3px 0 0; }
+.home-week-total { line-height: 1.25; }
+.home-week-total b { display: block; font-size: 15px; }
+.home-week-total span { font-size: 12px; color: var(--muted); }
+.home-facts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+.home-facts li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.home-facts li svg { flex-shrink: 0; color: var(--muted); }
+.home-facts li svg.flame { color: #D9822B; }
+.home-plan { border-top: 1px solid var(--line-soft); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.home-plan-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.home-quick { display: flex; flex-wrap: wrap; gap: 10px; }
+@media (max-width: 600px) {
+  .home-row { flex-wrap: wrap; }
+  .home-row .grow { min-width: 55%; }
+  .home-acts { margin-left: auto; }
+  .home-quick .btn { flex: 1 1 calc(50% - 5px); }
+}

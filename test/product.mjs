@@ -277,7 +277,8 @@ try {
   await A.locator('.card.tint').getByRole('button', { name: 'Save' }).click();
   await A.locator('.pill.click', { hasText: '(Anaya)' }).waitFor();
   await A.getByText('Which exam is each subject for?').waitFor({ state: 'detached' });
-  await nav(A, 'Subjects').click();
+  await nav(A, 'Library').click();
+  await A.getByRole('button', { name: 'Subjects', exact: true }).click();
   await A.locator('.pill', { hasText: '(0607)' }).waitFor();
   await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Past papers' }).click();
@@ -536,7 +537,8 @@ try {
   await shot(A, 'tutor-learner-study');
 
   step('Weekly parent report: StudyBridge fills it in; the learner switches WhatsApp on; Prof only suggests a comment; the tutor approves');
-  await nav(A, 'Reports').click();
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Reports', exact: true }).click();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'View report' }).click();
   const early = A.getByRole('dialog', { name: 'Anaya’s report' });
   await early.getByText('This week so far, as of now').waitFor();
@@ -553,7 +555,8 @@ try {
   await C.locator('#set-reports').getByRole('button', { name: 'Save', exact: true }).click();
   await C.getByText('Weekly reports are on').waitFor();
   await A.reload();
-  await nav(A, 'Reports').click();
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Reports', exact: true }).click();
   await A.getByText(/Mum by WhatsApp/).waitFor();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'View report' }).click();
   const rep = A.getByRole('dialog', { name: 'Anaya’s report' });
@@ -605,7 +608,8 @@ try {
   await C.getByText('Parents who can see your progress').waitFor();
   await C.locator('#set-parents').getByText('Dad').waitFor();
   await A.reload();
-  await nav(A, 'Reports').click();
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Reports', exact: true }).click();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByText(/1 parent account/).waitFor();
   await P.close();
   await C.close();
@@ -711,7 +715,7 @@ try {
   await A.locator('.card', { hasText: 'Year 10 maths' }).getByText('1 learner', { exact: true }).waitFor();
   // homework for the class: Anaya has it, Zara (not in the class) doesn't
   const klass = (await tc.from('classes').select('*').eq('name', 'Year 10 maths').single()).data;
-  const chw = (await tc.from('assignments').insert({ title: 'Class homework: fractions', kind: 'homework', subject_id: maths.id, class_id: klass.id, visibility: 'visible' }).select().single()).data;
+  const chw = (await tc.from('assignments').insert({ title: 'Class homework: fractions', kind: 'homework', subject_id: maths.id, class_id: klass.id, visibility: 'visible', due_at: new Date(Date.now() + 3 * 86400000).toISOString() }).select().single()).data;
   assert.deepEqual(chw.learner_ids.length, 1, 'for whoever is in the class');
   await A.goto(web.url + '#/assignments/' + chw.id);
   assert.equal(await A.getByLabel('Class', { exact: true }).inputValue(), klass.id, 'the editor shows it’s for the class');
@@ -741,6 +745,37 @@ try {
   await lf.getByRole('button', { name: /Schedule|Save/ }).last().click();
   await A.getByText(/Year 10 maths: Anaya.*Zara/).first().waitFor(); // each learner's own time shows when it differs
   assert.equal((await tc.from('sessions').select('class_id').eq('title', 'Fractions together').single()).data.class_id, klass.id);
+
+  // the new Home: what needs her, this week (the class's homework, with a reminder for whoever hasn't handed it in), a card per learner
+  await nav(A, 'Home').click();
+  await A.getByRole('heading', { name: 'Needs you' }).waitFor();
+  await A.getByRole('heading', { name: 'Today and this week' }).waitFor();
+  await A.getByRole('heading', { name: 'Your learners' }).waitFor();
+  const dueRow = A.locator('.home-row', { hasText: 'Class homework: fractions' });
+  await dueRow.getByText(/Year 10 maths/).waitFor();
+  await dueRow.getByRole('button', { name: 'Nudge' }).click();
+  await A.getByText(/Reminder sent to 2 learners/).waitFor();
+  for (const b of ['Set work', 'Ask Prof', 'Book a lesson', 'Invite']) await A.getByRole('button', { name: b, exact: true }).waitFor();
+  await shot(A, 'tutor-new-home');
+  await a11y(A, 'the new Home');
+
+  // See it as Anaya: her own screens, as she sees them now (hidden work isn't there), and nothing can be pressed
+  await tc.from('assignments').insert({ title: 'Not posted yet: algebra test', kind: 'test', subject_id: maths.id, visibility: 'hidden' });
+  await nav(A, 'Learners').click();
+  await A.locator('a.card', { hasText: 'Anaya' }).first().click();
+  await A.getByRole('button', { name: 'See it as Anaya' }).click();
+  await A.getByText('You’re seeing StudyBridge as Anaya sees it right now').waitFor();
+  await A.getByText(/Good (morning|afternoon|evening), Anaya!/).waitFor();
+  await A.getByRole('button', { name: 'My work', exact: true }).click();
+  await A.getByText('Class homework: fractions').first().waitFor();
+  assert.equal(await A.getByText('Not posted yet: algebra test').count(), 0, 'hidden work isn’t there');
+  await A.getByText('Class homework: fractions').first().click();
+  await A.locator('.see-as-page button').first().click();
+  await A.getByText('This is how Anaya sees it: you can’t press things here.').waitFor();
+  await shot(A, 'tutor-see-as');
+  await a11y(A, 'See it as a learner');
+  await A.getByRole('link', { name: 'Back to Anaya’s page' }).click();
+  await A.getByRole('button', { name: 'See it as Anaya' }).waitFor();
 
   // her own organisation becomes a tuition centre; Tom signs up, is approved and joins with its code
   await A.goto(web.url + '#/settings?s=org');
@@ -791,6 +826,41 @@ try {
   await a11y(A, 'Centre');
   await nav(ADM, 'Tutors').click();
   await ADM.locator('.tutor-row', { hasText: 'Aaryan Chouhan' }).getByText('Bright Minds Centre').waitFor();
+
+  // classes with teachers: as the centre's manager she makes a class taught by Tom, with one of her learners; Tom
+  // teaches Anaya there but can't run her account; Zara joins Tom's own class with its code and can message either
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Classes', exact: true }).click();
+  await A.getByText('All the classes in Bright Minds Centre').waitFor();
+  await A.getByRole('button', { name: 'New class' }).first().click();
+  const mf = A.getByRole('dialog');
+  await mf.getByLabel('Name').fill('Chemistry club');
+  await mf.getByRole('checkbox', { name: /Tom Phiri/ }).check();
+  await mf.getByRole('checkbox', { name: /Aaryan Chouhan/ }).uncheck();
+  await mf.getByRole('checkbox', { name: /Anaya/ }).check();
+  await mf.getByRole('button', { name: 'Save' }).click();
+  await A.locator('.card', { hasText: 'Chemistry club' }).getByText('Taught by Tom Phiri').waitFor();
+  await T3.goto(web.url + '#/learners');
+  await T3.locator('a.card', { hasText: 'Anaya' }).getByText('In your class').waitFor();
+  await T3.locator('a.card', { hasText: 'Anaya' }).click();
+  await T3.getByText(/Anaya is Aaryan Chouhan’s learner\. You teach them in Chemistry club\./).waitFor();
+  assert.equal(await T3.getByRole('button', { name: 'Account' }).count(), 0, 'only her own tutor runs her account');
+  await T3.goto(web.url + '#/learners/classes');
+  await T3.getByRole('button', { name: 'New class' }).first().click();
+  await T3.getByRole('dialog').getByLabel('Name').fill('Tom’s revision group');
+  await T3.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await T3.getByRole('button', { name: 'Class code for Tom’s revision group' }).click();
+  const tcode = (await T3.locator('.code-show').first().innerText()).replace(/\s/g, '');
+  assert.match(tcode, /^\d{8}$/);
+  await shot(T3, 'teacher-class-code');
+  await Z.goto(web.url + '#/settings?s=join-class');
+  await Z.getByLabel('Class code').fill(tcode);
+  await Z.getByRole('button', { name: 'Join the class' }).click();
+  await Z.getByText('You’re in Tom’s revision group now').waitFor();
+  await Z.goto(web.url + '#/messages');
+  await Z.getByRole('group', { name: 'Who to message' }).getByRole('button', { name: /Tom Phiri/ }).click();
+  await Z.getByPlaceholder('Message Tom Phiri…').waitFor();
+  await shot(Z, 'learner-two-teachers');
   await T3.close();
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
@@ -1116,14 +1186,14 @@ try {
   await ADM.getByRole('button', { name: 'Make the demo' }).click();
   await ADM.getByText('The demo is ready').waitFor({ timeout: 60000 });
   await ADM.getByRole('heading', { name: 'Open as…' }).waitFor();
-  assert.equal(await ADM.locator('.item').filter({ has: ADM.getByRole('button', { name: /^Open as / }) }).count(), 8, 'eight demo accounts');
+  assert.equal(await ADM.locator('.item').filter({ has: ADM.getByRole('button', { name: /^Open as / }) }).count(), 12, 'twelve demo accounts');
   await shot(ADM, 'admin-demo');
   await a11y(ADM, 'Admin → Demo');
   await ADM.getByRole('button', { name: 'Open as Grace' }).click();
   await ADM.getByText(/Demo: you’re Grace Mwansa, the centre manager/).waitFor();
   await nav(ADM, 'Centre').click();
   await ADM.getByText('Riverside Tuition (demo)').first().waitFor();
-  for (const n of ['Chipo Banda', 'Tendai Moyo', 'Amara Phiri', 'Kofi Mensah', 'Daniel Okafor']) await ADM.getByText(n).first().waitFor();
+  for (const n of ['Chipo Banda', 'Tendai Moyo', 'Amara Phiri', 'Kofi Mensah', 'Natasha Mwale', 'Mwila Zulu', 'Mercy Tembo', 'Daniel Okafor', 'Joseph Lungu']) await ADM.getByText(n).first().waitFor();
   await shot(ADM, 'demo-centre');
   await ADM.getByRole('button', { name: 'Back to my account' }).click();
   await nav(ADM, 'Demo').click();

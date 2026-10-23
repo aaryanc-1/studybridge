@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, Modal, Page, Seg, VisibilityPill, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
@@ -27,7 +27,16 @@ export default function Assignments() {
   const route = useRoute();
   const [filter, setFilter] = useState(route.query.get('show') || 'all');
   const [creating, setCreating] = useState(false);
+  const [preset, setPreset] = useState(null); // subject and topic from the address (Home's "Set work for it")
   const [open, setOpen] = useState(null); // the assignment whose options are showing
+  // /assignments?new=1&subject=…&topic=… opens New assignment straight away; a reload doesn't open it again
+  const wantsNew = route.query.get('new') === '1';
+  useEffect(() => {
+    if (!wantsNew) return;
+    setPreset({ subject: route.query.get('subject') || '', topic: route.query.get('topic') || '' });
+    setCreating(true);
+    go('/assignments', { replace: true });
+  }, [wantsNew]); // eslint-disable-line react-hooks/exhaustive-deps
   // practice a learner started themselves (Study) isn't listed here; it shows in their progress
   const list = (q.data || [])
     .filter((a) => a.source !== 'self')
@@ -102,7 +111,16 @@ export default function Assignments() {
       )}
       {open && <AssignmentOptions a={open} stats={stats(open)} onClose={() => setOpen(null)} />}
       {creating === 'mock' && <NewMock onClose={() => setCreating(false)} />}
-      {creating === true && <NewAssignment onClose={() => setCreating(false)} onMock={() => setCreating('mock')} />}
+      {creating === true && (
+        <NewAssignment
+          preset={preset}
+          onClose={() => {
+            setCreating(false);
+            setPreset(null);
+          }}
+          onMock={() => setCreating('mock')}
+        />
+      )}
     </Page>
   );
 
@@ -259,17 +277,20 @@ function AssignmentOptions({ a, stats, onClose }) {
   );
 }
 
-function NewAssignment({ onClose, onMock }) {
+function NewAssignment({ preset, onClose, onMock }) {
   const lk = useLookups();
+  // a topic from the address (this week in the teaching plan), kept while its subject stays chosen
+  const presetTopic = preset?.topic && lk.topic(preset.topic);
   const [kind, setKind] = useState('homework');
-  const [title, setTitle] = useState('');
-  const [subject, setSubject] = useState(lk.subjects[0]?.id || '');
+  const [title, setTitle] = useState(presetTopic?.name || '');
+  const [subject, setSubject] = useState(presetTopic?.subject_id || preset?.subject || lk.subjects[0]?.id || '');
   const [err, setErr] = useState('');
+  const topic = presetTopic && presetTopic.subject_id === subject ? presetTopic : null;
   async function submit(e) {
     e.preventDefault();
     if (!title.trim()) return setErr('Give it a title.');
     try {
-      const a = await api.save('assignments', { kind, title: title.trim(), subject_id: subject || null, ...KIND_DEFAULTS[kind] });
+      const a = await api.save('assignments', { kind, title: title.trim(), subject_id: subject || null, topic_id: topic?.id || null, ...KIND_DEFAULTS[kind] });
       invalidate('assignments');
       go(`/assignments/${a.id}`);
     } catch (x) {
@@ -312,6 +333,7 @@ function NewAssignment({ onClose, onMock }) {
             ))}
           </select>
         </Field>
+        {topic && <div className="small muted">Topic: {topic.name}</div>}
         {err && <div className="error">{err}</div>}
         <div className="foot row end">
           <button type="button" className="btn" onClick={onClose}>

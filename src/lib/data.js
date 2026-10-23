@@ -1,5 +1,5 @@
 // Data on screen: show the saved copy instantly (works offline), then refresh from the server.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import * as store from './store.js';
 
 let scope = 'anon';
@@ -10,6 +10,24 @@ const inflight = new Map();
 export function setScope(uid) {
   scope = uid || 'anon';
   cache.clear();
+}
+
+// "See it as …": a tutor looks at a learner's own screens. Queries inside AsLearnerCtx get keys of their own, and the
+// data calls they make know whose eyes to use while they're being made (asLearner() in api.js reads it as each call
+// starts, so the tutor's own queries running at the same time are never affected). While a preview is open, the
+// learner screens' own writes (time studied, read receipts) are switched off: previewOpen().
+export const AsLearnerCtx = createContext(null);
+let asWho = null;
+let previews = 0;
+export const asLearner = () => asWho;
+export const previewOpen = () => previews > 0;
+export function usePreviewOpen() {
+  useEffect(() => {
+    previews++;
+    return () => {
+      previews--;
+    };
+  }, []);
 }
 
 // ---- online status ----
@@ -54,6 +72,8 @@ async function load(key, fetcher) {
 }
 
 export function useQuery(key, fetcher, { enabled = true, poll = 0 } = {}) {
+  const as = useContext(AsLearnerCtx);
+  if (as && key) key = `as:${as}:${key}`;
   const [state, setState] = useState(() => ({
     data: key && cache.has(key) ? cache.get(key) : undefined,
     error: null,
@@ -61,7 +81,17 @@ export function useQuery(key, fetcher, { enabled = true, poll = 0 } = {}) {
     stale: false,
   }));
   const fref = useRef(fetcher);
-  fref.current = fetcher;
+  fref.current = as
+    ? () => {
+        const before = asWho;
+        asWho = as;
+        try {
+          return fetcher();
+        } finally {
+          asWho = before;
+        }
+      }
+    : fetcher;
 
   const run = useCallback(async () => {
     if (!key || !enabled) return;

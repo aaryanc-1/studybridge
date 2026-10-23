@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 // never pressed: they delete, cancel or end things for good, sign out, or leave the app (listed as skipped)
 const DANGER =
-  /^(cancel( code| this| invite)?|delete.*|remove.*|discard.*|reject.*|withdraw.*|decline.*|pause.*|stop.*|end .*|hand in.*|close (their|the) account|sign out|log out|switch to.*|add another account|reset password|install.*|restart.*|download.*|print.*|join.*|start now|go live.*|leave.*|let them try again|mark as sorted|unlink.*|sign up a test student.*|make this the admin account|use this account|open as .*|make the demo|reset the demo)$/i;
+  /^(cancel( code| this| invite)?|delete.*|remove.*|discard.*|reject.*|withdraw.*|decline.*|pause.*|stop.*|end .*|hand in.*|close (their|the) account|sign out|log out|switch to.*|add another account|reset password|install.*|restart.*|download.*|print.*|join.*|start now|go live.*|leave.*|let them try again|mark as sorted|unlink.*|sign up a test student.*|make this the admin account|use this account|open as .*|make the demo|reset the demo|nudge.*)$/i;
 const DANGER_ANY = /\b(delete|remove|discard|sign out|log out|withdraw|unlink|stop following|close (the|their) account|cancel (code|invite|this)|take .* out|put away)\b/i;
 const danger = (name) => DANGER.test(name) || DANGER_ANY.test(name);
 // buttons that only close a pop-up window
