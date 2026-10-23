@@ -502,22 +502,34 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
     });
     return [r.status, await r.json()];
   };
-  let [st, r] = await call({ action: 'checkout', plan: 'starter', period: 'month' });
+  let [st, r] = await call({ action: 'checkout', level: 'essentials', period: 'month' });
   assert.equal(st, 400);
-  assert.match(r.error, /aren’t open yet/);
+  assert.match(r.error, /isn’t open yet/);
 
   const A = await admin();
-  await q(A.rpc('admin_set_selling', { p_stripe_secret: 'sk_test_x', p_stripe_webhook: 'whsec_test', p_prices: { starter_month: 'price_s_m', pro_year: 'price_p_y' }, p_resend_key: 're_test', p_email_from: 'StudyBridge <hello@example.com>' }));
+  await q(A.rpc('admin_set_selling', { p_stripe_secret: 'sk_test_x', p_stripe_webhook: 'whsec_test', p_prices: { essentials_month: 'price_e_m', plus_year: 'price_p_y' }, p_resend_key: 're_test', p_email_from: 'StudyBridge <hello@example.com>' }));
   assert.equal((await q(T.rpc('public_settings'))).payments_on, true);
-  [st, r] = await call({ action: 'checkout', plan: 'starter', period: 'month', return_url: 'javascript:alert(1)' });
+  [st, r] = await call({ action: 'checkout', level: 'essentials', period: 'month', return_url: 'javascript:alert(1)' });
   assert.equal(st, 200, JSON.stringify(r));
   assert.match(r.url, /checkout\.stripe\.test/);
-  const co = outside.findLast((x) => x.url.startsWith('/v1/checkout/sessions'));
+  let co = outside.findLast((x) => x.url.startsWith('/v1/checkout/sessions'));
   assert.equal(co.auth, 'Bearer sk_test_x');
-  assert.equal(co.body['line_items[0][price]'], 'price_s_m');
+  assert.equal(co.body['line_items[0][price]'], 'price_e_m');
+  const active = Number((await srv.db.query(`select public._active_learners($1) n`, [me])).rows[0].n);
+  assert.equal(co.body['line_items[0][quantity]'], String(Math.max(1, active)), 'one for each learner');
   assert.equal(co.body['metadata[tutor]'], me);
+  assert.equal(co.body['metadata[level]'], 'essentials');
   assert.equal(co.body.mode, 'subscription');
+  assert.equal(co.body['automatic_tax[enabled]'], undefined, 'tax only when the Owner switches it on');
   assert.doesNotMatch(co.body.success_url, /javascript/, 'only safe return links');
+  [st, r] = await call({ action: 'checkout', level: 'plus', period: 'month' });
+  assert.equal(st, 400, 'no price for Plus monthly yet');
+  await q(A.rpc('admin_set_checkout', { p_tax: true }));
+  [st, r] = await call({ action: 'checkout', level: 'plus', period: 'year' });
+  assert.equal(st, 200, JSON.stringify(r));
+  co = outside.findLast((x) => x.url.startsWith('/v1/checkout/sessions'));
+  assert.deepEqual([co.body['line_items[0][price]'], co.body['automatic_tax[enabled]']], ['price_p_y', 'true']);
+  await q(A.rpc('admin_set_checkout', { p_tax: false }));
 
   // Stripe's webhook, signed; a bad signature changes nothing
   const hook = async (event, secret = 'whsec_test') => {
@@ -539,6 +551,48 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
   assert.equal(outside.findLast((x) => x.url.startsWith('/v1/billing_portal')).body.customer, 'cus_42');
   assert.equal(await hook({ type: 'customer.subscription.deleted', data: { object: { customer: 'cus_42', metadata: { tutor: me, plan: 'starter' } } } }), 200);
   assert.equal((await q(T.rpc('my_plan'))).plan, 'free');
+
+  // Essentials or Plus by card: the level and paid-up date come from the subscription, and the number of learners
+  // follows the tutor (kick updates Stripe)
+  assert.equal(await hook({ type: 'checkout.session.completed', data: { object: { customer: 'cus_42', subscription: 'sub_lvl', metadata: { tutor: me, level: 'plus', period: 'month' } } } }), 200);
+  plan = await q(T.rpc('my_plan'));
+  assert.equal(plan.level, 'plus');
+  assert.ok(plan.paid_until >= new Date(Date.now() + 29 * 86400000).toISOString().slice(0, 10), 'paid to the end of the period');
+  await srv.db.query(`update public.profiles set stripe_seats = 99 where id = $1`, [me]);
+  [st] = await call({ action: 'kick' });
+  for (let i = 0; i < 50 && !outside.some((x) => x.url.startsWith('/v1/subscription_items/')); i++) await new Promise((res) => setTimeout(res, 100));
+  const seats = outside.findLast((x) => x.url.startsWith('/v1/subscription_items/si_1'));
+  assert.ok(seats, 'Stripe was told the new number of learners');
+  assert.equal(seats.body.quantity, String(Math.max(1, active)));
+  assert.equal(seats.body.proration_behavior, 'create_prorations');
+  assert.equal(await hook({ type: 'customer.subscription.deleted', data: { object: { id: 'sub_lvl', customer: 'cus_42', status: 'canceled', metadata: { tutor: me, level: 'plus', period: 'month' } } } }), 200);
+  assert.equal((await srv.db.query(`select stripe_tutor_sub from public.profiles where id = $1`, [me])).rows[0].stripe_tutor_sub, null, 'ended');
+  await srv.db.query(`update public.profiles set level = 'essentials', paid_until = null, plan_period = null, plan_renews_at = null where id = $1`, [me]);
+
+  // mobile money: closed until both Flutterwave keys are in; a payment only counts once Flutterwave confirms it
+  [st, r] = await call({ action: 'mobile_pay', what: 'plus', months: 3, currency: 'ZMW' });
+  assert.equal(st, 400);
+  assert.match(r.error, /isn’t open yet/);
+  await q(A.rpc('admin_set_checkout', { p_flw_secret: 'FLWSECK_TEST-x', p_flw_hash: 'flw-hash' }));
+  [st, r] = await call({ action: 'mobile_pay', what: 'plus', months: 3, currency: 'ZMW', return_url: 'javascript:alert(1)' });
+  assert.equal(st, 200, JSON.stringify(r));
+  assert.match(r.url, /flutterwave\.test/);
+  const fp = outside.findLast((x) => x.url === '/v3/payments');
+  assert.equal(fp.auth, 'Bearer FLWSECK_TEST-x');
+  assert.equal(fp.body.currency, 'ZMW');
+  assert.equal(fp.body.amount, r.amount);
+  assert.doesNotMatch(fp.body.redirect_url, /javascript/);
+  const flw = async (id, hash = 'flw-hash') => (await fetch(`${srv.url}/functions/v1/prof?flutterwave=webhook`, { method: 'POST', headers: { 'content-type': 'application/json', 'verif-hash': hash }, body: JSON.stringify({ event: 'charge.completed', data: { id, tx_ref: fp.body.tx_ref, status: 'successful', amount: 1e9 } }) })).status;
+  assert.equal(await flw(8, 'wrong'), 401, 'not from Flutterwave');
+  assert.equal(await flw(9), 200);
+  assert.equal((await q(T.rpc('my_plan'))).paid_until, null, 'Flutterwave says it was short: it doesn’t count (the event’s own amount is never trusted)');
+  assert.equal(await flw(8), 200);
+  assert.ok(outside.some((x) => x.url === '/v3/transactions/8/verify' && x.auth === 'Bearer FLWSECK_TEST-x'), 'checked with Flutterwave');
+  plan = await q(T.rpc('my_plan'));
+  assert.equal(plan.level, 'plus');
+  assert.ok(plan.paid_until >= new Date(Date.now() + 85 * 86400000).toISOString().slice(0, 10), 'three months');
+  await srv.db.query(`update public.profiles set level = 'essentials', paid_until = null where id = $1`, [me]);
+  await srv.db.query(`update public.platform_secrets set flw_secret = null, flw_hash = null where id = 1`);
 
   // a student pays through the Owner's Pay by card links: recorded straight away, and "you're all set" is emailed
   const S = client();
@@ -685,7 +739,7 @@ test('Change this part: Prof changes one question, or just its mark scheme, only
   const T = client();
   await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
   const a = await q(T.from('assignments').insert({ title: 'Times tables', kind: 'quiz', visibility: 'hidden' }).select().single());
-  const qn = await q(T.from('questions').insert({ assignment_id: a.id, type: 'numeric', prompt_md: 'Work out $3 \times 7$.', marks: 1 }).select().single());
+  const qn = await q(T.from('questions').insert({ assignment_id: a.id, type: 'numeric', prompt_md: 'Work out $3 \\times 7$.', marks: 1 }).select().single());
   await q(T.from('question_keys').insert({ question_id: qn.id, answer: { value: '21' }, mark_scheme_md: 'B1' }));
   let job = await q(T.rpc('prof_revise', { p_question: qn.id, p_part: 'question', p_instruction: 'Make it a bit harder' }));
   await kick(T);
@@ -693,7 +747,7 @@ test('Change this part: Prof changes one question, or just its mark scheme, only
   assert.equal(j.status, 'done', j.error || '');
   assert.match(j.result.reply, /a little harder/);
   let now = await q(T.from('questions').select('prompt_md, marks').eq('id', qn.id).single());
-  assert.deepEqual([now.prompt_md, Number(now.marks)], ['Work out $6 \times 7$.', 2]);
+  assert.deepEqual([now.prompt_md, Number(now.marks)], ['Work out $6 \\times 7$.', 2]);
   let k = await q(T.from('question_keys').select('answer, mark_scheme_md').eq('question_id', qn.id).single());
   assert.deepEqual([k.answer.value, k.mark_scheme_md], ['42', 'M1 A1']);
   assert.equal((await q(T.from('assignments').select('draft').eq('id', a.id).single())).draft, true, 'a draft again until the tutor checks it');
@@ -704,7 +758,7 @@ test('Change this part: Prof changes one question, or just its mark scheme, only
   assert.equal(j.status, 'done', j.error || '');
   now = await q(T.from('questions').select('prompt_md').eq('id', qn.id).single());
   k = await q(T.from('question_keys').select('answer, mark_scheme_md').eq('question_id', qn.id).single());
-  assert.deepEqual([now.prompt_md, k.answer.value, k.mark_scheme_md], ['Work out $6 \times 7$.', '42', 'M1 for multiplying, A1 for 42.']);
+  assert.deepEqual([now.prompt_md, k.answer.value, k.mark_scheme_md], ['Work out $6 \\times 7$.', '42', 'M1 for multiplying, A1 for 42.']);
   assert.ok(seen.some((x) => x.body.tools?.[0]?.name === 'save_question' && JSON.stringify(x.body.messages).includes('Give a method mark')), 'only the one question is sent');
   // once learners can see it, Prof leaves it alone
   await q(T.from('assignments').update({ visibility: 'visible', draft: false }).eq('id', a.id));

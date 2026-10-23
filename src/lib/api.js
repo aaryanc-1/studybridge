@@ -111,7 +111,12 @@ export const adminSetSelling = (patch) =>
     p_enforce: patch.enforce ?? null, p_google: patch.google ?? null, p_email_from: patch.email_from ?? null, p_resend_key: patch.resend_key || null,
     p_stripe_secret: patch.stripe_secret || null, p_stripe_webhook: patch.stripe_webhook || null, p_prices: patch.prices ?? null,
   }));
-export const checkout = (plan, period) => callProf('checkout', { plan, period, return_url: webHome() });
+// Pay by card (Essentials or Plus, monthly or yearly, for each active learner) or by mobile money (what: essentials |
+// plus for tutors, monthly | pass for students; a parent passes their child as forId)
+export const checkout = (level, period) => callProf('checkout', { level, period, return_url: webHome() });
+export const mobilePay = (what, months, currency, forId = null) => callProf('mobile_pay', { what, months, currency, for: forId, return_url: webHome() });
+export const adminSetCheckout = (patch) =>
+  run(sb().rpc('admin_set_checkout', { p_tax: patch.tax ?? null, p_flw_secret: patch.flw_secret || null, p_flw_hash: patch.flw_hash || null }));
 export const billingPortal = () => callProf('billing', { return_url: webHome() });
 export const emailReport = (reportId) => callProf('email_report', { report_id: reportId });
 export const profUrl = () => (getServer()?.url ? `${getServer().url}/functions/v1/prof` : null);

@@ -8563,12 +8563,231 @@ begin
   update public.app_config set prof_small_model = coalesce(nullif(trim(p_model), ''), prof_small_model) where id = 1;
 end $$;
 
+-- =====================================================================
+-- Online checkout (22 Oct 2026).
+-- Tutors pay per learner for Essentials or Plus by card: a Stripe subscription whose quantity is their active (not
+-- paused) learners, kept in step as learners join, leave or are paused; Stripe Tax adds tax when the Owner switches
+-- it on. Mobile money (Flutterwave): tutors pay for 1–12 months at a time and students for a month or an exam pass,
+-- in their own currency; every payment is checked with Flutterwave before it counts. Both stay closed until the
+-- Owner adds the keys in Admin → Selling. Students' cards keep using the Owner's Payment Links.
+-- =====================================================================
+alter table public.app_config add column if not exists stripe_tax boolean not null default false;
+alter table public.app_config add column if not exists pricing jsonb not null default '{}';
+alter table public.platform_secrets add column if not exists flw_secret text;
+alter table public.platform_secrets add column if not exists flw_hash text;
+alter table public.profiles add column if not exists stripe_tutor_sub text;
+alter table public.profiles add column if not exists stripe_seats int;
+-- The prices, the same as website/site.config.json (test/website.test.mjs checks they match): a tutor's month is
+-- graduated per learner ([up to, $]); a year is 11 months; students $11 a month or $9 a month for an exam pass
+update public.app_config set pricing = '{
+  "tutor": {"essentials": [[10, 5], [30, 4], [null, 3]], "plus": [[10, 8], [30, 6], [null, 4]]},
+  "yearlyMonthsFree": 1,
+  "student": {"month": 11, "passMonth": 9},
+  "rates": {"USD": 1, "ZMW": 19.69, "INR": 96.22}
+}'::jsonb where id = 1;
+
+-- A tutor's month for this many learners, in US dollars (each learner priced by the step they fall in)
+create or replace function public._tutor_month_usd(p_level text, p_learners int) returns numeric
+language sql stable security definer set search_path = public as $$
+  select coalesce(sum((select (e.s ->> 1)::numeric
+                         from jsonb_array_elements((select pricing -> 'tutor' -> p_level from public.app_config where id = 1)) with ordinality e(s, i)
+                        where e.s ->> 0 is null or n <= (e.s ->> 0)::int order by e.i limit 1)), 0)
+    from generate_series(1, greatest(coalesce(p_learners, 0), 1)) n
+$$;
+create or replace function public._active_learners(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select count(*)::int from public.profiles where tutor_id = p_tutor and role = 'learner' and paused_at is null
+$$;
+
+-- ---------------- mobile money (Flutterwave) ----------------
+create table if not exists public.mobile_payments (
+  tx_ref text primary key,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null check (kind in ('tutor', 'student')),
+  what text not null,                -- tutor: essentials|plus; student: monthly|pass
+  months int not null default 1,
+  amount numeric not null,
+  currency text not null,
+  status text not null default 'pending' check (status in ('pending', 'paid')),
+  flw_id text,
+  created_at timestamptz not null default now(),
+  paid_at timestamptz
+);
+alter table public.mobile_payments enable row level security;
+revoke all on public.mobile_payments from public, anon, authenticated;
+grant select on public.mobile_payments to authenticated;
+drop policy if exists mobile_payments_own on public.mobile_payments;
+create policy mobile_payments_own on public.mobile_payments for select using (user_id = auth.uid());
+
+-- The Prof server starts a payment: what it's for and how much, in the currency they chose. A parent can pay for
+-- their child who studies on their own (p_for)
+create or replace function public._mobile_payment_new(p_user uuid, p_what text, p_months int, p_currency text, p_for uuid default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  payer public.profiles;
+  p jsonb := (select pricing from public.app_config where id = 1);
+  m int := greatest(1, least(coalesce(p_months, 1), 12));
+  usd numeric;
+  rate numeric := (p -> 'rates' ->> upper(coalesce(p_currency, 'USD')))::numeric;
+  v_ref text := 'sb-' || replace(gen_random_uuid()::text, '-', '');
+  v_amount numeric;
+begin
+  select * into payer from public.profiles where id = p_user;
+  if payer.id is null then raise exception 'Not signed in.'; end if;
+  if p_for is not null and p_for <> p_user then
+    if not exists (select 1 from public.parent_links where parent_id = p_user and learner_id = p_for) then
+      raise exception 'You can only pay for your own child.';
+    end if;
+    select * into me from public.profiles where id = p_for;
+  else
+    me := payer;
+  end if;
+  if rate is null then raise exception 'Choose a currency from the list.'; end if;
+  if me.role = 'tutor' and p_what in ('essentials', 'plus') then
+    usd := public._tutor_month_usd(p_what, public._active_learners(p_user))
+           * case when m = 12 then 12 - coalesce((p ->> 'yearlyMonthsFree')::int, 0) else m end;
+  elsif me.self_learner and p_what = 'monthly' then
+    m := 1;
+    usd := (p -> 'student' ->> 'month')::numeric;
+  elsif me.self_learner and p_what = 'pass' then
+    usd := (p -> 'student' ->> 'passMonth')::numeric * m;
+  else
+    raise exception 'That isn’t something you can pay for.';
+  end if;
+  v_amount := case when upper(p_currency) = 'USD' then round(usd * rate, 2) else ceil(usd * rate) end;
+  insert into public.mobile_payments (tx_ref, user_id, kind, what, months, amount, currency)
+  values (v_ref, me.id, case when me.role = 'tutor' then 'tutor' else 'student' end, p_what, m, v_amount, upper(p_currency));
+  return jsonb_build_object('tx_ref', v_ref, 'amount', v_amount, 'currency', upper(p_currency), 'email', payer.email,
+    'name', payer.display_name, 'months', m, 'what', p_what);
+end $$;
+
+-- Flutterwave confirmed a payment (the Prof server checked it with Flutterwave first): it counts if the amount and
+-- currency are right, once
+create or replace function public._mobile_payment_done(p_tx_ref text, p_amount numeric, p_currency text, p_flw_id text) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare x public.mobile_payments; v_until date;
+begin
+  select * into x from public.mobile_payments where tx_ref = p_tx_ref for update;
+  if x.tx_ref is null or x.status = 'paid' then return false; end if;
+  if upper(coalesce(p_currency, '')) <> x.currency or coalesce(p_amount, 0) < x.amount then return false; end if;
+  update public.mobile_payments set status = 'paid', paid_at = now(), flw_id = p_flw_id where tx_ref = p_tx_ref;
+  if x.kind = 'tutor' then
+    select (greatest(coalesce(paid_until, current_date), current_date) + make_interval(months => x.months))::date into v_until
+      from public.profiles where id = x.user_id;
+    update public.profiles set level = x.what, paid_until = v_until where id = x.user_id;
+    perform public.notify_user(x.user_id, 'plan', 'Thank you! You’re on ' || initcap(x.what), 'Paid up to ' || public._nice_date(v_until) || '.', '{}');
+    perform public._admin_log('tutor_paid_mobile', x.user_id, jsonb_build_object('level', x.what, 'months', x.months, 'until', v_until));
+  else
+    perform public._student_paid_by_card(x.user_id, x.what, x.months, null);
+    perform public.notify_user(x.user_id, 'plan', 'Thank you! You’re all set', 'Your payment came through.', '{}');
+  end if;
+  return true;
+end $$;
+
+-- ---------------- tutors by card (Stripe) ----------------
+-- Stripe told the Prof server about a tutor's subscription: their level, paid up to the end of the period they've
+-- paid for (nothing: it has ended)
+create or replace function public._set_paid_level(p_tutor uuid, p_level text, p_period text, p_customer text, p_sub text, p_until timestamptz)
+returns void language plpgsql security definer set search_path = public as $$
+declare was date;
+begin
+  select paid_until into was from public.profiles where id = p_tutor and role = 'tutor';
+  update public.profiles
+     set level = case when p_level in ('essentials', 'plus') then p_level else level end,
+         paid_until = case when p_until is null then least(coalesce(paid_until, current_date), current_date) else (p_until::date + 2) end,
+         plan_period = p_period, plan_renews_at = p_until,
+         stripe_customer = coalesce(p_customer, stripe_customer),
+         stripe_tutor_sub = case when p_until is null then null else coalesce(p_sub, stripe_tutor_sub) end
+   where id = p_tutor and role = 'tutor';
+  if found and p_until is not null and (was is null or was < current_date) then
+    perform public.notify_user(p_tutor, 'plan', 'Thank you! You’re on ' || initcap(p_level), 'Your plan is active.', '{}');
+  elsif found and p_until is null then
+    perform public.notify_user(p_tutor, 'plan', 'Your paid plan has ended', 'You can pay again any time in Settings → Your plan.', '{}');
+  end if;
+end $$;
+
+-- Subscriptions whose number of learners has changed (the Prof server updates Stripe, then says so)
+create or replace function public._seats_due() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('tutor', p.id, 'sub', p.stripe_tutor_sub, 'seats', greatest(public._active_learners(p.id), 1))), '[]')
+    from public.profiles p
+   where p.role = 'tutor' and p.stripe_tutor_sub is not null
+     and p.stripe_seats is distinct from greatest(public._active_learners(p.id), 1)
+$$;
+create or replace function public._seats_synced(p_tutor uuid, p_seats int) returns void
+language sql security definer set search_path = public as $$
+  update public.profiles set stripe_seats = p_seats where id = p_tutor
+$$;
+
+-- What the Prof server needs to sell (secrets for it only)
+create or replace function public._selling() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('stripe_tax', c.stripe_tax, 'flw_secret', s.flw_secret, 'flw_hash', s.flw_hash, 'pricing', c.pricing)
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
+$$;
+
+-- Admin → Selling: tax, and the Flutterwave keys (write-only)
+create or replace function public.admin_set_checkout(p_tax boolean default null, p_flw_secret text default null, p_flw_hash text default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_config set stripe_tax = coalesce(p_tax, stripe_tax) where id = 1;
+  update public.platform_secrets set flw_secret = coalesce(nullif(trim(p_flw_secret), ''), flw_secret),
+                                     flw_hash = coalesce(nullif(trim(p_flw_hash), ''), flw_hash) where id = 1;
+  perform public._admin_log('settings', null, jsonb_build_object('checkout', true));
+end $$;
+
+create or replace function public.admin_selling() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return (select jsonb_build_object('enforce_plans', c.enforce_plans, 'google_on', c.google_on, 'email_from', c.email_from,
+      'resend_set', s.resend_key is not null, 'stripe_set', s.stripe_secret is not null, 'webhook_set', s.stripe_webhook_secret is not null,
+      'prices', c.stripe_prices, 'stripe_tax', c.stripe_tax, 'flw_set', s.flw_secret is not null, 'flw_hash_set', s.flw_hash is not null,
+      'plans', (select jsonb_object_agg(coalesce(plan, 'free'), n) from (select plan, count(*) n from public.profiles where role = 'tutor' group by plan) z))
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
+end $$;
+
+create or replace function public.public_settings() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'enforce_plans', c.enforce_plans,
+    'google_on', c.google_on,
+    'payments_on', s.stripe_secret is not null and c.stripe_prices <> '{}'::jsonb,
+    -- which card prices are set up (essentials_month, plus_year, …); never the price ids themselves
+    'card_prices', case when s.stripe_secret is null then '[]'::jsonb
+                        else coalesce((select jsonb_agg(k) from jsonb_object_keys(c.stripe_prices) k where coalesce(c.stripe_prices ->> k, '') <> ''), '[]') end,
+    'mobile_on', s.flw_secret is not null and s.flw_hash is not null,
+    'currencies', coalesce((select jsonb_agg(k order by k = 'USD' desc, k) from jsonb_object_keys(c.pricing -> 'rates') k), '["USD"]'),
+    'rates', coalesce(c.pricing -> 'rates', '{"USD": 1}'),
+    'email_on', s.resend_key is not null and c.email_from is not null,
+    'students_open', not c.students_paused and public._studybridge_account() is not null
+                     and exists (select 1 from public.subjects s where s.tutor_id = public._studybridge_account() and s.live))
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
+$$;
+grant execute on function public.public_settings() to anon;
+
+-- Your plan also says when a card subscription is running (its learners follow yours)
+create or replace function public.my_plan() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('plan', p.plan, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
+    'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner' and l.paused_at is null),
+    'paused', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner' and l.paused_at is not null),
+    'limit', public._tutor_limit(p.id), 'until', p.plan_until,
+    'enforced', (select enforce_plans from public.app_config where id = 1),
+    'has_billing', p.stripe_customer is not null, 'card', p.stripe_tutor_sub is not null,
+    'level', p.level, 'plus', public._plus(p.id), 'trial_until', p.trial_until, 'paid_until', p.paid_until)
+    from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
+$$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
 declare f text;
 begin
-  foreach f in array array['prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
+  foreach f in array array['_mobile_payment_new(uuid, text, int, text, uuid)', '_mobile_payment_done(text, numeric, text, text)', '_set_paid_level(uuid, text, text, text, text, timestamptz)',
+                           '_seats_due()', '_seats_synced(uuid, int)', '_selling()', 'prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
                            'prof_context(uuid)', 'prof_mark_context(uuid)', 'prof_orphan_files()', 'prof_tick()', '_prof_kick()'] loop
     execute format('revoke execute on function public.%s from public, anon, authenticated', f);
     execute format('grant execute on function public.%s to service_role', f);
@@ -8635,6 +8854,8 @@ revoke execute on function public._class_pool(uuid) from public, anon, authentic
 revoke execute on function public._add_to_class(uuid, uuid) from public, anon, authenticated;
 revoke execute on function public._home_learners() from public, anon, authenticated;
 revoke execute on function public._class_made() from public, anon, authenticated;
+revoke execute on function public._tutor_month_usd(text, int) from public, anon, authenticated;
+revoke execute on function public._active_learners(uuid) from public, anon, authenticated;
 revoke execute on function public._tutor_trial() from public, anon, authenticated;
 revoke execute on function public._plus_only() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it

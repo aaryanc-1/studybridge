@@ -11,6 +11,7 @@ import { BOARDS, upcomingSessions } from '../../lib/catalogue.js';
 import { spreadEvenly, today, at, fmt } from '../../lib/plan.js';
 import { studentAccess } from '../../lib/students.js';
 import { useLookups } from '../shared/lookups.jsx';
+import MobileMoney from '../shared/MobileMoney.jsx';
 
 const HOURS = [2, 4, 6, 8, 10];
 
@@ -451,8 +452,8 @@ export function monthsToExams(examDate, now = new Date()) {
   return Math.max(1, Math.ceil(days / 30.44));
 }
 
-// Pay by card (the Owner's Stripe links), or another way through Contact StudyBridge. The Owner marks it paid.
-// A parent pays for their child the same way (forId: the child's account, so the Owner can match it).
+// Pay by card (the Owner's Stripe links), mobile money (Flutterwave), or another way through Contact StudyBridge.
+// A parent pays for their child the same way (forId: the child's account, so the payment is matched to them).
 export function PayOptions({ forId = null, examDate = undefined, otherWay = null }) {
   const app = useApp();
   const links = useQuery('pay-links', api.studentPayLinks).data || {};
@@ -460,7 +461,8 @@ export function PayOptions({ forId = null, examDate = undefined, otherWay = null
   // the account's id goes with the payment so the Owner can match it (nothing personal goes in the link);
   // the desktop app opens it in the browser
   const open = (url) => window.open(`${url}${url.includes('?') ? '&' : '?'}client_reference_id=${forId || app.me.id}`, '_blank');
-  const card = links.monthly || links.pass;
+  const pub = useQuery('public-settings', api.publicSettings).data || {};
+  const card = links.monthly || links.pass || pub.mobile_on;
   return (
     <div className="stack sm">
       <div className="row wrap" style={{ gap: 8 }}>
@@ -474,12 +476,14 @@ export function PayOptions({ forId = null, examDate = undefined, otherWay = null
             Exam pass by card: ${PRICE.passMonth * months} for {months} month{months === 1 ? '' : 's'}
           </button>
         )}
+        <MobileMoney what="monthly" label={`$${PRICE.month} a month with mobile money`} months={1} usdFor={() => PRICE.month} forId={forId} />
+        <MobileMoney what="pass" label={`Exam pass with mobile money: $${PRICE.passMonth * months}`} months={months} usdFor={(m) => PRICE.passMonth * m} forId={forId} />
         <button className={'btn' + (card ? ' ghost' : ' primary')} onClick={() => (otherWay ? otherWay() : go('/settings?s=contact'))}>
           <Icon name="message" size={18} /> {card ? 'Pay another way' : 'Ask about paying'}
         </button>
       </div>
       {links.pass && <div className="small muted">For the exam pass, set the quantity to {months} on the card page: one for each month until your exams.</div>}
-      {card && <div className="small muted">Use the email you signed up with. We switch your account over once the payment comes through, usually within a day.</div>}
+      {(links.monthly || links.pass) && <div className="small muted">Use the email you signed up with. Your account switches over as soon as the payment comes through.</div>}
     </div>
   );
 }

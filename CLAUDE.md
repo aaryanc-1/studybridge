@@ -338,6 +338,44 @@ Website fix (same day): in dark mode a later rule painted the early-access field
 dropdowns took dark colours inside a white box; the fix is a block at the end of website/site.css (`.early-box` fields always light,
 `color-scheme: light`, option colours). Only "A student" is asked the age question (`#ea-age`), and the thank-you line fits the role.
 
+Launch 2 builds 1–6 (22 Oct 2026, Aaryan: "build all go"; builds 1–3 = app 1.1.80, 4–6 = the next release).
+1. New Home + 8-item menu + See it as your learner. Tutor menu: Home, Learners (tabs Learners/Classes/Reports; `/learners/reports`),
+Assignments, Marking, Library (Subjects tab = `<Structure embedded />`; `/structure` goes there), Messages, Live, Prof, plus Centre for
+managers. Home.jsx: Needs you, Today and this week (Join, Nudge = `nudge_assignment`, once per 12 h, `assignments.nudged_at`), Your learners
+cards from `tutor_home()` (streak, last mark, mock, exam, plan). See it as: `/see/:learner/:tab` (SeeAs.jsx: Today, My work, Library, Study,
+Progress); `AsLearnerCtx` in data.js prefixes query keys `as:<id>:` and api.js filters with `seenBy` (mirrors `can_learner_see`);
+`AsLearnerApp` overrides `me`; links are rewritten and buttons blocked ("you can’t press things here"); logTime/markCommentsRead do
+nothing while previewing. The demo is now 12 accounts: Grace (manager, doesn't teach), Mercy (maths), Daniel (physics), Joseph (biology),
+six learners in three classes, Ruth (parent), Lina (test student).
+2. Classes with teachers (option A): `class_teachers`; `_teaches(teacher, learner)`, `_my_teachers()`, `_can_view_learner`; a class teacher
+sees, marks and posts to the learners in their classes even if another tutor in the centre is their main tutor (`can_learner_see` uses
+`_my_teachers()`; profiles/subjects/topics/comments/storage policies follow). `save_class(..., p_teacher_ids)` (managers pick teachers
+from `class_pool()`; new teachers are told "You teach X now"); class codes (`class_code`, learners `join_class` in Settings, also on
+sign-up via accept_invite). Learners message any of their teachers (Messages picker; `my_teachers()`). `_audience` includes class learners.
+3. Essentials and Plus: `profiles.level` (essentials|plus), 7-day Plus trial on approval (`_tutor_trial`), `paid_until`; `_plus(tutor)` is
+true while plan limits are off, or for Plus paid/trial/complimentary/custom. Plus-only (`_plus_only` trigger and checks): Prof
+(`_prof_ready`), StudyBridge's library (`_sb_library`), mocks, the exam camera. Admin → Tutors sets level/paid-up/free days
+(`admin_set_level`); tutors "Ask for" a level (`ask_level`) while online payment is closed. Settings → Your plan shows both levels.
+4. Watched mode: `assignments.watched` lets a lockdown/camera test run in any browser (full screen, every leave is a strike via
+`lockdown_strike`); `attempts.client` records the device ("Done on a Chromebook (watched)"). Pausing: `pause_learner` sets
+`profiles.paused_at`: work kept, no new work starts, not told about new work (`_audience`), not counted on the plan (`my_plan`
+learners/paused, `_check_plan_room`). Closing the tab in watched mode isn't counted yet.
+5. Change with Prof: "Change with Prof" on a question in the editor → `prof_revise(question, 'question'|'scheme', instruction)` (job kind
+'revise', Prof's `stepRevise` + `save_question`), the assignment goes back to draft until the tutor checks it. Cheaper Prof: weekly
+reports use `app_config.prof_small_model` (default claude-haiku-5-5, Admin → Prof).
+6. Online checkout (ready, off until keys): tutors pay by card for Essentials/Plus monthly or yearly (Prof `checkout`, `body.level`,
+Stripe price per unit with graduated tiers, keys `essentials_month|essentials_year|plus_month|plus_year`, quantity = active learners,
+`automatic_tax` when Admin → Selling "Add tax" is on); the webhook (events with `metadata.level`) calls `_set_paid_level` (paid up to
+the period end + 2 days; ended → `stripe_tutor_sub` null); `syncSeats()` on every kick updates the subscription quantity when
+`_seats_due()` says the learner count changed (proration). Mobile money (Flutterwave v3): Prof `mobile_pay` → `_mobile_payment_new`
+(tutors 1–12 months, 12 = 11 months' price; students monthly or pass; a parent with `p_for` = their child) → hosted page;
+`prof?flutterwave=webhook` checks `verif-hash`, then asks Flutterwave (`/v3/transactions/<id>/verify`) and `_mobile_payment_done` counts it
+only if the amount and currency are right, once. Prices live in `app_config.pricing` (same as site.config.json; website.test.mjs checks);
+`public_settings` gives `card_prices`, `mobile_on`, `currencies`, `rates`. UI: Settings → Your plan (Pay by card / Mobile money per
+level; "Ask for" only while both are closed), `MobileMoney.jsx`, student/parent `PayOptions`, Admin → Selling (Stripe steps, tax switch,
+Flutterwave keys). Old Starter/Pro learner caps still apply when plan limits are on (to replace with per-learner billing).
+7. Signed apps: needs Aaryan's Apple Developer and a Windows code-signing account; not done.
+
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
   Reviewer until he adds a team.

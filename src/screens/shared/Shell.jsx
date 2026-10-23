@@ -317,6 +317,11 @@ function useAnnouncer(target) {
     if (fresh.some((n) => n.kind === 'joined')) invalidate('learners', 'learner_subjects', 'invites', 'accounts', 'class_members');
     if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions', 'learners', 'classes', 'class_members', 'class_teachers', 'class-pool');
     if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
+    // a payment came through (card or mobile money): the plan and what's open follow straight away
+    if (fresh.some((n) => n.kind === 'plan')) {
+      app.refreshMe?.().catch(() => {});
+      invalidate('my-plan');
+    }
     // paused or back on: the banner and what they can start follow straight away
     if (fresh.some((n) => n.kind === 'paused')) {
       app.refreshMe?.().catch(() => {});

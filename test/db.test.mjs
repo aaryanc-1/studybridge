@@ -1404,7 +1404,7 @@ test('teaching plans: the tutor’s own, per subject; learners and other tutors 
 test('selling basics: plan limits only once switched on; download my data; delete my own account', async () => {
   // what the app may know, even before signing in; no secrets
   const pub = await val(null, `select public_settings()`);
-  assert.deepEqual(Object.keys(pub).sort(), ['email_on', 'enforce_plans', 'google_on', 'payments_on', 'students_open']);
+  assert.deepEqual(Object.keys(pub).sort(), ['card_prices', 'currencies', 'email_on', 'enforce_plans', 'google_on', 'mobile_on', 'payments_on', 'rates', 'students_open']);
   assert.equal(pub.enforce_plans, false);
   await fails(as('TW', `select admin_set_selling(p_enforce => true)`), /admins only/);
   await fails(as('TW', `select _set_paid_plan($1, 'pro', 'month', 'cus_1', null)`, [U.TW]), /permission denied/);
@@ -2687,4 +2687,94 @@ test('watched mode: a locked-down test on any device when the tutor allows it, e
   await as('WT', `select pause_learner($1, false)`, [U.WL2]);
   await as('WL2', `select start_attempt($1, 'browser')`, [hw]);
   assert.equal((await val('WT', `select my_plan()`)).learners, 2);
+});
+
+test('online checkout: per-learner prices; mobile money counts only once Flutterwave confirms the right amount; tutors’ card subscriptions set the level and keep the number of learners in step', async () => {
+  const sql = async (q, p) => (await db.query(q, p)).rows[0];
+  // graduated per learner: 12 on Plus = 10 × $8 + 2 × $6; 35 on Essentials = 10 × $5 + 20 × $4 + 5 × $3; never less than one
+  assert.deepEqual(
+    [Number((await sql(`select _tutor_month_usd('plus', 12) v`)).v), Number((await sql(`select _tutor_month_usd('essentials', 35) v`)).v), Number((await sql(`select _tutor_month_usd('plus', 0) v`)).v)],
+    [92, 145, 8],
+  );
+  // only the Prof server starts or records payments
+  await fails(as('T', `select _mobile_payment_new($1, 'plus', 1, 'USD')`, [U.T]), /permission denied/);
+  await fails(as('T', `select _mobile_payment_done('x', 1, 'USD', '1')`), /permission denied/);
+  await fails(as('T', `select _set_paid_level($1, 'plus', 'month', null, null, now())`, [U.T]), /permission denied/);
+
+  // a tutor pays three months of Plus in kwacha
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  await mk('CT', 'checkout-tutor@x.com');
+  await one('CT', `select * from become_tutor('Chanda', 'Africa/Lusaka')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.CT]);
+  const start = (await sql(`select _mobile_payment_new($1, 'plus', 3, 'zmw') v`, [U.CT])).v;
+  assert.deepEqual([start.currency, start.amount], ['ZMW', Math.ceil(8 * 3 * 19.69)]);
+  assert.equal((await as('CT', `select tx_ref from mobile_payments`)).length, 1, 'they see their own payment');
+  assert.equal((await as('T', `select tx_ref from mobile_payments`)).length, 0);
+  // too little, or the wrong currency: it doesn't count
+  assert.equal((await sql(`select _mobile_payment_done($1, $2, 'ZMW', '101') v`, [start.tx_ref, start.amount - 1])).v, false);
+  assert.equal((await sql(`select _mobile_payment_done($1, $2, 'USD', '101') v`, [start.tx_ref, start.amount])).v, false);
+  assert.equal((await sql(`select _mobile_payment_done($1, $2, 'ZMW', '101') v`, [start.tx_ref, start.amount])).v, true);
+  assert.equal((await sql(`select _mobile_payment_done($1, $2, 'ZMW', '101') v`, [start.tx_ref, start.amount])).v, false, 'once');
+  const ct = await val('CT', `select my_plan()`);
+  assert.equal(ct.level, 'plus');
+  assert.ok(ct.paid_until >= new Date(Date.now() + 85 * 86400000).toISOString().slice(0, 10), 'three months');
+  // a year is 11 months' price
+  const year = (await sql(`select _mobile_payment_new($1, 'essentials', 12, 'USD') v`, [U.CT])).v;
+  assert.equal(Number(year.amount), 5 * 11);
+  // a student on their own: an exam pass by the month
+  const stu = (await sql(`select id from profiles where self_learner and not demo limit 1`))?.id;
+  if (stu) {
+    const pass = (await sql(`select _mobile_payment_new($1, 'pass', 4, 'USD') v`, [stu])).v;
+    assert.equal(Number(pass.amount), 36);
+    assert.equal((await sql(`select _mobile_payment_done($1, 36, 'USD', '102') v`, [pass.tx_ref])).v, true);
+    assert.equal((await sql(`select paid_plan from profiles where id = $1`, [stu])).paid_plan, 'pass');
+  }
+  await fails(db.query(`select _mobile_payment_new($1, 'plus', 1, 'EUR')`, [U.CT]), /currency/);
+  // a parent pays for their own child only
+  await fails(db.query(`select _mobile_payment_new($1, 'monthly', 1, 'USD', $2)`, [U.CT, U.T]), /your own child/);
+  const kid = (await sql(`select learner_id, parent_id from parent_links pl join profiles c on c.id = pl.learner_id where c.self_learner limit 1`));
+  if (kid) {
+    const forKid = (await sql(`select _mobile_payment_new($1, 'monthly', 1, 'USD', $2) v`, [kid.parent_id, kid.learner_id])).v;
+    assert.equal(Number(forKid.amount), 11);
+    assert.equal((await sql(`select user_id from mobile_payments where tx_ref = $1`, [forKid.tx_ref])).user_id, kid.learner_id, 'it’s the child’s plan');
+  }
+  assert.deepEqual((await val('A', `select public_settings()`)).currencies, ['USD', 'INR', 'ZMW']);
+  await fails(db.query(`select _mobile_payment_new($1, 'pass', 1, 'USD')`, [U.CT]), /isn’t something you can pay for/);
+
+  // by card: Stripe sets the level and paid-up date; the number of learners follows them
+  await db.query(`select _set_paid_level($1, 'essentials', 'month', 'cus_1', 'sub_1', now() + interval '30 days')`, [U.CT]);
+  const card = await val('CT', `select my_plan()`);
+  assert.equal(card.level, 'essentials');
+  assert.ok((await sql(`select stripe_tutor_sub from profiles where id = $1`, [U.CT])).stripe_tutor_sub === 'sub_1');
+  let due = (await sql(`select _seats_due() v`)).v.find((x) => x.tutor === U.CT);
+  assert.deepEqual([due.sub, due.seats], ['sub_1', 1]);
+  await db.query(`select _seats_synced($1, 1)`, [U.CT]);
+  assert.equal((await sql(`select _seats_due() v`)).v.find((x) => x.tutor === U.CT), undefined, 'in step');
+  const code = await val('CT', `insert into invites (name) values ('One') returning code`);
+  await mk('CL1', 'cl1@x.com');
+  await mk('CL2', 'cl2@x.com');
+  await one('CL1', `select * from accept_invite($1, 'One')`, [code]);
+  const code2 = await val('CT', `insert into invites (name) values ('Two') returning code`);
+  await one('CL2', `select * from accept_invite($1, 'Two')`, [code2]);
+  due = (await sql(`select _seats_due() v`)).v.find((x) => x.tutor === U.CT);
+  assert.equal(due.seats, 2, 'two learners now');
+  await db.query(`select _seats_synced($1, 2)`, [U.CT]);
+  await as('CT', `select pause_learner($1)`, [U.CL2]);
+  assert.equal((await sql(`select _seats_due() v`)).v.find((x) => x.tutor === U.CT).seats, 1, 'a paused learner isn’t paid for');
+  // the subscription ends
+  await db.query(`select _set_paid_level($1, 'essentials', null, null, null, null)`, [U.CT]);
+  assert.equal((await sql(`select stripe_tutor_sub from profiles where id = $1`, [U.CT])).stripe_tutor_sub, null);
+
+  // Admin → Selling: mobile money opens once both Flutterwave keys are in (never shown again)
+  assert.equal((await val('A', `select public_settings()`)).mobile_on, false);
+  await fails(as('T', `select admin_set_checkout(p_tax => true)`), /admins only/i);
+  await as('A', `select admin_set_checkout(true, 'FLWSECK_TEST-x', 'hash-x')`);
+  const sel = await val('A', `select admin_selling()`);
+  assert.deepEqual([sel.stripe_tax, sel.flw_set, sel.flw_hash_set], [true, true, true]);
+  assert.ok(!JSON.stringify(sel).includes('FLWSECK'), 'never shown again');
+  assert.equal((await val('A', `select public_settings()`)).mobile_on, true);
+  await db.exec(`update platform_secrets set flw_secret = null, flw_hash = null where id = 1; update app_config set stripe_tax = false where id = 1`);
 });

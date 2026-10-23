@@ -1556,6 +1556,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
   // ---------------- payments (Stripe) and email (Resend), once the admin adds their keys ----------------
   const STRIPE = String(env('STRIPE_BASE_URL') || 'https://api.stripe.com').replace(/\/+$/, '');
   const RESEND = String(env('RESEND_BASE_URL') || 'https://api.resend.com').replace(/\/+$/, '');
+  const FLW = String(env('FLUTTERWAVE_BASE_URL') || 'https://api.flutterwave.com').replace(/\/+$/, '');
   const WEB = String(env('WEB_APP_URL') || 'https://gostudybridge.com/app/');
   async function sellingConfig() {
     const s = (await rest('platform_secrets?id=eq.1&select=stripe_secret,stripe_webhook_secret,resend_key'))[0] || {};
@@ -1598,28 +1599,102 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       return WEB;
     }
   };
+  // A tutor pays by card for Essentials or Plus: a subscription for each of their active learners (Stripe's price has
+  // the per-learner steps), monthly or yearly; the number of learners is kept in step afterwards (syncSeats)
   async function checkout(user, body) {
-    const plan = ['starter', 'pro'].includes(body.plan) ? body.plan : null;
+    const level = ['essentials', 'plus'].includes(body.level) ? body.level : null;
     const period = body.period === 'year' ? 'year' : 'month';
-    if (!plan) return json({ error: 'Choose Starter or Pro.' }, 400);
+    if (!level) return json({ error: 'Choose Essentials or Plus.' }, 400);
     const cfg = await sellingConfig();
-    const price = cfg.prices?.[`${plan}_${period}`];
-    if (!cfg.stripe_secret || !price) return json({ error: 'Paid plans aren’t open yet.' }, 400);
+    const price = cfg.prices?.[`${level}_${period}`];
+    if (!cfg.stripe_secret || !price) return json({ error: 'Paying by card isn’t open yet.' }, 400);
     const me = (await rest(`profiles?id=eq.${user.id}&select=email,stripe_customer`))[0] || {};
+    const learners = await rest(`profiles?tutor_id=eq.${user.id}&role=eq.learner&paused_at=is.null&select=id`);
+    const seats = Math.max(1, (learners || []).length);
+    const sell = await rpc('_selling', {});
     const back = safeReturn(body.return_url);
-    const meta = { tutor: user.id, plan, period };
+    const meta = { tutor: user.id, level, period };
     const s = await stripe(cfg.stripe_secret, 'checkout/sessions', {
       mode: 'subscription',
-      line_items: { 0: { price, quantity: 1 } },
+      line_items: { 0: { price, quantity: seats } },
       client_reference_id: user.id,
-      ...(me.stripe_customer ? { customer: me.stripe_customer } : { customer_email: me.email }),
+      ...(me.stripe_customer ? { customer: me.stripe_customer, ...(sell?.stripe_tax ? { customer_update: { address: 'auto' } } : {}) } : { customer_email: me.email }),
+      ...(sell?.stripe_tax ? { automatic_tax: { enabled: 'true' }, billing_address_collection: 'required' } : {}),
       metadata: meta,
       subscription_data: { metadata: meta },
-      allow_promotion_codes: 'true',
       success_url: back,
       cancel_url: back,
     });
+    await rpc('_seats_synced', { p_tutor: user.id, p_seats: seats });
     return json({ url: s.url });
+  }
+  // The number of learners a tutor pays for follows them (joining, leaving, pausing); Stripe works out the difference
+  async function syncSeats() {
+    const cfg = await sellingConfig();
+    if (!cfg.stripe_secret) return 0;
+    let n = 0;
+    for (const d of (await rpc('_seats_due', {})) || []) {
+      try {
+        const sub = await stripeGet(cfg.stripe_secret, `subscriptions/${encodeURIComponent(d.sub)}`);
+        const item = sub?.items?.data?.[0];
+        if (!item) continue;
+        if (item.quantity !== d.seats) await stripe(cfg.stripe_secret, `subscription_items/${encodeURIComponent(item.id)}`, { quantity: d.seats, proration_behavior: 'create_prorations' });
+        await rpc('_seats_synced', { p_tutor: d.tutor, p_seats: d.seats });
+        n++;
+      } catch (e) {
+        console.error('Prof seats:', d.tutor, e);
+      }
+    }
+    return n;
+  }
+
+  // ---------------- mobile money (Flutterwave) ----------------
+  // A tutor (1–12 months of a level) or a student (a month, or an exam pass by the month; or their parent) pays in their own currency
+  // on Flutterwave's page; it only counts once Flutterwave confirms the payment to us (flutterwaveWebhook)
+  async function mobilePay(user, body) {
+    const sell = await rpc('_selling', {});
+    if (!sell?.flw_secret || !sell?.flw_hash) return json({ error: 'Mobile money isn’t open yet.' }, 400);
+    let p;
+    try {
+      p = await rpc('_mobile_payment_new', { p_user: user.id, p_what: String(body.what || ''), p_months: Number(body.months) || 1, p_currency: String(body.currency || 'USD'), p_for: body.for || null });
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+    const r = await fetch(`${FLW}/v3/payments`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sell.flw_secret}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        tx_ref: p.tx_ref,
+        amount: p.amount,
+        currency: p.currency,
+        redirect_url: safeReturn(body.return_url),
+        customer: { email: p.email, name: p.name || undefined },
+        customizations: { title: 'StudyBridge', description: p.what === 'pass' ? `Exam pass, ${p.months} month(s)` : p.what === 'monthly' ? 'One month' : `${p.what === 'plus' ? 'Plus' : 'Essentials'}, ${p.months} month(s)` },
+        meta: { user: user.id },
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data?.data?.link) return json({ error: data?.message || 'Flutterwave didn’t answer. Try again.' }, 502);
+    return json({ url: data.data.link, amount: p.amount, currency: p.currency });
+  }
+  // Flutterwave tells us about a payment (with our secret hash); we ask Flutterwave for the real details before it counts
+  async function flutterwaveWebhook(req) {
+    const sell = await rpc('_selling', {});
+    if (!sell?.flw_hash || req.headers.get('verif-hash') !== sell.flw_hash) return json({ error: 'Not signed.' }, 401);
+    let ev;
+    try {
+      ev = JSON.parse(await req.text());
+    } catch {
+      return json({ error: 'Bad event.' }, 400);
+    }
+    const id = ev?.data?.id;
+    if (!id) return json({ received: true });
+    const r = await fetch(`${FLW}/v3/transactions/${encodeURIComponent(id)}/verify`, { headers: { authorization: `Bearer ${sell.flw_secret}` } });
+    const v = (await r.json().catch(() => ({})))?.data;
+    if (r.ok && v?.status === 'successful' && v.tx_ref) {
+      await rpc('_mobile_payment_done', { p_tx_ref: v.tx_ref, p_amount: Number(v.amount), p_currency: String(v.currency || ''), p_flw_id: String(v.id) });
+    }
+    return json({ received: true });
   }
   async function billing(user, body) {
     const cfg = await sellingConfig();
@@ -1673,6 +1748,21 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     }
     if (ev.type === 'invoice.paid' && o.subscription && o.billing_reason === 'subscription_cycle') {
       await rpc('_student_renewed', { p_subscription: o.subscription });
+      return json({ received: true });
+    }
+    // a tutor's Essentials or Plus by card: the level, paid up to the end of the period Stripe has been paid for
+    if (m.tutor && m.level) {
+      if (ev.type === 'checkout.session.completed' && o.subscription) {
+        const sub = await stripeGet(cfg.stripe_secret, `subscriptions/${encodeURIComponent(o.subscription)}`);
+        const end = sub.current_period_end || sub.items?.data?.[0]?.current_period_end;
+        await rpc('_set_paid_level', { p_tutor: m.tutor, p_level: m.level, p_period: m.period, p_customer: o.customer || null, p_sub: o.subscription,
+          p_until: end ? new Date(end * 1000).toISOString() : new Date(Date.now() + 31 * 86400000).toISOString() });
+      } else if (ev.type === 'customer.subscription.updated' || ev.type === 'customer.subscription.deleted') {
+        const live = ev.type === 'customer.subscription.updated' && ['active', 'trialing', 'past_due'].includes(o.status);
+        const end = o.current_period_end || o.items?.data?.[0]?.current_period_end;
+        await rpc('_set_paid_level', { p_tutor: m.tutor, p_level: m.level, p_period: live ? m.period : null, p_customer: o.customer || null, p_sub: live ? o.id : null,
+          p_until: live && end ? new Date(end * 1000).toISOString() : null });
+      }
       return json({ received: true });
     }
     if (ev.type === 'checkout.session.completed' && m.tutor) {
@@ -1811,6 +1901,7 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
     const reqUrl = new URL(req.url);
     if (req.method === 'GET' && reqUrl.searchParams.get('calendar')) return calendar(reqUrl.searchParams.get('calendar'));
     if (req.method === 'POST' && reqUrl.searchParams.get('stripe') === 'webhook') return stripeWebhook(req);
+    if (req.method === 'POST' && reqUrl.searchParams.get('flutterwave') === 'webhook') return flutterwaveWebhook(req);
     let body = {};
     try {
       body = await req.json();
@@ -1839,6 +1930,14 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
       if (!fromDb && !user.admin) return json({ error: 'Admins only.' }, 403);
       return json({ removed: await cleanup() });
     }
+    if (action === 'mobile_pay') {
+      if (!user || (!['tutor', 'learner', 'parent'].includes(user.role))) return json({ error: 'Not signed in.' }, 401);
+      try {
+        return await mobilePay(user, body);
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
+    }
     if (action === 'checkout' || action === 'billing' || action === 'email_report') {
       if (!user || user.role !== 'tutor') return json({ error: 'Tutors only.' }, 403);
       try {
@@ -1853,6 +1952,7 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
         sendQueued()
           .catch((e) => console.error('Prof email:', e))
           .then(() => sendPushes().catch((e) => console.error('Prof push:', e)))
+          .then(() => syncSeats().catch((e) => console.error('Prof seats:', e)))
           .then(() => work(cfg)),
       );
       if (p) await p;

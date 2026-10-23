@@ -27,6 +27,31 @@ export async function startFakeClaude() {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ data: [{ quantity: Number(items[1].split('_q')[1] || 1) }] }));
     }
+    // a tutor's subscription (one line: their learners) and changing how many learners it's for
+    const sub = req.url.match(/^\/v1\/subscriptions\/([^/?]+)/);
+    if (sub) {
+      outside.push({ url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ id: sub[1], status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400, items: { data: [{ id: 'si_1', quantity: 1 }] } }));
+    }
+    if (req.url.startsWith('/v1/subscription_items/')) {
+      outside.push({ url: req.url, auth: req.headers.authorization, body: Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString())) });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ id: 'si_1' }));
+    }
+    // stand-in Flutterwave: a payment page, and checking a payment (transaction 9 is a short one)
+    if (req.url === '/v3/payments') {
+      outside.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString()) });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'success', data: { link: 'https://checkout.flutterwave.test/pay/1' } }));
+    }
+    const verify = req.url.match(/^\/v3\/transactions\/([^/]+)\/verify/);
+    if (verify) {
+      outside.push({ url: req.url, auth: req.headers.authorization });
+      const last = [...outside].reverse().find((o) => o.url === '/v3/payments')?.body || {};
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'success', data: { id: Number(verify[1]), status: 'successful', tx_ref: last.tx_ref, currency: last.currency, amount: verify[1] === '9' ? last.amount - 1 : last.amount } }));
+    }
     if (req.url.startsWith('/v1/checkout/sessions') || req.url.startsWith('/v1/billing_portal/sessions') || req.url.startsWith('/emails')) {
       const raw = Buffer.concat(chunks).toString();
       outside.push({ url: req.url, auth: req.headers.authorization, body: req.url.startsWith('/emails') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw)) });
@@ -175,7 +200,7 @@ function reply(body) {
     const scheme = /Change only the mark scheme/.test(typeof body.system === 'string' ? body.system : JSON.stringify(body.system));
     const input = scheme
       ? { mark_scheme: 'M1 for multiplying, A1 for 42.', note: 'The mark scheme now gives a method mark.' }
-      : { prompt: 'Work out $6 \times 7$.', answer: '42', marks: 2, mark_scheme: 'M1 A1', solution: '$6 \times 7 = 42$', note: 'Made it a little harder, worth 2 marks.' };
+      : { prompt: 'Work out $6 \\times 7$.', answer: '42', marks: 2, mark_scheme: 'M1 A1', solution: '$6 \\times 7 = 42$', note: 'Made it a little harder, worth 2 marks.' };
     return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_question', input)] };
   }
   if (tools.includes('write_report')) {

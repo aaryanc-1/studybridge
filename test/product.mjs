@@ -1220,20 +1220,23 @@ try {
   await tc.from('questions').insert({ assignment_id: wt.id, type: 'numeric', prompt_md: 'What is $5 + 5$?', marks: 1 });
   await Z.goto(web.url + '#/work/' + wt.id);
   await Z.getByText(/Watched mode: stay on this page until you hand in|Watched mode: this goes full screen/).first().waitFor();
-  await Z.getByRole('button', { name: /^Start/ }).click();
+  await Z.getByRole('button', { name: /^Start/ }).first().click();
+  await Z.getByRole('dialog', { name: 'Ready?' }).getByRole('button', { name: /^Start/ }).click();
   await Z.getByText(/Watched mode: stay on this page until you hand in/).first().waitFor();
   await Z.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await Z.getByRole('dialog').getByText(/warning/i).first().waitFor();
+  await Z.getByRole('alertdialog').getByText('You can’t leave this test').waitFor();
   await shot(Z, 'learner-watched-warning');
-  assert.equal((await tc.from('attempts').select('client').eq('assignment_id', wt.id).single()).data.client, 'Android', 'the tutor sees which device');
+  // the tutor sees which device (the test phone is Edge on Windows underneath, so it says "browser")
+  const client = (await tc.from('attempts').select('client').eq('assignment_id', wt.id).single()).data.client;
+  assert.ok(client && client !== 'desktop', `the tutor sees which device (${client})`);
   // the tutor pauses Zara: she sees it, keeps her work, and can't start anything new
   await A.goto(web.url + '#/learners/' + zaraId);
   await A.getByRole('button', { name: 'Pause', exact: true }).click();
   await A.getByRole('dialog').getByRole('button', { name: 'Pause', exact: true }).click();
-  await A.getByText('Zara is paused').waitFor();
+  await A.getByText(/^Zara is paused \(since/).waitFor();
   await Z.goto(web.url + '#/');
   await Z.reload();
   await Z.getByText(/Your StudyBridge is paused for now/).waitFor();
@@ -1242,28 +1245,42 @@ try {
   await A.getByText('Zara is back on').waitFor();
   // Change this part: Prof changes one question of a hidden test, and it waits as a draft for her to check
   const ct = (await tc.from('assignments').insert({ title: 'Times tables check', kind: 'quiz', subject_id: maths.id, visibility: 'hidden' }).select().single()).data;
-  const cq = (await tc.from('questions').insert({ assignment_id: ct.id, type: 'numeric', prompt_md: 'Work out $3 \times 7$.', marks: 1 }).select().single()).data;
+  const cq = (await tc.from('questions').insert({ assignment_id: ct.id, type: 'numeric', prompt_md: 'Work out $3 \\times 7$.', marks: 1 }).select().single()).data;
   await tc.from('question_keys').insert({ question_id: cq.id, answer: { value: '21' } });
   await A.goto(web.url + '#/assignments/' + ct.id);
   await A.getByRole('button', { name: 'Change question 1 with Prof' }).click();
   await A.getByRole('dialog').getByLabel('What should Prof change?').fill('Make it a bit harder');
   await A.getByRole('dialog').getByRole('button', { name: 'Ask Prof' }).click();
   await A.getByText('Prof changed question 1').waitFor({ timeout: 90000 });
-  await A.getByLabel('Question 1').waitFor();
-  assert.equal(await A.getByLabel('Question 1').inputValue(), 'Work out $6 \times 7$.');
+  const q1 = A.getByRole('textbox', { name: 'Question 1', exact: true });
+  await q1.waitFor();
+  assert.equal(await q1.inputValue(), 'Work out $6 \\times 7$.');
   assert.equal((await tc.from('assignments').select('draft').eq('id', ct.id).single()).data.draft, true, 'a draft until she checks it');
   await shot(A, 'tutor-change-with-prof');
 
-  step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
+  step('Selling: plans are free for now; the tutor sees her plan, can pay with mobile money once the Owner adds the keys, and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
-  await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();
+  await ADM.getByRole('heading', { name: 'Card payments (Stripe)' }).waitFor();
   assert.equal(await ADM.getByRole('switch', { name: 'Enforce plan limits' }).getAttribute('aria-checked'), 'false', 'plan limits start off');
+  await ADM.getByLabel(/^Secret key/).last().fill('FLWSECK_TEST-e2e');
+  await ADM.getByLabel(/^Secret hash/).fill('e2e-hash');
+  await ADM.getByRole('button', { name: 'Save mobile money' }).click();
+  await ADM.getByText('Mobile money saved').waitFor();
+  await ADM.getByText('Secret hash (saved)').waitFor();
   await shot(ADM, 'admin-selling');
   await A.goto(web.url + '#/settings');
   const plan = A.locator('#set-plan');
   await plan.getByText(/Essentials from \$5 and Plus from \$8 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
   await plan.getByText('Plus is on').first().waitFor(); // (Essentials or Plus: everything is on until plan limits are)
+  await plan.locator('.level-card').last().getByRole('button', { name: 'Mobile money' }).click();
+  const mm = A.getByRole('dialog');
+  await mm.getByLabel('How long').selectOption('12');
+  await mm.getByLabel('Currency').selectOption('ZMW');
+  await mm.getByRole('button', { name: /^Pay ZMW [\d,]+$/ }).waitFor();
+  await shot(A, 'tutor-mobile-money');
+  await mm.getByRole('button', { name: 'Cancel' }).click();
+  await srv.db.query(`update public.platform_secrets set flw_secret = null, flw_hash = null where id = 1`);
   // (the message is watched for from the click on: it can come and go while the download is being caught)
   const [zip] = await Promise.all([
     A.waitForEvent('download'),

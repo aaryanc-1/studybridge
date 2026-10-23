@@ -17,6 +17,7 @@ import { bytes } from '../../lib/format.js';
 import { setTheme, useTheme, setTextSize, useTextSize, setDataSaver, useDataSaver, setLiveMode, useLiveMode, useSavedBytes } from '../../lib/device.js';
 import { studentAccess } from '../../lib/students.js';
 import { PayOptions } from '../learner/SelfStudy.jsx';
+import MobileMoney from './MobileMoney.jsx';
 import { SetUpChild, AddWithCode } from '../parent/ChildCodes.jsx';
 import site from '../../../website/site.config.json';
 
@@ -1279,6 +1280,22 @@ function YourPlan() {
   const plusSettled = comp || (level.id === 'plus' && (paid || ['custom', 'starter', 'pro'].includes(p.plan)));
   const canAsk = (id) => !comp && (id === 'plus' ? !plusSettled : level.id !== id);
   const months = period === 'year' ? 12 - site.yearlyMonthsFree : 1;
+  // paying online: by card (a subscription that follows your number of learners) or mobile money (months at a time);
+  // not while a card subscription is running (change or cancel that first) or a plan StudyBridge set up for you
+  const cards = pub.card_prices || [];
+  const canPay = !comp && p.plan !== 'custom' && !p.card;
+  const payOpen = canPay && (cards.length > 0 || pub.mobile_on);
+  async function card(id) {
+    setBusy('card-' + id);
+    try {
+      const r = await api.checkout(id, period);
+      if (r?.url) window.open(r.url, '_blank'); // the desktop app opens this in the browser
+    } catch (e) {
+      toast({ title: 'Couldn’t open the card page', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy('');
+    }
+  }
   async function ask(id) {
     setBusy(id);
     try {
@@ -1366,7 +1383,17 @@ function YourPlan() {
                   </li>
                 ))}
               </ul>
-              {canAsk(l.id) && (
+              {payOpen && (
+                <div className="level-ask row wrap" style={{ gap: 8 }}>
+                  {cards.includes(`${l.id}_${period}`) && (
+                    <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy} onClick={() => card(l.id)}>
+                      {busy === 'card-' + l.id ? 'Opening…' : `Pay by card${period === 'year' ? ' for a year' : ''}`}
+                    </button>
+                  )}
+                  <MobileMoney what={l.id} label="Mobile money" usdFor={(m) => levelCost(l, Math.max(1, p.learners)).total * (m === 12 ? 12 - site.yearlyMonthsFree : m)} />
+                </div>
+              )}
+              {!payOpen && canAsk(l.id) && (
                 <div className="level-ask">
                   <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy || asked.includes(l.id)} onClick={() => ask(l.id)}>
                     {busy === l.id ? 'Asking…' : asked.includes(l.id) ? `Asked for ${l.name}` : `Ask for ${l.name}`}
@@ -1378,14 +1405,20 @@ function YourPlan() {
         })}
       </div>
       {pub.payments_on && p.has_billing && (
-        <div>
+        <div className="row wrap" style={{ gap: 8 }}>
           <button className="btn" disabled={!!busy} onClick={billing}>
             {busy === 'billing' ? 'Opening…' : 'Manage or cancel'}
           </button>
+          {p.card && <span className="small muted">You pay by card. It follows your number of learners: Stripe adds or takes off the difference on your next bill.</span>}
         </div>
       )}
       <div className="small muted">
-        Essentials from $5 and Plus from $8 per learner a month, and less per learner as you grow. New tutors get Plus free for 7 days. For now, StudyBridge arranges payment with you directly.
+        Essentials from $5 and Plus from $8 per learner a month, and less per learner as you grow. Paused learners don’t count. New tutors get Plus free for 7 days.{' '}
+        {payOpen
+          ? 'Pay by card (it renews by itself) or with mobile money (1 to 12 months at a time).'
+          : p.card
+            ? ''
+            : 'For now, StudyBridge arranges payment with you directly.'}
       </div>
     </Section>
   );

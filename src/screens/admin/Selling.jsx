@@ -1,5 +1,5 @@
-// Admin → Selling (1.6): plan limits, payments (Stripe), email (Resend) and Google sign-in. Each is off until
-// the admin switches it on or adds its keys. Keys are write-only: once saved, nobody can read them back.
+// Admin → Selling (1.6): plan limits, payments (Stripe cards, Flutterwave mobile money), email (Resend) and Google
+// sign-in. Each is off until the admin switches it on or adds its keys. Keys are write-only: nobody can read them back.
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Field, Page, Toggle, useToast } from '../../ui/kit.jsx';
@@ -7,18 +7,19 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { getServer } from '../../lib/config.js';
 
+// One Stripe price each, per learner a month or a year, with Stripe's graduated tiers (the steps on the website)
 const PRICES = [
-  ['starter_month', 'Starter, monthly ($15)'],
-  ['starter_year', 'Starter, yearly ($150)'],
-  ['pro_month', 'Pro, monthly ($29)'],
-  ['pro_year', 'Pro, yearly ($290)'],
+  ['essentials_month', 'Essentials, monthly', '$5 for learners 1–10, $4 for 11–30, $3 after'],
+  ['essentials_year', 'Essentials, yearly', '$55, $44 and $33 (11 months for 12)'],
+  ['plus_month', 'Plus, monthly', '$8 for learners 1–10, $6 for 11–30, $4 after'],
+  ['plus_year', 'Plus, yearly', '$88, $66 and $44 (11 months for 12)'],
 ];
 
 export default function SellingPage() {
   const toast = useToast();
   const q = useQuery('admin-selling', api.adminSelling);
   const s = q.data;
-  const [keys, setKeys] = useState({ stripe_secret: '', stripe_webhook: '', resend_key: '' });
+  const [keys, setKeys] = useState({ stripe_secret: '', stripe_webhook: '', resend_key: '', flw_secret: '', flw_hash: '' });
   const [prices, setPrices] = useState(null);
   const [from, setFrom] = useState(null);
   async function save(patch, msg = 'Saved') {
@@ -33,36 +34,53 @@ export default function SellingPage() {
   if (!s) return <Page title="Selling">{q.error ? <div className="error">{q.error.message}</div> : null}</Page>;
   const p = prices || s.prices || {};
   const plans = s.plans || {};
+  const prof = api.profUrl?.() || 'your Supabase URL/functions/v1/prof';
+  async function saveCheckout(patch, msg) {
+    try {
+      await api.adminSetCheckout(patch);
+      invalidate('admin-selling', 'public-settings');
+      toast(msg);
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad' });
+    }
+  }
   return (
     <Page title="Selling" subtitle="Plans, payments, email and Google sign-in. Each stays off until you switch it on or add its keys.">
       <div className="card">
         <h2>Plans</h2>
         <div className="small muted">
-          New prices (on the website): tutors pay per learner on Essentials or Plus, after a 7-day free trial; self-learners pay $11 a month or an exam pass at $9 a month. Until online checkout opens, you take payment yourself, then set the tutor’s plan on their page: Custom (the learners they’ve paid for, until the date they’ve paid to) or Complimentary. Essentials and Plus arrive with the tutor launch. Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
+          Tutors pay per learner on Essentials or Plus, after a 7-day free trial of Plus; self-learners pay $11 a month or an exam pass at $9 a month. Tutors pay by card or mobile money once you add the keys below; you can still take payment yourself and set a tutor’s level and paid-up date on their page (or make them Complimentary). Tutors now: {Object.entries(plans).map(([k, n]) => `${n} ${k}`).join(', ') || 'none yet'}.
         </div>
         <Toggle
           checked={s.enforce_plans}
           onChange={(v) => save({ enforce: v }, v ? 'Plan limits are on' : 'Plan limits are off')}
           title="Enforce plan limits"
-          sub="When on, a learner can’t join a tutor whose plan is full. Leave this off until you start charging. You can still set any tutor’s plan by hand on their page."
+          sub="When on, Plus features need Plus (paid, the free week, or given by you), and old Starter/Pro learner limits apply. Leave this off until you start charging. Make your own tutor account Complimentary first, or it needs Plus too."
         />
       </div>
 
       <div className="card">
-        <h2>Payments (Stripe)</h2>
-        <div className="small muted">Online checkout comes last, once everything is ready. Leave this empty until then: these steps are for the old Starter and Pro plans and will change for per-learner prices.</div>
+        <h2>Card payments (Stripe)</h2>
+        <div className="small muted">
+          Tutors pay by card from Settings → Your plan: a subscription with one place for each of their learners (paused learners don’t count). When a learner joins, leaves or is paused,
+          StudyBridge changes the number on Stripe and Stripe charges or credits the difference on the next bill.
+        </div>
         <ol className="small stack sm" style={{ paddingLeft: 18, margin: 0 }}>
-          <li>In Stripe, make two products (Starter and Pro), each with a monthly and a yearly price, and copy each price’s ID (it starts with price_).</li>
+          <li>
+            In Stripe, make two products, Essentials and Plus. Give each a monthly and a yearly price that is <b>per unit</b> with <b>graduated</b> tiers (the steps below), and copy each price’s ID (it starts with
+            price_).
+          </li>
           <li>Stripe → Developers → API keys: copy the Secret key.</li>
           <li>
-            Stripe → Developers → Webhooks → Add endpoint: <span className="code-box" style={{ display: 'inline', padding: '2px 6px' }}>{`${api.profUrl?.() || 'your Supabase URL/functions/v1/prof'}?stripe=webhook`}</span>, events
+            Stripe → Developers → Webhooks → Add endpoint: <span className="code-box" style={{ display: 'inline', padding: '2px 6px' }}>{`${prof}?stripe=webhook`}</span>, events
             checkout.session.completed, customer.subscription.updated, customer.subscription.deleted and invoice.paid. Copy its signing secret.
             With these saved, students who pay with the Pay by card links (Admin → Students) are switched on by themselves.
           </li>
+          <li>For tax, switch on Stripe Tax in Stripe (Settings → Tax, with where you’re registered), then switch on “Add tax” here. Stripe then asks each tutor for their address and adds the tax due.</li>
         </ol>
         <div className="grid g2" style={{ gap: 10 }}>
-          {PRICES.map(([k, label]) => (
-            <Field key={k} label={label}>
+          {PRICES.map(([k, label, hint]) => (
+            <Field key={k} label={label} hint={hint}>
               <input className="input" value={p[k] || ''} onChange={(e) => setPrices({ ...p, [k]: e.target.value.trim() })} placeholder="price_…" />
             </Field>
           ))}
@@ -86,7 +104,49 @@ export default function SellingPage() {
             Save payments
           </button>
         </div>
-        <div className="tiny muted">Tutors see “Upgrade” in Settings once the secret key and at least one price are saved.</div>
+        <Toggle
+          checked={!!s.stripe_tax}
+          onChange={(v) => saveCheckout({ tax: v }, v ? 'Tax is added at checkout' : 'Tax is off')}
+          title="Add tax (Stripe Tax)"
+          sub="Switch on Stripe Tax in Stripe first. Tutors then give their address at checkout and Stripe adds the right tax."
+        />
+        <div className="tiny muted">Tutors see “Pay by card” in Settings → Your plan for each price you’ve saved here.</div>
+      </div>
+
+      <div className="card">
+        <h2>Mobile money (Flutterwave)</h2>
+        <div className="small muted">
+          For tutors, students and parents who pay with mobile money (Airtel, MTN, M-Pesa and more) or a local card, in their own currency. Tutors pay 1 to 12 months at a time (12 months is 11 months’ price);
+          students pay a month or an exam pass. Every payment is checked with Flutterwave before it counts.
+        </div>
+        <ol className="small stack sm" style={{ paddingLeft: 18, margin: 0 }}>
+          <li>Make a Flutterwave business account and finish its checks (it asks for your business details).</li>
+          <li>Flutterwave → Settings → API keys: copy the Secret key.</li>
+          <li>
+            Flutterwave → Settings → Webhooks: the URL <span className="code-box" style={{ display: 'inline', padding: '2px 6px' }}>{`${prof}?flutterwave=webhook`}</span>; make up a secret hash (a long
+            password), type it there and below.
+          </li>
+        </ol>
+        <div className="grid g2" style={{ gap: 10 }}>
+          <Field label={`Secret key ${s.flw_set ? '(saved)' : ''}`} hint="Write-only: it can’t be read back.">
+            <input className="input" type="password" value={keys.flw_secret} onChange={(e) => setKeys({ ...keys, flw_secret: e.target.value })} placeholder={s.flw_set ? '••••••• (leave empty to keep)' : 'FLWSECK-…'} />
+          </Field>
+          <Field label={`Secret hash ${s.flw_hash_set ? '(saved)' : ''}`}>
+            <input className="input" type="password" value={keys.flw_hash} onChange={(e) => setKeys({ ...keys, flw_hash: e.target.value })} placeholder={s.flw_hash_set ? '••••••• (leave empty to keep)' : 'the same as in Flutterwave'} />
+          </Field>
+        </div>
+        <div>
+          <button
+            className="btn primary"
+            onClick={async () => {
+              await saveCheckout({ flw_secret: keys.flw_secret, flw_hash: keys.flw_hash }, 'Mobile money saved');
+              setKeys({ ...keys, flw_secret: '', flw_hash: '' });
+            }}
+          >
+            Save mobile money
+          </button>
+        </div>
+        <div className="tiny muted">Mobile money shows in the app once both are saved. Prices in kwacha and rupees use the rates in the price list (app_config.pricing).</div>
       </div>
 
       <div className="card">

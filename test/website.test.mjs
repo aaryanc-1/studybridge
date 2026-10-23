@@ -247,3 +247,15 @@ test('website: a sitemap of every page, robots.txt, and a link preview on every 
     rmSync(out, { recursive: true, force: true });
   }
 });
+
+test('website: the prices the server charges (app_config.pricing in setup.sql) are the website’s', () => {
+  const c = siteConfig();
+  const sql = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'utf8');
+  const m = sql.match(/update public\.app_config set pricing = '([\s\S]*?)'::jsonb where id = 1;/);
+  assert.ok(m, 'the price list is in setup.sql');
+  const p = JSON.parse(m[1]);
+  for (const l of c.tutorLevels) assert.deepEqual(p.tutor[l.id], l.steps.map((s) => [s.upTo, s.price]), l.id);
+  assert.equal(p.yearlyMonthsFree, c.yearlyMonthsFree);
+  assert.deepEqual([p.student.month, p.student.passMonth], [c.selfLearner.month, c.selfLearner.passMonth]);
+  assert.deepEqual(p.rates, Object.fromEntries(c.currencies.map((x) => [x.code, x.rate])));
+});
