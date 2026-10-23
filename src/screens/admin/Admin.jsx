@@ -351,15 +351,16 @@ export function PlanModal({ t, onClose }) {
   const [until, setUntil] = useState(t.plan_until || '');
   const [custom, setCustom] = useState(!!t.ai_limit_custom);
   const [limit, setLimit] = useState((Number(t.ai_limit_cents) / 100).toFixed(2));
-  // Essentials or Plus, paid up to, more free days. The Tutors list has them; a tutor's own page may not, so look there.
-  const known = t.level !== undefined;
-  const tutors = useQuery('admin-tutors', api.adminTutors, { enabled: !known }).data;
-  const lv = known ? t : (tutors || []).find((x) => x.id === t.id);
+  // Essentials or Plus, paid up to, places, more free days: theirs, or their centre's when the centre pays for everyone
+  const lv = useQuery(`admin-bill:${t.id}`, () => api.adminBill(t.id)).data;
+  const viaCentre = lv?.payer === 'centre';
   const [level, setLevel] = useState(null); // null: as it is
   const [paidUntil, setPaidUntil] = useState(null);
+  const [seats, setSeats] = useState(null);
   const [moreDays, setMoreDays] = useState('');
   const levelNow = level ?? lv?.level ?? 'plus';
   const paidNow = paidUntil ?? lv?.paid_until ?? '';
+  const seatsNow = seats ?? (lv?.paid_seats != null ? String(lv.paid_seats) : '');
   const trialOn = lv?.trial_until && new Date(lv.trial_until) > new Date();
   return (
     <Modal
@@ -376,9 +377,14 @@ export function PlanModal({ t, onClose }) {
               try {
                 await api.adminSetPlan(t.id, plan, custom ? Math.round(Number(limit) * 100) : null, plan === 'custom' ? Math.round(Number(learners)) : null, plan === 'complimentary' ? until || null : null);
                 const days = Math.round(Number(moreDays)) || 0;
-                if (lv && (levelNow !== lv.level || (paidNow || null) !== (lv.paid_until || null) || days > 0))
+                const places = seatsNow === '' ? null : Math.round(Number(seatsNow));
+                const changed = lv && (levelNow !== lv.level || (paidNow || null) !== (lv.paid_until || null) || places !== (lv.paid_seats ?? null) || days > 0);
+                if (changed && viaCentre) await api.adminSetOrgPlan(lv.org_id, levelNow, paidNow || null, places, days > 0 ? days : null);
+                else if (changed) {
                   await api.adminSetLevel(t.id, levelNow, paidNow || null, days > 0 ? days : null);
-                invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview', 'admin-selling');
+                  if (places !== (lv.paid_seats ?? null)) await api.adminSetSeats(t.id, places);
+                }
+                invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview', 'admin-selling', `admin-bill:${t.id}`);
                 toast('Saved');
                 onClose();
               } catch (e) {
@@ -391,11 +397,11 @@ export function PlanModal({ t, onClose }) {
         </>
       }
     >
-      <Field label="Plan" hint={`They have ${t.learners ?? 0} learner${Number(t.learners) === 1 ? '' : 's'}. Learner limits apply once plan limits are on (Admin → Selling).`}>
+      <Field label="Plan" hint={`They have ${t.learners ?? 0} learner${Number(t.learners) === 1 ? '' : 's'}. What they’ve paid for applies once plan limits are on (Admin → Selling).`}>
         <select className="select" value={plan} onChange={(e) => setPlan(e.target.value)} aria-label="Plan">
-          {PLANS.map((p) => (
+          {PLANS.filter((p) => !p.old || p.id === t.plan).map((p) => (
             <option key={p.id} value={p.id}>
-              {p.id === 'custom' ? 'Custom: you choose the number of learners' : p.id === 'complimentary' ? 'Complimentary: Pro for free (25 learners)' : `${p.name}: ${p.learners} learner${p.learners === 1 ? '' : 's'}`}
+              {p.choice}
             </option>
           ))}
         </select>
@@ -406,13 +412,14 @@ export function PlanModal({ t, onClose }) {
         </Field>
       )}
       {plan === 'complimentary' && (
-        <Field label="Free until (optional)" hint="Leave it empty to keep it free. After this day they move to the Free plan. Never charged.">
+        <Field label="Free until (optional)" hint="Leave it empty to keep it free. After this day they pay per learner like everyone else. Never charged.">
           <input className="input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
         </Field>
       )}
       {lv ? (
         <>
-          <Field label="Level" hint={`Plus adds Prof, mocks with grades, the exam camera and StudyBridge’s library. Plus is ${lv.plus === false ? 'off' : 'on'} for them now.`}>
+          {viaCentre && <div className="note small">{lv.org_name} pays for everyone in it, so these change the centre’s plan ({lv.learners} learners in the centre).</div>}
+          <Field label="Level" hint="Plus adds Prof, mocks with grades, the exam camera and StudyBridge’s library.">
             <select className="select" value={levelNow} onChange={(e) => setLevel(e.target.value)}>
               <option value="essentials">Essentials</option>
               <option value="plus">Plus</option>
@@ -422,13 +429,16 @@ export function PlanModal({ t, onClose }) {
             <Field label="Paid up to" hint="The last day they’ve paid for. Leave it empty if they haven’t paid.">
               <input className="input" type="date" value={paidNow} onChange={(e) => setPaidUntil(e.target.value)} />
             </Field>
+            <Field label="Learners paid for" hint="Places for learners. Leave it empty for any number.">
+              <input className="input" type="number" min="1" step="1" value={seatsNow} placeholder="Any number" onChange={(e) => setSeats(e.target.value)} />
+            </Field>
             <Field label="More free days" hint={trialOn ? `Free week until ${shortDay(lv.trial_until)}. Days you add go on from there (up to 60).` : 'Free days of Plus from today (up to 60). Leave it empty for none.'}>
               <input className="input" type="number" min="1" max="60" step="1" value={moreDays} placeholder="None" onChange={(e) => setMoreDays(e.target.value)} />
             </Field>
           </div>
         </>
       ) : (
-        !tutors && <div className="small muted">Loading their level…</div>
+        <div className="small muted">Loading their level…</div>
       )}
       <Toggle checked={custom} onChange={setCustom} title="Own Prof allowance" sub="Otherwise they get the default allowance from Admin settings." />
       {custom && (

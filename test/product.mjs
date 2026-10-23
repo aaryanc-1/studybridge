@@ -813,6 +813,25 @@ try {
   await torg.getByText('Aaryan Chouhan', { exact: true }).waitFor();
   assert.equal(await torg.getByRole('button', { name: 'Take out of the centre' }).count(), 0, 'only managers take tutors out');
   await a11y(T3, 'Settings → Your organisation');
+  // one bill for the centre: the manager chooses it, Tom sees the centre pays, and the Owner sees it on Tom's plan
+  await org.getByRole('button', { name: 'The centre pays for everyone' }).click();
+  await A.getByText('The centre pays for everyone now').waitFor();
+  await org.getByText(/One bill for the whole centre/).waitFor();
+  await T3.goto(web.url + '#/settings?s=plan');
+  await T3.reload();
+  const tplan = T3.locator('#set-plan');
+  await tplan.getByText(/Bright Minds Centre pays for StudyBridge for all its tutors/).waitFor();
+  await tplan.getByText('Your centre’s manager chooses the level and pays for everyone in Settings → Your plan.').waitFor();
+  assert.equal(await tplan.getByRole('button', { name: /Ask for|Pay by card|Mobile money/ }).count(), 0, 'only the manager pays');
+  await shot(T3, 'tutor-centre-pays');
+  await nav(ADM, 'Tutors').click();
+  await ADM.locator('.tutor-row', { hasText: 'Tom Phiri' }).getByRole('button', { name: 'Plan & Prof' }).click();
+  await ADM.getByRole('dialog').getByText(/Bright Minds Centre pays for everyone in it/).waitFor();
+  await ADM.getByRole('dialog').getByLabel('Learners paid for').waitFor();
+  await ADM.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await org.getByRole('button', { name: 'Each tutor pays for their own learners' }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Each tutor pays', exact: true }).click();
+  await A.getByText('Each tutor pays for their own learners now').waitFor();
   // the manager's Centre page: every tutor and learner, read-only
   await A.reload();
   await nav(A, 'Centre').click();

@@ -1410,10 +1410,10 @@ test('selling basics: plan limits only once switched on; download my data; delet
   await fails(as('TW', `select _set_paid_plan($1, 'pro', 'month', 'cus_1', null)`, [U.TW]), /permission denied/);
   const plan = await val('TW', `select my_plan()`);
   assert.equal(plan.plan, 'free');
-  assert.equal(plan.limit, 1);
+  assert.equal(plan.state, 'trial', 'a new tutor’s free week');
   assert.equal(plan.enforced, false);
 
-  // a fresh tutor on the Free plan: limits off, a second learner can join; on, the next one can't
+  // no more Free/Starter/Pro caps: a tutor pays per learner, so the only limit is what they've paid for
   U.TP = (await db.query(`insert into auth.users (email) values ('plan-tutor@x.com') returning id`)).rows[0].id;
   await as('TP', `select * from become_tutor('Plan Tutor', 'UTC')`);
   await as('A', `select admin_set_status($1, 'active')`, [U.TP]);
@@ -1425,13 +1425,35 @@ test('selling basics: plan limits only once switched on; download my data; delet
   await join('P1');
   await join('P2');
   await as('A', `select admin_set_selling(p_enforce => true)`);
-  await fails(join('P3'), /plan is full/);
-  assert.equal((await val('TP', `select my_plan()`)).learners, 2);
-  await db.query(`select _set_paid_plan($1, 'starter', 'month', 'cus_123', now() + interval '30 days')`, [U.TP]);
-  await join('P4');
-  assert.equal((await val('TP', `select my_plan()`)).limit, 5);
-  assert.equal((await as('TP', `select * from notifications where kind = 'plan'`)).length, 1);
-  await as('A', `select admin_set_selling(p_enforce => false, p_resend_key => 're_x', p_email_from => 'hello@example.com')`);
+  try {
+    await join('P3'); // the free week: any number
+    await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.TP]);
+    await fails(join('P4'), /needs paying before new learners can join/);
+    assert.deepEqual([(await val('TP', `select my_plan()`)).state, (await val('TP', `select my_plan()`)).learners], ['unpaid', 3]);
+    // paid by hand (or with mobile money) for 4 places: one more can join, then it's full
+    await as('A', `select admin_set_level($1, 'essentials', (current_date + 30)::date)`, [U.TP]);
+    await fails(as('TP', `select admin_set_seats($1, 40)`, [U.TP]), /admins only/i);
+    await as('A', `select admin_set_seats($1, 4)`, [U.TP]);
+    await join('P5');
+    await fails(join('P6'), /paid for 4 places and they’re all taken/);
+    // a paused learner frees a place; bringing them back needs one
+    await as('TP', `select pause_learner($1)`, [U.P1]);
+    await join('P7');
+    await fails(as('TP', `select pause_learner($1, false)`, [U.P1]), /places you’ve paid for are taken/);
+    // a card subscription: no limit, the bill follows the learners
+    await db.query(`select _set_paid_level($1, 'essentials', 'month', 'cus_123', 'sub_tp', now() + interval '30 days')`, [U.TP]);
+    await join('P8');
+    await as('TP', `select pause_learner($1, false)`, [U.P1]);
+    const tp = await val('TP', `select my_plan()`);
+    assert.deepEqual([tp.state, tp.learners, tp.card], ['card', 6, true]);
+    // old Starter plans keep their 5 places (paid by hand); Complimentary has no limit
+    await db.query(`update profiles set stripe_tutor_sub = null, paid_until = null, plan = 'starter' where id = $1`, [U.TP]);
+    await fails(join('P9'), /paid for 5 places/);
+    await as('A', `select admin_set_plan($1, 'complimentary')`, [U.TP]);
+    await join('P10');
+  } finally {
+    await as('A', `select admin_set_selling(p_enforce => false, p_resend_key => 're_x', p_email_from => 'hello@example.com')`);
+  }
   assert.equal((await val(null, `select public_settings()`)).email_on, true);
   assert.equal((await val('A', `select admin_selling()`)).resend_set, true);
   await fails(as('A', `select resend_key from platform_secrets`), /permission denied/);
@@ -1485,7 +1507,7 @@ test('plans come from a list: custom learner limits, complimentary plans with an
   await db.exec(SETUP);
   const t = () => val('A', `select admin_tutor($1)`, [U.PL]);
   assert.equal((await t()).plan, 'complimentary');
-  assert.equal((await t()).plan_limit, 25);
+  assert.equal((await t()).plan_limit, 1000000, 'Complimentary: any number of learners');
   await fails(db.query(`update profiles set plan = 'Gold' where id = $1`, [U.PL]), /profiles_plan_check/);
   // only plans from the list
   await fails(as('A', `select admin_set_plan($1, 'Gold')`, [U.PL]), /from the list/);
@@ -1498,11 +1520,11 @@ test('plans come from a list: custom learner limits, complimentary plans with an
   // keeping the plan while changing only the Prof allowance keeps the custom number
   await as('A', `select admin_set_plan($1, 'custom', 500)`, [U.PL]);
   assert.equal((await t()).plan_limit, 40);
-  // Complimentary: Pro-sized until its end date, then Free
+  // Complimentary: free until its end date, then they pay per learner like everyone else
   await as('A', `select admin_set_plan($1, 'complimentary', null, null, current_date + 30)`, [U.PL]);
-  assert.equal((await val('PL', `select my_plan()`)).limit, 25);
+  assert.equal((await val('PL', `select my_plan()`)).state, 'free');
   await as('A', `select admin_set_plan($1, 'complimentary', null, null, current_date - 1)`, [U.PL]);
-  assert.equal((await val('PL', `select my_plan()`)).limit, 1, 'after the end date it is the Free plan');
+  assert.equal((await val('PL', `select my_plan()`)).state, 'trial', 'after the end date: their own free week, then paying');
   await as('A', `select admin_set_plan($1, 'starter')`, [U.PL]);
   const st = await t();
   assert.deepEqual([st.plan, st.plan_limit, st.plan_until], ['starter', 5, null]);
@@ -2777,4 +2799,94 @@ test('online checkout: per-learner prices; mobile money counts only once Flutter
   assert.ok(!JSON.stringify(sel).includes('FLWSECK'), 'never shown again');
   assert.equal((await val('A', `select public_settings()`)).mobile_on, true);
   await db.exec(`update platform_secrets set flw_secret = null, flw_hash = null where id = 1; update app_config set stripe_tax = false where id = 1`);
+});
+
+test('one bill for a centre; places paid for with mobile money; a watched page that goes quiet', async () => {
+  const sql = async (q, p) => (await db.query(q, p)).rows[0];
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['BM', 'BT']) {
+    await mk(k, k.toLowerCase() + '@bill.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k === 'BM' ? 'Bill Manager' : 'Bill Tutor']);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const addLearner = async (tutor, k) => {
+    await mk(k, k.toLowerCase() + '@bill.x');
+    const c = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    return one(k, `select * from accept_invite($1, $2)`, [c, k]);
+  };
+  await addLearner('BM', 'BL1');
+  await addLearner('BT', 'BL2');
+  await addLearner('BT', 'BL3');
+  const centre = await val('BM', `select org_make_centre('Bill Centre')`);
+  await val('BT', `select org_join($1)`, [centre.code]);
+  // only a manager chooses who pays; the centre starts with a free week; the tutors are told
+  await fails(as('BT', `select org_set_billing(true, 'plus')`), /Only the manager/);
+  await as('BM', `select org_set_billing(true, 'plus')`);
+  assert.deepEqual(await val('BT', `select my_org_billing()`), { billing: 'centre', level: 'plus', learners: 3 });
+  const bt = await val('BT', `select my_plan()`);
+  assert.deepEqual([bt.state, bt.learners, bt.own_learners, bt.centre.name, bt.centre.manager], ['trial', 3, 2, 'Bill Centre', false]);
+  assert.equal(await val('BT', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Bill Centre pays for StudyBridge now'`), 1);
+  // a tutor can't pay for the centre; the manager pays for the whole centre's learners
+  await fails(db.query(`select _mobile_payment_new($1, 'plus', 1, 'USD')`, [U.BT]), /Your centre pays/);
+  const pay = (await sql(`select _mobile_payment_new($1, 'plus', 2, 'USD', null, 4) v`, [U.BM])).v;
+  assert.deepEqual([pay.seats, Number(pay.amount)], [4, 8 * 4 * 2]);
+  assert.equal((await sql(`select kind, org_id from mobile_payments where tx_ref = $1`, [pay.tx_ref])).kind, 'centre');
+  assert.equal((await sql(`select _mobile_payment_done($1, $2, 'USD', 'f1') v`, [pay.tx_ref, pay.amount])).v, true);
+  const paid = await val('BT', `select my_plan()`);
+  assert.deepEqual([paid.state, paid.seats, paid.level], ['paid', 4, 'plus']);
+  // the centre's places are shared: with limits on, one more learner fits anywhere in it, then add places
+  await as('A', `select admin_set_selling(p_enforce => true)`);
+  try {
+    await addLearner('BT', 'BL4');
+    await fails(addLearner('BM', 'BL5'), /paid for 4 places/);
+    // two more places for the rest of the paid time: the next step's price, for each month left
+    const more = (await sql(`select _mobile_payment_new($1, 'seats', 1, 'USD', null, 2) v`, [U.BM])).v;
+    assert.deepEqual([more.seats, more.months, Number(more.amount)], [2, 2, 8 * 2 * 2]);
+    await sql(`select _mobile_payment_done($1, $2, 'USD', 'f2') v`, [more.tx_ref, more.amount]);
+    await addLearner('BM', 'BL6');
+    assert.equal((await val('BM', `select my_plan()`)).seats, 6);
+    // a tutor on their own can't add places to a plan they haven't paid for that way
+    await fails(db.query(`select _mobile_payment_new($1, 'seats', 1, 'USD', null, 1)`, [U.T]), /Pay for your plan first/);
+  } finally {
+    await as('A', `select admin_set_selling(p_enforce => false)`);
+  }
+  // by card: the centre's subscription follows every learner in it
+  await db.query(`select _set_org_paid($1, 'plus', 'month', 'cus_c', 'sub_c', now() + interval '30 days')`, [centre.id]);
+  assert.equal((await val('BM', `select my_plan()`)).state, 'card');
+  let due = (await sql(`select _seats_due() v`)).v.find((x) => x.org === centre.id);
+  assert.deepEqual([due.sub, due.seats], ['sub_c', 5]);
+  await db.query(`select _org_seats_synced($1, 5)`, [centre.id]);
+  assert.equal((await sql(`select _seats_due() v`)).v.find((x) => x.org === centre.id), undefined);
+  assert.equal((await sql(`select _checkout_target($1) v`, [U.BT])).v.manager, false);
+  await fails(as('BM', `select org_set_billing(false)`), /Cancel that first/);
+  await db.query(`select _set_org_paid($1, 'plus', null, null, null, null)`, [centre.id]);
+  // leaving a centre that paid: a week to sort out their own plan
+  await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.BT]);
+  await val('BT', `select org_leave()`);
+  const own = await val('BT', `select my_plan()`);
+  assert.deepEqual([own.state, own.centre, own.learners], ['trial', null, 3]);
+  // the Owner sees and sets a centre's plan by hand
+  await fails(as('BM', `select admin_bill($1)`, [U.BM]), /admins only/i);
+  assert.equal((await val('A', `select admin_bill($1)`, [U.BM])).payer, 'centre');
+  await as('A', `select admin_set_org_plan($1, 'essentials', (current_date + 10)::date, 20)`, [centre.id]);
+  assert.deepEqual([(await val('BM', `select my_plan()`)).level, (await val('BM', `select my_plan()`)).seats], ['essentials', 20]);
+  // only the Prof server records payments
+  await fails(as('BM', `select _set_org_paid($1, 'plus', 'month', null, null, now())`, [centre.id]), /permission denied/);
+
+  // watched mode: the page says it's there; quiet for 2 minutes, the tutor is told once
+  const wt = await val('BM', `insert into assignments (title, kind, lockdown, watched, visibility) values ('Watched check', 'test', true, true, 'visible') returning id`);
+  await val('BM', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '1 + 1?', 1) returning id`, [wt]);
+  const at = await one('BL1', `select * from start_attempt($1, 'Chromebook')`, [wt]);
+  await as('BL1', `select watch_seen($1)`, [at.id]);
+  assert.equal((await sql(`select public._watch_away() v`)).v, 0, 'still there');
+  await db.query(`update attempts set seen_at = now() - interval '3 minutes' where id = $1`, [at.id]);
+  assert.equal((await sql(`select public._watch_away() v`)).v, 1);
+  assert.equal((await sql(`select public._watch_away() v`)).v, 0, 'once');
+  assert.equal(await val('BM', `select count(*)::int from notifications where user_id = auth.uid() and title = 'BL1: not on the page for 2 minutes'`), 1);
+  assert.match((await val('BM', `select attempt_detail($1)`, [at.id])).attempt.lockdown_events.at(-1).event, /Not on the page for 2 minutes/);
+  assert.ok((await val('BM', `select attempt_detail($1)`, [at.id])).attempt.seen_at, 'the tutor sees when it was last there');
+  assert.equal((await val('BL1', `select attempt_detail($1)`, [at.id])).attempt.seen_at, null, 'only the tutor');
+  await fails(as('BL1', `select public._watch_away()`), /permission denied/);
 });

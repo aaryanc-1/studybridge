@@ -147,12 +147,17 @@ export default function Attempt({ id }) {
         setStrike({ warningsLeft: 0, event });
       }
     };
-    // Open in this tab before, but this page is new: it was reloaded (or left for another site and opened again)
+    // Open on this device before, but this page is new: it was reloaded, the tab or browser was closed, or it was left for
+    // another site and opened again (kept on the device, so closing the tab counts too)
     try {
-      if (lock && !openHere.has(id) && sessionStorage.getItem(key) === 'open') leave('Reloaded the page or left it and came back');
-      sessionStorage.setItem(key, 'open');
+      if (lock && !openHere.has(id) && localStorage.getItem(key) === 'open') leave('Closed or reloaded the page and came back');
+      localStorage.setItem(key, 'open');
     } catch {}
     openHere.add(id);
+    // still on the page: the tutor sees it, and is told when the page goes quiet for 2 minutes
+    const beat = () => document.visibilityState === 'visible' && navigator.onLine !== false && api.watchSeen(id).catch(() => {});
+    beat();
+    const beatEvery = setInterval(beat, 30 * 1000);
 
     // the screen stays on (a phone that locks itself while they think would look like leaving)
     let wake = null;
@@ -201,6 +206,7 @@ export default function Attempt({ id }) {
     document.addEventListener('pointerdown', touch, true);
     return () => {
       clearTimeout(pickEnd);
+      clearInterval(beatEvery);
       document.removeEventListener('pointerdown', touch, true);
       document.body.classList.remove('watching');
       document.removeEventListener('visibilitychange', hidden);
@@ -218,7 +224,7 @@ export default function Attempt({ id }) {
     if (!done) return;
     openHere.delete(id);
     try {
-      sessionStorage.removeItem(`sb.watched.${id}`);
+      localStorage.removeItem(`sb.watched.${id}`);
     } catch {}
   }, [done, id]);
   // Leaving the page inside the app (the browser's back button or a back swipe) is leaving too: it's counted, and
@@ -229,7 +235,7 @@ export default function Attempt({ id }) {
       if (!what || doneRef.current) return;
       openHere.delete(id);
       try {
-        sessionStorage.setItem(`sb.watched.${id}`, 'left'); // counted now, so not again when they come back
+        localStorage.setItem(`sb.watched.${id}`, 'left'); // counted now, so not again when they come back
       } catch {}
       api
         .lockdownStrike(id, 'Left the page')

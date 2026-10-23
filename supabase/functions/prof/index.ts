@@ -1600,7 +1600,8 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     }
   };
   // A tutor pays by card for Essentials or Plus: a subscription for each of their active learners (Stripe's price has
-  // the per-learner steps), monthly or yearly; the number of learners is kept in step afterwards (syncSeats)
+  // the per-learner steps), monthly or yearly; the number of learners is kept in step afterwards (syncSeats). When their
+  // centre pays for everyone, its manager pays for every learner in the centre the same way.
   async function checkout(user, body) {
     const level = ['essentials', 'plus'].includes(body.level) ? body.level : null;
     const period = body.period === 'year' ? 'year' : 'month';
@@ -1608,12 +1609,14 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     const cfg = await sellingConfig();
     const price = cfg.prices?.[`${level}_${period}`];
     if (!cfg.stripe_secret || !price) return json({ error: 'Paying by card isn’t open yet.' }, 400);
-    const me = (await rest(`profiles?id=eq.${user.id}&select=email,stripe_customer`))[0] || {};
-    const learners = await rest(`profiles?tutor_id=eq.${user.id}&role=eq.learner&paused_at=is.null&select=id`);
-    const seats = Math.max(1, (learners || []).length);
+    const who = await rpc('_checkout_target', { p_user: user.id });
+    if (!who) return json({ error: 'Tutors only.' }, 403);
+    if (!who.manager) return json({ error: 'Your centre pays for StudyBridge. Its manager pays in Settings → Your plan.' }, 400);
+    const seats = Math.max(1, Number(who.learners) || 0);
     const sell = await rpc('_selling', {});
     const back = safeReturn(body.return_url);
-    const meta = { tutor: user.id, level, period };
+    const meta = who.kind === 'centre' ? { org: who.id, by: user.id, level, period } : { tutor: user.id, level, period };
+    const me = { email: who.email, stripe_customer: who.customer };
     const s = await stripe(cfg.stripe_secret, 'checkout/sessions', {
       mode: 'subscription',
       line_items: { 0: { price, quantity: seats } },
@@ -1625,7 +1628,8 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       success_url: back,
       cancel_url: back,
     });
-    await rpc('_seats_synced', { p_tutor: user.id, p_seats: seats });
+    if (who.kind === 'centre') await rpc('_org_seats_synced', { p_org: who.id, p_seats: seats });
+    else await rpc('_seats_synced', { p_tutor: user.id, p_seats: seats });
     return json({ url: s.url });
   }
   // The number of learners a tutor pays for follows them (joining, leaving, pausing); Stripe works out the difference
@@ -1639,10 +1643,11 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
         const item = sub?.items?.data?.[0];
         if (!item) continue;
         if (item.quantity !== d.seats) await stripe(cfg.stripe_secret, `subscription_items/${encodeURIComponent(item.id)}`, { quantity: d.seats, proration_behavior: 'create_prorations' });
-        await rpc('_seats_synced', { p_tutor: d.tutor, p_seats: d.seats });
+        if (d.org) await rpc('_org_seats_synced', { p_org: d.org, p_seats: d.seats });
+        else await rpc('_seats_synced', { p_tutor: d.tutor, p_seats: d.seats });
         n++;
       } catch (e) {
-        console.error('Prof seats:', d.tutor, e);
+        console.error('Prof seats:', d.tutor || d.org, e);
       }
     }
     return n;
@@ -1656,7 +1661,8 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     if (!sell?.flw_secret || !sell?.flw_hash) return json({ error: 'Mobile money isn’t open yet.' }, 400);
     let p;
     try {
-      p = await rpc('_mobile_payment_new', { p_user: user.id, p_what: String(body.what || ''), p_months: Number(body.months) || 1, p_currency: String(body.currency || 'USD'), p_for: body.for || null });
+      p = await rpc('_mobile_payment_new', { p_user: user.id, p_what: String(body.what || ''), p_months: Number(body.months) || 1, p_currency: String(body.currency || 'USD'), p_for: body.for || null,
+        p_seats: Number(body.seats) || null });
     } catch (e) {
       return json({ error: e.message }, 400);
     }
@@ -1669,7 +1675,14 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
         currency: p.currency,
         redirect_url: safeReturn(body.return_url),
         customer: { email: p.email, name: p.name || undefined },
-        customizations: { title: 'StudyBridge', description: p.what === 'pass' ? `Exam pass, ${p.months} month(s)` : p.what === 'monthly' ? 'One month' : `${p.what === 'plus' ? 'Plus' : 'Essentials'}, ${p.months} month(s)` },
+        customizations: {
+          title: 'StudyBridge',
+          description:
+            p.what === 'pass' ? `Exam pass, ${p.months} month(s)`
+            : p.what === 'monthly' ? 'One month'
+            : p.what === 'seats' ? `${p.seats} more place(s) for learners`
+            : `${p.what === 'plus' ? 'Plus' : 'Essentials'} for ${p.seats} learner(s), ${p.months} month(s)`,
+        },
         meta: { user: user.id },
       }),
     });
@@ -1696,11 +1709,13 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     }
     return json({ received: true });
   }
+  // Stripe's page to change or cancel a card plan: the tutor's own, or (for its manager) the centre's
   async function billing(user, body) {
     const cfg = await sellingConfig();
-    const me = (await rest(`profiles?id=eq.${user.id}&select=stripe_customer`))[0] || {};
-    if (!cfg.stripe_secret || !me.stripe_customer) return json({ error: 'There’s no paid plan to manage.' }, 400);
-    const s = await stripe(cfg.stripe_secret, 'billing_portal/sessions', { customer: me.stripe_customer, return_url: safeReturn(body.return_url) });
+    const who = await rpc('_checkout_target', { p_user: user.id });
+    const customer = body.own || who?.kind !== 'centre' ? who?.own_customer : who.manager ? who.customer : null;
+    if (!cfg.stripe_secret || !customer) return json({ error: 'There’s no paid plan to manage.' }, 400);
+    const s = await stripe(cfg.stripe_secret, 'billing_portal/sessions', { customer, return_url: safeReturn(body.return_url) });
     return json({ url: s.url });
   }
   async function hmacHex(secret, text) {
@@ -1748,6 +1763,21 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     }
     if (ev.type === 'invoice.paid' && o.subscription && o.billing_reason === 'subscription_cycle') {
       await rpc('_student_renewed', { p_subscription: o.subscription });
+      return json({ received: true });
+    }
+    // a centre's card plan (its manager pays for everyone in it): the same, for the centre
+    if (m.org && m.level) {
+      if (ev.type === 'checkout.session.completed' && o.subscription) {
+        const sub = await stripeGet(cfg.stripe_secret, `subscriptions/${encodeURIComponent(o.subscription)}`);
+        const end = sub.current_period_end || sub.items?.data?.[0]?.current_period_end;
+        await rpc('_set_org_paid', { p_org: m.org, p_level: m.level, p_period: m.period, p_customer: o.customer || null, p_sub: o.subscription,
+          p_until: end ? new Date(end * 1000).toISOString() : new Date(Date.now() + 31 * 86400000).toISOString() });
+      } else if (ev.type === 'customer.subscription.updated' || ev.type === 'customer.subscription.deleted') {
+        const live = ev.type === 'customer.subscription.updated' && ['active', 'trialing', 'past_due'].includes(o.status);
+        const end = o.current_period_end || o.items?.data?.[0]?.current_period_end;
+        await rpc('_set_org_paid', { p_org: m.org, p_level: m.level, p_period: live ? m.period : null, p_customer: o.customer || null, p_sub: live ? o.id : null,
+          p_until: live && end ? new Date(end * 1000).toISOString() : null });
+      }
       return json({ received: true });
     }
     // a tutor's Essentials or Plus by card: the level, paid up to the end of the period Stripe has been paid for

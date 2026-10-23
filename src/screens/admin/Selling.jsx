@@ -55,7 +55,7 @@ export default function SellingPage() {
           checked={s.enforce_plans}
           onChange={(v) => save({ enforce: v }, v ? 'Plan limits are on' : 'Plan limits are off')}
           title="Enforce plan limits"
-          sub="When on, Plus features need Plus (paid, the free week, or given by you), and old Starter/Pro learner limits apply. Leave this off until you start charging. Make your own tutor account Complimentary first, or it needs Plus too."
+          sub="When on, learners can join a tutor only while their free week lasts or they’ve paid (for as many learners as they’ve paid for; a card plan follows them), and Plus features need Plus. Leave this off until you start charging. Make your own tutor account Complimentary first, or it needs paying too."
         />
       </div>
 

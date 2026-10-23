@@ -99,6 +99,11 @@ export const myPlan = () => run(sb().rpc('my_plan'));
 export const adminSetLevel = (userId, level, paidUntil = null, trialDays = null) =>
   run(sb().rpc('admin_set_level', { p_user: userId, p_level: level, p_paid_until: paidUntil || null, p_trial_days: trialDays }));
 export const askLevel = (level) => run(sb().rpc('ask_level', { p_level: level }));
+// The Owner: a tutor's plan as it stands (theirs or their centre's), the places they've paid for, a centre's plan
+export const adminBill = (userId) => run(sb().rpc('admin_bill', { p_tutor: userId }));
+export const adminSetSeats = (userId, seats) => run(sb().rpc('admin_set_seats', { p_user: userId, p_seats: seats }));
+export const adminSetOrgPlan = (orgId, level, paidUntil = null, seats = null, trialDays = null) =>
+  run(sb().rpc('admin_set_org_plan', { p_org: orgId, p_level: level, p_paid_until: paidUntil || null, p_seats: seats, p_trial_days: trialDays }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));
@@ -114,10 +119,11 @@ export const adminSetSelling = (patch) =>
 // Pay by card (Essentials or Plus, monthly or yearly, for each active learner) or by mobile money (what: essentials |
 // plus for tutors, monthly | pass for students; a parent passes their child as forId)
 export const checkout = (level, period) => callProf('checkout', { level, period, return_url: webHome() });
-export const mobilePay = (what, months, currency, forId = null) => callProf('mobile_pay', { what, months, currency, for: forId, return_url: webHome() });
+export const mobilePay = (what, months, currency, forId = null, seats = null) => callProf('mobile_pay', { what, months, currency, for: forId, seats, return_url: webHome() });
 export const adminSetCheckout = (patch) =>
   run(sb().rpc('admin_set_checkout', { p_tax: patch.tax ?? null, p_flw_secret: patch.flw_secret || null, p_flw_hash: patch.flw_hash || null }));
-export const billingPortal = () => callProf('billing', { return_url: webHome() });
+// Stripe's page for a card plan: the centre's (for its manager) or, with own, the tutor's own
+export const billingPortal = (own = false) => callProf('billing', { own, return_url: webHome() });
 export const emailReport = (reportId) => callProf('email_report', { report_id: reportId });
 export const profUrl = () => (getServer()?.url ? `${getServer().url}/functions/v1/prof` : null);
 
@@ -214,6 +220,9 @@ export const nudgeAssignment = (id) => run(sb().rpc('nudge_assignment', { p_assi
 // ---------------- organisations and classes ----------------
 // Every tutor is in an organisation (their own, or a tuition centre they joined with its code)
 export const myOrg = () => run(sb().rpc('my_org'));
+// Who pays in a centre: each tutor, or the centre for everyone (one bill)
+export const myOrgBilling = () => run(sb().rpc('my_org_billing'));
+export const orgSetBilling = (centre, level = null) => run(sb().rpc('org_set_billing', { p_centre: centre, p_level: level }));
 export const orgRename = (name) => run(sb().rpc('org_rename', { p_name: name }));
 export const orgMakeCentre = (name = null) => run(sb().rpc('org_make_centre', { p_name: name }));
 export const orgNewCode = () => run(sb().rpc('org_new_code'));
@@ -700,6 +709,8 @@ export const logTime = (kind, ref, seconds) =>
   previewOpen() ? Promise.resolve(null) : sendOrQueue({ kind: 'rpc', fn: 'log_time', args: { p_kind: kind, p_ref: ref, p_seconds: Math.round(seconds) } }).catch(() => {});
 // A try to leave a locked-down exam: the server counts it, and hands the exam in after the tutor's warnings
 export const lockdownStrike = (attemptId, event) => run(sb().rpc('lockdown_strike', { p_attempt: attemptId, p_event: event }));
+// Watched mode: the page is still there (every 30 seconds)
+export const watchSeen = (attemptId) => run(sb().rpc('watch_seen', { p_attempt: attemptId }));
 // The tutor ends an exam early: 'hand_in' now, or 'cancel' so it can be started again
 export const endAttempt = (attemptId, mode) => run(sb().rpc('end_attempt', { p_attempt: attemptId, p_mode: mode }));
 export const logLockdown = (attemptId, event) =>

@@ -373,8 +373,36 @@ the period end + 2 days; ended → `stripe_tutor_sub` null); `syncSeats()` on ev
 only if the amount and currency are right, once. Prices live in `app_config.pricing` (same as site.config.json; website.test.mjs checks);
 `public_settings` gives `card_prices`, `mobile_on`, `currencies`, `rates`. UI: Settings → Your plan (Pay by card / Mobile money per
 level; "Ask for" only while both are closed), `MobileMoney.jsx`, student/parent `PayOptions`, Admin → Selling (Stripe steps, tax switch,
-Flutterwave keys). Old Starter/Pro learner caps still apply when plan limits are on (to replace with per-learner billing).
+Flutterwave keys). (The old Starter/Pro learner caps went in "Ready to charge tutors", below.)
 7. Signed apps: needs Aaryan's Apple Developer and a Windows code-signing account; not done.
+
+Decided 23 Oct 2026 (Aaryan): classroom and running a school move up (they make StudyBridge complete for schools). Order:
+1 Ready to charge tutors → 2 a learner with a school and a tutor at once → classroom (stream, classwork, rubrics, gradebook; then
+school sign-in, class lists, exam-room view) → running a school (attendance, behaviour, timetable; then report cards, IB criteria,
+planners) → IB core (CAS/EE/TOK/PP) → Chromebook extension. A learner in a school and with a tutor has ONE login ("easy, accessible
+and simple but safe and private both ways"): one Today labelled by who set what, a wall between school and tutor (each sees only
+what it set; the learner's own flashcards, streak and study time are theirs), sharing across the wall off unless the learner (or a
+parent for young children) switches it on, and both the school and the tutor pay for that learner.
+Ready to charge tutors (23 Oct 2026, build 1 of that order). No Free/Starter/Pro caps: `_bill(tutor)` says who pays (own, or the
+centre when its `organisations.billing = 'centre'`, `_billing_org`) and the state: free (content account, Complimentary: any number),
+trial (any number), card (Stripe subscription: any number, `syncSeats` keeps the quantity in step), paid (paid_until; places =
+`paid_seats`, any number when null; old custom/starter/pro = paid by hand for plan_learners/5/25), unpaid (no new learners).
+`_tutor_limit`, `_plus`, `_check_plan_room`, `pause_learner` (unpausing needs a place) and `my_plan` (state, seats, learners = the
+payer's, own_learners, centre {id, name, manager}, own_card) use it; limits still apply only with `enforce_plans`. Mobile money:
+`_mobile_payment_new(user, what, months, currency, for, seats)`: tutors choose learners to pay for (at least their active ones);
+what 'seats' adds places for the whole months left (`age()`, a part month counts) at the next steps' price; kind 'centre' payments
+(`mobile_payments.org_id`) go on the organisation. One bill for a centre: a manager's Settings → Your organisation → Who pays
+(`org_set_billing(centre, level)`, a 7-day centre trial once; switching back needs the centre's card plan cancelled and gives unpaid
+tutors a week, `_bill_grace`, also when a tutor leaves a paying centre via the `org_members_bill_grace` trigger); the centre has its
+own level, paid_until, paid_seats, trial_until, stripe_customer/sub/seats; Prof `checkout`/`billing` use `_checkout_target` (only a
+manager pays; metadata `org`), the webhook calls `_set_org_paid`, `_seats_due` lists centres too (`_org_seats_synced`). Admin →
+Tutors → Plan & Prof: Pays per learner or Complimentary (old plans show only for tutors on them), Learners paid for
+(`admin_set_seats`), and when the centre pays the fields change the centre (`admin_bill`, `admin_set_org_plan`). Watched mode: the
+page calls `watch_seen` every 30 s (`attempts.seen_at`; tutors see "On the page now / Not on the page since …", `onPage` in Live.jsx);
+`_watch_away()` (run by `_auto_hand_in` every minute) logs and tells the tutor once when a watched browser page is quiet for 2 minutes;
+the open marker `sb.watched.<attempt>` is in localStorage now, so closing the tab counts as a try to leave when they come back.
+Open question for Aaryan: should an unpaid tutor (limits on, free week over) also stop posting new work? Today they only can't add
+learners and lose Plus.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

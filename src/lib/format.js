@@ -79,18 +79,19 @@ export function bytes(n) {
 
 export const kindLabel = { homework: 'Homework', quiz: 'Quiz', test: 'Test', exam: 'Exam' };
 
-// A tutor's plan. The admin chooses from this list; learner limits match the website (website/site.config.json)
+// A tutor's plan. Tutors pay per learner (Essentials or Plus), or the Owner makes them Complimentary. The old fixed
+// plans (Starter 5, Pro 25, Custom) count as paid by hand for their number and only show for tutors still on them.
 export const PLANS = [
-  { id: 'free', name: 'Free', learners: 1 },
-  { id: 'starter', name: 'Starter', learners: 5 },
-  { id: 'pro', name: 'Pro', learners: 25 },
-  { id: 'custom', name: 'Custom', learners: null },
-  { id: 'complimentary', name: 'Complimentary', learners: 25 },
+  { id: 'free', name: 'Pays per learner', choice: 'Pays per learner (online, or by hand below)' },
+  { id: 'complimentary', name: 'Complimentary', choice: 'Complimentary: free, any number of learners' },
+  { id: 'custom', name: 'Custom', choice: 'Old plan: Custom, paid by hand for a number of learners', old: true },
+  { id: 'starter', name: 'Starter', choice: 'Old plan: Starter, paid by hand for 5 learners', old: true },
+  { id: 'pro', name: 'Pro', choice: 'Old plan: Pro, paid by hand for 25 learners', old: true },
 ];
-// "Pro · 25 learners", "Custom · 40 learners", "Complimentary · free until 1 Jan 2027"
+// "Pays per learner", "Custom · 40 learners", "Complimentary · free until 1 Jan 2027"
 export function planName(t) {
   const p = PLANS.find((x) => x.id === t?.plan) || PLANS[0];
-  const n = t?.plan_limit ?? (p.id === 'custom' ? t?.plan_learners : p.learners);
+  const n = p.old ? (t?.plan_limit ?? (p.id === 'custom' ? t?.plan_learners : null)) : null;
   const until = p.id === 'complimentary' && t?.plan_until ? ` · free until ${new Date(t.plan_until + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : '';
   return `${p.name}${n ? ` · ${n} learner${n === 1 ? '' : 's'}` : ''}${until}`;
 }

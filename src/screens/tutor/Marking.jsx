@@ -11,7 +11,7 @@ import { checkSteps } from '../../lib/steps.js';
 import { ago, dur, forKind, kindLabel, pct, typeLabel, when } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
-import { doneOn } from '../shared/Live.jsx';
+import { doneOn, onPage } from '../shared/Live.jsx';
 import { StatusPill } from './Learners.jsx';
 
 export default function Marking() {
@@ -258,7 +258,7 @@ export function MarkAttempt({ id }) {
   const redoCount = qs.filter((q) => responses[q.id]?.redo).length;
   const late = a.due_at && d.attempt.submitted_at && new Date(d.attempt.submitted_at) > new Date(a.due_at);
   const others = attempts.filter((t) => t.assignment_id === a.id && t.status === 'submitted' && t.id !== id);
-  const device = doneOn({ client: d.attempt.client ?? attempts.find((t) => t.id === id)?.client }, a);
+  const device = [doneOn({ client: d.attempt.client ?? attempts.find((t) => t.id === id)?.client }, a), onPage(d.attempt, a)].filter(Boolean).join(' · ');
 
   // release: give the marks back now (or save them for later); redo: also send the ticked questions back to redo
   async function finish(release, redo = false) {

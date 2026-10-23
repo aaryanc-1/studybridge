@@ -1318,6 +1318,7 @@ begin
   return jsonb_build_object(
     'attempt', jsonb_build_object('id', t.id, 'assignment_id', t.assignment_id, 'learner_id', t.learner_id, 'number', t.number,
       'client', case when is_tutor then to_jsonb(t) ->> 'client' end,
+      'seen_at', case when is_tutor then to_jsonb(t) ->> 'seen_at' end,
       'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
@@ -8781,13 +8782,490 @@ language sql stable security definer set search_path = public as $$
     from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
 $$;
 
+-- =====================================================================
+-- Ready to charge tutors (23 Oct 2026). The old Free 1 / Starter 5 / Pro 25 learner caps are gone: a tutor pays per
+-- learner, so the only limit is what they've paid for.
+--   free     StudyBridge's own account, or Complimentary from the Owner: any number of learners
+--   trial    the free week: any number of learners
+--   card     a card subscription: any number (the bill follows the learners)
+--   paid     paid up to a date (mobile money, or by hand): the places paid for (any number when none was given)
+--   unpaid   nothing active: no new learners can join (everything already there stays)
+-- Old Custom/Starter/Pro plans count as paid by hand for their number. A centre can also pay for every tutor in it
+-- (one bill): its manager chooses that in Settings → Your organisation, and the centre's plan then decides for all of
+-- them. Plan limits still only apply once the Owner switches them on (Admin → Selling).
+-- Watched mode: the page says it's still there every 30 seconds; after 2 minutes without a word the tutor is told
+-- (closed the page, or lost the connection), and opening it again from a new page counts as a try to leave.
+-- =====================================================================
+alter table public.profiles add column if not exists paid_seats int;
+alter table public.organisations add column if not exists billing text not null default 'each';
+alter table public.organisations add column if not exists level text not null default 'plus';
+alter table public.organisations add column if not exists trial_until timestamptz;
+alter table public.organisations add column if not exists paid_until date;
+alter table public.organisations add column if not exists paid_seats int;
+alter table public.organisations add column if not exists plan_period text;
+alter table public.organisations add column if not exists renews_at timestamptz;
+alter table public.organisations add column if not exists stripe_customer text;
+alter table public.organisations add column if not exists stripe_sub text;
+alter table public.organisations add column if not exists stripe_seats int;
+do $$
+begin
+  alter table public.organisations add constraint organisations_billing_check check (billing in ('each', 'centre'));
+exception when duplicate_object then null;
+end $$;
+do $$
+begin
+  alter table public.organisations add constraint organisations_level_check check (level in ('essentials', 'plus'));
+exception when duplicate_object then null;
+end $$;
+alter table public.mobile_payments add column if not exists org_id uuid references public.organisations (id) on delete cascade;
+alter table public.mobile_payments add column if not exists seats int;
+alter table public.mobile_payments drop constraint if exists mobile_payments_kind_check;
+alter table public.mobile_payments add constraint mobile_payments_kind_check check (kind in ('tutor', 'student', 'centre'));
+alter table public.attempts add column if not exists seen_at timestamptz;
+alter table public.attempts add column if not exists away_noted_at timestamptz;
+
+-- The centre that pays for a tutor (when their centre pays for everyone)
+create or replace function public._billing_org(p_tutor uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select o.id from public.org_members m join public.organisations o on o.id = m.org_id
+   where m.user_id = p_tutor and o.billing = 'centre' and o.kind in ('centre', 'school')
+$$;
+-- The learners a centre pays for: every active learner of every tutor in it
+create or replace function public._org_learners(p_org uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select count(*)::int from public.profiles l join public.org_members m on m.user_id = l.tutor_id
+   where m.org_id = p_org and l.role = 'learner' and l.paused_at is null
+$$;
+
+-- Who pays for a tutor and where that stands (see the list above)
+create or replace function public._bill(p_tutor uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare p public.profiles; o public.organisations; v_org uuid;
+begin
+  select * into p from public.profiles where id = p_tutor and role = 'tutor';
+  if p.id is null then return null; end if;
+  if p.is_studybridge or (p.plan = 'complimentary' and (p.plan_until is null or p.plan_until >= current_date)) then
+    return jsonb_build_object('payer', 'own', 'state', 'free', 'level', 'plus', 'seats', null,
+      'learners', public._active_learners(p.id), 'until', p.plan_until);
+  end if;
+  v_org := public._billing_org(p.id);
+  if v_org is not null then
+    select * into o from public.organisations where id = v_org;
+    return jsonb_build_object('payer', 'centre', 'org_id', o.id, 'org_name', o.name, 'level', o.level,
+      'learners', public._org_learners(o.id),
+      'state', case when o.stripe_sub is not null and o.paid_until >= current_date then 'card'
+                    when o.paid_until >= current_date then 'paid'
+                    when o.trial_until >= now() then 'trial' else 'unpaid' end,
+      'seats', case when o.stripe_sub is null and o.paid_until >= current_date then o.paid_seats end,
+      'paid_until', o.paid_until, 'trial_until', o.trial_until, 'period', o.plan_period, 'renews_at', o.renews_at,
+      'has_billing', o.stripe_customer is not null);
+  end if;
+  return jsonb_build_object('payer', 'own', 'level', p.level, 'learners', public._active_learners(p.id),
+    'state', case when p.stripe_tutor_sub is not null and p.paid_until >= current_date then 'card'
+                  when p.paid_until >= current_date then 'paid'
+                  when p.plan in ('custom', 'starter', 'pro') then 'paid'
+                  when p.trial_until >= now() then 'trial' else 'unpaid' end,
+    'seats', case when p.stripe_tutor_sub is not null and p.paid_until >= current_date then null
+                  when p.paid_until >= current_date then p.paid_seats
+                  when p.plan = 'custom' then greatest(coalesce(p.plan_learners, 1), 1)
+                  when p.plan in ('starter', 'pro') then public._plan_learners(p.plan) end,
+    'paid_until', p.paid_until, 'trial_until', p.trial_until, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
+    'has_billing', p.stripe_customer is not null);
+end $$;
+
+-- How many learners a tutor (or their centre) may have: their places, any number, or none while unpaid
+create or replace function public._tutor_limit(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select case when b is null then 0 when b ->> 'state' = 'unpaid' then 0 else coalesce((b ->> 'seats')::int, 1000000) end
+    from (select public._bill(p_tutor) b) x
+$$;
+
+-- Plus: StudyBridge's own account and Complimentary always; otherwise Plus that's paid, on a card or in its free week
+create or replace function public._plus(p_tutor uuid default null) returns boolean
+language sql stable security definer set search_path = public as $$
+  select not coalesce((select enforce_plans from public.app_config where id = 1), false)
+      or coalesce((select b ->> 'state' = 'free' or (b ->> 'level' = 'plus' and b ->> 'state' in ('trial', 'card', 'paid'))
+                     from (select public._bill(coalesce(p_tutor, auth.uid())) b) x), false)
+$$;
+
+-- A learner can join a tutor while there's a place for them
+create or replace function public._check_plan_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare b jsonb;
+begin
+  if new.role = 'learner' and new.tutor_id is not null and new.tutor_id is distinct from old.tutor_id
+     and (select enforce_plans from public.app_config where id = 1) then
+    b := public._bill(new.tutor_id);
+    if b is null or b ->> 'state' in ('free', 'trial', 'card') then return new; end if;
+    if b ->> 'state' = 'unpaid' then
+      raise exception 'Your tutor’s StudyBridge plan needs paying before new learners can join. Ask them, then use the code again.';
+    end if;
+    if (b ->> 'seats') is not null and (b ->> 'learners')::int >= (b ->> 'seats')::int then
+      raise exception 'Your tutor has paid for % places and they’re all taken. Ask them to add a place (Settings → Your plan), then use the code again.', b ->> 'seats';
+    end if;
+  end if;
+  return new;
+end $$;
+
+-- Unpausing takes a place again
+create or replace function public.pause_learner(p_learner uuid, p_paused boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+declare b jsonb;
+begin
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  if not p_paused and (select paused_at from public.profiles where id = p_learner) is not null
+     and (select enforce_plans from public.app_config where id = 1) then
+    b := public._bill(auth.uid());
+    if b ->> 'state' = 'unpaid' then raise exception 'Your plan needs paying first (Settings → Your plan).'; end if;
+    if (b ->> 'seats') is not null and (b ->> 'learners')::int >= (b ->> 'seats')::int then
+      raise exception 'All % places you’ve paid for are taken. Add a place first (Settings → Your plan).', b ->> 'seats';
+    end if;
+  end if;
+  update public.profiles set paused_at = case when p_paused then coalesce(paused_at, now()) end where id = p_learner;
+  perform public.notify_user(p_learner, 'paused',
+    case when p_paused then 'Your StudyBridge is paused for now' else 'Your StudyBridge is back on' end,
+    case when p_paused then 'Your work is all kept. Your tutor can switch it back on any time.' else 'You can start new work again.' end, '{}');
+end $$;
+
+-- A tutor's plan as Settings shows it: their own, or their centre's when the centre pays
+create or replace function public.my_plan() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare p public.profiles; b jsonb; v_org uuid;
+begin
+  select * into p from public.profiles where id = auth.uid() and role = 'tutor';
+  if p.id is null then return null; end if;
+  b := public._bill(p.id);
+  v_org := (b ->> 'org_id')::uuid;
+  return jsonb_build_object('plan', p.plan, 'until', p.plan_until,
+    'enforced', (select enforce_plans from public.app_config where id = 1),
+    'state', b ->> 'state', 'seats', b -> 'seats', 'level', b ->> 'level', 'plus', public._plus(p.id),
+    'learners', (b ->> 'learners')::int, 'own_learners', public._active_learners(p.id),
+    'paused', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner' and l.paused_at is not null),
+    'limit', public._tutor_limit(p.id),
+    'trial_until', b -> 'trial_until', 'paid_until', b -> 'paid_until', 'period', b -> 'period', 'renews_at', b -> 'renews_at',
+    'has_billing', coalesce((b ->> 'has_billing')::boolean, false), 'card', b ->> 'state' = 'card',
+    'own_card', p.stripe_tutor_sub is not null and v_org is not null,
+    'centre', case when v_org is not null then jsonb_build_object('id', v_org, 'name', b ->> 'org_name',
+                'manager', exists (select 1 from public.org_members where org_id = v_org and user_id = p.id and role = 'manager')) end);
+end $$;
+
+-- ---------------- one bill for a centre ----------------
+-- A centre's manager chooses who pays: each tutor for their own learners, or the centre for everyone. When the centre
+-- starts paying it gets a free week (once), so nobody loses anything while the manager pays.
+create or replace function public.org_set_billing(p_centre boolean, p_level text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change(); me text := (select display_name from public.profiles where id = auth.uid());
+begin
+  if o.kind not in ('centre', 'school') then raise exception 'Make it a centre first.'; end if;
+  if p_level is not null and p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
+  if not p_centre and o.billing = 'centre' and o.stripe_sub is not null and o.paid_until >= current_date then
+    raise exception 'The centre pays by card. Cancel that first (Settings → Your plan → Manage or cancel).';
+  end if;
+  update public.organisations
+     set billing = case when p_centre then 'centre' else 'each' end,
+         level = coalesce(p_level, level),
+         trial_until = case when p_centre and trial_until is null then now() + interval '7 days' else trial_until end
+   where id = o.id;
+  if p_centre is distinct from (o.billing = 'centre') then
+    if not p_centre then perform public._bill_grace(m.user_id) from public.org_members m where m.org_id = o.id; end if;
+    perform public.notify_user(m.user_id, 'plan',
+      case when p_centre then o.name || ' pays for StudyBridge now' else 'You pay for your own learners again' end,
+      case when p_centre then coalesce(me, 'Your manager') || ' set it up: one bill for the whole centre. If you pay by card yourself, cancel it in Settings → Your plan.'
+           else coalesce(me, 'Your manager') || ' stopped the centre paying for everyone. See Settings → Your plan.' end, '{}')
+      from public.org_members m where m.org_id = o.id and m.user_id <> auth.uid();
+  end if;
+  return public.my_org();
+end $$;
+
+-- A tutor who stops being paid for by a centre gets a week to sort out their own plan (if it isn't active already)
+create or replace function public._bill_grace(p_tutor uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if public._billing_org(p_tutor) is null and (public._bill(p_tutor) ->> 'state') = 'unpaid' then
+    update public.profiles set trial_until = now() + interval '7 days' where id = p_tutor;
+  end if;
+end $$;
+create or replace function public._org_member_left() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if (select billing from public.organisations where id = old.org_id) = 'centre' then perform public._bill_grace(old.user_id); end if;
+  return old;
+end $$;
+drop trigger if exists org_members_bill_grace on public.org_members;
+create trigger org_members_bill_grace after delete on public.org_members for each row execute function public._org_member_left();
+
+-- Your organisation also says who pays and the centre's level
+create or replace function public.my_org_billing() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('billing', o.billing, 'level', o.level, 'learners', public._org_learners(o.id))
+    from public.organisations o where o.id = public._org_of(auth.uid()) and public.my_role() = 'tutor'
+$$;
+
+-- Stripe told the Prof server about a centre's card subscription (nothing: it has ended)
+create or replace function public._set_org_paid(p_org uuid, p_level text, p_period text, p_customer text, p_sub text, p_until timestamptz)
+returns void language plpgsql security definer set search_path = public as $$
+declare was date; v_name text;
+begin
+  select paid_until, name into was, v_name from public.organisations where id = p_org;
+  update public.organisations
+     set level = case when p_level in ('essentials', 'plus') then p_level else level end,
+         paid_until = case when p_until is null then least(coalesce(paid_until, current_date), current_date) else (p_until::date + 2) end,
+         paid_seats = null, plan_period = p_period, renews_at = p_until,
+         stripe_customer = coalesce(p_customer, stripe_customer),
+         stripe_sub = case when p_until is null then null else coalesce(p_sub, stripe_sub) end
+   where id = p_org;
+  if not found then return; end if;
+  perform public.notify_user(m.user_id, 'plan',
+      case when p_until is null then v_name || '’s paid plan has ended' else 'Thank you! ' || v_name || ' is on ' || initcap(p_level) end,
+      case when p_until is null then 'You can pay again any time in Settings → Your plan.' else 'One bill for the whole centre.' end, '{}')
+    from public.org_members m where m.org_id = p_org and m.role = 'manager' and (p_until is null or was is null or was < current_date);
+end $$;
+
+-- Card subscriptions whose number of learners has changed: tutors' and centres'
+create or replace function public._seats_due() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(x), '[]') from (
+    select jsonb_build_object('tutor', p.id, 'sub', p.stripe_tutor_sub, 'seats', greatest(public._active_learners(p.id), 1)) x
+      from public.profiles p
+     where p.role = 'tutor' and p.stripe_tutor_sub is not null
+       and p.stripe_seats is distinct from greatest(public._active_learners(p.id), 1)
+    union all
+    select jsonb_build_object('org', o.id, 'sub', o.stripe_sub, 'seats', greatest(public._org_learners(o.id), 1))
+      from public.organisations o
+     where o.stripe_sub is not null and o.stripe_seats is distinct from greatest(public._org_learners(o.id), 1)) z
+$$;
+create or replace function public._org_seats_synced(p_org uuid, p_seats int) returns void
+language sql security definer set search_path = public as $$
+  update public.organisations set stripe_seats = p_seats where id = p_org
+$$;
+
+-- Who a tutor's card payment is for (the Prof server asks before opening Stripe): them, or their centre
+create or replace function public._checkout_target(p_user uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._billing_org(p_user); o public.organisations; p public.profiles;
+begin
+  select * into p from public.profiles where id = p_user and role = 'tutor';
+  if p.id is null then return null; end if;
+  if v_org is null then
+    return jsonb_build_object('kind', 'tutor', 'id', p.id, 'manager', true, 'customer', p.stripe_customer, 'email', p.email,
+      'learners', public._active_learners(p.id), 'own_customer', p.stripe_customer);
+  end if;
+  select * into o from public.organisations where id = v_org;
+  return jsonb_build_object('kind', 'centre', 'id', o.id, 'name', o.name, 'customer', o.stripe_customer, 'email', p.email,
+    'manager', exists (select 1 from public.org_members where org_id = o.id and user_id = p_user and role = 'manager'),
+    'learners', public._org_learners(o.id), 'own_customer', p.stripe_customer);
+end $$;
+
+-- ---------------- mobile money: places, and centres ----------------
+-- A tutor (or a centre's manager) pays for a number of places (one per learner, at least the learners they have),
+-- adds places to a plan already paid, or a student pays a month or an exam pass
+drop function if exists public._mobile_payment_new(uuid, text, int, text, uuid);
+create or replace function public._mobile_payment_new(p_user uuid, p_what text, p_months int, p_currency text,
+  p_for uuid default null, p_seats int default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  payer public.profiles;
+  p jsonb := (select pricing from public.app_config where id = 1);
+  m int := greatest(1, least(coalesce(p_months, 1), 12));
+  usd numeric;
+  rate numeric := (p -> 'rates' ->> upper(coalesce(p_currency, 'USD')))::numeric;
+  v_ref text := 'sb-' || replace(gen_random_uuid()::text, '-', '');
+  v_amount numeric;
+  b jsonb;
+  v_org uuid;
+  v_seats int;
+  v_kind text := 'student';
+begin
+  select * into payer from public.profiles where id = p_user;
+  if payer.id is null then raise exception 'Not signed in.'; end if;
+  if p_for is not null and p_for <> p_user then
+    if not exists (select 1 from public.parent_links where parent_id = p_user and learner_id = p_for) then
+      raise exception 'You can only pay for your own child.';
+    end if;
+    select * into me from public.profiles where id = p_for;
+  else
+    me := payer;
+  end if;
+  if rate is null then raise exception 'Choose a currency from the list.'; end if;
+  if me.role = 'tutor' and p_what in ('essentials', 'plus', 'seats') then
+    b := public._bill(me.id);
+    if b ->> 'payer' = 'centre' then
+      v_org := (b ->> 'org_id')::uuid;
+      if not exists (select 1 from public.org_members where org_id = v_org and user_id = me.id and role = 'manager') then
+        raise exception 'Your centre pays for StudyBridge. Ask its manager.';
+      end if;
+      v_kind := 'centre';
+    else
+      v_kind := 'tutor';
+    end if;
+    if p_what = 'seats' then
+      if b ->> 'state' <> 'paid' or jsonb_typeof(b -> 'seats') is distinct from 'number' then
+        raise exception 'Places are added to a plan paid for a number of learners. Pay for your plan first.';
+      end if;
+      v_seats := greatest(coalesce(p_seats, 1), 1);
+      -- whole months left (a part month counts as one)
+      select greatest(1, (extract(year from g) * 12 + extract(month from g) + case when extract(day from g) > 0 then 1 else 0 end)::int)
+        into m from age((b ->> 'paid_until')::date, current_date) g;
+      usd := (public._tutor_month_usd(b ->> 'level', (b ->> 'seats')::int + v_seats) - public._tutor_month_usd(b ->> 'level', (b ->> 'seats')::int)) * m;
+    else
+      v_seats := greatest(coalesce(p_seats, 0), (b ->> 'learners')::int, 1);
+      usd := public._tutor_month_usd(p_what, v_seats) * case when m = 12 then 12 - coalesce((p ->> 'yearlyMonthsFree')::int, 0) else m end;
+    end if;
+  elsif me.self_learner and p_what = 'monthly' then
+    m := 1;
+    usd := (p -> 'student' ->> 'month')::numeric;
+  elsif me.self_learner and p_what = 'pass' then
+    usd := (p -> 'student' ->> 'passMonth')::numeric * m;
+  else
+    raise exception 'That isn’t something you can pay for.';
+  end if;
+  v_amount := case when upper(p_currency) = 'USD' then round(usd * rate, 2) else ceil(usd * rate) end;
+  insert into public.mobile_payments (tx_ref, user_id, kind, what, months, amount, currency, org_id, seats)
+  values (v_ref, me.id, v_kind, p_what, m, v_amount, upper(p_currency), v_org, v_seats);
+  return jsonb_build_object('tx_ref', v_ref, 'amount', v_amount, 'currency', upper(p_currency), 'email', payer.email,
+    'name', payer.display_name, 'months', m, 'what', p_what, 'seats', v_seats);
+end $$;
+
+-- Flutterwave confirmed a payment (the Prof server checked it with Flutterwave first): it counts if the amount and
+-- currency are right, once
+create or replace function public._mobile_payment_done(p_tx_ref text, p_amount numeric, p_currency text, p_flw_id text) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare x public.mobile_payments; v_until date; v_name text;
+begin
+  select * into x from public.mobile_payments where tx_ref = p_tx_ref for update;
+  if x.tx_ref is null or x.status = 'paid' then return false; end if;
+  if upper(coalesce(p_currency, '')) <> x.currency or coalesce(p_amount, 0) < x.amount then return false; end if;
+  update public.mobile_payments set status = 'paid', paid_at = now(), flw_id = p_flw_id where tx_ref = p_tx_ref;
+  if x.kind = 'centre' then
+    select name into v_name from public.organisations where id = x.org_id;
+    if x.what = 'seats' then
+      update public.organisations set paid_seats = coalesce(paid_seats, 0) + x.seats where id = x.org_id;
+    else
+      select (greatest(coalesce(paid_until, current_date), current_date) + make_interval(months => x.months))::date into v_until
+        from public.organisations where id = x.org_id;
+      update public.organisations set level = x.what, paid_until = v_until, paid_seats = x.seats where id = x.org_id;
+    end if;
+    perform public.notify_user(m.user_id, 'plan', 'Thank you! ' || v_name || ' is paid for',
+        case when x.what = 'seats' then x.seats || ' more place' || case when x.seats = 1 then '' else 's' end || ' for learners.'
+             else initcap(x.what) || ' for ' || x.seats || ' learner' || case when x.seats = 1 then '' else 's' end || ', up to ' || public._nice_date(v_until) || '.' end, '{}')
+      from public.org_members m where m.org_id = x.org_id and m.role = 'manager';
+    perform public._admin_log('centre_paid_mobile', x.user_id, jsonb_build_object('org', x.org_id, 'what', x.what, 'months', x.months, 'seats', x.seats));
+  elsif x.kind = 'tutor' then
+    if x.what = 'seats' then
+      update public.profiles set paid_seats = coalesce(paid_seats, 0) + x.seats where id = x.user_id;
+      perform public.notify_user(x.user_id, 'plan', 'Thank you! ' || x.seats || ' more place' || case when x.seats = 1 then '' else 's' end,
+        'New learners can join with your code.', '{}');
+    else
+      select (greatest(coalesce(paid_until, current_date), current_date) + make_interval(months => x.months))::date into v_until
+        from public.profiles where id = x.user_id;
+      update public.profiles set level = x.what, paid_until = v_until, paid_seats = x.seats where id = x.user_id;
+      perform public.notify_user(x.user_id, 'plan', 'Thank you! You’re on ' || initcap(x.what),
+        'Paid up to ' || public._nice_date(v_until) || ' for ' || x.seats || ' learner' || case when x.seats = 1 then '' else 's' end || '.', '{}');
+    end if;
+    perform public._admin_log('tutor_paid_mobile', x.user_id, jsonb_build_object('what', x.what, 'months', x.months, 'seats', x.seats));
+  else
+    perform public._student_paid_by_card(x.user_id, x.what, x.months, null);
+    perform public.notify_user(x.user_id, 'plan', 'Thank you! You’re all set', 'Your payment came through.', '{}');
+  end if;
+  return true;
+end $$;
+
+-- ---------------- the Owner, by hand ----------------
+-- What a tutor's plan is (theirs, or their centre's), for Admin → Tutors → Plan & Prof
+create or replace function public.admin_bill(p_tutor uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare b jsonb; o public.organisations; p public.profiles;
+begin
+  perform public._admin();
+  b := public._bill(p_tutor);
+  if b is null then raise exception 'That isn’t a tutor account.'; end if;
+  if b ->> 'payer' = 'centre' then
+    select * into o from public.organisations where id = (b ->> 'org_id')::uuid;
+    return b || jsonb_build_object('paid_seats', o.paid_seats, 'level', o.level, 'paid_until', o.paid_until, 'trial_until', o.trial_until);
+  end if;
+  select * into p from public.profiles where id = p_tutor;
+  return b || jsonb_build_object('paid_seats', p.paid_seats, 'level', p.level, 'paid_until', p.paid_until, 'trial_until', p.trial_until);
+end $$;
+
+-- The Owner records a tutor's places (with the level and paid-up date in admin_set_level)
+create or replace function public.admin_set_seats(p_user uuid, p_seats int) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_seats is not null and p_seats < 1 then raise exception 'At least 1 place, or leave it empty for any number.'; end if;
+  update public.profiles set paid_seats = p_seats where id = p_user and role = 'tutor';
+  if not found then raise exception 'That isn’t a tutor account.'; end if;
+  perform public._admin_log('seats', p_user, jsonb_build_object('seats', p_seats));
+end $$;
+
+-- ... and a centre's plan, when the centre pays
+create or replace function public.admin_set_org_plan(p_org uuid, p_level text, p_paid_until date default null,
+  p_seats int default null, p_trial_days int default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
+  if p_seats is not null and p_seats < 1 then raise exception 'At least 1 place, or leave it empty for any number.'; end if;
+  update public.organisations
+     set level = p_level, paid_until = p_paid_until, paid_seats = p_seats,
+         trial_until = case when coalesce(p_trial_days, 0) > 0
+                            then greatest(coalesce(trial_until, now()), now()) + make_interval(days => least(p_trial_days, 60))
+                            else trial_until end
+   where id = p_org and kind in ('centre', 'school');
+  if not found then raise exception 'That isn’t a centre.'; end if;
+  perform public._admin_log('org_plan', null, jsonb_build_object('org', p_org, 'level', p_level, 'paid_until', p_paid_until, 'seats', p_seats, 'trial_days', p_trial_days));
+end $$;
+
+-- ---------------- watched mode: still on the page? ----------------
+create or replace function public.watch_seen(p_attempt uuid) returns void
+language sql security definer set search_path = public as $$
+  update public.attempts set seen_at = now() where id = p_attempt and learner_id = auth.uid() and status = 'in_progress'
+$$;
+-- (every minute, with the timed hand-ins) a watched page that has gone quiet for 2 minutes: the tutor is told, once
+-- each time
+create or replace function public._watch_away() returns int
+language plpgsql security definer set search_path = public as $$
+declare r record; n int := 0; v_event text := 'Not on the page for 2 minutes (closed it, or lost the connection)';
+begin
+  for r in select x.id, x.tutor_id, x.learner_id, a.title, l.display_name
+             from public.attempts x join public.assignments a on a.id = x.assignment_id join public.profiles l on l.id = x.learner_id
+            where x.status = 'in_progress' and a.watched and (a.lockdown or a.camera) and coalesce(x.client, 'desktop') <> 'desktop'
+              and x.seen_at < now() - interval '2 minutes' and (x.away_noted_at is null or x.away_noted_at < x.seen_at)
+            for update of x skip locked loop
+    update public.attempts
+       set away_noted_at = now(),
+           lockdown_events = lockdown_events || jsonb_build_array(jsonb_build_object('at', now(), 'event', v_event))
+     where id = r.id;
+    perform public.notify_user(r.tutor_id, 'lockdown', coalesce(r.display_name, 'Learner') || ': not on the page for 2 minutes', r.title,
+      jsonb_build_object('attempt_id', r.id, 'learner_id', r.learner_id));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+create or replace function public._auto_hand_in() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in select x.id from public.attempts x
+            where x.status = 'in_progress' and public._attempt_timed_out(x)
+            for update skip locked loop
+    perform public._hand_in(r.id, 'time ran out');
+    n := n + 1;
+  end loop;
+  perform public._watch_away();
+  return n;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
 declare f text;
 begin
-  foreach f in array array['_mobile_payment_new(uuid, text, int, text, uuid)', '_mobile_payment_done(text, numeric, text, text)', '_set_paid_level(uuid, text, text, text, text, timestamptz)',
-                           '_seats_due()', '_seats_synced(uuid, int)', '_selling()', 'prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
+  foreach f in array array['_mobile_payment_new(uuid, text, int, text, uuid, int)', '_mobile_payment_done(text, numeric, text, text)', '_set_paid_level(uuid, text, text, text, text, timestamptz)',
+                           '_seats_due()', '_seats_synced(uuid, int)', '_set_org_paid(uuid, text, text, text, text, timestamptz)', '_org_seats_synced(uuid, int)', '_checkout_target(uuid)', '_selling()', 'prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
                            'prof_context(uuid)', 'prof_mark_context(uuid)', 'prof_orphan_files()', 'prof_tick()', '_prof_kick()'] loop
     execute format('revoke execute on function public.%s from public, anon, authenticated', f);
     execute format('grant execute on function public.%s to service_role', f);
@@ -8856,6 +9334,12 @@ revoke execute on function public._home_learners() from public, anon, authentica
 revoke execute on function public._class_made() from public, anon, authenticated;
 revoke execute on function public._tutor_month_usd(text, int) from public, anon, authenticated;
 revoke execute on function public._active_learners(uuid) from public, anon, authenticated;
+revoke execute on function public._billing_org(uuid) from public, anon, authenticated;
+revoke execute on function public._org_learners(uuid) from public, anon, authenticated;
+revoke execute on function public._bill(uuid) from public, anon, authenticated;
+revoke execute on function public._bill_grace(uuid) from public, anon, authenticated;
+revoke execute on function public._org_member_left() from public, anon, authenticated;
+revoke execute on function public._watch_away() from public, anon, authenticated;
 revoke execute on function public._tutor_trial() from public, anon, authenticated;
 revoke execute on function public._plus_only() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it

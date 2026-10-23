@@ -162,6 +162,80 @@ function Account() {
 
 // A tutor's organisation: their own, or a tuition centre other tutors join with its code. Each tutor keeps their
 // own learners, classes and work and approves everything for them; a centre's managers also see everyone in Centre.
+// Who pays in a centre: each tutor for their own learners, or the centre for everyone (one bill, paid by a manager
+// in Settings → Your plan). Tutors see which it is.
+function CentreBilling({ manager }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('org-billing', api.myOrgBilling);
+  const [busy, setBusy] = useState(false);
+  const b = q.data;
+  if (!b) return null;
+  const centrePays = b.billing === 'centre';
+  async function set(centre, level = null) {
+    if (
+      !centre &&
+      !(await confirm({
+        title: 'Stop the centre paying for everyone?',
+        body: 'Each tutor then pays for their own learners. Tutors who haven’t paid get a free week to sort it out.',
+        ok: 'Each tutor pays',
+      }))
+    )
+      return;
+    setBusy(true);
+    try {
+      await api.orgSetBilling(centre, level);
+      invalidate('org-billing', 'my-plan', 'org');
+      toast(centre ? { title: 'The centre pays for everyone now', body: 'Pay for it in Settings → Your plan. It starts with a free week.' } : 'Each tutor pays for their own learners now');
+    } catch (e) {
+      toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <hr />
+      <div className="stack sm">
+        <h3>Who pays</h3>
+        {manager ? (
+          <>
+            <div className="seg" role="group" aria-label="Who pays">
+              <button type="button" aria-pressed={!centrePays} disabled={busy} onClick={() => centrePays && set(false)}>
+                Each tutor pays for their own learners
+              </button>
+              <button type="button" aria-pressed={centrePays} disabled={busy} onClick={() => !centrePays && set(true, b.level)}>
+                The centre pays for everyone
+              </button>
+            </div>
+            {centrePays && (
+              <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+                <span className="small">Level for everyone:</span>
+                <div className="seg" role="group" aria-label="The centre’s level">
+                  {LEVELS.map((l) => (
+                    <button key={l.id} type="button" aria-pressed={b.level === l.id} disabled={busy} onClick={() => b.level !== l.id && set(true, l.id)}>
+                      {l.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="small muted">
+              {centrePays
+                ? `One bill for the whole centre: ${b.learners} learner${b.learners === 1 ? '' : 's'} now. Pay for it in Settings → Your plan.`
+                : 'Each tutor pays for their own learners in their own Settings → Your plan.'}
+            </div>
+          </>
+        ) : (
+          <div className="small muted">
+            {centrePays ? 'The centre pays for StudyBridge for everyone (one bill). Your manager looks after it.' : 'Each tutor pays for their own learners (Settings → Your plan).'}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function YourOrganisation() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -299,6 +373,8 @@ function YourOrganisation() {
               </span>
             </div>
           )}
+
+          {centre && <CentreBilling manager={manager} />}
 
           {centre && (
             <>
@@ -1261,6 +1337,16 @@ const stepsText = (level) =>
       return i ? `${usd(s.price)} for ${from}–${s.upTo}` : `${usd(s.price)} each for learners ${from}–${s.upTo}`;
     })
     .join(', ');
+// Whole months from today to a paid-up date (a part month counts as one), as the server works out added places
+function monthsLeft(until) {
+  const a = new Date();
+  const b = new Date(String(until).slice(0, 10) + 'T12:00');
+  const m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + (b.getDate() > a.getDate() ? 1 : 0);
+  return Math.max(1, m);
+}
+const ess = (n) => (n === 1 ? '' : 's');
+// A tutor's plan: their level, where it stands (free week, paid by card, paid up to a date for a number of learners,
+// or not paid), and paying. When their centre pays for everyone, it's the centre's plan, and only its manager pays.
 function YourPlan() {
   const toast = useToast();
   const q = useQuery('my-plan', api.myPlan);
@@ -1270,21 +1356,27 @@ function YourPlan() {
   const [asked, setAsked] = useState([]);
   const p = q.data;
   if (!p) return null;
-  const now = new Date();
   const level = LEVELS.find((l) => l.id === p.level) || LEVELS.at(-1);
-  const comp = p.plan === 'complimentary' && (!p.until || new Date(p.until + 'T23:59') >= now);
-  const paid = !!p.paid_until && new Date(p.paid_until + 'T23:59') >= now;
-  const trial = level.id === 'plus' && !!p.trial_until && new Date(p.trial_until) > now;
-  const status = comp ? (p.until ? `Complimentary until ${planDay(p.until)}` : 'Complimentary') : paid ? `Paid up to ${planDay(p.paid_until)}` : trial ? `Free week of Plus until ${planDay(p.trial_until)}` : null;
+  const centre = p.centre; // the centre pays for every tutor in it
+  const payer = !centre || centre.manager;
+  const seats = typeof p.seats === 'number' ? p.seats : null;
+  const byHand = ['custom', 'starter', 'pro'].includes(p.plan);
+  const status = {
+    free: p.until ? `Complimentary until ${planDay(p.until)}` : 'Complimentary',
+    trial: p.trial_until ? `Free week until ${planDay(p.trial_until)}` : 'Free week',
+    card: `Paid by card${p.renews_at ? `, renews ${planDay(p.renews_at)}` : ''}`,
+    paid: `${p.paid_until ? `Paid up to ${planDay(p.paid_until)}` : 'Paid'}${seats ? ` for ${seats} learner${ess(seats)}` : ''}`,
+    unpaid: p.enforced ? 'Not paid' : null,
+  }[p.state];
   // Plus is settled once it's paid for (or given by StudyBridge); until then, asking for it sets up paying
-  const plusSettled = comp || (level.id === 'plus' && (paid || ['custom', 'starter', 'pro'].includes(p.plan)));
-  const canAsk = (id) => !comp && (id === 'plus' ? !plusSettled : level.id !== id);
+  const plusSettled = p.state === 'free' || (level.id === 'plus' && ['card', 'paid'].includes(p.state));
+  const canAsk = (id) => payer && p.state !== 'free' && (id === 'plus' ? !plusSettled : level.id !== id);
   const months = period === 'year' ? 12 - site.yearlyMonthsFree : 1;
-  // paying online: by card (a subscription that follows your number of learners) or mobile money (months at a time);
-  // not while a card subscription is running (change or cancel that first) or a plan StudyBridge set up for you
+  // paying online: by card (a subscription that follows the number of learners) or mobile money (months at a time);
+  // not while a card plan is running (change or cancel that first) or a plan StudyBridge set up by hand
   const cards = pub.card_prices || [];
-  const canPay = !comp && p.plan !== 'custom' && !p.card;
-  const payOpen = canPay && (cards.length > 0 || pub.mobile_on);
+  const canPay = payer && p.state !== 'free' && p.state !== 'card' && !byHand;
+  const payOpen = canPay && (cards.length > 0 || !!pub.mobile_on);
   async function card(id) {
     setBusy('card-' + id);
     try {
@@ -1308,10 +1400,10 @@ function YourPlan() {
       setBusy('');
     }
   }
-  async function billing() {
-    setBusy('billing');
+  async function billing(own = false) {
+    setBusy(own ? 'own' : 'billing');
     try {
-      const r = await api.billingPortal();
+      const r = await api.billingPortal(own);
       if (r?.url) window.open(r.url, '_blank'); // the desktop app opens this in the browser
     } catch (e) {
       toast({ title: 'Couldn’t open payments', body: e.message, tone: 'bad' });
@@ -1319,25 +1411,48 @@ function YourPlan() {
       setBusy('');
     }
   }
+  const who = centre
+    ? `${centre.name} pays for StudyBridge for all its tutors: ${p.learners} learner${ess(p.learners)} in the centre, ${p.own_learners} of them yours.`
+    : `You have ${p.learners} learner${ess(p.learners)}.`;
   return (
-    <Section
-      id="plan"
-      icon="star"
-      title="Your plan"
-      sub={`You have ${p.learners} learner${p.learners === 1 ? '' : 's'}.${p.enforced ? ` Your plan has room for ${p.limit}.` : ''}${p.renews_at ? ` Renews ${planDay(p.renews_at)}.` : ''}`}
-    >
+    <Section id="plan" icon="star" title="Your plan" sub={`${who}${p.paused ? ` ${p.paused} paused (they don’t count).` : ''}`}>
       <div className="row wrap" style={{ gap: 8 }}>
-        <span className="strong">{level.name}</span>
+        <span className="strong">
+          {centre ? `${centre.name}: ` : ''}
+          {level.name}
+        </span>
         <span className={'pill ' + (p.plus ? 'good' : level.id === 'plus' ? 'warn' : '')}>{p.plus ? 'Plus is on' : 'Plus is off'}</span>
-        {status && <span className="small">{status}</span>}
+        {status && <span className={'small' + (p.state === 'unpaid' ? ' strong' : '')}>{status}</span>}
       </div>
-      {p.enforced && (
-        <div className="plan-meter" aria-label={`${p.learners} of ${p.limit} learners`}>
-          <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, p.limit)) * 100)}%` }} />
+      {seats && (
+        <div className="stack sm">
+          <div className="plan-meter" aria-label={`${p.learners} of ${seats} places used`}>
+            <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, seats)) * 100)}%` }} />
+          </div>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <span className="small">
+              {p.learners} of {seats} place{ess(seats)} used{p.learners >= seats && p.enforced ? ': new learners can’t join until you add a place.' : '.'}
+            </span>
+            {payer && p.state === 'paid' && p.paid_until && (
+              <MobileMoney
+                what="seats"
+                label="Add places"
+                className="btn sm"
+                months={monthsLeft(p.paid_until)}
+                usdFor={(m, n) => (levelCost(level, seats + n).total - levelCost(level, seats).total) * m}
+              />
+            )}
+          </div>
         </div>
       )}
       {!p.enforced ? (
         <div className="small muted">Plan limits aren’t switched on yet, so you have everything for now.</div>
+      ) : p.state === 'unpaid' ? (
+        <div className="note warn small">
+          {centre && !centre.manager
+            ? `${centre.name}’s plan isn’t paid, so new learners can’t join. Ask your centre’s manager to pay in Settings → Your plan. Everything you have stays.`
+            : 'Your free week has ended and nothing is paid yet, so new learners can’t join. Everything you have stays: pay below to carry on.'}
+        </div>
       ) : (
         !p.plus && (
           <div className="small muted">
@@ -1345,81 +1460,100 @@ function YourPlan() {
           </div>
         )
       )}
-      {(comp || p.plan === 'custom') && <div className="small muted">Your plan was set up for you by StudyBridge. Contact StudyBridge from Settings to change it.</div>}
-      <div className="seg" role="group" aria-label="Prices">
-        <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>
-          Monthly
-        </button>
-        <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
-          Yearly (1 month free)
-        </button>
-      </div>
-      <div className="level-cards">
-        {LEVELS.map((l) => {
-          const c = levelCost(l, p.learners);
-          const mine = l.id === level.id;
-          return (
-            <div key={l.id} className={'level-card' + (mine ? ' mine' : '')}>
-              <div className="row wrap between" style={{ gap: 6 }}>
-                <h3 className="row" style={{ gap: 8, margin: 0 }}>
-                  {l.name} {l.tag && <span className="pill claude">{l.tag}</span>}
-                </h3>
-                {mine && <span className="pill accent">Your level</span>}
-              </div>
-              <div className="small muted">{l.blurb}</div>
-              <div className="level-price">
-                <b>{usd(c.total * months)}</b> {period === 'year' ? 'a year' : 'a month'}
-              </div>
-              <div className="tiny muted">
-                {p.learners
-                  ? `For your ${p.learners} learner${p.learners === 1 ? '' : 's'}: ${c.parts.map((x) => `${x.n} × ${usd(x.price)}`).join(' + ')}${months > 1 ? `, for ${months} months` : ''}. `
-                  : 'No learners yet, so nothing to pay. '}
-                {stepsText(l)}.
-              </div>
-              <ul className="level-includes">
-                {l.includes.map((x) => (
-                  <li key={x}>
-                    <Icon name="check" size={14} /> {x}
-                  </li>
-                ))}
-              </ul>
-              {payOpen && (
-                <div className="level-ask row wrap" style={{ gap: 8 }}>
-                  {cards.includes(`${l.id}_${period}`) && (
-                    <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy} onClick={() => card(l.id)}>
-                      {busy === 'card-' + l.id ? 'Opening…' : `Pay by card${period === 'year' ? ' for a year' : ''}`}
-                    </button>
-                  )}
-                  <MobileMoney what={l.id} label="Mobile money" usdFor={(m) => levelCost(l, Math.max(1, p.learners)).total * (m === 12 ? 12 - site.yearlyMonthsFree : m)} />
-                </div>
-              )}
-              {!payOpen && canAsk(l.id) && (
-                <div className="level-ask">
-                  <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy || asked.includes(l.id)} onClick={() => ask(l.id)}>
-                    {busy === l.id ? 'Asking…' : asked.includes(l.id) ? `Asked for ${l.name}` : `Ask for ${l.name}`}
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {pub.payments_on && p.has_billing && (
-        <div className="row wrap" style={{ gap: 8 }}>
-          <button className="btn" disabled={!!busy} onClick={billing}>
-            {busy === 'billing' ? 'Opening…' : 'Manage or cancel'}
+      {(p.state === 'free' || byHand) && !centre && <div className="small muted">Your plan was set up for you by StudyBridge. Contact StudyBridge from Settings to change it.</div>}
+      {p.own_card && (
+        <div className="note warn small row wrap" style={{ gap: 8 }}>
+          <span className="grow">You still pay by card for your own plan. Your centre pays for you now, so cancel yours.</span>
+          <button className="btn sm" disabled={!!busy} onClick={() => billing(true)}>
+            {busy === 'own' ? 'Opening…' : 'Cancel my own plan'}
           </button>
-          {p.card && <span className="small muted">You pay by card. It follows your number of learners: Stripe adds or takes off the difference on your next bill.</span>}
         </div>
       )}
-      <div className="small muted">
-        Essentials from $5 and Plus from $8 per learner a month, and less per learner as you grow. Paused learners don’t count. New tutors get Plus free for 7 days.{' '}
-        {payOpen
-          ? 'Pay by card (it renews by itself) or with mobile money (1 to 12 months at a time).'
-          : p.card
-            ? ''
-            : 'For now, StudyBridge arranges payment with you directly.'}
-      </div>
+      {payer ? (
+        <>
+          <div className="seg" role="group" aria-label="Prices">
+            <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>
+              Monthly
+            </button>
+            <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
+              Yearly (1 month free)
+            </button>
+          </div>
+          <div className="level-cards">
+            {LEVELS.map((l) => {
+              const c = levelCost(l, p.learners);
+              const mine = l.id === level.id;
+              return (
+                <div key={l.id} className={'level-card' + (mine ? ' mine' : '')}>
+                  <div className="row wrap between" style={{ gap: 6 }}>
+                    <h3 className="row" style={{ gap: 8, margin: 0 }}>
+                      {l.name} {l.tag && <span className="pill claude">{l.tag}</span>}
+                    </h3>
+                    {mine && <span className="pill accent">{centre ? 'The centre’s level' : 'Your level'}</span>}
+                  </div>
+                  <div className="small muted">{l.blurb}</div>
+                  <div className="level-price">
+                    <b>{usd(c.total * months)}</b> {period === 'year' ? 'a year' : 'a month'}
+                  </div>
+                  <div className="tiny muted">
+                    {p.learners
+                      ? `For ${centre ? 'the centre’s' : 'your'} ${p.learners} learner${ess(p.learners)}: ${c.parts.map((x) => `${x.n} × ${usd(x.price)}`).join(' + ')}${months > 1 ? `, for ${months} months` : ''}. `
+                      : 'No learners yet, so nothing to pay. '}
+                    {stepsText(l)}.
+                  </div>
+                  <ul className="level-includes">
+                    {l.includes.map((x) => (
+                      <li key={x}>
+                        <Icon name="check" size={14} /> {x}
+                      </li>
+                    ))}
+                  </ul>
+                  {payOpen && (
+                    <div className="level-ask row wrap" style={{ gap: 8 }}>
+                      {cards.includes(`${l.id}_${period}`) && (
+                        <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy} onClick={() => card(l.id)}>
+                          {busy === 'card-' + l.id ? 'Opening…' : `Pay by card${period === 'year' ? ' for a year' : ''}`}
+                        </button>
+                      )}
+                      <MobileMoney
+                        what={l.id}
+                        label="Mobile money"
+                        minPlaces={Math.max(1, p.learners)}
+                        usdFor={(m, n) => levelCost(l, n).total * (m === 12 ? 12 - site.yearlyMonthsFree : m)}
+                      />
+                    </div>
+                  )}
+                  {!payOpen && canAsk(l.id) && (
+                    <div className="level-ask">
+                      <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy || asked.includes(l.id)} onClick={() => ask(l.id)}>
+                        {busy === l.id ? 'Asking…' : asked.includes(l.id) ? `Asked for ${l.name}` : `Ask for ${l.name}`}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {pub.payments_on && p.has_billing && (
+            <div className="row wrap" style={{ gap: 8 }}>
+              <button className="btn" disabled={!!busy} onClick={() => billing()}>
+                {busy === 'billing' ? 'Opening…' : 'Manage or cancel'}
+              </button>
+              {p.card && (
+                <span className="small muted">
+                  {centre ? 'The centre pays' : 'You pay'} by card. It follows the number of learners: Stripe adds or takes off the difference on the next bill.
+                </span>
+              )}
+            </div>
+          )}
+          <div className="small muted">
+            Essentials from $5 and Plus from $8 per learner a month, and less per learner as you grow. Paused learners don’t count. New tutors get Plus free for 7 days.{' '}
+            {payOpen ? 'Pay by card (it renews by itself) or with mobile money (1 to 12 months at a time).' : p.card ? '' : 'For now, StudyBridge arranges payment with you directly.'}
+          </div>
+        </>
+      ) : (
+        <div className="small muted">Your centre’s manager chooses the level and pays for everyone in Settings → Your plan.</div>
+      )}
     </Section>
   );
 }

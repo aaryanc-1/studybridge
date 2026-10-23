@@ -593,6 +593,28 @@ test('payments and email: closed until the admin adds keys; Stripe checkout, sig
   assert.ok(plan.paid_until >= new Date(Date.now() + 85 * 86400000).toISOString().slice(0, 10), 'three months');
   await srv.db.query(`update public.profiles set level = 'essentials', paid_until = null where id = $1`, [me]);
   await srv.db.query(`update public.platform_secrets set flw_secret = null, flw_hash = null where id = 1`);
+  // a centre that pays for everyone: its manager pays by card for every learner in it, and Stripe's events set the
+  // centre's plan; its subscription follows the centre's learners; Manage opens the centre's billing
+  const centre = await q(T.rpc('org_make_centre', { p_name: 'Card Centre' }));
+  await q(T.rpc('org_set_billing', { p_centre: true, p_level: 'plus' }));
+  [st, r] = await call({ action: 'checkout', level: 'essentials', period: 'month' });
+  assert.equal(st, 200, JSON.stringify(r));
+  co = outside.findLast((x) => x.url.startsWith('/v1/checkout/sessions'));
+  assert.deepEqual([co.body['metadata[org]'], co.body['metadata[tutor]']], [centre.id, undefined]);
+  assert.equal(await hook({ type: 'checkout.session.completed', data: { object: { customer: 'cus_org', subscription: 'sub_org', metadata: { org: centre.id, level: 'essentials', period: 'month' } } } }), 200);
+  plan = await q(T.rpc('my_plan'));
+  assert.deepEqual([plan.state, plan.level, plan.centre.name], ['card', 'essentials', 'Card Centre']);
+  await srv.db.query(`update public.organisations set stripe_seats = 99 where id = $1`, [centre.id]);
+  const before = outside.length;
+  [st] = await call({ action: 'kick' });
+  for (let i = 0; i < 50 && !outside.slice(before).some((x) => x.url.startsWith('/v1/subscription_items/')); i++) await new Promise((res) => setTimeout(res, 100));
+  assert.ok(outside.slice(before).some((x) => x.url.startsWith('/v1/subscriptions/sub_org')), 'the centre’s subscription was brought in step');
+  [st, r] = await call({ action: 'billing' });
+  assert.equal(outside.findLast((x) => x.url.startsWith('/v1/billing_portal')).body.customer, 'cus_org');
+  assert.equal(await hook({ type: 'customer.subscription.deleted', data: { object: { id: 'sub_org', status: 'canceled', metadata: { org: centre.id, level: 'essentials', period: 'month' } } } }), 200);
+  assert.equal((await srv.db.query(`select stripe_sub from public.organisations where id = $1`, [centre.id])).rows[0].stripe_sub, null, 'ended');
+  await q(T.rpc('org_set_billing', { p_centre: false }));
+  await q(T.rpc('org_leave'));
 
   // a student pays through the Owner's Pay by card links: recorded straight away, and "you're all set" is emailed
   const S = client();

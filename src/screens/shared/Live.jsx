@@ -808,6 +808,14 @@ export function doneOn(attempt, a) {
   return `Done on ${DEVICES[c] || c} (watched)`;
 }
 
+// Watched work still going in a browser: "On the page now", or "Not on the page since 10:42" (the page checks in
+// every 30 seconds while it's open)
+export function onPage(attempt, a) {
+  if (!attempt || attempt.status !== 'in_progress' || !a?.watched || !attempt.client || attempt.client === 'desktop' || !attempt.seen_at) return '';
+  const seen = new Date(attempt.seen_at);
+  return Date.now() - seen.getTime() < 90 * 1000 ? 'On the page now' : `Not on the page since ${seen.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+}
+
 // ---------- tutor watches an exam camera ----------
 export function Watch({ attemptId }) {
   const lk = useLookups();
@@ -858,7 +866,7 @@ export function Watch({ attemptId }) {
           {learner?.display_name || 'Learner'} · {a?.title || ''}
         </span>
       }
-      subtitle={t && `${kindLabel[a?.kind] || ''} · started ${ago(t.started_at)}${left != null ? ` · ${left > 0 ? clock(left) + ' left' : 'time up'}` : ''}`}
+      subtitle={t && `${kindLabel[a?.kind] || ''} · started ${ago(t.started_at)}${left != null ? ` · ${left > 0 ? clock(left) + ' left' : 'time up'}` : ''}${onPage(t, a) ? ` · ${onPage(t, a)}` : ''}`}
       actions={
         t && t.status !== 'in_progress' ? (
           <button className="btn primary" onClick={() => go(`/marking/${attemptId}`)}>
