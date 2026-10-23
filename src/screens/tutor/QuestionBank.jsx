@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { Empty, Field, Loading, Markdown, Modal, Seg, go, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Link, Loading, Markdown, Modal, Seg, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as X from '../../lib/exams.js';
@@ -26,12 +26,22 @@ const isStudyBridge = (b, me) => b.owner_id !== me.id;
 // The tutor's own subject for a bank question: its subject if it's theirs, else their subject for its exam
 const subjectFor = (b, lk) => (b.subject_id && lk.subject(b.subject_id) ? b.subject_id : (b.exam_code && lk.subjects.find((s) => s.exam && s.exam.split(':')[1] === b.exam_code)?.id) || null);
 
+// Where StudyBridge's checked questions and practice papers would be, for a tutor without Plus (also in Past papers)
+export function SbLibraryWithPlus() {
+  return (
+    <div className="note small plus-note">
+      StudyBridge’s checked questions and practice papers come with Plus. <Link to="/settings?s=plan">See your plan</Link>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The question bank: your questions, and StudyBridge's checked exam-style ones for your subjects' exams
 // ---------------------------------------------------------------------------
 export default function QuestionBank() {
   const bank = useQuery('bank', api.listBank);
   const app = useApp();
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false; // StudyBridge's questions come with Plus
   const [asking, setAsking] = useState(false);
   const [practicing, setPracticing] = useState(false);
   const [writing, setWriting] = useState(false);
@@ -60,6 +70,7 @@ export default function QuestionBank() {
           </button>
         </div>
       </div>
+      {noPlus && <SbLibraryWithPlus />}
       {waiting.length > 0 && <ReviewQueue rows={waiting} title="Waiting for your approval" />}
       <BankBrowser rows={usable} />
       {rejected.length > 0 && <Rejected rows={rejected} />}

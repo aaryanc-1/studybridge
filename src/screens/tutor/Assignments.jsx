@@ -5,7 +5,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { due, kindLabel } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
-import { MockCards, NewMock } from './Mocks.jsx';
+import { MockCards, MocksWithPlus, NewMock } from './Mocks.jsx';
 import { quickPost } from './AssignmentEditor.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
 
@@ -24,6 +24,7 @@ export default function Assignments() {
   const q = useQuery('assignments', api.listAssignments);
   const attempts = useQuery('attempts', api.listAttempts).data || [];
   const mocks = useQuery('mocks', api.listMocks).data || [];
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false; // new mocks come with Plus (the ones made stay)
   const route = useRoute();
   const [filter, setFilter] = useState(route.query.get('show') || 'all');
   const [creating, setCreating] = useState(false);
@@ -72,12 +73,13 @@ export default function Assignments() {
         <Empty
           title="No mock exams yet"
           action={
-            <button className="btn primary" onClick={() => setCreating('mock')}>
+            <button className="btn primary" disabled={noPlus} onClick={() => setCreating('mock')}>
               <Icon name="plus" size={18} /> New mock exam
             </button>
           }
         >
           A mock is one or more papers whose marks add up to one total. StudyBridge works out the grade from your own grade boundaries for the exam.
+          {noPlus && <MocksWithPlus />}
         </Empty>
       ) : filter === 'mocks' ? (
         <div className="stack">
@@ -114,6 +116,7 @@ export default function Assignments() {
       {creating === true && (
         <NewAssignment
           preset={preset}
+          noPlus={noPlus}
           onClose={() => {
             setCreating(false);
             setPreset(null);
@@ -277,7 +280,7 @@ function AssignmentOptions({ a, stats, onClose }) {
   );
 }
 
-function NewAssignment({ preset, onClose, onMock }) {
+function NewAssignment({ preset, noPlus, onClose, onMock }) {
   const lk = useLookups();
   // a topic from the address (this week in the teaching plan), kept while its subject stays chosen
   const presetTopic = preset?.topic && lk.topic(preset.topic);
@@ -290,7 +293,8 @@ function NewAssignment({ preset, onClose, onMock }) {
     e.preventDefault();
     if (!title.trim()) return setErr('Give it a title.');
     try {
-      const a = await api.save('assignments', { kind, title: title.trim(), subject_id: subject || null, topic_id: topic?.id || null, ...KIND_DEFAULTS[kind] });
+      // (the exam camera comes with Plus)
+      const a = await api.save('assignments', { kind, title: title.trim(), subject_id: subject || null, topic_id: topic?.id || null, ...KIND_DEFAULTS[kind], ...(noPlus ? { camera: false } : {}) });
       invalidate('assignments');
       go(`/assignments/${a.id}`);
     } catch (x) {
@@ -301,23 +305,27 @@ function NewAssignment({ preset, onClose, onMock }) {
     <Modal title="New assignment" onClose={onClose}>
       <form className="stack" onSubmit={submit}>
         <Field label="Kind">
-          <Seg
-            value={kind}
-            onChange={(v) => (v === 'mock' ? onMock() : setKind(v))}
-            options={[
-              { value: 'homework', label: 'Homework' },
-              { value: 'quiz', label: 'Quiz' },
-              { value: 'test', label: 'Test' },
-              { value: 'exam', label: 'Exam' },
-              { value: 'mock', label: 'Mock exam' },
-            ]}
-          />
+          {/* (like Seg, with a mock exam that waits for Plus) */}
+          <div className="seg" role="group" aria-label="Kind">
+            {[
+              ['homework', 'Homework'],
+              ['quiz', 'Quiz'],
+              ['test', 'Test'],
+              ['exam', 'Exam'],
+              ['mock', 'Mock exam'],
+            ].map(([v, label]) => (
+              <button key={v} type="button" aria-pressed={kind === v} disabled={v === 'mock' && noPlus} onClick={() => (v === 'mock' ? onMock() : setKind(v))}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {noPlus && <MocksWithPlus />}
         </Field>
         <div className="note small">
           {kind === 'homework' && 'Open-book work. No timer or lockdown unless you turn them on.'}
           {kind === 'quiz' && 'Short, timed, marked automatically and returned as soon as it’s submitted.'}
           {kind === 'test' && 'Timed and locked down: the learner’s screen stays on StudyBridge until they submit.'}
-          {kind === 'exam' && 'Timed, locked down, and you can watch their camera while they work.'}{' '}
+          {kind === 'exam' && (noPlus ? 'Timed and locked down. The exam camera comes with Plus.' : 'Timed, locked down, and you can watch their camera while they work.')}{' '}
           You can change every setting next.
         </div>
         <Field label="Title">

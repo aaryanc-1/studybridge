@@ -84,6 +84,9 @@ export default function AssignmentEditor({ id }) {
   const [previewIntro, setPreviewIntro] = useState(false);
   const [picking, setPicking] = useState(false);
   useLeaveGuard(dirty);
+  // The exam camera comes with Plus: without it, a camera that's already on (saved) stays, and none is switched on
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false;
+  const savedCamera = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -91,6 +94,7 @@ export default function AssignmentEditor({ id }) {
       if (!row) return setErr('This assignment no longer exists.');
       const q = await api.listQuestions(id);
       const keys = await api.listKeys(q.map((x) => x.id));
+      savedCamera.current = !!row.camera;
       setA(row);
       setQs(q.map((x) => ({ ...x, _k: k(), key: keys.find((y) => y.question_id === x.id) || { answer: {}, solution_md: '', mark_scheme_md: '' } })));
       setRemoved([]);
@@ -172,6 +176,7 @@ export default function AssignmentEditor({ id }) {
           next.push({ ...q, id: saved.id });
         }
         const s = await api.save('assignments', row);
+        savedCamera.current = !!s.camera;
         setA(s);
         setQs(next);
         setRemoved([]);
@@ -423,7 +428,7 @@ export default function AssignmentEditor({ id }) {
                 onChange={async (e) => {
                   const kind = e.target.value;
                   const use = await confirm({ title: `Use the usual ${kindLabel[kind].toLowerCase()} settings?`, body: 'Lockdown, camera, timer, attempts and marks release change to the defaults for this kind. You can adjust them after.', ok: 'Use defaults', cancel: 'Just change the kind' });
-                  setField(use ? { kind, ...KIND_DEFAULTS[kind] } : { kind });
+                  setField(use ? { kind, ...KIND_DEFAULTS[kind], ...(noPlus && !savedCamera.current ? { camera: false } : {}) } : { kind });
                 }}
               >
                 {Object.entries(kindLabel).map(([v, l]) => (
@@ -466,7 +471,12 @@ export default function AssignmentEditor({ id }) {
                 </select>
               </Field>
             )}
-            <Toggle checked={a.camera} onChange={(v) => setField({ camera: v })} icon="camera" title="Camera on" sub="You can watch their camera and screen live while they work." />
+            <Toggle checked={a.camera} onChange={(v) => setField({ camera: v })} disabled={noPlus && !savedCamera.current && !a.camera} icon="camera" title="Camera on" sub="You can watch their camera and screen live while they work." />
+            {noPlus && (
+              <div className="small muted plus-note">
+                The exam camera comes with Plus. <Link to="/settings?s=plan">See your plan</Link>
+              </div>
+            )}
             <div className="grid g2" style={{ gap: 10 }}>
               <Field label="Time limit (minutes)">
                 <input className="input" type="number" min="1" value={a.time_limit_min || ''} placeholder="None" onChange={(e) => setField({ time_limit_min: e.target.value ? Number(e.target.value) : null })} />

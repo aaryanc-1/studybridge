@@ -10,12 +10,14 @@ import { ago, bytes, PLANS, planName } from '../../lib/format.js';
 import { easyPassword } from '../tutor/Learners.jsx';
 
 export const money = (cents) => '$' + (Number(cents || 0) / 100).toFixed(2);
+// "29 Oct 2026", from a date ('2026-10-29') or a time
+const shortDay = (d) => new Date(String(d).length === 10 ? d + 'T12:00' : d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 const MODELS = [
   ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (recommended: great work, lower cost)'],
   ['claude-opus-5-5', 'Claude Opus 5.5 (best work, about 2× the cost)'],
   ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (cheapest, simpler work)'],
 ];
-const ACTIONS = { admin_moved: 'Admin moved to its own account', allowance: 'Prof allowance raised', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed' };
+const ACTIONS = { admin_moved: 'Admin moved to its own account', allowance: 'Prof allowance raised', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed', level: 'Level changed' };
 
 export function TutorsPage() {
   const tutors = useQuery('admin-tutors', api.adminTutors);
@@ -191,6 +193,17 @@ export function TutorRow({ t }) {
         <span>
           Plan <b>{planName(t)}</b>
         </span>
+        {t.level && (
+          <span>
+            Level{' '}
+            <b>
+              {t.level === 'essentials' ? 'Essentials' : 'Plus'}
+              {t.level === 'plus' && t.plus === false ? ' (off)' : ''}
+            </b>
+            {t.trial_until && new Date(t.trial_until) > new Date() ? ` · free week until ${shortDay(t.trial_until)}` : ''}
+            {t.paid_until && new Date(t.paid_until + 'T23:59') >= new Date() ? ` · paid up to ${shortDay(t.paid_until)}` : ''}
+          </span>
+        )}
         {!pending && (
           <span>
             Classes <b>{t.classes ?? 0}</b>
@@ -337,6 +350,16 @@ export function PlanModal({ t, onClose }) {
   const [until, setUntil] = useState(t.plan_until || '');
   const [custom, setCustom] = useState(!!t.ai_limit_custom);
   const [limit, setLimit] = useState((Number(t.ai_limit_cents) / 100).toFixed(2));
+  // Essentials or Plus, paid up to, more free days. The Tutors list has them; a tutor's own page may not, so look there.
+  const known = t.level !== undefined;
+  const tutors = useQuery('admin-tutors', api.adminTutors, { enabled: !known }).data;
+  const lv = known ? t : (tutors || []).find((x) => x.id === t.id);
+  const [level, setLevel] = useState(null); // null: as it is
+  const [paidUntil, setPaidUntil] = useState(null);
+  const [moreDays, setMoreDays] = useState('');
+  const levelNow = level ?? lv?.level ?? 'plus';
+  const paidNow = paidUntil ?? lv?.paid_until ?? '';
+  const trialOn = lv?.trial_until && new Date(lv.trial_until) > new Date();
   return (
     <Modal
       title={`${t.name}: plan & Prof`}
@@ -351,6 +374,9 @@ export function PlanModal({ t, onClose }) {
             onClick={async () => {
               try {
                 await api.adminSetPlan(t.id, plan, custom ? Math.round(Number(limit) * 100) : null, plan === 'custom' ? Math.round(Number(learners)) : null, plan === 'complimentary' ? until || null : null);
+                const days = Math.round(Number(moreDays)) || 0;
+                if (lv && (levelNow !== lv.level || (paidNow || null) !== (lv.paid_until || null) || days > 0))
+                  await api.adminSetLevel(t.id, levelNow, paidNow || null, days > 0 ? days : null);
                 invalidate('admin-tutors', 'admin-log', 'admin-tutor', 'admin-overview', 'admin-selling');
                 toast('Saved');
                 onClose();
@@ -382,6 +408,26 @@ export function PlanModal({ t, onClose }) {
         <Field label="Free until (optional)" hint="Leave it empty to keep it free. After this day they move to the Free plan. Never charged.">
           <input className="input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
         </Field>
+      )}
+      {lv ? (
+        <>
+          <Field label="Level" hint={`Plus adds Prof, mocks with grades, the exam camera and StudyBridge’s library. Plus is ${lv.plus === false ? 'off' : 'on'} for them now.`}>
+            <select className="select" value={levelNow} onChange={(e) => setLevel(e.target.value)}>
+              <option value="essentials">Essentials</option>
+              <option value="plus">Plus</option>
+            </select>
+          </Field>
+          <div className="grid g2" style={{ gap: 10 }}>
+            <Field label="Paid up to" hint="The last day they’ve paid for. Leave it empty if they haven’t paid.">
+              <input className="input" type="date" value={paidNow} onChange={(e) => setPaidUntil(e.target.value)} />
+            </Field>
+            <Field label="More free days" hint={trialOn ? `Free week until ${shortDay(lv.trial_until)}. Days you add go on from there (up to 60).` : 'Free days of Plus from today (up to 60). Leave it empty for none.'}>
+              <input className="input" type="number" min="1" max="60" step="1" value={moreDays} placeholder="None" onChange={(e) => setMoreDays(e.target.value)} />
+            </Field>
+          </div>
+        </>
+      ) : (
+        !tutors && <div className="small muted">Loading their level…</div>
       )}
       <Toggle checked={custom} onChange={setCustom} title="Own Prof allowance" sub="Otherwise they get the default allowance from Admin settings." />
       {custom && (
@@ -606,6 +652,7 @@ function Log({ always }) {
             <span className="grow">
               <b>{ACTIONS[x.action] || x.action}</b> · {x.detail?.name || x.email || 'account'}
               {x.action === 'plan' && x.detail?.plan ? ` → ${x.detail.plan}` : ''}
+              {x.action === 'level' && x.detail?.level ? ` → ${x.detail.level === 'essentials' ? 'Essentials' : 'Plus'}` : ''}
               {x.action === 'deleted' && x.detail?.learners ? ` (and ${x.detail.learners} learner${x.detail.learners > 1 ? 's' : ''})` : ''}
             </span>
           </div>

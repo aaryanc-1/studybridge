@@ -58,8 +58,18 @@ export function MockCards({ mocks, assignments }) {
   );
 }
 
+// Where a new mock is started, for a tutor without Plus (the mocks they made stay)
+export function MocksWithPlus() {
+  return (
+    <div className="small muted plus-note">
+      Mocks with grades come with Plus. <Link to="/settings?s=plan">See your plan</Link>
+    </div>
+  );
+}
+
 export function NewMock({ onClose }) {
   const lk = useLookups();
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false;
   const [title, setTitle] = useState('');
   const [subject, setSubject] = useState(lk.subjects[0]?.id || '');
   const [err, setErr] = useState('');
@@ -96,11 +106,14 @@ export function NewMock({ onClose }) {
           </select>
         </Field>
         {err && <div className="error">{err}</div>}
+        {noPlus && <MocksWithPlus />}
         <div className="foot row end">
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary">Create</button>
+          <button className="btn primary" disabled={noPlus}>
+            Create
+          </button>
         </div>
       </form>
     </Modal>
@@ -130,6 +143,7 @@ export default function MockPage({ id }) {
   // a mock whose subject doesn't say its exam keeps boundaries under the subject (or the mock itself)
   const examFor = m ? m.exam || examKey(lk.subject(m.subject_id)) || `mock:${m.id}` : null;
   const r = results.data;
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false; // (a new paper's camera comes with Plus)
 
   if (!m) return <Page title="Mock exam">{mocks.data ? <Empty>This mock exam no longer exists.</Empty> : <Loading />}</Page>;
 
@@ -166,6 +180,7 @@ export default function MockPage({ id }) {
         mock_id: id,
         mock_position: papers.length + 1,
         ...KIND_DEFAULTS.exam,
+        ...(noPlus ? { camera: false } : {}),
       });
       refresh();
       go(`/assignments/${a.id}`);

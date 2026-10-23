@@ -1034,3 +1034,18 @@ table.papers-plan tr.quiet td { color: var(--muted); }
   .home-acts { margin-left: auto; }
   .home-quick .btn { flex: 1 1 calc(50% - 5px); }
 }
+
+/* Essentials and Plus */
+.level-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.level-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); min-width: 0; }
+.level-card.mine { border-color: var(--accent-line); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.level-card h3 { font-size: 16px; }
+.level-price { font-size: 14px; color: var(--muted); }
+.level-price b { font-size: 22px; font-weight: 700; color: var(--ink); }
+.level-includes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+.level-includes li { display: flex; align-items: flex-start; gap: 6px; }
+.level-includes li svg { flex-shrink: 0; margin-top: 3px; color: var(--accent); }
+.level-ask { margin-top: auto; padding-top: 4px; }
+.plus-note a { font-weight: 600; white-space: nowrap; }
+.seg button:disabled { opacity: 0.45; cursor: default; }
+.toggle[aria-disabled='true'] { opacity: 0.6; cursor: default; }

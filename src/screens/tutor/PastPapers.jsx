@@ -10,6 +10,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { SbPaperShelf } from '../shared/SbPapers.jsx';
 import { ExamSelect } from './Structure.jsx';
 import { GradeBoundaries } from './Mocks.jsx';
+import { SbLibraryWithPlus } from './QuestionBank.jsx';
 
 const THIS_YEAR = new Date().getFullYear();
 const SESSION_MONTH = { m: 3, s: 5, w: 11, may: 5, nov: 11 };
@@ -33,6 +34,7 @@ export default function PastPapers() {
   const [panel, setPanel] = useState(null);
   const [find, setFind] = useState('');
   const toast = useToast();
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false; // StudyBridge's practice papers come with Plus
 
   const mine = (files.data || []).filter((f) => f.exam_board);
   // Exams your learners take (from the Exam set on each subject), first
@@ -164,12 +166,12 @@ export default function PastPapers() {
         </Empty>
       ) : board === 'cie' ? (
         <>
-          <SbPaperShelf exam={key} />
+          {noPlus ? <SbLibraryWithPlus /> : <SbPaperShelf exam={key} />}
           <CieSyllabus code={code} mine={mine.filter((f) => f.exam_board === 'cie' && f.exam_code === code)} onOpen={setPanel} />
         </>
       ) : (
         <>
-          <SbPaperShelf exam={key} />
+          {noPlus ? <SbLibraryWithPlus /> : <SbPaperShelf exam={key} />}
           <IbSyllabus syl={syl} mine={mine.filter((f) => f.exam_board === 'ib' && f.exam_code === code)} onOpen={setPanel} />
           <BoundariesCard exam={key} />
         </>

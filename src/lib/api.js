@@ -95,6 +95,10 @@ export async function sessionFromLink() {
 export const publicSettings = () => run(sb().rpc('public_settings')).catch(() => ({}));
 // Plans, payments, your data, deleting your account
 export const myPlan = () => run(sb().rpc('my_plan'));
+// Essentials or Plus: the Owner sets a tutor's level and what they've paid up to (or more free days); a tutor asks to switch
+export const adminSetLevel = (userId, level, paidUntil = null, trialDays = null) =>
+  run(sb().rpc('admin_set_level', { p_user: userId, p_level: level, p_paid_until: paidUntil || null, p_trial_days: trialDays }));
+export const askLevel = (level) => run(sb().rpc('ask_level', { p_level: level }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));

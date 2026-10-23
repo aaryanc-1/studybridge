@@ -7570,7 +7570,8 @@ begin
       'org', (select jsonb_build_object('name', o.name, 'kind', o.kind, 'role', m.role,
                                         'tutors', (select count(*) from public.org_members x where x.org_id = o.id))
                 from public.org_members m join public.organisations o on o.id = m.org_id where m.user_id = p.id),
-      'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived)
+      'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived),
+      'level', p.level, 'plus', public._plus(p.id), 'trial_until', p.trial_until, 'paid_until', p.paid_until
     ) order by (p.status = 'pending') desc, p.created_at)
     from public.profiles p left join auth.users u on u.id = p.id where p.role = 'tutor' and not p.demo), '[]');
 end $$;
@@ -8160,6 +8161,11 @@ begin
     update public.classes set name = v_name, subject_id = p_subject where id = v_id;
   end if;
   if v_teachers is not null then
+    -- teachers given the class (by the manager) are told
+    perform public.notify_user(x, 'class', 'You teach ' || v_name || ' now', 'Its learners are in your Learners, and you can set work for the class.',
+                               jsonb_build_object('class_id', v_id))
+       from unnest(v_teachers) x
+      where x <> auth.uid() and not exists (select 1 from public.class_teachers where class_id = v_id and teacher_id = x);
     delete from public.class_teachers where class_id = v_id and not teacher_id = any (v_teachers);
     insert into public.class_teachers (class_id, teacher_id) select v_id, x from unnest(v_teachers) x on conflict do nothing;
   end if;
@@ -8257,6 +8263,17 @@ begin
   return jsonb_build_object('class', c.name, 'already', false);
 end $$;
 
+-- Who an item is for (and is told about it): chosen learners, else everyone taking the subject, else the tutor's own
+-- learners. A class teacher's learners count too, whoever their own tutor is.
+create or replace function public._audience(p_tutor uuid, p_learner_ids uuid[], p_subject uuid)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select p.id from public.profiles p
+   where p.role = 'learner' and (p.tutor_id = p_tutor or public._teaches(p_tutor, p.id))
+     and case when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then p.id = any (p_learner_ids)
+              when p_subject is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p.id and ls.subject_id = p_subject)
+              else p.tutor_id = p_tutor end
+$$;
+
 -- A learner's teachers, for their Messages (their own tutor first)
 create or replace function public.my_teachers() returns jsonb
 language sql stable security definer set search_path = public as $$
@@ -8274,6 +8291,132 @@ language sql stable security definer set search_path = public as $$
   union
   select cm.learner_id from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id where ct.teacher_id = auth.uid()
 $$;
+
+-- =====================================================================
+-- Launch 2, part 3 (22 Oct 2026): Essentials and Plus. A tutor is on one of two levels, priced per learner
+-- (website/site.config.json → tutorLevels). Plus adds Prof, mocks with grades, the exam camera and StudyBridge's
+-- library; Essentials has everything else. A new tutor tries Plus free for 7 days from when they're approved.
+-- Nothing is switched off until the Owner turns plan limits on (Admin → Selling): until then everyone has it all.
+-- Payment is still arranged by hand: the Owner records it (paid until) in Admin → Tutors → Plan & Prof.
+-- (A tutor's trial_until and paid_until reuse the columns students have.)
+-- =====================================================================
+alter table public.profiles add column if not exists level text not null default 'plus';
+do $$
+begin
+  alter table public.profiles add constraint profiles_level_check check (level in ('essentials', 'plus'));
+exception when duplicate_object then null;
+end $$;
+
+-- Does this tutor have Plus now?
+create or replace function public._plus(p_tutor uuid default null) returns boolean
+language sql stable security definer set search_path = public as $$
+  select not coalesce((select enforce_plans from public.app_config where id = 1), false)
+      or exists (select 1 from public.profiles p where p.id = coalesce(p_tutor, auth.uid()) and p.role = 'tutor' and (
+           p.is_studybridge
+        or (p.plan = 'complimentary' and (p.plan_until is null or p.plan_until >= current_date))
+        or (p.level = 'plus' and (p.trial_until >= now() or p.paid_until >= current_date or p.plan in ('custom', 'starter', 'pro')))))
+$$;
+
+-- A tutor's free week of Plus starts when they're approved
+create or replace function public._tutor_trial() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.role = 'tutor' and new.status = 'active' and old.status is distinct from 'active' and new.trial_until is null then
+    new.trial_until := now() + interval '7 days';
+  end if;
+  return new;
+end $$;
+drop trigger if exists profiles_tutor_trial on public.profiles;
+create trigger profiles_tutor_trial before update of status on public.profiles for each row execute function public._tutor_trial();
+
+-- Prof: for Plus
+create or replace function public._prof_ready(p_tutor uuid) returns text
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not (public._tutor_active(p_tutor) or exists (select 1 from public.profiles p join public.platform_admins a on a.user_id = p.id
+                                                    where p.id = p_tutor and p.role = 'admin')) then
+    return 'Prof is for approved tutors.';
+  end if;
+  if exists (select 1 from public.profiles where id = p_tutor and role = 'tutor') and not public._plus(p_tutor) then
+    return 'Prof comes with Plus. Switch to Plus in Settings → Your plan.';
+  end if;
+  if not exists (select 1 from public.platform_secrets where id = 1 and anthropic_api_key is not null) then
+    return 'Prof isn’t switched on yet. (The StudyBridge admin adds the Claude key in Admin.)';
+  end if;
+  if public._prof_month_cents(p_tutor) >= public._prof_limit(p_tutor)
+     and not exists (select 1 from public.profiles where id = p_tutor and role = 'admin') then
+    return 'Prof is unavailable right now. StudyBridge has been told and will sort it out.';
+  end if;
+  return null;
+end $$;
+
+-- StudyBridge's library (its checked questions and practice papers): for Plus
+create or replace function public._sb_library(p_tutor uuid default null) returns uuid
+language sql stable security definer set search_path = public as $$
+  select c from (select public._studybridge_account() as c) x
+   where c is not null and c is distinct from coalesce(p_tutor, auth.uid()) and public._tutor_active(coalesce(p_tutor, auth.uid()))
+     and public._plus(coalesce(p_tutor, auth.uid()))
+$$;
+
+-- New mocks and the exam camera: for Plus (what's there already stays)
+create or replace function public._plus_only() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_table_name = 'mocks' and tg_op = 'INSERT' and not public._plus(new.tutor_id) then
+    raise exception 'Mocks with grades come with Plus. Switch to Plus in Settings → Your plan.';
+  end if;
+  if tg_table_name = 'assignments' then -- (only assignments have a camera)
+    if new.camera and (tg_op = 'INSERT' or not old.camera) and not public._plus(new.tutor_id) then
+      raise exception 'The exam camera comes with Plus. Switch to Plus in Settings → Your plan.';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists mocks_plus on public.mocks;
+create trigger mocks_plus before insert on public.mocks for each row execute function public._plus_only();
+drop trigger if exists assignments_plus on public.assignments;
+create trigger assignments_plus before insert or update of camera on public.assignments for each row execute function public._plus_only();
+
+-- A tutor's plan: their level, what's on, the trial, how many learners count
+create or replace function public.my_plan() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('plan', p.plan, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
+    'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'),
+    'limit', public._tutor_limit(p.id), 'until', p.plan_until,
+    'enforced', (select enforce_plans from public.app_config where id = 1),
+    'has_billing', p.stripe_customer is not null,
+    'level', p.level, 'plus', public._plus(p.id), 'trial_until', p.trial_until, 'paid_until', p.paid_until)
+    from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
+$$;
+
+-- The Owner sets a tutor's level, records what they've paid up to, and can give them more free days
+create or replace function public.admin_set_level(p_user uuid, p_level text, p_paid_until date default null, p_trial_days int default null)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  if p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
+  if not exists (select 1 from public.profiles where id = p_user and role = 'tutor') then raise exception 'That isn’t a tutor account.'; end if;
+  update public.profiles
+     set level = p_level, paid_until = p_paid_until,
+         trial_until = case when coalesce(p_trial_days, 0) > 0
+                            then greatest(coalesce(trial_until, now()), now()) + make_interval(days => least(p_trial_days, 60))
+                            else trial_until end
+   where id = p_user;
+  perform public._admin_log('level', p_user, jsonb_build_object('level', p_level, 'paid_until', p_paid_until, 'trial_days', p_trial_days));
+end $$;
+
+-- A tutor asks to switch level (no checkout yet): the Owner is told and sets it in Admin
+create or replace function public.ask_level(p_level text) returns void
+language plpgsql security definer set search_path = public as $$
+declare me public.profiles;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.role is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
+  if p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
+  perform public.notify_user(a.user_id, 'feedback', coalesce(me.display_name, 'A tutor') || ' would like ' || initcap(p_level),
+    'Set it in Admin → Tutors → Plan & Prof once you’ve arranged payment.', jsonb_build_object('tutor_id', me.id))
+     from public.platform_admins a;
+end $$;
 
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
@@ -8347,6 +8490,8 @@ revoke execute on function public._class_pool(uuid) from public, anon, authentic
 revoke execute on function public._add_to_class(uuid, uuid) from public, anon, authenticated;
 revoke execute on function public._home_learners() from public, anon, authenticated;
 revoke execute on function public._class_made() from public, anon, authenticated;
+revoke execute on function public._tutor_trial() from public, anon, authenticated;
+revoke execute on function public._plus_only() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
 revoke execute on function public._prof_limit(uuid) from public, anon, authenticated;
 revoke execute on function public._prof_ready(uuid) from public, anon, authenticated;

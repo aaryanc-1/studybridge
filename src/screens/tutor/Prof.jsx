@@ -56,6 +56,8 @@ export function useProfJobs() {
 export default function Prof() {
   const usage = useQuery('prof-usage', api.profUsage);
   const u = usage.data;
+  // Prof comes with Plus: without it, what Prof already made stays here, and asking waits for Plus
+  const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false;
   return (
     <Page
       title={
@@ -68,11 +70,25 @@ export default function Prof() {
       }
       subtitle="Your teaching assistant. Ask for homework, quizzes, tests, exams or lesson notes, and switch on marking. Everything Prof makes waits here until you approve it. Learners never use Prof."
     >
-      {u && !u.ready && <div className="card warn small">{u.why_not}</div>}
-      <AskProf ready={u?.ready !== false} />
+      {noPlus ? (
+        <div className="card claude plus-lock">
+          <h2 className="row">
+            <Icon name="cap" style={{ color: 'var(--claude)' }} /> Prof comes with Plus
+          </h2>
+          <div className="small">Prof makes homework, quizzes, tests and lesson notes, drafts your marking and plans your teaching, and you check everything before learners see it.</div>
+          <div>
+            <button className="btn primary" onClick={() => go('/settings?s=plan')}>
+              See your plan
+            </button>
+          </div>
+        </div>
+      ) : (
+        u && !u.ready && <div className="card warn small">{u.why_not}</div>
+      )}
+      {!noPlus && <AskProf ready={u?.ready !== false} />}
       <DraftsWaiting />
       <Jobs />
-      <ProfSettings usage={u} />
+      {!noPlus && <ProfSettings usage={u} />}
     </Page>
   );
 }

@@ -2553,6 +2553,7 @@ test('classes with teachers: a manager makes a class for any of its teachers; ea
   await val('HB', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', 'How many moles in 18 g of water?', 1) returning id`, [hw]);
   assert.equal((await as('SA', `select id from assignments where id = $1`, [hw])).length, 1);
   assert.deepEqual((await as('SA', `select name from subjects where id = $1`, [chem])).map((s) => s.name), ['Chemistry'], 'the class’s subject');
+  assert.equal(await val('SA', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New homework: Moles'`), 1, 'told about it, though he isn’t her own tutor');
   const t = await one('SA', `select * from start_attempt($1)`, [hw]);
   await as('SA', `select submit_attempt($1)`, [t.id]);
   assert.equal((await as('HB', `select id from attempts where id = $1`, [t.id])).length, 1, 'he marks it');
@@ -2592,4 +2593,56 @@ test('classes with teachers: a manager makes a class for any of its teachers; ea
   await fails(as('PT', `select delete_class($1)`, [f3]), /Not your class/);
   await as('HM', `select archive_class($1, true)`, [f3]);
   await as('HM', `select archive_class($1, false)`, [f3]);
+});
+
+test('Essentials and Plus: Plus adds Prof, mock grades, the exam camera and StudyBridge’s library; a free week of Plus from approval; nothing is switched off until plan limits are on', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  await mk('PE', 'essentials@plans.x');
+  await mk('PP', 'plus@plans.x');
+  await one('PE', `select * from become_tutor('Esther Essentials', 'UTC')`);
+  await one('PP', `select * from become_tutor('Peter Plus', 'UTC')`);
+  assert.equal(await val('PE', `select trial_until from profiles where id = auth.uid()`), null, 'no free week before approval');
+  await as('A', `select admin_set_status($1, 'active')`, [U.PE]);
+  await as('A', `select admin_set_status($1, 'active')`, [U.PP]);
+  const trial = new Date(await val('PE', `select trial_until from profiles where id = auth.uid()`));
+  assert.ok(Math.abs(trial - Date.now() - 7 * 86400000) < 60000, 'a free week of Plus from approval');
+  // plan limits off: everyone has everything, whatever their level
+  await as('A', `select admin_set_level($1, 'essentials')`, [U.PE]);
+  assert.equal((await val('PE', `select my_plan()`)).plus, true);
+  await fails(as('T', `select admin_set_level($1, 'plus')`, [U.PE]), /admins only/i);
+  await fails(as('A', `select admin_set_level($1, 'gold')`, [U.PE]), /Essentials or Plus/);
+
+  // limits on: Essentials after the free week loses Prof, new mocks, the camera and StudyBridge's library
+  await as('A', `select admin_set_selling(p_enforce => true)`);
+  try {
+    await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.PE]);
+    const pe = await val('PE', `select my_plan()`);
+    assert.deepEqual([pe.level, pe.plus, pe.enforced], ['essentials', false, true]);
+    await fails(as('PE', `select prof_ask('Make a quiz', '{}')`), /Prof comes with Plus/);
+    await fails(as('PE', `insert into mocks (title) values ('Term 1')`), /Mocks with grades come with Plus/);
+    await fails(as('PE', `insert into assignments (title, kind, camera) values ('Exam', 'exam', true)`), /exam camera comes with Plus/);
+    const plain = await val('PE', `insert into assignments (title, kind) values ('Homework', 'homework') returning id`);
+    await fails(as('PE', `update assignments set camera = true where id = $1`, [plain]), /exam camera comes with Plus/);
+    assert.equal(await val('PE', `select public._sb_library()`), null, 'no StudyBridge library');
+    // Peter is on Plus in his free week: all of it
+    assert.equal((await val('PP', `select my_plan()`)).plus, true);
+    await val('PP', `insert into mocks (title) values ('Term 1') returning id`);
+    // after his free week he needs to have paid (recorded by the Owner)
+    await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.PP]);
+    assert.equal((await val('PP', `select my_plan()`)).plus, false);
+    await as('A', `select admin_set_level($1, 'plus', (current_date + 30)::date)`, [U.PP]);
+    assert.equal((await val('PP', `select my_plan()`)).plus, true);
+    assert.equal((await val('A', `select admin_tutors()`)).find((t) => t.id === U.PP).plus, true);
+    // or a few more free days
+    await as('A', `select admin_set_level($1, 'plus', null, 7)`, [U.PE]);
+    assert.equal((await val('PE', `select my_plan()`)).plus, true, 'Plus again for 7 days');
+    // asking to switch tells the Owner
+    await as('PE', `select ask_level('plus')`);
+    assert.ok((await as('A', `select title from notifications where user_id = auth.uid() and title = 'Esther Essentials would like Plus'`)).length === 1);
+  } finally {
+    await as('A', `select admin_set_selling(p_enforce => false)`);
+  }
 });

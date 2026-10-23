@@ -308,7 +308,7 @@ function useAnnouncer(target) {
     // a learner joined (they show in lists and pickers straight away); a learner was put in a class (its work shows);
     // a centre changed
     if (fresh.some((n) => n.kind === 'joined')) invalidate('learners', 'learner_subjects', 'invites', 'accounts', 'class_members');
-    if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions');
+    if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions', 'learners', 'classes', 'class_members', 'class_teachers', 'class-pool');
     if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
 

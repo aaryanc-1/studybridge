@@ -840,6 +840,7 @@ try {
   await mf.getByRole('checkbox', { name: /Anaya/ }).check();
   await mf.getByRole('button', { name: 'Save' }).click();
   await A.locator('.card', { hasText: 'Chemistry club' }).getByText('Taught by Tom Phiri').waitFor();
+  await T3.getByText('You teach Chemistry club now').first().waitFor({ timeout: 45000 }); // (told, and his lists refresh)
   await T3.goto(web.url + '#/learners');
   await T3.locator('a.card', { hasText: 'Anaya' }).getByText('In your class').waitFor();
   await T3.locator('a.card', { hasText: 'Anaya' }).click();
@@ -1221,6 +1222,7 @@ try {
   const plan = A.locator('#set-plan');
   await plan.getByText(/Essentials from \$5 and Plus from \$8 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
+  await plan.getByText('Plus is on').first().waitFor(); // (Essentials or Plus: everything is on until plan limits are)
   // (the message is watched for from the click on: it can come and go while the download is being caught)
   const [zip] = await Promise.all([
     A.waitForEvent('download'),

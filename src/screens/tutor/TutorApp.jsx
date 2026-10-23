@@ -37,6 +37,7 @@ function notificationTarget(n) {
   if (n.kind === 'prof') return r.attempt_id ? `/marking/${r.attempt_id}` : r.assignment_id ? `/assignments/${r.assignment_id}` : r.lesson_id ? `/lesson/${r.lesson_id}` : '/prof';
   if (n.kind === 'feedback_reply') return '/settings?s=contact';
   if (n.kind === 'org') return '/settings?s=org';
+  if (n.kind === 'class') return '/learners/classes';
   if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/learners/reports';
   return '/';
 }

@@ -18,6 +18,7 @@ import { setTheme, useTheme, setTextSize, useTextSize, setDataSaver, useDataSave
 import { studentAccess } from '../../lib/students.js';
 import { PayOptions } from '../learner/SelfStudy.jsx';
 import { SetUpChild, AddWithCode } from '../parent/ChildCodes.jsx';
+import site from '../../../website/site.config.json';
 
 export default function Settings() {
   const app = useApp();
@@ -1234,31 +1235,66 @@ function StudyReminder() {
   );
 }
 
-// The tutor's plan: how full it is, and (once StudyBridge takes payments) upgrading or managing it
-const PLAN = {
-  free: { name: 'Free', learners: 1 },
-  starter: { name: 'Starter', learners: 5, month: '$15 a month', year: '$150 a year (2 months free)' },
-  pro: { name: 'Pro', learners: 25, month: '$29 a month', year: '$290 a year (2 months free)' },
-};
+// The tutor's plan: Essentials or Plus (website/site.config.json → tutorLevels), whether Plus is on now, what each
+// level would cost for their learners, and asking StudyBridge to switch (payment is arranged by hand for now)
+const LEVELS = site.tutorLevels;
+const usd = (n) => '$' + n.toLocaleString('en-US');
+const planDay = (d) => new Date(String(d).length === 10 ? d + 'T12:00' : d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+// A month for n learners, step by step: 12 learners on Plus = 10 × $8 + 2 × $6 = $92
+function levelCost(level, n) {
+  const parts = [];
+  let from = 0;
+  for (const s of level.steps) {
+    const to = s.upTo ?? Infinity;
+    if (n > from) parts.push({ n: Math.min(n, to) - from, price: s.price });
+    from = to;
+  }
+  return { total: parts.reduce((t, x) => t + x.n * x.price, 0), parts };
+}
+// "$8 each for learners 1–10, $6 for 11–30, $4 after that"
+const stepsText = (level) =>
+  level.steps
+    .map((s, i) => {
+      const from = i ? level.steps[i - 1].upTo + 1 : 1;
+      if (s.upTo == null) return i ? `${usd(s.price)} after that` : `${usd(s.price)} each`;
+      return i ? `${usd(s.price)} for ${from}–${s.upTo}` : `${usd(s.price)} each for learners ${from}–${s.upTo}`;
+    })
+    .join(', ');
 function YourPlan() {
   const toast = useToast();
   const q = useQuery('my-plan', api.myPlan);
   const pub = useQuery('public-settings', api.publicSettings).data || {};
   const [period, setPeriod] = useState('month');
   const [busy, setBusy] = useState('');
+  const [asked, setAsked] = useState([]);
   const p = q.data;
   if (!p) return null;
-  const cur =
-    p.plan === 'custom'
-      ? { name: 'Custom', learners: p.limit }
-      : p.plan === 'complimentary'
-        ? { name: p.until ? `Complimentary (free until ${new Date(p.until + 'T12:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})` : 'Complimentary (free)', learners: p.limit }
-        : PLAN[p.plan] || { name: p.plan, learners: p.limit };
-  const setByUs = p.plan === 'custom' || p.plan === 'complimentary';
-  async function open(fn, what) {
-    setBusy(what);
+  const now = new Date();
+  const level = LEVELS.find((l) => l.id === p.level) || LEVELS.at(-1);
+  const comp = p.plan === 'complimentary' && (!p.until || new Date(p.until + 'T23:59') >= now);
+  const paid = !!p.paid_until && new Date(p.paid_until + 'T23:59') >= now;
+  const trial = level.id === 'plus' && !!p.trial_until && new Date(p.trial_until) > now;
+  const status = comp ? (p.until ? `Complimentary until ${planDay(p.until)}` : 'Complimentary') : paid ? `Paid up to ${planDay(p.paid_until)}` : trial ? `Free week of Plus until ${planDay(p.trial_until)}` : null;
+  // Plus is settled once it's paid for (or given by StudyBridge); until then, asking for it sets up paying
+  const plusSettled = comp || (level.id === 'plus' && (paid || ['custom', 'starter', 'pro'].includes(p.plan)));
+  const canAsk = (id) => !comp && (id === 'plus' ? !plusSettled : level.id !== id);
+  const months = period === 'year' ? 12 - site.yearlyMonthsFree : 1;
+  async function ask(id) {
+    setBusy(id);
     try {
-      const r = await fn();
+      await api.askLevel(id);
+      setAsked((xs) => [...xs, id]);
+      toast('StudyBridge will be in touch to set it up');
+    } catch (e) {
+      toast({ title: 'Couldn’t ask', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy('');
+    }
+  }
+  async function billing() {
+    setBusy('billing');
+    try {
+      const r = await api.billingPortal();
       if (r?.url) window.open(r.url, '_blank'); // the desktop app opens this in the browser
     } catch (e) {
       toast({ title: 'Couldn’t open payments', body: e.message, tone: 'bad' });
@@ -1267,44 +1303,90 @@ function YourPlan() {
     }
   }
   return (
-    <Section id="plan" icon="star" title="Your plan" sub={`${cur.name}: up to ${cur.learners} learner${cur.learners === 1 ? '' : 's'}. You have ${p.learners}.${p.renews_at ? ` Renews ${new Date(p.renews_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.` : ''}`}>
-      <div className="plan-meter" aria-label={`${p.learners} of ${p.limit} learners`}>
-        <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, p.limit)) * 100)}%` }} />
+    <Section
+      id="plan"
+      icon="star"
+      title="Your plan"
+      sub={`You have ${p.learners} learner${p.learners === 1 ? '' : 's'}.${p.enforced ? ` Your plan has room for ${p.limit}.` : ''}${p.renews_at ? ` Renews ${planDay(p.renews_at)}.` : ''}`}
+    >
+      <div className="row wrap" style={{ gap: 8 }}>
+        <span className="strong">{level.name}</span>
+        <span className={'pill ' + (p.plus ? 'good' : level.id === 'plus' ? 'warn' : '')}>{p.plus ? 'Plus is on' : 'Plus is off'}</span>
+        {status && <span className="small">{status}</span>}
       </div>
-      {!p.enforced && <div className="small muted">Plan limits aren’t switched on yet, so you can add as many learners as you like for now.</div>}
-      {setByUs ? (
-        <div className="small muted">Your plan was set up for you by StudyBridge. Contact StudyBridge from Settings to change it.</div>
-      ) : pub.payments_on ? (
-        <div className="stack sm">
-          <div className="seg" role="group" aria-label="Pay">
-            <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>
-              Monthly
-            </button>
-            <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
-              Yearly (1 month free)
-            </button>
-          </div>
-          <div className="row wrap">
-            {['starter', 'pro']
-              .filter((k) => k !== p.plan)
-              .map((k) => (
-                <button key={k} className="btn primary" disabled={!!busy} onClick={() => open(() => api.checkout(k, period), k)}>
-                  {busy === k ? 'Opening…' : `${PLAN[k].name}: ${PLAN[k][period]}`}
-                </button>
-              ))}
-            {p.has_billing && (
-              <button className="btn" disabled={!!busy} onClick={() => open(api.billingPortal, 'billing')}>
-                Manage or cancel
-              </button>
-            )}
-          </div>
-          <div className="tiny muted">Payment opens in your browser (Stripe). Your plan changes here as soon as it’s paid.</div>
-        </div>
-      ) : (
-        <div className="small muted">
-          Plans are priced per learner: Essentials from $5 and Plus from $8 per learner a month (Plus adds Prof). Try everything free for 7 days. During early access, StudyBridge arranges payment with you directly.
+      {p.enforced && (
+        <div className="plan-meter" aria-label={`${p.learners} of ${p.limit} learners`}>
+          <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, p.limit)) * 100)}%` }} />
         </div>
       )}
+      {!p.enforced ? (
+        <div className="small muted">Plan limits aren’t switched on yet, so you have everything for now.</div>
+      ) : (
+        !p.plus && (
+          <div className="small muted">
+            {level.id === 'plus' ? 'Your free week of Plus has ended. ' : ''}Prof, mocks with grades, the exam camera and StudyBridge’s practice papers come with Plus. Everything you’ve made stays.
+          </div>
+        )
+      )}
+      {(comp || p.plan === 'custom') && <div className="small muted">Your plan was set up for you by StudyBridge. Contact StudyBridge from Settings to change it.</div>}
+      <div className="seg" role="group" aria-label="Prices">
+        <button type="button" aria-pressed={period === 'month'} onClick={() => setPeriod('month')}>
+          Monthly
+        </button>
+        <button type="button" aria-pressed={period === 'year'} onClick={() => setPeriod('year')}>
+          Yearly (1 month free)
+        </button>
+      </div>
+      <div className="level-cards">
+        {LEVELS.map((l) => {
+          const c = levelCost(l, p.learners);
+          const mine = l.id === level.id;
+          return (
+            <div key={l.id} className={'level-card' + (mine ? ' mine' : '')}>
+              <div className="row wrap between" style={{ gap: 6 }}>
+                <h3 className="row" style={{ gap: 8, margin: 0 }}>
+                  {l.name} {l.tag && <span className="pill claude">{l.tag}</span>}
+                </h3>
+                {mine && <span className="pill accent">Your level</span>}
+              </div>
+              <div className="small muted">{l.blurb}</div>
+              <div className="level-price">
+                <b>{usd(c.total * months)}</b> {period === 'year' ? 'a year' : 'a month'}
+              </div>
+              <div className="tiny muted">
+                {p.learners
+                  ? `For your ${p.learners} learner${p.learners === 1 ? '' : 's'}: ${c.parts.map((x) => `${x.n} × ${usd(x.price)}`).join(' + ')}${months > 1 ? `, for ${months} months` : ''}. `
+                  : 'No learners yet, so nothing to pay. '}
+                {stepsText(l)}.
+              </div>
+              <ul className="level-includes">
+                {l.includes.map((x) => (
+                  <li key={x}>
+                    <Icon name="check" size={14} /> {x}
+                  </li>
+                ))}
+              </ul>
+              {canAsk(l.id) && (
+                <div className="level-ask">
+                  <button className={'btn' + (l.id === 'plus' ? ' primary' : '')} disabled={!!busy || asked.includes(l.id)} onClick={() => ask(l.id)}>
+                    {busy === l.id ? 'Asking…' : asked.includes(l.id) ? `Asked for ${l.name}` : `Ask for ${l.name}`}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {pub.payments_on && p.has_billing && (
+        <div>
+          <button className="btn" disabled={!!busy} onClick={billing}>
+            {busy === 'billing' ? 'Opening…' : 'Manage or cancel'}
+          </button>
+        </div>
+      )}
+      <div className="small muted">
+        Essentials from $5 and Plus from $8 per learner a month, and less per learner as you grow. New tutors get Plus free for 7 days. For now, StudyBridge arranges payment with you directly.
+      </div>
     </Section>
   );
 }
