@@ -15,6 +15,7 @@ const PRICES = {
   'claude-fable-5-1': [10, 50],
   'claude-opus-5-5': [4, 20],
   'claude-sonnet-5-5': [2, 10],
+  'claude-haiku-5-5': [0.1, 0.5],
   'claude-haiku-4-5-20251001': [1, 5],
   'claude-haiku-4-5': [1, 5],
 };
@@ -757,7 +758,8 @@ Rules:
     await save(job, 'running', { p_progress: 'Writing the report…', p_input: 0 });
     const style = (await rest(`prof_settings?tutor_id=eq.${job.tutor_id}&select=style_md`))[0]?.style_md || '';
     const d = rep.data || {};
-    const res = await claude(cfg, {
+    const small = { ...cfg, model: cfg.small_model || cfg.model }; // a small job: the cheaper model
+    const res = await claude(small, {
       max_tokens: 1500,
       system: `You draft the weekly report a tutor sends to a learner's parent. Write as the tutor (${d.tutor || 'the tutor'}), in the first person, to ${d.parent || 'the parent'}.
 Warm, honest and specific; plain words, no jargon; short. Use ONLY facts in the data (never invent marks, lessons or behaviour). If work was missing or late, say so kindly and say what will help. Mention effort where the data shows it (time studied, practice tries). Topics with a low ratio are ones to work on; high ratio are strengths.${style ? `\nThe tutor's own instructions:\n${style}` : ''}`,
@@ -773,10 +775,87 @@ Warm, honest and specific; plain words, no jargon; short. Use ONLY facts in the 
       body: { summary: String(x.summary || '').slice(0, 600), comment: String(x.comment || '').slice(0, 2000), next_week: String(x.next_week || '').slice(0, 1000), prof: true, updated_at: new Date().toISOString() },
     });
     await save(job, 'done', {
-      ...usageArgs(cfg, res.usage),
+      ...usageArgs(small, res.usage),
       p_result: { report_id: rep.id, reply: String(x.summary || '') },
       p_progress: 'Ready for you to check and send',
       p_notify: { title: `Prof drafted ${d.learner || 'a'} weekly report`, body: String(x.summary || '').slice(0, 220), ref: { report_id: rep.id, learner_id: rep.learner_id } },
+    });
+  }
+
+  // ---------------- change this part ----------------
+  // One question (or just its mark scheme) changed as the tutor asks, not the whole paper. Only work learners can't
+  // see yet; the tutor checks it before posting, as with everything Prof makes.
+  const REVISE_TOOL = {
+    name: 'save_question',
+    description: 'The changed question. Change only what the tutor asked for; keep everything else as it was.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'The question (Markdown; maths in $...$)' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Multiple choice only: the choices' },
+        answer: { type: 'string', description: 'The answer: a number; for multiple choice, the 0-based number of the right choice' },
+        marks: { type: 'number' },
+        mark_scheme: { type: 'string', description: 'How the marks are given (Markdown)' },
+        solution: { type: 'string', description: 'A worked solution (Markdown)' },
+        note: { type: 'string', description: 'One short sentence for the tutor: what you changed' },
+      },
+      required: ['note'],
+    },
+  };
+  async function stepRevise(job, cfg) {
+    const c = job.context || {};
+    const q = (await rest(`questions?id=eq.${c.question_id}&tutor_id=eq.${job.tutor_id}&select=*`))[0];
+    if (!q) throw new Error('That question isn’t there any more.');
+    const a = (await rest(`assignments?id=eq.${q.assignment_id}&select=title,kind,draft,visibility,visible_from`))[0] || {};
+    if (!a.draft && (a.visibility === 'visible' || (a.visibility === 'scheduled' && new Date(a.visible_from) <= new Date()))) {
+      throw new Error('Learners can already see this, so Prof left it as it was.');
+    }
+    const key = (await rest(`question_keys?question_id=eq.${q.id}&select=*`))[0];
+    await save(job, 'running', { p_progress: 'Changing it…', p_input: 0 });
+    const scheme = c.part === 'scheme';
+    const res = await claude(cfg, {
+      max_tokens: 3000,
+      system: `You change one question in a tutor's ${a.kind || 'work'} "${a.title || ''}" exactly as the tutor asks, and nothing else. ${
+        scheme
+          ? 'Change only the mark scheme (and the worked solution if it has to follow). Leave the question, its choices and its answer as they are.'
+          : `Rewrite the question as asked. Keep its type (${q.type}), and make the answer, mark scheme and solution match the new question.`
+      } Write maths in $...$. Work the answer out twice before you save it.`,
+      tools: [REVISE_TOOL],
+      tool_choice: { type: 'tool', name: 'save_question' },
+      messages: [{
+        role: 'user',
+        content: `The question now:
+${JSON.stringify({ type: q.type, prompt: q.prompt_md, options: q.options, marks: q.marks, answer: key?.answer, mark_scheme: key?.mark_scheme_md, solution: key?.solution_md })}
+
+The tutor asks: ${job.prompt}`,
+      }],
+    });
+    const call = (res.content || []).find((b) => b.type === 'tool_use' && b.name === 'save_question');
+    if (!call) throw new Error('Prof didn’t change it. Try again.');
+    const x = call.input || {};
+    const qPatch = {};
+    const kPatch = {};
+    if (!scheme) {
+      if (x.prompt) qPatch.prompt_md = fixNewlines(x.prompt).slice(0, 8000);
+      if (q.type === 'mcq' && Array.isArray(x.options) && x.options.length >= 2 && Array.isArray(q.options)) qPatch.options = x.options.map((o) => String(o).slice(0, 500));
+      if (Number(x.marks) > 0) qPatch.marks = Number(x.marks);
+      if (x.answer != null && String(x.answer).trim() !== '' && (q.type === 'numeric' || (q.type === 'mcq' && Array.isArray(q.options)) || q.type === 'short' || q.type === 'steps')) {
+        kPatch.answer = keyOf({ type: q.type, answer: String(x.answer), correct: [Number(x.answer)] });
+      }
+    }
+    if (x.mark_scheme) kPatch.mark_scheme_md = fixNewlines(x.mark_scheme).slice(0, 8000);
+    if (x.solution) kPatch.solution_md = fixNewlines(x.solution).slice(0, 8000);
+    if (Object.keys(qPatch).length) await rest(`questions?id=eq.${q.id}`, { method: 'PATCH', body: qPatch });
+    if (Object.keys(kPatch).length) {
+      if (key) await rest(`question_keys?question_id=eq.${q.id}`, { method: 'PATCH', body: kPatch });
+      else await rest('question_keys', { method: 'POST', body: { question_id: q.id, tutor_id: job.tutor_id, ...kPatch } });
+    }
+    const note = String(x.note || 'Changed as you asked.').slice(0, 300);
+    await save(job, 'done', {
+      ...usageArgs(cfg, res.usage),
+      p_result: { assignment_id: q.assignment_id, question_id: q.id, reply: note },
+      p_progress: 'Changed: check it',
+      p_notify: { title: `Prof changed a question in ${a.title || 'your work'}`, body: note, ref: { assignment_id: q.assignment_id } },
     });
   }
 
@@ -1391,6 +1470,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
       else if (job.kind === 'paper') await stepPaper(job, cfg);
       else if (job.kind === 'boundaries') await stepBoundaries(job, cfg);
       else if (job.kind === 'plan') await stepPlan(job, cfg);
+      else if (job.kind === 'revise') await stepRevise(job, cfg);
       else await stepCreate(job, cfg);
     } catch (e) {
       const tries = (job.state?.tries || 0) + 1;

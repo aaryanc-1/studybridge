@@ -2646,3 +2646,45 @@ test('Essentials and Plus: Plus adds Prof, mock grades, the exam camera and Stud
     await as('A', `select admin_set_selling(p_enforce => false)`);
   }
 });
+
+test('watched mode: a locked-down test on any device when the tutor allows it, each try to leave a strike; pausing a learner keeps their work and takes them off the plan', async () => {
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  for (const k of ['WT', 'WL', 'WL2']) await mk(k, k.toLowerCase() + '@watched.x');
+  await one('WT', `select * from become_tutor('Watcher', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.WT]);
+  for (const l of ['WL', 'WL2']) {
+    const c = await val('WT', `insert into invites (name) values ($1) returning code`, [l]);
+    await one(l, `select * from accept_invite($1, $2)`, [c, l]);
+  }
+  const test1 = await val('WT', `insert into assignments (title, kind, lockdown, visibility, leave_warnings) values ('Locked test', 'test', true, 'visible', 1) returning id`);
+  await val('WT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '2 + 2?', 1) returning id`, [test1]);
+  // locked down: the desktop app only, unless the tutor allows watched mode
+  await fails(as('WL', `select start_attempt($1, 'Chromebook')`, [test1]), /desktop app/);
+  await as('WT', `update assignments set watched = true where id = $1`, [test1]);
+  const t = await one('WL', `select * from start_attempt($1, 'Chromebook')`, [test1]);
+  assert.equal(t.client, 'Chromebook', 'the tutor sees which device');
+  // each try to leave is a strike: a warning, then it hands itself in
+  const s1 = await val('WL', `select lockdown_strike($1, 'Left the page')`, [t.id]);
+  assert.equal(s1.handed_in, false);
+  const s2 = await val('WL', `select lockdown_strike($1, 'Left full screen')`, [t.id]);
+  assert.equal(s2.handed_in, true);
+  assert.equal(await val('WT', `select status from attempts where id = $1`, [t.id]), 'submitted');
+
+  // pausing: work kept, nothing new can start, not told about new work, not counted on the plan
+  assert.equal((await val('WT', `select my_plan()`)).learners, 2);
+  await fails(as('WL2', `select pause_learner($1)`, [U.WL]), /Not your learner/);
+  await as('WT', `select pause_learner($1)`, [U.WL2]);
+  assert.deepEqual([(await val('WT', `select my_plan()`)).learners, (await val('WT', `select my_plan()`)).paused], [1, 1]);
+  assert.equal(await val('WL2', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Your StudyBridge is paused for now'`), 1);
+  const hw = await val('WT', `insert into assignments (title, kind, visibility) values ('After the pause', 'homework', 'visible') returning id`);
+  assert.equal(await val('WL2', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New homework: After the pause'`), 0, 'not told');
+  assert.equal(await val('WL', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New homework: After the pause'`), 1, 'the others are');
+  await fails(as('WL2', `select start_attempt($1, 'browser')`, [hw]), /paused/);
+  assert.equal((await as('WL2', `select id from assignments where id = $1`, [hw])).length, 1, 'they can still see it');
+  await as('WT', `select pause_learner($1, false)`, [U.WL2]);
+  await as('WL2', `select start_attempt($1, 'browser')`, [hw]);
+  assert.equal((await val('WT', `select my_plan()`)).learners, 2);
+});

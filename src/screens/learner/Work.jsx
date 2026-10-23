@@ -142,21 +142,29 @@ export function WorkDetail({ id }) {
   const s = workState(a, mine);
   const attached = (a.file_refs || []).map((r) => files.find((f) => f.id === r.file_id)).filter(Boolean);
   const special = a.lockdown || a.camera || a.time_limit_min;
-  const blocked = (a.lockdown || a.camera) && !desktop;
+  const canFull = !!document.documentElement.requestFullscreen;
+  // Watched mode: the tutor lets locked-down or camera work be done in a browser too (Chromebook, iPad, phone)
+  const watched = (a.lockdown || a.camera) && !!a.watched && !desktop;
+  const blocked = (a.lockdown || a.camera) && !desktop && !a.watched;
+  // Paused by their tutor: they can look, but not start anything
+  const paused = app.me.role === 'learner' && !!app.me.paused_at;
   const canStart = s.key === 'todo' || s.key === 'doing' || s.key === 'redo' || (s.key === 'marked' && s.canRetry);
   const label = s.key === 'doing' ? 'Continue' : s.key === 'redo' ? 'Redo the questions' : s.key === 'marked' ? 'Try again' : 'Start';
   // Students on their own can sit a practice paper or mock like the real thing (full screen, timer, no notes)
-  const canExam = !!app.me.self_learner && !desktop && (a.kind === 'test' || a.kind === 'exam') && !!document.documentElement.requestFullscreen;
+  const canExam = !!app.me.self_learner && !desktop && (a.kind === 'test' || a.kind === 'exam') && canFull && !watched;
+  const warns = Number(a.leave_warnings ?? 1);
 
   async function start() {
     setBusy(true);
     // full screen has to be asked for straight from the tap, before anything else
-    if (canExam && examConditions) document.documentElement.requestFullscreen().catch(() => {});
+    if ((canExam && examConditions) || (watched && canFull)) document.documentElement.requestFullscreen().catch(() => {});
     try {
       const t = await api.startAttempt(a.id);
       try {
         if (canExam && examConditions) sessionStorage.setItem(`sb.exam.${t.id}`, '1');
         else sessionStorage.removeItem(`sb.exam.${t.id}`);
+        // watched mode: opened from here (the attempt page then counts a reload, or leaving and coming back, as leaving)
+        if (watched) sessionStorage.setItem(`sb.watched.${t.id}`, '1');
       } catch {}
       await store.del(`submitted:${t.id}`);
       invalidate('myattempts');
@@ -167,6 +175,7 @@ export function WorkDetail({ id }) {
       }
       go(`/attempt/${t.id}`);
     } catch (e) {
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       toast({ title: 'Couldn’t start', body: e.message, tone: 'bad' });
       setBusy(false);
     }
@@ -204,7 +213,7 @@ export function WorkDetail({ id }) {
                 <span>You’ll have <b>{a.time_limit_min} minutes</b>. It hands in automatically when time is up.</span>
               </div>
             )}
-            {a.lockdown && (
+            {a.lockdown && !watched && (
               <div className="row top">
                 <Icon name="lock" />
                 <span>Your screen will be <b>locked to StudyBridge</b> until you hand in. Leaving the window is reported to your tutor.</span>
@@ -213,7 +222,7 @@ export function WorkDetail({ id }) {
             {a.camera && (
               <div className="row top">
                 <Icon name="camera" />
-                <span>Your tutor will be able to <b>see your camera and screen</b> while you work.</span>
+                <span>Your tutor will be able to <b>see your camera{watched ? '' : ' and screen'}</b> while you work.</span>
               </div>
             )}
             {a.max_attempts > 1 && (
@@ -224,8 +233,17 @@ export function WorkDetail({ id }) {
             )}
           </div>
           {blocked && <div className="error">Open this on your laptop in the StudyBridge app. It can’t be done in a web browser.</div>}
+          {watched && (
+            <div className="note">
+              <b>Watched mode:</b> {canFull ? 'this goes full screen. Stay on this page until you hand in: switching tabs or apps, or leaving full screen,' : 'stay on this page until you hand in. Switching tabs or apps'}{' '}
+              {a.lockdown
+                ? `counts as trying to leave, and ${warns > 0 ? `after ${warns} warning${warns === 1 ? '' : 's'} it hands itself in` : 'the first time it hands itself in'}.`
+                : 'is reported to your tutor.'}
+            </div>
+          )}
         </div>
       )}
+      {paused && canStart && <div className="note warn">Your StudyBridge is paused for now, so you can’t start this. Your tutor can switch it back on.</div>}
       {canExam && canStart && (
         <div className="card">
           <label className="row top" style={{ gap: 10, cursor: 'pointer' }}>
@@ -273,7 +291,7 @@ export function WorkDetail({ id }) {
       )}
       {canStart && (
         <div>
-          <button className="btn primary big" disabled={busy || blocked} onClick={() => (a.lockdown && s.key === 'todo' ? setConfirming(true) : start())}>
+          <button className="btn primary big" disabled={busy || blocked || paused} onClick={() => (a.lockdown && s.key === 'todo' ? setConfirming(true) : start())}>
             {busy ? 'Opening…' : label}
             <Icon name="send2" size={18} />
           </button>
@@ -294,7 +312,11 @@ export function WorkDetail({ id }) {
             </>
           }
         >
-          <div>StudyBridge will fill your screen and stay there until you hand in{a.time_limit_min ? ` or the ${a.time_limit_min} minutes run out` : ''}. Close other apps first.</div>
+          <div>
+            {watched
+              ? `${canFull ? 'This goes full screen. ' : ''}Stay on this page until you hand in${a.time_limit_min ? ` or the ${a.time_limit_min} minutes run out` : ''}: leaving it counts as trying to leave. Close other tabs and apps first.`
+              : `StudyBridge will fill your screen and stay there until you hand in${a.time_limit_min ? ` or the ${a.time_limit_min} minutes run out` : ''}. Close other apps first.`}
+          </div>
         </Modal>
       )}
     </Page>

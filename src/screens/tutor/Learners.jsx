@@ -5,7 +5,7 @@ import { Avatar, Empty, Field, Link, Modal, Page, Seg, copyText, go, useConfirm,
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { builtInServer, encodeInvite } from '../../lib/config.js';
-import { ago, dur, kindLabel, pct, weekRange, ymd, when } from '../../lib/format.js';
+import { ago, day, dur, kindLabel, pct, weekRange, ymd, when } from '../../lib/format.js';
 import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
@@ -88,7 +88,9 @@ export default function Learners({ tab = 'learners' }) {
                   <div className="row">
                     <Avatar person={l} size="lg" />
                     <div className="grow">
-                      <div className="strong" style={{ fontSize: 17 }}>{l.display_name}</div>
+                      <div className="strong" style={{ fontSize: 17 }}>
+                        {l.display_name} {l.paused_at && <span className="pill warn">Paused</span>}
+                      </div>
                       {/* someone else's learner, here because they're in one of my classes */}
                       <div className="muted small">{l.tutor_id === app.me.id ? lk.programme(l.programme_id)?.name || 'No programme' : <span className="pill">In your class</span>}</div>
                     </div>
@@ -782,6 +784,26 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   if (!own && tab === 'parents') tab = 'progress';
   const taught = lk.activeClasses.filter((c) => c.members.includes(id)).map((c) => c.name);
   const theirTutor = pool && (pool.find((p) => p.id === id)?.tutor || 'another tutor');
+  // Pausing: they keep everything and can look, but start nothing new and don't count on the plan
+  async function pause() {
+    const on = !l.paused_at;
+    if (
+      on &&
+      !(await confirm({
+        title: `Pause ${first}?`,
+        body: 'They keep all their work and can still sign in to see it, but can’t start anything new and aren’t told about new work. They don’t count on your plan while paused. Unpause any time.',
+        ok: 'Pause',
+      }))
+    )
+      return;
+    try {
+      await api.pauseLearner(l.id, on);
+      invalidate('learners', 'my-plan');
+      toast(on ? `${first} is paused` : `${first} is back on`);
+    } catch (e) {
+      toast({ title: on ? 'Couldn’t pause' : 'Couldn’t unpause', body: e.message, tone: 'bad' });
+    }
+  }
 
   return (
     <Page
@@ -795,6 +817,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
         <span className="row" style={{ gap: 14 }}>
           <Avatar person={l} size="lg" />
           {l.display_name}
+          {l.paused_at && <span className="pill warn">Paused</span>}
         </span>
       }
       subtitle={
@@ -841,11 +864,19 @@ export function LearnerDetail({ id, tab = 'progress' }) {
               <button className="btn" onClick={() => setAccount(true)}>
                 <Icon name="lock" size={18} /> Account
               </button>
+              <button className="btn" onClick={pause}>
+                <Icon name={l.paused_at ? 'play' : 'pause'} size={18} /> {l.paused_at ? 'Unpause' : 'Pause'}
+              </button>
             </>
           )}
         </>
       }
     >
+      {l.paused_at && (
+        <div className="note warn">
+          {first} is paused (since {day(l.paused_at)}). They can sign in and see their work, but can’t start anything new and aren’t told about new work.
+        </div>
+      )}
       {own && account && <AccountModal l={l} onClose={() => setAccount(false)} />}
       {classing && <LearnerClasses l={l} onClose={() => setClassing(false)} />}
       <Seg

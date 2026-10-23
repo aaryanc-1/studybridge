@@ -71,6 +71,8 @@ insert into public.app_config (id) values (1) on conflict do nothing;
 -- admin approves them. Learners only ever join through a tutor's invite.
 alter table public.app_config add column if not exists tutor_signups_open boolean not null default true;
 alter table public.app_config add column if not exists prof_model text not null default 'claude-sonnet-5-5';
+-- small jobs (weekly report comments) go to a cheaper model; nobody sees a difference
+alter table public.app_config add column if not exists prof_small_model text not null default 'claude-haiku-5-5';
 alter table public.app_config add column if not exists default_ai_limit_cents int not null default 1000;
 alter table public.app_config add column if not exists prof_endpoint text;
 alter table public.app_config add column if not exists prof_seen_at timestamptz;
@@ -1315,6 +1317,7 @@ begin
   rel := public._is_released(t);
   return jsonb_build_object(
     'attempt', jsonb_build_object('id', t.id, 'assignment_id', t.assignment_id, 'learner_id', t.learner_id, 'number', t.number,
+      'client', case when is_tutor then to_jsonb(t) ->> 'client' end,
       'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
@@ -1972,7 +1975,7 @@ language plpgsql stable security definer set search_path = public as $$
 begin
   perform public._admin();
   return (select jsonb_build_object(
-    'tutor_signups_open', c.tutor_signups_open, 'prof_model', c.prof_model, 'default_ai_limit_cents', c.default_ai_limit_cents,
+    'tutor_signups_open', c.tutor_signups_open, 'prof_model', c.prof_model, 'prof_small_model', c.prof_small_model, 'default_ai_limit_cents', c.default_ai_limit_cents,
     'prof_key_set', s.anthropic_api_key is not null, 'prof_endpoint', c.prof_endpoint, 'prof_seen_at', c.prof_seen_at,
     'livekit_url', c.livekit_url, 'livekit_set', s.livekit_api_key is not null and s.livekit_api_secret is not null,
     'pg_net', exists (select 1 from pg_extension where extname = 'pg_net'),
@@ -2467,7 +2470,7 @@ create or replace function public.prof_hello(p_endpoint text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 begin
   update public.app_config set prof_endpoint = coalesce(nullif(p_endpoint, ''), prof_endpoint), prof_seen_at = now() where id = 1;
-  return (select jsonb_build_object('model', c.prof_model, 'key', s.anthropic_api_key, 'secret', s.hook_secret)
+  return (select jsonb_build_object('model', c.prof_model, 'small_model', c.prof_small_model, 'key', s.anthropic_api_key, 'secret', s.hook_secret)
             from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1);
 end $$;
 
@@ -8416,6 +8419,148 @@ begin
   perform public.notify_user(a.user_id, 'feedback', coalesce(me.display_name, 'A tutor') || ' would like ' || initcap(p_level),
     'Set it in Admin → Tutors → Plan & Prof once you’ve arranged payment.', jsonb_build_object('tutor_id', me.id))
      from public.platform_admins a;
+end $$;
+
+-- =====================================================================
+-- Launch 2, part 4 (22 Oct 2026): watched mode on any device, and pausing a learner.
+-- Watched mode: a locked-down test or exam can also be done in a browser (a Chromebook, an iPad, a phone): it asks for
+-- full screen, and every time the learner leaves the page (another tab or app, out of full screen) it's a strike, the
+-- same as the desktop app's lockdown, so after the tutor's warnings it hands itself in. The tutor sees which device.
+-- Pausing: a tutor pauses a learner who stops for a while. They keep everything and can still sign in to see it, but
+-- can't start new work, aren't told about new work, and don't count towards the tutor's plan.
+-- =====================================================================
+alter table public.assignments add column if not exists watched boolean not null default false;
+alter table public.attempts add column if not exists client text;
+alter table public.profiles add column if not exists paused_at timestamptz;
+
+create or replace function public.start_attempt(p_assignment uuid, p_client text default 'desktop')
+returns public.attempts language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  cur public.attempts;
+  n int;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.draft or not public.can_learner_see(a.tutor_id, a.learner_ids, a.subject_id, a.visibility, a.visible_from) then
+    raise exception 'That assignment is not available.';
+  end if;
+  if (select paused_at from public.profiles where id = auth.uid()) is not null then
+    raise exception 'Your StudyBridge is paused for now, so you can’t start new work. Ask your tutor.';
+  end if;
+  -- the desktop app, or any device in watched mode when the tutor allows it
+  if (a.lockdown or a.camera) and coalesce(p_client, '') <> 'desktop' and not a.watched then
+    raise exception 'Open this in the StudyBridge desktop app: it needs % mode.',
+      case when a.lockdown then 'lockdown' else 'camera' end;
+  end if;
+  select * into cur from public.attempts
+   where assignment_id = p_assignment and learner_id = auth.uid() and status in ('in_progress', 'returned')
+   order by number desc limit 1;
+  if cur.id is not null then
+    if cur.status = 'returned' then
+      update public.attempts set status = 'in_progress' where id = cur.id returning * into cur;
+    elsif public._attempt_timed_out(cur) then
+      cur := public._hand_in(cur.id, 'time ran out');
+    end if;
+    return cur;
+  end if;
+  select count(*) into n from public.attempts where assignment_id = p_assignment and learner_id = auth.uid();
+  if n >= a.max_attempts then raise exception 'You have used all your attempts for this.'; end if;
+  insert into public.attempts (assignment_id, learner_id, tutor_id, number, max_score, client)
+  values (p_assignment, auth.uid(), a.tutor_id, n + 1,
+          (select coalesce(sum(marks), 0) from public.questions where assignment_id = p_assignment),
+          case when coalesce(p_client, '') = 'desktop' then 'desktop' else left(coalesce(p_client, 'web'), 20) end)
+  returning * into cur;
+  return cur;
+end $$;
+
+-- Who an item is for: never someone paused (they aren't told about new work)
+create or replace function public._audience(p_tutor uuid, p_learner_ids uuid[], p_subject uuid)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select p.id from public.profiles p
+   where p.role = 'learner' and p.paused_at is null
+     and (p.tutor_id = p_tutor or public._teaches(p_tutor, p.id))
+     and case when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then p.id = any (p_learner_ids)
+              when p_subject is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p.id and ls.subject_id = p_subject)
+              else p.tutor_id = p_tutor end
+$$;
+
+-- Pause or unpause one of your own learners
+create or replace function public.pause_learner(p_learner uuid, p_paused boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  update public.profiles set paused_at = case when p_paused then coalesce(paused_at, now()) end where id = p_learner;
+  perform public.notify_user(p_learner, 'paused',
+    case when p_paused then 'Your StudyBridge is paused for now' else 'Your StudyBridge is back on' end,
+    case when p_paused then 'Your work is all kept. Your tutor can switch it back on any time.' else 'You can start new work again.' end, '{}');
+end $$;
+
+-- A paused learner doesn't count towards the plan
+create or replace function public._check_plan_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_n int;
+begin
+  if new.role = 'learner' and new.tutor_id is not null and new.tutor_id is distinct from old.tutor_id
+     and (select enforce_plans from public.app_config where id = 1) then
+    select count(*) into v_n from public.profiles where tutor_id = new.tutor_id and role = 'learner' and id <> new.id and paused_at is null;
+    if v_n >= public._tutor_limit(new.tutor_id) then
+      raise exception 'Your tutor’s StudyBridge plan is full. Ask them to upgrade, then use the invite again.';
+    end if;
+  end if;
+  return new;
+end $$;
+create or replace function public.my_plan() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('plan', p.plan, 'period', p.plan_period, 'renews_at', p.plan_renews_at,
+    'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner' and l.paused_at is null),
+    'paused', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner' and l.paused_at is not null),
+    'limit', public._tutor_limit(p.id), 'until', p.plan_until,
+    'enforced', (select enforce_plans from public.app_config where id = 1),
+    'has_billing', p.stripe_customer is not null,
+    'level', p.level, 'plus', public._plus(p.id), 'trial_until', p.trial_until, 'paid_until', p.paid_until)
+    from public.profiles p where p.id = auth.uid() and p.role = 'tutor'
+$$;
+
+-- =====================================================================
+-- Launch 2, part 5 (22 Oct 2026): "Change this part" with Prof, and a cheaper Prof behind the scenes. A tutor asks
+-- Prof to change one question (or just its mark scheme) instead of the whole paper, so it costs a fraction of a cent.
+-- It's only for work learners can't see yet: the tutor checks the change before posting, as with everything Prof makes.
+-- Small jobs (weekly report comments) use a cheaper model (app_config.prof_small_model, Admin → Prof).
+-- =====================================================================
+alter table public.prof_jobs drop constraint if exists prof_jobs_kind_check;
+alter table public.prof_jobs add constraint prof_jobs_kind_check
+  check (kind in ('ask', 'mark', 'auto', 'bank', 'report', 'syllabus', 'paper', 'cards', 'boundaries', 'plan', 'revise'));
+
+create or replace function public.prof_revise(p_question uuid, p_part text, p_instruction text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare q public.questions; a public.assignments; v_err text; v_id uuid;
+begin
+  select * into q from public.questions where id = p_question and tutor_id = auth.uid();
+  if q.id is null then raise exception 'Question not found.'; end if;
+  select * into a from public.assignments where id = q.assignment_id;
+  if not a.draft and (a.visibility = 'visible' or (a.visibility = 'scheduled' and a.visible_from <= now())) then
+    raise exception 'Learners can already see this. Hide it first, then ask Prof, and check the change before posting it again.';
+  end if;
+  if p_part not in ('question', 'scheme') then raise exception 'Choose the question or its mark scheme.'; end if;
+  if nullif(trim(coalesce(p_instruction, '')), '') is null then raise exception 'Say what Prof should change.'; end if;
+  v_err := public._prof_ready(auth.uid());
+  if v_err is not null then raise exception '%', v_err; end if;
+  -- Prof only ever writes to drafts: the work goes back to being a draft until the tutor checks the change
+  if not a.draft then update public.assignments set draft = true where id = a.id; end if;
+  insert into public.prof_jobs (tutor_id, kind, prompt, context)
+  values (auth.uid(), 'revise', left(trim(p_instruction), 1000),
+          jsonb_build_object('question_id', q.id, 'assignment_id', q.assignment_id, 'part', p_part))
+  returning id into v_id;
+  perform public._prof_kick();
+  return jsonb_build_object('id', v_id);
+end $$;
+
+-- The Owner chooses the model for small jobs
+create or replace function public.admin_set_prof_small_model(p_model text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._admin();
+  update public.app_config set prof_small_model = coalesce(nullif(trim(p_model), ''), prof_small_model) where id = 1;
 end $$;
 
 grant execute on all functions in schema public to authenticated;

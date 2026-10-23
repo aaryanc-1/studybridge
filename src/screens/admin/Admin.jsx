@@ -15,7 +15,8 @@ const shortDay = (d) => new Date(String(d).length === 10 ? d + 'T12:00' : d).toL
 const MODELS = [
   ['claude-sonnet-5-5', 'Claude Sonnet 5.5 (recommended: great work, lower cost)'],
   ['claude-opus-5-5', 'Claude Opus 5.5 (best work, about 2× the cost)'],
-  ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (cheapest, simpler work)'],
+  ['claude-haiku-5-5', 'Claude Haiku 5.5 (cheapest: small jobs)'],
+  ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (older, cheap)'],
 ];
 const ACTIONS = { admin_moved: 'Admin moved to its own account', allowance: 'Prof allowance raised', approved: 'Approved', paused: 'Paused', switched_on: 'Switched back on', password_reset: 'Password reset', deleted: 'Deleted', plan: 'Plan changed', level: 'Level changed' };
 
@@ -513,12 +514,14 @@ function PlatformSettings({ s }) {
   const toast = useToast();
   const [key, setKey] = useState('');
   const [model, setModel] = useState('');
+  const [small, setSmall] = useState('');
   const [limit, setLimit] = useState('');
   const [lk, setLk] = useState({ url: '', key: '', secret: '' });
   const [check, setCheck] = useState(null);
   useEffect(() => {
     if (s && !model) {
       setModel(s.prof_model);
+      setSmall(s.prof_small_model || 'claude-haiku-5-5');
       setLimit((s.default_ai_limit_cents / 100).toFixed(2));
       setLk((x) => ({ ...x, url: s.livekit_url || '' }));
     }
@@ -528,6 +531,7 @@ function PlatformSettings({ s }) {
   async function saveProf() {
     try {
       await api.adminSetProf({ key: key.trim() || null, model, defaultLimitCents: Math.round(Number(limit || 0) * 100) });
+      if (small && small !== s.prof_small_model) await api.adminSetProfSmallModel(small);
       setKey('');
       invalidate('admin-settings', 'admin-tutors', 'prof-usage');
       toast('Prof settings saved');
@@ -565,6 +569,15 @@ function PlatformSettings({ s }) {
       <div className="grid g2" style={{ gap: 12 }}>
         <Field label="Model">
           <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
+            {MODELS.map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Model for small jobs" hint="Weekly report comments. A cheaper model; tutors don’t see a difference.">
+          <select className="select" value={small} onChange={(e) => setSmall(e.target.value)}>
             {MODELS.map(([v, l]) => (
               <option key={v} value={v}>
                 {l}

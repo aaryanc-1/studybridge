@@ -1213,6 +1213,47 @@ try {
   await ADM.getByText('The demo is removed').waitFor();
   await ADM.getByRole('heading', { name: 'Make the demo' }).waitFor();
 
+  step('Watched mode on a phone, pausing a learner, and Change this part with Prof');
+  const zaraId = (await tc.from('profiles').select('id').eq('display_name', 'Zara').eq('role', 'learner').single()).data.id;
+  // a locked-down test the tutor allows on any device: Zara does it on her phone; leaving the page is a strike
+  const wt = (await tc.from('assignments').insert({ title: 'Watched quiz', kind: 'test', subject_id: maths.id, learner_ids: [zaraId], lockdown: true, watched: true, leave_warnings: 1, visibility: 'visible' }).select().single()).data;
+  await tc.from('questions').insert({ assignment_id: wt.id, type: 'numeric', prompt_md: 'What is $5 + 5$?', marks: 1 });
+  await Z.goto(web.url + '#/work/' + wt.id);
+  await Z.getByText(/Watched mode: stay on this page until you hand in|Watched mode: this goes full screen/).first().waitFor();
+  await Z.getByRole('button', { name: /^Start/ }).click();
+  await Z.getByText(/Watched mode: stay on this page until you hand in/).first().waitFor();
+  await Z.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await Z.getByRole('dialog').getByText(/warning/i).first().waitFor();
+  await shot(Z, 'learner-watched-warning');
+  assert.equal((await tc.from('attempts').select('client').eq('assignment_id', wt.id).single()).data.client, 'Android', 'the tutor sees which device');
+  // the tutor pauses Zara: she sees it, keeps her work, and can't start anything new
+  await A.goto(web.url + '#/learners/' + zaraId);
+  await A.getByRole('button', { name: 'Pause', exact: true }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Pause', exact: true }).click();
+  await A.getByText('Zara is paused').waitFor();
+  await Z.goto(web.url + '#/');
+  await Z.reload();
+  await Z.getByText(/Your StudyBridge is paused for now/).waitFor();
+  await shot(Z, 'learner-paused');
+  await A.getByRole('button', { name: 'Unpause', exact: true }).click();
+  await A.getByText('Zara is back on').waitFor();
+  // Change this part: Prof changes one question of a hidden test, and it waits as a draft for her to check
+  const ct = (await tc.from('assignments').insert({ title: 'Times tables check', kind: 'quiz', subject_id: maths.id, visibility: 'hidden' }).select().single()).data;
+  const cq = (await tc.from('questions').insert({ assignment_id: ct.id, type: 'numeric', prompt_md: 'Work out $3 \times 7$.', marks: 1 }).select().single()).data;
+  await tc.from('question_keys').insert({ question_id: cq.id, answer: { value: '21' } });
+  await A.goto(web.url + '#/assignments/' + ct.id);
+  await A.getByRole('button', { name: 'Change question 1 with Prof' }).click();
+  await A.getByRole('dialog').getByLabel('What should Prof change?').fill('Make it a bit harder');
+  await A.getByRole('dialog').getByRole('button', { name: 'Ask Prof' }).click();
+  await A.getByText('Prof changed question 1').waitFor({ timeout: 90000 });
+  await A.getByLabel('Question 1').waitFor();
+  assert.equal(await A.getByLabel('Question 1').inputValue(), 'Work out $6 \times 7$.');
+  assert.equal((await tc.from('assignments').select('draft').eq('id', ct.id).single()).data.draft, true, 'a draft until she checks it');
+  await shot(A, 'tutor-change-with-prof');
+
   step('Selling: plans are free for now; the tutor sees her plan and downloads her data; admin sees the selling switches');
   await nav(ADM, 'Selling').click();
   await ADM.getByRole('heading', { name: 'Payments (Stripe)' }).waitFor();

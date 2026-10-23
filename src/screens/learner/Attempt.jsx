@@ -18,6 +18,9 @@ import { Hint, ReportProblem } from './SelfStudy.jsx';
 import { strokesPicture } from '../../ui/DrawingPad.jsx';
 import { confetti } from '../../ui/confetti.js';
 
+// Watched attempts this page has open right now (a reloaded page starts again with none)
+const openHere = new Set();
+
 export default function Attempt({ id }) {
   const app = useApp();
   const toast = useToast();
@@ -66,6 +69,17 @@ export default function Attempt({ id }) {
   }, [id]);
 
   const locked = !!a?.lockdown && !!desktop && t?.status === 'in_progress' && !done;
+  // Watched mode: the tutor lets a locked-down (or camera) test be done in a browser too, on a Chromebook, an iPad or a
+  // phone. It goes full screen where it can, and leaving the page (another tab, app or window, or out of full screen) is
+  // a strike, the same as the desktop app's lockdown. With only the camera on, the tutor is told.
+  const canFull = typeof document !== 'undefined' && !!document.documentElement.requestFullscreen;
+  const watching = !desktop && !!a?.watched && !!(a?.lockdown || a?.camera) && t?.status === 'in_progress' && !done;
+  const watchLock = watching && !!a?.lockdown;
+  const [outOfFull, setOutOfFull] = useState(false);
+  const doneRef = useRef(done);
+  doneRef.current = done;
+  const watchLockRef = useRef(null); // what it is ("test"), while it's watched and locked down
+  watchLockRef.current = watchLock ? kindLabel[a.kind]?.toLowerCase() || 'exam' : null;
 
   // Lockdown: fill the screen until handed in. Every try to leave is a strike: the first ones bring a warning,
   // and after the tutor's number of warnings the server hands the exam in.
@@ -101,6 +115,141 @@ export default function Attempt({ id }) {
       desktop.lockdown.exit();
     };
   }, [locked, id, handedInFor]);
+
+  // Watched mode in a browser: every way of leaving the page is noticed. (Before the camera starts below, so the
+  // browser asking for the camera isn't taken for leaving.)
+  useEffect(() => {
+    if (!watching) return;
+    const lock = !!a.lockdown;
+    const key = `sb.watched.${id}`;
+    document.body.classList.add('watching'); // no menus: there's nowhere else to go
+    // choosing a photo (the device's own picker or camera app) or the browser asking to use the camera isn't leaving
+    let picking = false;
+    let asking = false;
+    let pickEnd = null;
+    let wasFull = !!document.fullscreenElement;
+    const leave = async (event) => {
+      if (picking || asking) return api.logLockdown(id, `${event} (choosing a photo or starting the camera)`);
+      // one strike per few seconds (leaving the page can fire several events at once)
+      if (Date.now() - lastStrike.current < 4000) return api.logLockdown(id, event);
+      lastStrike.current = Date.now();
+      if (!lock) {
+        api.logLockdown(id, event);
+        return setWarning('You left the page, and your tutor has been told. Stay here until you hand in.');
+      }
+      try {
+        const r = await api.lockdownStrike(id, event);
+        if (r.handed_in) return handedInFor('left');
+        setStrike({ warningsLeft: r.warnings_left ?? 0, event });
+      } catch {
+        // offline: the tutor is told when it sends; the warning still shows
+        api.logLockdown(id, event);
+        setStrike({ warningsLeft: 0, event });
+      }
+    };
+    // Open in this tab before, but this page is new: it was reloaded (or left for another site and opened again)
+    try {
+      if (lock && !openHere.has(id) && sessionStorage.getItem(key) === 'open') leave('Reloaded the page or left it and came back');
+      sessionStorage.setItem(key, 'open');
+    } catch {}
+    openHere.add(id);
+
+    // the screen stays on (a phone that locks itself while they think would look like leaving)
+    let wake = null;
+    let alive = true;
+    const keepAwake = () =>
+      navigator.wakeLock
+        ?.request('screen')
+        .then((w) => (alive ? (wake = w) : w.release()))
+        .catch(() => {});
+    keepAwake();
+    const hidden = () => (document.visibilityState === 'hidden' ? leave('Left the page (another tab or app)') : keepAwake());
+    const blur = () =>
+      setTimeout(() => {
+        // another tab or app is counted as leaving the page; a frame inside the page is still the page
+        if (!alive || document.visibilityState === 'hidden' || document.hasFocus() || document.activeElement?.tagName === 'IFRAME') return;
+        leave('Switched to another window');
+      }, 60);
+    const fullChange = () => {
+      const full = !!document.fullscreenElement;
+      setOutOfFull(!full);
+      if (wasFull && !full) leave('Left full screen');
+      wasFull = full;
+    };
+    const pick = (e) => {
+      if (!e.target?.matches?.('input[type=file]')) return;
+      picking = true;
+      clearTimeout(pickEnd);
+      pickEnd = setTimeout(() => (picking = false), 90 * 1000);
+    };
+    // back on the page (or touching it again): the picker has closed
+    const back = () => setTimeout(() => (picking = false), 1000);
+    const touch = () => (picking = false);
+    const md = navigator.mediaDevices;
+    const askCamera = md?.getUserMedia;
+    if (askCamera)
+      md.getUserMedia = (...x) => {
+        asking = true;
+        return askCamera.apply(md, x).finally(() => setTimeout(() => (asking = false), 1500));
+      };
+    if (canFull) setOutOfFull(!document.fullscreenElement);
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('blur', blur);
+    window.addEventListener('focus', back);
+    document.addEventListener('fullscreenchange', fullChange);
+    document.addEventListener('click', pick, true);
+    document.addEventListener('pointerdown', touch, true);
+    return () => {
+      clearTimeout(pickEnd);
+      document.removeEventListener('pointerdown', touch, true);
+      document.body.classList.remove('watching');
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('blur', blur);
+      window.removeEventListener('focus', back);
+      document.removeEventListener('fullscreenchange', fullChange);
+      document.removeEventListener('click', pick, true);
+      if (askCamera) md.getUserMedia = askCamera;
+      alive = false;
+      wake?.release().catch(() => {});
+    };
+  }, [watching, id, handedInFor]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Handed in (or stopped): nothing more to notice in this tab
+  useEffect(() => {
+    if (!done) return;
+    openHere.delete(id);
+    try {
+      sessionStorage.removeItem(`sb.watched.${id}`);
+    } catch {}
+  }, [done, id]);
+  // Leaving the page inside the app (the browser's back button or a back swipe) is leaving too: it's counted, and
+  // they're told, as they'll be on another page by then
+  useEffect(
+    () => () => {
+      const what = watchLockRef.current;
+      if (!what || doneRef.current) return;
+      openHere.delete(id);
+      try {
+        sessionStorage.setItem(`sb.watched.${id}`, 'left'); // counted now, so not again when they come back
+      } catch {}
+      api
+        .lockdownStrike(id, 'Left the page')
+        .then((r) =>
+          toast({
+            title: r.handed_in ? `Handed in: you left the ${what}` : `You left the ${what}`,
+            body: r.handed_in
+              ? 'Your tutor has been told.'
+              : r.warnings_left > 0
+                ? `Your tutor has been told. After ${r.warnings_left} more warning${r.warnings_left === 1 ? '' : 's'}, leaving hands your work in.`
+                : 'Your tutor has been told. If you leave again, your work is handed in straight away.',
+            tone: 'bad',
+            ms: 9000,
+          }),
+        )
+        .catch(() => api.logLockdown(id, 'Left the page'))
+        .finally(() => invalidate('myattempts', 'attempt'));
+    },
+    [id], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   // The tutor can end it, and the server hands it in when time runs out: notice either within seconds
   useEffect(() => {
@@ -180,7 +329,6 @@ export default function Attempt({ id }) {
   // Exam conditions (students on their own, in a browser; chosen before starting): full screen until it's handed in.
   // Leaving full screen is counted on the attempt and they're asked to go back. Phones that can't go full screen
   // just keep the timer.
-  const canFull = typeof document !== 'undefined' && !!document.documentElement.requestFullscreen;
   const [examMode] = useState(() => {
     try {
       return !desktop && canFull && sessionStorage.getItem(`sb.exam.${id}`) === '1';
@@ -188,7 +336,6 @@ export default function Attempt({ id }) {
       return false;
     }
   });
-  const [outOfFull, setOutOfFull] = useState(false);
   const [leftFull, setLeftFull] = useState(0);
   useEffect(() => {
     if (!examMode || t?.status !== 'in_progress' || done) return;
@@ -348,6 +495,26 @@ export default function Attempt({ id }) {
           <span className="grow">Locked until you hand in. Trying to leave is reported to your tutor{a.leave_warnings > 0 ? `, and after ${a.leave_warnings} warning${a.leave_warnings === 1 ? '' : 's'} it hands your work in` : ' and hands your work in'}.</span>
         </div>
       )}
+      {watching && canFull && outOfFull ? (
+        <div className="banner lock" role="alert">
+          <Icon name="maximize" size={18} />
+          <span className="grow">Watched mode: you’re out of full screen. Go back to it and stay on this page until you hand in.</span>
+          <button className="btn sm" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})}>
+            Back to full screen
+          </button>
+        </div>
+      ) : (
+        watching && (
+          <div className="banner lock">
+            <Icon name="eye" size={18} />
+            <span className="grow">
+              {watchLock
+                ? `Watched mode: stay on this page until you hand in. Leaving it is reported to your tutor${a.leave_warnings > 0 ? `, and after ${a.leave_warnings} warning${a.leave_warnings === 1 ? '' : 's'} it hands your work in` : ' and hands your work in'}.`
+                : 'Watched mode: your tutor can see your camera, and leaving this page is reported to them.'}
+            </span>
+          </div>
+        )
+      )}
       {!online && (
         <div className="banner off">
           <Icon name="wifiOff" size={18} />
@@ -388,7 +555,7 @@ export default function Attempt({ id }) {
             <Icon name="book" size={16} /> {panel ? 'Hide resources' : 'Resources'}
           </button>
         )}
-        {!locked && (
+        {!locked && !watchLock && (
           <button className="btn sm ghost" onClick={() => go(`/work/${a.id}`)}>
             Save & close
           </button>
@@ -533,7 +700,14 @@ export default function Attempt({ id }) {
                 ? `Your tutor has been told. After ${strike.warningsLeft} more warning${strike.warningsLeft === 1 ? '' : 's'}, trying to leave hands your work in.`
                 : 'Your tutor has been told. If you try to leave again, your work is handed in straight away.'}
             </div>
-            <button className="btn primary big" onClick={() => setStrike(null)}>
+            <button
+              className="btn primary big"
+              onClick={() => {
+                setStrike(null);
+                // watched mode: back into full screen too (it needs a tap, and this is one)
+                if (watching && canFull && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+              }}
+            >
               Back to my work
             </button>
           </div>

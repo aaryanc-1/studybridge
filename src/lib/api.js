@@ -658,7 +658,16 @@ export const myAttempts = (aid = null) => {
   const as = asLearner();
   return as ? attemptsSeenBy(as, aid) : run(sb().rpc('my_attempts', { p_assignment: aid }));
 };
-export const startAttempt = (aid) => run(sb().rpc('start_attempt', { p_assignment: aid, p_client: window.studybridge ? 'desktop' : 'web' }));
+// which device it's done on (the tutor sees it; watched mode on anything that isn't the desktop app)
+export function deviceName() {
+  if (window.studybridge) return 'desktop';
+  const ua = navigator.userAgent || '';
+  const ipad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1); // (iPads say they're Macs)
+  return /CrOS/.test(ua) ? 'Chromebook' : ipad ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : 'browser';
+}
+export const startAttempt = (aid) => run(sb().rpc('start_attempt', { p_assignment: aid, p_client: deviceName() }));
+// A tutor pauses (or unpauses) one of their own learners: their work stays, they don't count on the plan
+export const pauseLearner = (id, paused = true) => run(sb().rpc('pause_learner', { p_learner: id, p_paused: paused }));
 
 export async function saveAnswer(attemptId, questionId, answer) {
   const local = (await store.get(`ans:${attemptId}`)) || {};
@@ -785,6 +794,9 @@ export async function adminDeleteAccount(id) {
 export const adminSettings = () => run(sb().rpc('admin_settings'));
 export const adminOverview = () => run(sb().rpc('admin_overview'));
 export const adminProf = () => run(sb().rpc('admin_prof'));
+export const adminSetProfSmallModel = (model) => run(sb().rpc('admin_set_prof_small_model', { p_model: model }));
+// "Change this part": Prof changes one question, or just its mark scheme ('question' | 'scheme')
+export const profRevise = (questionId, part, instruction) => run(sb().rpc('prof_revise', { p_question: questionId, p_part: part, p_instruction: instruction }));
 export const adminSetProfCredit = (balanceCents, lowCents = null) => run(sb().rpc('admin_set_prof_credit', { p_balance_cents: balanceCents, p_low_cents: lowCents }));
 export const adminTutor = (id) => run(sb().rpc('admin_tutor', { p_user: id }));
 export const adminSetNote = (id, body) => run(sb().rpc('admin_set_note', { p_user: id, p_body: body }));
@@ -835,6 +847,7 @@ export async function callProf(action = 'kick', extra = {}) {
 }
 const JOB_COLS = 'id,kind,status,prompt,attempt_id,result,progress,error,created_at,updated_at,finished_at,context';
 export const profJobs = () => run(sb().from('prof_jobs').select(JOB_COLS).order('created_at', { ascending: false }).limit(40));
+export const profJob = (id) => run(sb().from('prof_jobs').select(JOB_COLS).eq('id', id).maybeSingle());
 // Every request ever made, newest first, a page at a time (Prof → History)
 export function profHistory({ kinds = null, text = '', before = null, limit = 30 } = {}) {
   let q = sb().from('prof_jobs').select(JOB_COLS).order('created_at', { ascending: false }).limit(limit);

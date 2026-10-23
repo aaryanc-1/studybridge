@@ -170,6 +170,14 @@ function reply(body) {
     ];
     return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_syllabus', { topics, note: 'Follows the 2025–2027 syllabus. Check it against the official document.' })] };
   }
+  // change this part: one question (or just its mark scheme) changed as asked
+  if (tools.includes('save_question')) {
+    const scheme = /Change only the mark scheme/.test(typeof body.system === 'string' ? body.system : JSON.stringify(body.system));
+    const input = scheme
+      ? { mark_scheme: 'M1 for multiplying, A1 for 42.', note: 'The mark scheme now gives a method mark.' }
+      : { prompt: 'Work out $6 \times 7$.', answer: '42', marks: 2, mark_scheme: 'M1 A1', solution: '$6 \times 7 = 42$', note: 'Made it a little harder, worth 2 marks.' };
+    return { role: 'assistant', stop_reason: 'tool_use', usage, content: [tu('save_question', input)] };
+  }
   if (tools.includes('write_report')) {
     const d = JSON.parse(body.messages[0].content.slice(body.messages[0].content.indexOf('{')));
     return {

@@ -88,6 +88,12 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
         )}
         {banner}
         {app.me.demo && <DemoBar />}
+        {app.me.role === 'learner' && app.me.paused_at && (
+          <div className="banner paused" role="status">
+            <Icon name="pause" size={18} />
+            <span className="grow">Your StudyBridge is paused for now. Your work is all kept: you can look at it, but not start anything new. Your tutor can switch it back on.</span>
+          </div>
+        )}
         {app.me.role !== 'admin' && <Announcements />}
         <SlowConnectionTip />
         <UpdateBanner pending={pending} />
@@ -282,6 +288,7 @@ export function AccountSwitcher({ full = false }) {
 
 // Pops up new notifications (in-app toast, plus a system notification when the app isn't in front)
 function useAnnouncer(target) {
+  const app = useApp();
   const toast = useToast();
   const q = useQuery('notifications', api.listNotifications);
   const seen = useRef(null);
@@ -310,6 +317,11 @@ function useAnnouncer(target) {
     if (fresh.some((n) => n.kind === 'joined')) invalidate('learners', 'learner_subjects', 'invites', 'accounts', 'class_members');
     if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions', 'learners', 'classes', 'class_members', 'class_teachers', 'class-pool');
     if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
+    // paused or back on: the banner and what they can start follow straight away
+    if (fresh.some((n) => n.kind === 'paused')) {
+      app.refreshMe?.().catch(() => {});
+      invalidate('assignments');
+    }
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
 }
@@ -416,7 +428,7 @@ function NotificationBell({ target, inline }) {
 
 function iconFor(kind) {
   return (
-    { submitted: 'clipboard', note: 'message', message: 'message', marked: 'checkCircle', joined: 'user', lockdown: 'alert', session: 'video', assignment: 'clipboard', lesson: 'book' }[kind] || 'bell'
+    { submitted: 'clipboard', note: 'message', message: 'message', marked: 'checkCircle', joined: 'user', lockdown: 'alert', session: 'video', assignment: 'clipboard', lesson: 'book', paused: 'pause' }[kind] || 'bell'
   );
 }
 

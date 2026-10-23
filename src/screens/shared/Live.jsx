@@ -800,6 +800,14 @@ function LiveRoom({ session, onLeave }) {
   );
 }
 
+// Watched work done in a browser: which device, e.g. "Done on a Chromebook (watched)". The desktop app needs no note.
+const DEVICES = { Chromebook: 'a Chromebook', iPad: 'an iPad', iPhone: 'an iPhone', Android: 'an Android phone or tablet', browser: 'a web browser', web: 'a web browser' };
+export function doneOn(attempt, a) {
+  const c = attempt?.client;
+  if (!c || c === 'desktop' || !(a?.lockdown || a?.camera || a?.watched)) return '';
+  return `Done on ${DEVICES[c] || c} (watched)`;
+}
+
 // ---------- tutor watches an exam camera ----------
 export function Watch({ attemptId }) {
   const lk = useLookups();
@@ -808,6 +816,7 @@ export function Watch({ attemptId }) {
   const detail = useQuery(`attempt:${attemptId}`, () => api.attemptDetail(attemptId), { poll: 10000 });
   const aid = detail.data?.attempt.assignment_id;
   const a = useQuery(aid ? `assignment:${aid}` : null, () => api.getAssignment(aid)).data;
+  const row = (useQuery('attempts', api.listAttempts).data || []).find((x) => x.id === attemptId); // which device it's on
   const [room, setRoom] = useState(null);
   const [err, setErr] = useState('');
   const people = useParticipants(room);
@@ -833,6 +842,7 @@ export function Watch({ attemptId }) {
   const them = people.find((p) => !p.local);
   const events = t?.lockdown_events || [];
   const left = a?.time_limit_min && t ? a.time_limit_min * 60 - (Date.now() - new Date(t.started_at).getTime()) / 1000 : null;
+  const device = doneOn({ client: t?.client ?? row?.client }, a);
 
   return (
     <Page
@@ -898,6 +908,11 @@ export function Watch({ attemptId }) {
           {t.auto_reason ? ` (handed in automatically: ${t.auto_reason})` : ''}. The camera has stopped.
         </div>
       )}
+      {device && (
+        <div className="small muted row" style={{ gap: 6 }}>
+          <Icon name="eye" size={15} /> {device}
+        </div>
+      )}
       {t && t.status === 'in_progress' && a?.lockdown && (
         <div className="small muted">
           Tries to leave so far: {t.strikes || 0}. {a.leave_warnings > 0 ? `After ${a.leave_warnings} warning${a.leave_warnings === 1 ? '' : 's'}, the next try hands it in.` : 'The first try hands it in.'}
@@ -911,7 +926,7 @@ export function Watch({ attemptId }) {
         </div>
         <div className="stack sm">
           <div className="label">Screen</div>
-          {them?.screen ? <VideoTile track={them.screen} name="Their screen" contain /> : <div className="tile" style={{ color: '#aaa' }}>{room ? 'Their screen shows here when shared.' : 'Connecting…'}</div>}
+          {them?.screen ? <VideoTile track={them.screen} name="Their screen" contain /> : <div className="tile" style={{ color: '#aaa' }}>{device ? 'A browser doesn’t share the screen. You’re told each time they leave the page instead.' : room ? 'Their screen shows here when shared.' : 'Connecting…'}</div>}
         </div>
       </div>
       <div className="card">

@@ -309,6 +309,7 @@ test('Prof drafts a weekly parent report; the tutor sends it', async () => {
   assert.match(after.summary, /A steady week for Sis/);
   assert.equal(after.prof, true);
   assert.equal(after.status, 'draft', 'Prof never sends it');
+  assert.ok(seen.some((x) => x.body.model === 'claude-haiku-5-5' && x.body.tools?.[0]?.name === 'write_report'), 'a small job: the cheaper model');
   await q(T.from('parent_reports').update({ status: 'sent', sent_via: 'whatsapp', sent_at: new Date().toISOString() }).eq('id', rep.id));
   const seenByLearner = await q(L.from('parent_reports').select('summary'));
   assert.equal(seenByLearner.length, 1);
@@ -678,4 +679,35 @@ test('study reminders as browser notifications: Prof signs each push with StudyB
   } finally {
     push.close();
   }
+});
+
+test('Change this part: Prof changes one question, or just its mark scheme, only in work learners can’t see yet', async () => {
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  const a = await q(T.from('assignments').insert({ title: 'Times tables', kind: 'quiz', visibility: 'hidden' }).select().single());
+  const qn = await q(T.from('questions').insert({ assignment_id: a.id, type: 'numeric', prompt_md: 'Work out $3 \times 7$.', marks: 1 }).select().single());
+  await q(T.from('question_keys').insert({ question_id: qn.id, answer: { value: '21' }, mark_scheme_md: 'B1' }));
+  let job = await q(T.rpc('prof_revise', { p_question: qn.id, p_part: 'question', p_instruction: 'Make it a bit harder' }));
+  await kick(T);
+  let j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  assert.match(j.result.reply, /a little harder/);
+  let now = await q(T.from('questions').select('prompt_md, marks').eq('id', qn.id).single());
+  assert.deepEqual([now.prompt_md, Number(now.marks)], ['Work out $6 \times 7$.', 2]);
+  let k = await q(T.from('question_keys').select('answer, mark_scheme_md').eq('question_id', qn.id).single());
+  assert.deepEqual([k.answer.value, k.mark_scheme_md], ['42', 'M1 A1']);
+  assert.equal((await q(T.from('assignments').select('draft').eq('id', a.id).single())).draft, true, 'a draft again until the tutor checks it');
+  // just the mark scheme: the question stays as it is
+  job = await q(T.rpc('prof_revise', { p_question: qn.id, p_part: 'scheme', p_instruction: 'Give a method mark' }));
+  await kick(T);
+  j = await q(T.from('prof_jobs').select('*').eq('id', job.id).single());
+  assert.equal(j.status, 'done', j.error || '');
+  now = await q(T.from('questions').select('prompt_md').eq('id', qn.id).single());
+  k = await q(T.from('question_keys').select('answer, mark_scheme_md').eq('question_id', qn.id).single());
+  assert.deepEqual([now.prompt_md, k.answer.value, k.mark_scheme_md], ['Work out $6 \times 7$.', '42', 'M1 for multiplying, A1 for 42.']);
+  assert.ok(seen.some((x) => x.body.tools?.[0]?.name === 'save_question' && JSON.stringify(x.body.messages).includes('Give a method mark')), 'only the one question is sent');
+  // once learners can see it, Prof leaves it alone
+  await q(T.from('assignments').update({ visibility: 'visible', draft: false }).eq('id', a.id));
+  const r = await T.rpc('prof_revise', { p_question: qn.id, p_part: 'question', p_instruction: 'Easier' });
+  assert.match(r.error.message, /Learners can already see this/);
 });

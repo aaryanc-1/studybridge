@@ -1049,3 +1049,7 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .plus-note a { font-weight: 600; white-space: nowrap; }
 .seg button:disabled { opacity: 0.45; cursor: default; }
 .toggle[aria-disabled='true'] { opacity: 0.6; cursor: default; }
+
+/* Watched mode and pausing */
+body.watching .side, body.watching .topbar, body.watching .tabbar { display: none !important; }
+.banner.paused { background: var(--amber-tint); color: var(--amber-ink); border-color: var(--amber-line); }

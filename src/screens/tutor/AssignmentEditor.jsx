@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
-import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
+import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Modal, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
 import MathField from '../../ui/MathField.jsx';
 import { StoredImage } from '../../ui/media.jsx';
 import { invalidate, useQuery } from '../../lib/data.js';
@@ -83,6 +83,7 @@ export default function AssignmentEditor({ id }) {
   const [err, setErr] = useState('');
   const [previewIntro, setPreviewIntro] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [changing, setChanging] = useState(null); // "Change this part": { q, n }
   useLeaveGuard(dirty);
   // The exam camera comes with Plus: without it, a camera that's already on (saved) stays, and none is switched on
   const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false;
@@ -144,6 +145,7 @@ export default function AssignmentEditor({ id }) {
           lockdown: !!a.lockdown,
           leave_warnings: Math.max(0, Math.min(5, Number(a.leave_warnings ?? 1))),
           camera: !!a.camera,
+          watched: !!a.watched && !!(a.lockdown || a.camera), // also in a browser, full screen and watched
           time_limit_min: a.time_limit_min ? Number(a.time_limit_min) : null,
           max_attempts: Math.max(1, Number(a.max_attempts) || 1),
           allow_notes: !!a.allow_notes,
@@ -312,6 +314,7 @@ export default function AssignmentEditor({ id }) {
             )}
           </div>
 
+          {changing && <ChangePart q={changing.q} n={changing.n} onClose={() => setChanging(null)} onDone={load} />}
           {picking && (
             <BankPicker
               onClose={() => setPicking(false)}
@@ -355,6 +358,7 @@ export default function AssignmentEditor({ id }) {
                 });
                 setDirty(true);
               }}
+              onAskProf={q.id && !noPlus ? () => (dirty ? toast({ title: 'Save first', body: 'Save your changes, then ask Prof to change this question.' }) : setChanging({ q, n: i + 1 })) : null}
             />
           ))}
           <div className="card">
@@ -462,7 +466,10 @@ export default function AssignmentEditor({ id }) {
             </div>
             <Toggle checked={a.lockdown} onChange={(v) => setField({ lockdown: v })} icon="lock" title="Lockdown" sub="Their screen stays on StudyBridge until they hand in: there’s no way out. Needs the desktop app." />
             {a.lockdown && (
-              <Field label="If they try to leave" hint="Switching window, closing StudyBridge or a blocked shortcut. You’re told each time, and you can end it early from the exam camera page.">
+              <Field
+                label="If they try to leave"
+                hint={`Switching window, closing StudyBridge or a blocked shortcut${a.watched ? ' (in a browser: leaving the page or full screen)' : ''}. You’re told each time, and you can end it early from the exam camera page.`}
+              >
                 <select className="select" value={a.leave_warnings ?? 1} onChange={(e) => setField({ leave_warnings: Number(e.target.value) })}>
                   <option value={0}>Hand it in straight away</option>
                   <option value={1}>Warn once, then hand it in</option>
@@ -476,6 +483,15 @@ export default function AssignmentEditor({ id }) {
               <div className="small muted plus-note">
                 The exam camera comes with Plus. <Link to="/settings?s=plan">See your plan</Link>
               </div>
+            )}
+            {(a.lockdown || a.camera) && (
+              <Toggle
+                checked={!!a.watched}
+                onChange={(v) => setField({ watched: v })}
+                icon="eye"
+                title="Allow on any device (watched)"
+                sub="Learners can also do it in a browser on a Chromebook, iPad or phone. It goes full screen, and leaving the page counts as trying to leave."
+              />
             )}
             <div className="grid g2" style={{ gap: 10 }}>
               <Field label="Time limit (minutes)">
@@ -548,7 +564,7 @@ export default function AssignmentEditor({ id }) {
   );
 }
 
-function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate }) {
+function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, onAskProf }) {
   const lk = useLookups();
   const toast = useToast();
   const [showKey, setShowKey] = useState(true);
@@ -585,6 +601,11 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate }
         <button className="btn sm ghost icon" onClick={() => onMove(1)} disabled={n === total} aria-label="Move down">
           <Icon name="down" size={16} />
         </button>
+        {onAskProf && (
+          <button className="btn sm ghost" onClick={onAskProf} aria-label={`Change question ${n} with Prof`}>
+            <Icon name="cap" size={16} /> Change with Prof
+          </button>
+        )}
         <button className="btn sm ghost icon" onClick={onDuplicate} aria-label="Duplicate question">
           <Icon name="copy" size={16} />
         </button>
@@ -753,5 +774,68 @@ export function AudienceNames({ item }) {
         'No learners yet.'
       )}
     </div>
+  );
+}
+
+// "Change this part": Prof changes just this question, or just its mark scheme, as the tutor asks (a fraction of a
+// cent instead of redoing the paper). The work stays a draft until the tutor checks it.
+function ChangePart({ q, n, onClose, onDone }) {
+  const toast = useToast();
+  const [part, setPart] = useState('question');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function send(e) {
+    e.preventDefault();
+    if (!text.trim()) return setErr('Say what Prof should change.');
+    setBusy(true);
+    setErr('');
+    try {
+      const { id } = await api.profRevise(q.id, part, text.trim());
+      // wait for Prof (usually under a minute), then show the change
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const j = await api.profJob(id);
+        if (j?.status === 'done') {
+          await onDone();
+          toast({ title: `Prof changed question ${n}`, body: `${j.result?.reply || ''} Check it before you post.`.trim() });
+          return onClose();
+        }
+        if (j?.status === 'failed') throw new Error(j.error || 'Prof couldn’t change it. Try again.');
+      }
+      toast({ title: 'Prof is still working on it', body: 'You’ll get a notification when it’s done.' });
+      onClose();
+    } catch (x) {
+      setErr(x.message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={`Change question ${n} with Prof`} onClose={busy ? () => {} : onClose}>
+      <form className="stack" onSubmit={send}>
+        <div className="small muted">Prof changes only this question, so it’s quick. The work stays a draft until you’ve checked it.</div>
+        <Seg
+          label="What to change"
+          value={part}
+          onChange={setPart}
+          options={[
+            { value: 'question', label: 'The question' },
+            { value: 'scheme', label: 'Just the mark scheme' },
+          ]}
+        />
+        <Field label="What should Prof change?">
+          <textarea className="textarea" value={text} onChange={(e) => setText(e.target.value)} placeholder={part === 'scheme' ? 'e.g. Give a method mark for setting up the equation' : 'e.g. Make it a bit harder, with a negative answer'} />
+        </Field>
+        {err && <div className="error">{err}</div>}
+        <div className="foot row end">
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn claude" disabled={busy}>
+            <Icon name="cap" size={18} /> {busy ? 'Prof is changing it…' : 'Ask Prof'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
