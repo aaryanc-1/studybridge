@@ -102,8 +102,10 @@ export const askLevel = (level) => run(sb().rpc('ask_level', { p_level: level })
 // The Owner: a tutor's plan as it stands (theirs or their centre's), the places they've paid for, a centre's plan
 export const adminBill = (userId) => run(sb().rpc('admin_bill', { p_tutor: userId }));
 export const adminSetSeats = (userId, seats) => run(sb().rpc('admin_set_seats', { p_user: userId, p_seats: seats }));
-export const adminSetOrgPlan = (orgId, level, paidUntil = null, seats = null, trialDays = null) =>
-  run(sb().rpc('admin_set_org_plan', { p_org: orgId, p_level: level, p_paid_until: paidUntil || null, p_seats: seats, p_trial_days: trialDays }));
+// Admin → Schools and centres: every centre and school, and setting one up (paid up to, learners paid for, pilot days)
+export const adminOrgs = () => run(sb().rpc('admin_orgs'));
+export const adminSetSchoolPlan = (orgId, paidUntil = null, seats = null, pilotDays = null, kind = null) =>
+  run(sb().rpc('admin_set_school_plan', { p_org: orgId, p_paid_until: paidUntil || null, p_seats: seats, p_pilot_days: pilotDays, p_kind: kind }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));
@@ -220,9 +222,9 @@ export const nudgeAssignment = (id) => run(sb().rpc('nudge_assignment', { p_assi
 // ---------------- organisations and classes ----------------
 // Every tutor is in an organisation (their own, or a tuition centre they joined with its code)
 export const myOrg = () => run(sb().rpc('my_org'));
-// Who pays in a centre: each tutor, or the centre for everyone (one bill)
+// A centre or school pays for everyone in it, yearly by invoice: its manager asks StudyBridge for one
 export const myOrgBilling = () => run(sb().rpc('my_org_billing'));
-export const orgSetBilling = (centre, level = null) => run(sb().rpc('org_set_billing', { p_centre: centre, p_level: level }));
+export const orgAskInvoice = (learners = null, note = null) => run(sb().rpc('org_ask_invoice', { p_learners: learners, p_note: note }));
 export const orgRename = (name) => run(sb().rpc('org_rename', { p_name: name }));
 export const orgMakeCentre = (name = null) => run(sb().rpc('org_make_centre', { p_name: name }));
 export const orgNewCode = () => run(sb().rpc('org_new_code'));
@@ -253,6 +255,12 @@ export async function joinClass(code) {
 }
 // A learner's teachers (their own tutor first), for Messages
 export const myTeachers = () => run(sb().rpc('my_teachers'));
+// A class's page: its classwork by topic, its gradebook, and a whole class list at once (an invite each)
+export const classWork = (classId) => run(sb().rpc('class_work', { p_class: classId }));
+export const classGradebook = (classId) => run(sb().rpc('class_gradebook', { p_class: classId }));
+export const classInvites = (classId, names) => run(sb().rpc('class_invites', { p_class: classId, p_names: names }));
+// Rubrics (a teacher's own; a learner reads the ones on their questions)
+export const listRubrics = () => run(sb().from('rubrics').select('*').order('title'));
 // A learner's places (main tutor, other tutors, schools and centres): or, for a parent, their child's
 export const myPlaces = (learnerId = null) => run(sb().rpc('my_places', { p_learner: learnerId }));
 export const setShare = (placeId, on, learnerId = null) => run(sb().rpc('set_share', { p_place: placeId, p_on: on, p_learner: learnerId }));

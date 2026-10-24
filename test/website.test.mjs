@@ -258,4 +258,5 @@ test('website: the prices the server charges (app_config.pricing in setup.sql) a
   assert.equal(p.yearlyMonthsFree, c.yearlyMonthsFree);
   assert.deepEqual([p.student.month, p.student.passMonth], [c.selfLearner.month, c.selfLearner.passMonth]);
   assert.deepEqual(p.rates, Object.fromEntries(c.currencies.map((x) => [x.code, x.rate])));
+  assert.deepEqual([p.school.year, p.school.min], [c.schoolPlan.perLearnerYear, c.schoolPlan.minLearners], 'schools and centres');
 });

@@ -162,75 +162,19 @@ function Account() {
 
 // A tutor's organisation: their own, or a tuition centre other tutors join with its code. Each tutor keeps their
 // own learners, classes and work and approves everything for them; a centre's managers also see everyone in Centre.
-// Who pays in a centre: each tutor for their own learners, or the centre for everyone (one bill, paid by a manager
-// in Settings → Your plan). Tutors see which it is.
-function CentreBilling({ manager }) {
-  const toast = useToast();
-  const confirm = useConfirm();
-  const q = useQuery('org-billing', api.myOrgBilling);
-  const [busy, setBusy] = useState(false);
-  const b = q.data;
-  if (!b) return null;
-  const centrePays = b.billing === 'centre';
-  async function set(centre, level = null) {
-    if (
-      !centre &&
-      !(await confirm({
-        title: 'Stop the centre paying for everyone?',
-        body: 'Each tutor then pays for their own learners. Tutors who haven’t paid get a free week to sort it out.',
-        ok: 'Each tutor pays',
-      }))
-    )
-      return;
-    setBusy(true);
-    try {
-      await api.orgSetBilling(centre, level);
-      invalidate('org-billing', 'my-plan', 'org');
-      toast(centre ? { title: 'The centre pays for everyone now', body: 'Pay for it in Settings → Your plan. It starts with a free week.' } : 'Each tutor pays for their own learners now');
-    } catch (e) {
-      toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
-    } finally {
-      setBusy(false);
-    }
-  }
+// A centre or school pays for StudyBridge for everyone in it: one price per learner a year, by invoice (its tutors don't
+// pay as well). The price is the website's (site.config.json → schoolPlan).
+const SCHOOL = site.schoolPlan;
+function CentrePays({ manager, kind }) {
   return (
     <>
       <hr />
       <div className="stack sm">
         <h3>Who pays</h3>
-        {manager ? (
-          <>
-            <div className="seg" role="group" aria-label="Who pays">
-              <button type="button" aria-pressed={!centrePays} disabled={busy} onClick={() => centrePays && set(false)}>
-                Each tutor pays for their own learners
-              </button>
-              <button type="button" aria-pressed={centrePays} disabled={busy} onClick={() => !centrePays && set(true, b.level)}>
-                The centre pays for everyone
-              </button>
-            </div>
-            {centrePays && (
-              <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
-                <span className="small">Level for everyone:</span>
-                <div className="seg" role="group" aria-label="The centre’s level">
-                  {LEVELS.map((l) => (
-                    <button key={l.id} type="button" aria-pressed={b.level === l.id} disabled={busy} onClick={() => b.level !== l.id && set(true, l.id)}>
-                      {l.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div className="small muted">
-              {centrePays
-                ? `One bill for the whole centre: ${b.learners} learner${b.learners === 1 ? '' : 's'} now. Pay for it in Settings → Your plan.`
-                : 'Each tutor pays for their own learners in their own Settings → Your plan.'}
-            </div>
-          </>
-        ) : (
-          <div className="small muted">
-            {centrePays ? 'The centre pays for StudyBridge for everyone (one bill). Your manager looks after it.' : 'Each tutor pays for their own learners (Settings → Your plan).'}
-          </div>
-        )}
+        <div className="small muted">
+          The {kind === 'school' ? 'school' : 'centre'} pays for everyone in it: ${SCHOOL.perLearnerYear} per learner a year, everything included, for at least {SCHOOL.minLearners} learners, by invoice. Its tutors don’t pay as well.{' '}
+          {manager ? 'Ask for an invoice in Settings → Your plan.' : 'Your manager looks after it.'}
+        </div>
       </div>
     </>
   );
@@ -265,7 +209,7 @@ function YourOrganisation() {
     try {
       const r = await fn();
       q.mutate(r);
-      invalidate('org', 'org-overview'); // the menu shows Centre only to a centre's managers
+      invalidate('org', 'org-overview', 'my-plan', 'org-billing'); // the menu shows Centre only to a centre's managers; a centre pays for everyone
       toast(typeof done === 'function' ? done(r) : done);
       return true;
     } catch (e) {
@@ -311,7 +255,7 @@ function YourOrganisation() {
                   <div className="stack sm">
                     <h3>Run a tuition centre?</h3>
                     <div className="small muted">
-                      Make this a tuition centre and other tutors can join it with a code. They keep their own learners and work, and still mark and approve everything for them. You see every tutor and learner in a Centre page.
+                      Make this a tuition centre and other tutors can join it with a code. They keep their own learners and work, and still mark and approve everything for them. You see every tutor and learner in a Centre page. A centre pays ${SCHOOL.perLearnerYear} per learner a year for everyone in it (at least {SCHOOL.minLearners} learners), by invoice, instead of each tutor paying, and starts with a free week.
                     </div>
                     <div>
                       <button className="btn" disabled={busy} onClick={() => act(() => api.orgMakeCentre(), (r) => ({ title: `${r.name} is a tuition centre now`, body: 'Send its code to the tutors who’ll join.' }))}>
@@ -374,7 +318,7 @@ function YourOrganisation() {
             </div>
           )}
 
-          {centre && <CentreBilling manager={manager} />}
+          {centre && <CentrePays manager={manager} kind={o.kind} />}
 
           {centre && (
             <>
@@ -1436,6 +1380,108 @@ const stepsText = (level) =>
       return i ? `${usd(s.price)} for ${from}–${s.upTo}` : `${usd(s.price)} each for learners ${from}–${s.upTo}`;
     })
     .join(', ');
+// A centre's or school's plan: one price per learner a year for everyone in it, by invoice after a free pilot term.
+// Its manager asks StudyBridge for an invoice (StudyBridge sets the plan up in Admin); its tutors see who pays.
+function CentrePlan({ p }) {
+  const toast = useToast();
+  const c = p.centre;
+  const seats = typeof p.seats === 'number' ? p.seats : null;
+  const [n, setN] = useState(String(Math.max(SCHOOL.minLearners, p.learners || 0)));
+  const [busy, setBusy] = useState(false);
+  const kind = c.kind === 'school' ? 'school' : 'centre';
+  const count = Math.max(Number(n) || 0, SCHOOL.minLearners);
+  const status = {
+    trial: p.trial_until ? `Free until ${planDay(p.trial_until)}` : 'Free for now',
+    paid: `${p.paid_until ? `Paid up to ${planDay(p.paid_until)}` : 'Paid'}${seats ? ` for ${seats} learners` : ''}`,
+    card: 'Paid by card',
+    free: 'Complimentary',
+    unpaid: p.enforced ? 'Not paid' : null,
+  }[p.state];
+  async function ask() {
+    setBusy(true);
+    try {
+      await api.orgAskInvoice(count);
+      invalidate('my-plan');
+      toast({ title: 'StudyBridge will send you an invoice', body: 'By email, usually within a day.' });
+    } catch (e) {
+      toast({ title: 'Couldn’t ask', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Section
+      id="plan"
+      icon="star"
+      title="Your plan"
+      sub={`${c.name} pays for StudyBridge for everyone in it: ${p.learners} learner${ess(p.learners)} now, ${p.own_learners} of them yours.${p.paused ? ` ${p.paused} paused (they don’t count).` : ''}`}
+    >
+      <div className="row wrap" style={{ gap: 8 }}>
+        <span className="strong">{c.name}</span>
+        <span className="pill good">Everything included</span>
+        {status && <span className={'small' + (p.state === 'unpaid' ? ' strong' : '')}>{status}</span>}
+      </div>
+      {seats && (
+        <div className="plan-meter" aria-label={`${p.learners} of ${seats} places used`}>
+          <span style={{ width: `${Math.min(100, (p.learners / Math.max(1, seats)) * 100)}%` }} />
+        </div>
+      )}
+      <div className="level-price">
+        <b>${SCHOOL.perLearnerYear}</b> per learner a year
+      </div>
+      <div className="tiny muted">
+        For at least {SCHOOL.minLearners} learners (${SCHOOL.perLearnerYear * SCHOOL.minLearners} a year). One bill a year, paid by invoice, after a free pilot term. Prof for every teacher, mocks with grades,
+        the exam camera and watched mode are all included. Tutors in the {kind} don’t pay as well.
+      </div>
+      {!p.enforced ? (
+        <div className="small muted">Plan limits aren’t switched on yet, so you have everything for now.</div>
+      ) : (
+        p.state === 'unpaid' && (
+          <div className="note warn small">
+            {c.manager ? `The ${kind}’s free time has ended and nothing is paid yet, so new learners can’t join. Everything stays: ask for an invoice below.` : `The ${kind}’s plan isn’t paid, so new learners can’t join. Your manager looks after it.`}
+          </div>
+        )
+      )}
+      {c.manager ? (
+        <div className="stack sm">
+          <div className="row wrap" style={{ alignItems: 'flex-end', gap: 10 }}>
+            <div style={{ maxWidth: 200 }}>
+              <Field label="Learners to pay for" hint={`At least ${SCHOOL.minLearners}.`}>
+                <input className="input" type="number" min={SCHOOL.minLearners} step="1" value={n} onChange={(e) => setN(e.target.value)} />
+              </Field>
+            </div>
+            <button className="btn primary" disabled={busy} onClick={ask}>
+              {busy ? 'Asking…' : 'Ask for an invoice'}
+            </button>
+            <span className="small">${(SCHOOL.perLearnerYear * count).toLocaleString('en-US')} a year</span>
+          </div>
+          {c.invoice_asked_at && <div className="small muted">You asked for an invoice on {planDay(c.invoice_asked_at)}. StudyBridge replies by email.</div>}
+        </div>
+      ) : (
+        <div className="small muted">Your {kind}’s manager looks after paying.</div>
+      )}
+      {p.own_card && (
+        <div className="note warn small row wrap" style={{ gap: 8 }}>
+          <span className="grow">You still pay by card for your own plan. Your {kind} pays for you now, so cancel yours.</span>
+          <button
+            className="btn sm"
+            onClick={async () => {
+              try {
+                const r = await api.billingPortal(true);
+                if (r?.url) window.open(r.url, '_blank');
+              } catch (e) {
+                toast({ title: 'Couldn’t open payments', body: e.message, tone: 'bad' });
+              }
+            }}
+          >
+            Cancel my own plan
+          </button>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // Whole months from today to a paid-up date (a part month counts as one), as the server works out added places
 function monthsLeft(until) {
   const a = new Date();
@@ -1455,6 +1501,7 @@ function YourPlan() {
   const [asked, setAsked] = useState([]);
   const p = q.data;
   if (!p) return null;
+  if (p.centre) return <CentrePlan p={p} />;
   const level = LEVELS.find((l) => l.id === p.level) || LEVELS.at(-1);
   const centre = p.centre; // the centre pays for every tutor in it
   const payer = !centre || centre.manager;

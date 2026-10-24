@@ -431,6 +431,20 @@ tutors (YourPlaces, replaces Join a class: list, Leave, Sharing, Add with a code
 Parents for them), Shell's ReadOnlyBar. Fixed on the way: the storage rules at the end of setup.sql had reset the class-teacher
 versions (files and work photos of class teachers who aren't the main tutor). Not yet: practice for a linked tutor's subjects
 uses the main tutor's question bank.
+Update B (24 Oct 2026, app 1.1.84), school and centre pricing, the same on the website and in the app. site.config.json
+`schoolPlan` {perLearnerYear 15, minLearners 30} = `app_config.pricing.school` {year, min} (website.test.mjs checks); website:
+pricing.html Schools tab ($15 per learner a year, at least 30 = $450, one bill a year by invoice, a free pilot term) and FAQ "How do
+schools and tuition centres pay?", schools.html ("What you get", the price, a link to pricing), tokens schoolYear/schoolMin/
+schoolMinYear in build-website.mjs; `earlyAccessPayment` now "For now, we arrange payment with you directly." A centre or school
+always pays for everyone in it (`billing = 'centre'`, level plus; `org_make_centre` sets that and a 7-day free week); the "Who pays"
+switch (`org_set_billing`) and `admin_set_org_plan` are gone; card checkout (Prof) and mobile money refuse centres ("pays yearly by
+invoice"). Managers: Settings → Your plan → CentrePlan (price, status, places meter, "Ask for an invoice" → `org_ask_invoice(learners,
+note)`: admin notification with ref org_id → Admin's /schools, and an email to hello@ with reply-to the manager; `invoice_asked_at`);
+tutors in it see who pays. Admin → Schools and centres (Schools.jsx): `admin_orgs()` (manager, teachers, learners, state, paid up to,
+places, pilot, invoice asked; demo excluded) and Set up → `admin_set_school_plan(org, paid_until, seats, pilot_days, kind)` (centre or
+school, notifies managers), with a note when it has fewer than 3 teachers (the school price is for several teachers).
+`_school_year_usd(n)`. Plan & Prof for a tutor whose centre pays links to Schools and centres. Also fixed: time studied (`log_time`) now
+counts for whoever set the item, not always the main tutor (the wall needs it), and Settings refreshes Your plan after centre changes.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

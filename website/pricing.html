@@ -93,10 +93,10 @@
           <article class="plan">
             <span class="tag soon-tag">Set up with you</span>
             <h3>Schools and tuition centres</h3>
-            <div class="blurb">A price per learner for the year, set up with you.</div>
-            <div><span class="amount word">Let’s talk</span></div>
-            <div class="equiv"></div>
-            <ul><li>Teachers, classes, learners and parents in one place</li><li>Locked-down mocks and exam prep built in</li><li>One bill, paid by invoice</li><li>A pilot term to start</li></ul>
+            <div class="blurb">Everything included, for every teacher and learner.</div>
+            <div><span class="amount" data-usd="{{schoolYear}}">${{schoolYear}}</span><span class="per">per learner a year</span></div>
+            <div class="equiv">At least {{schoolMin}} learners: <span data-usd="{{schoolMinYear}}">${{schoolMinYear}}</span> a year</div>
+            <ul><li>Teachers, classes, learners and parents in one place</li><li>Prof for every teacher, mocks with grades and the exam camera</li><li>Locked-down exams on any device</li><li>One bill a year, paid by invoice</li><li>A free pilot term to start</li></ul>
             <a class="btn primary" href="contact.html">Tell us about yours</a>
           </article>
         </div>
@@ -108,6 +108,7 @@
     <div class="wrap narrow">
       <h2 class="reveal">Questions about pricing</h2>
       <details class="reveal"><summary>How does the free trial work?</summary><p>You get everything free for {{trialDays}} days, with no card needed. Tutors get Plus, so they can see what Prof does. Then you choose a plan. If you don’t, your account turns read-only: nothing is deleted, and you can still see and download everything.</p></details>
+      <details class="reveal"><summary>How do schools and tuition centres pay?</summary><p><span data-usd="{{schoolYear}}">${{schoolYear}}</span> per learner a year, with everything included, for at least {{schoolMin}} learners. It’s one bill a year, paid by invoice, after a free pilot term. Tutors in a centre or school don’t pay as well, and a learner who also has a private tutor counts once for each.</p></details>
       <details class="reveal"><summary>What’s the exam pass?</summary><p>One payment that lasts until your exams, then stops by itself, so there’s nothing to cancel. It costs less each month than paying monthly. With no exam date yet, it lasts 12 months.</p></details>
       <details class="reveal"><summary>What’s the difference between Essentials and Plus?</summary><p>Essentials has everything a tutor needs to run their tutoring: work, marking, past papers, live lessons, parent reports and locked-down exams. Plus adds Prof with no limit (it makes work, drafts marking and plans with you), mocks with grades, the exam camera and {{brand}}’s own practice papers and self-study for your learners.</p></details>
       <details class="reveal"><summary>Is there a limit on Prof?</summary><p>No. On Plus, Prof makes as many papers and quizzes as you need and changes them as often as you like. You can always edit anything it makes yourself, too.</p></details>

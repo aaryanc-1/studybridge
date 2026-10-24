@@ -1611,6 +1611,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     if (!cfg.stripe_secret || !price) return json({ error: 'Paying by card isn’t open yet.' }, 400);
     const who = await rpc('_checkout_target', { p_user: user.id });
     if (!who) return json({ error: 'Tutors only.' }, 403);
+    if (who.kind === 'centre') return json({ error: 'A centre or school pays yearly by invoice. Ask StudyBridge in Settings → Your plan.' }, 400);
     if (!who.manager) return json({ error: 'Your centre pays for StudyBridge. Its manager pays in Settings → Your plan.' }, 400);
     const seats = Math.max(1, Number(who.learners) || 0);
     const sell = await rpc('_selling', {});

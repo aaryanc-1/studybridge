@@ -12,6 +12,7 @@ import SellingPage from './Selling.jsx';
 import StudentsPage from './Students.jsx';
 import ContentPage from './Content.jsx';
 import DemoPage from './Demo.jsx';
+import SchoolsPage from './Schools.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -19,6 +20,7 @@ function notificationTarget(n) {
   if (n.kind === 'prof_limit' && r.user_id) return `/tutors/${r.user_id}`;
   if (n.kind === 'prof_credit' || n.kind === 'prof') return '/prof';
   if (n.kind === 'problem') return '/problems';
+  if (n.kind === 'feedback' && r.org_id) return '/schools'; // a centre asked for an invoice
   if (n.kind === 'feedback') return '/inbox';
   if (n.kind === 'content_report' || n.kind === 'content_check') return '/content';
   return '/';
@@ -37,6 +39,7 @@ export default function AdminApp() {
     { to: '/', label: 'Overview', icon: 'home' },
     { to: '/tutors', label: 'Tutors', icon: 'users', count: waiting },
     { to: '/students', label: 'Students', icon: 'book' },
+    { to: '/schools', label: 'Schools and centres', icon: 'users' },
     { to: '/content', label: 'Content', icon: 'layers', count: contentOpen },
     { to: '/inbox', label: 'Inbox', icon: 'message', count: o.feedback_open },
     { to: '/problems', label: 'Problems', icon: 'alert', count: o.problems_open, tone: 'claude' },
@@ -53,6 +56,7 @@ export default function AdminApp() {
   if (a === 'tutors' && b) page = <TutorPage id={b} />;
   else if (a === 'tutors') page = <TutorsPage />;
   else if (a === 'students') page = <StudentsPage />;
+  else if (a === 'schools') page = <SchoolsPage />;
   else if (a === 'content') page = <ContentPage />;
   else if (a === 'inbox') page = <InboxPage />;
   else if (a === 'problems') page = <ProblemsPage />;

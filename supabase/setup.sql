@@ -1363,6 +1363,7 @@ create or replace function public.log_time(p_kind text, p_ref uuid, p_seconds in
 returns void language plpgsql security definer set search_path = public as $$
 declare
   v_tutor uuid;
+  v_owner uuid;
   v_subject uuid;
   v_topic uuid;
   v_tz text;
@@ -1370,22 +1371,25 @@ declare
 begin
   select tutor_id, timezone into v_tutor, v_tz from public.profiles where id = auth.uid() and role = 'learner';
   if v_tutor is null or s = 0 then return; end if;
+  -- the time counts for whoever set the work (a learner can have a school and tutors, each seeing only their own)
   if p_kind = 'assignment' then
-    select a.subject_id, a.topic_id into v_subject, v_topic from public.attempts t join public.assignments a on a.id = t.assignment_id
+    select a.subject_id, a.topic_id, a.tutor_id into v_subject, v_topic, v_owner from public.attempts t join public.assignments a on a.id = t.assignment_id
      where t.id = p_ref and t.learner_id = auth.uid();
     if not found then return; end if;
     update public.attempts set time_spent_sec = time_spent_sec + s where id = p_ref and learner_id = auth.uid();
   elsif p_kind = 'lesson' then
-    select subject_id, topic_id into v_subject, v_topic from public.lessons where id = p_ref;
+    select subject_id, topic_id, tutor_id into v_subject, v_topic, v_owner from public.lessons where id = p_ref;
   elsif p_kind = 'file' then
-    select subject_id, topic_id into v_subject, v_topic from public.files where id = p_ref;
+    select subject_id, topic_id, tutor_id into v_subject, v_topic, v_owner from public.files where id = p_ref;
   elsif p_kind = 'study' then
-    select id into v_subject from public.subjects where id = p_ref;
-  elsif p_kind <> 'session' then
+    select id, tutor_id into v_subject, v_owner from public.subjects where id = p_ref;
+  elsif p_kind = 'session' then
+    select tutor_id into v_owner from public.sessions where id = p_ref;
+  else
     return;
   end if;
   insert into public.activity (learner_id, tutor_id, kind, ref_id, subject_id, topic_id, seconds, day)
-  values (auth.uid(), v_tutor, p_kind, p_ref, v_subject, v_topic, s,
+  values (auth.uid(), coalesce(v_owner, v_tutor), p_kind, p_ref, v_subject, v_topic, s,
           (now() at time zone coalesce((select name from pg_timezone_names where name = v_tz), 'UTC'))::date);
 end $$;
 
@@ -8599,6 +8603,7 @@ update public.app_config set pricing = '{
   "tutor": {"essentials": [[10, 5], [30, 4], [null, 3]], "plus": [[10, 8], [30, 6], [null, 4]]},
   "yearlyMonthsFree": 1,
   "student": {"month": 11, "passMonth": 9},
+  "school": {"year": 15, "min": 30},
   "rates": {"USD": 1, "ZMW": 19.69, "INR": 96.22}
 }'::jsonb where id = 1;
 
@@ -8961,37 +8966,13 @@ begin
     'has_billing', coalesce((b ->> 'has_billing')::boolean, false), 'card', b ->> 'state' = 'card',
     'own_card', p.stripe_tutor_sub is not null and v_org is not null,
     'centre', case when v_org is not null then jsonb_build_object('id', v_org, 'name', b ->> 'org_name',
-                'manager', exists (select 1 from public.org_members where org_id = v_org and user_id = p.id and role = 'manager')) end);
+                'manager', exists (select 1 from public.org_members where org_id = v_org and user_id = p.id and role = 'manager'),
+                'kind', (select kind from public.organisations where id = v_org),
+                'invoice_asked_at', (select to_jsonb(o) ->> 'invoice_asked_at' from public.organisations o where o.id = v_org)) end);
 end $$;
+
 
 -- ---------------- one bill for a centre ----------------
--- A centre's manager chooses who pays: each tutor for their own learners, or the centre for everyone. When the centre
--- starts paying it gets a free week (once), so nobody loses anything while the manager pays.
-create or replace function public.org_set_billing(p_centre boolean, p_level text default null) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare o public.organisations := public._org_mine_to_change(); me text := (select display_name from public.profiles where id = auth.uid());
-begin
-  if o.kind not in ('centre', 'school') then raise exception 'Make it a centre first.'; end if;
-  if p_level is not null and p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
-  if not p_centre and o.billing = 'centre' and o.stripe_sub is not null and o.paid_until >= current_date then
-    raise exception 'The centre pays by card. Cancel that first (Settings → Your plan → Manage or cancel).';
-  end if;
-  update public.organisations
-     set billing = case when p_centre then 'centre' else 'each' end,
-         level = coalesce(p_level, level),
-         trial_until = case when p_centre and trial_until is null then now() + interval '7 days' else trial_until end
-   where id = o.id;
-  if p_centre is distinct from (o.billing = 'centre') then
-    if not p_centre then perform public._bill_grace(m.user_id) from public.org_members m where m.org_id = o.id; end if;
-    perform public.notify_user(m.user_id, 'plan',
-      case when p_centre then o.name || ' pays for StudyBridge now' else 'You pay for your own learners again' end,
-      case when p_centre then coalesce(me, 'Your manager') || ' set it up: one bill for the whole centre. If you pay by card yourself, cancel it in Settings → Your plan.'
-           else coalesce(me, 'Your manager') || ' stopped the centre paying for everyone. See Settings → Your plan.' end, '{}')
-      from public.org_members m where m.org_id = o.id and m.user_id <> auth.uid();
-  end if;
-  return public.my_org();
-end $$;
-
 -- A tutor who stops being paid for by a centre gets a week to sort out their own plan (if it isn't active already)
 create or replace function public._bill_grace(p_tutor uuid) returns void
 language plpgsql security definer set search_path = public as $$
@@ -9106,14 +9087,9 @@ begin
   if me.role = 'tutor' and p_what in ('essentials', 'plus', 'seats') then
     b := public._bill(me.id);
     if b ->> 'payer' = 'centre' then
-      v_org := (b ->> 'org_id')::uuid;
-      if not exists (select 1 from public.org_members where org_id = v_org and user_id = me.id and role = 'manager') then
-        raise exception 'Your centre pays for StudyBridge. Ask its manager.';
-      end if;
-      v_kind := 'centre';
-    else
-      v_kind := 'tutor';
+      raise exception 'A centre or school pays yearly by invoice. Ask StudyBridge in Settings → Your plan.';
     end if;
+    v_kind := 'tutor';
     if p_what = 'seats' then
       if b ->> 'state' <> 'paid' or jsonb_typeof(b -> 'seats') is distinct from 'number' then
         raise exception 'Places are added to a plan paid for a number of learners. Pay for your plan first.';
@@ -9214,23 +9190,6 @@ begin
   perform public._admin_log('seats', p_user, jsonb_build_object('seats', p_seats));
 end $$;
 
--- ... and a centre's plan, when the centre pays
-create or replace function public.admin_set_org_plan(p_org uuid, p_level text, p_paid_until date default null,
-  p_seats int default null, p_trial_days int default null) returns void
-language plpgsql security definer set search_path = public as $$
-begin
-  perform public._admin();
-  if p_level not in ('essentials', 'plus') then raise exception 'Choose Essentials or Plus.'; end if;
-  if p_seats is not null and p_seats < 1 then raise exception 'At least 1 place, or leave it empty for any number.'; end if;
-  update public.organisations
-     set level = p_level, paid_until = p_paid_until, paid_seats = p_seats,
-         trial_until = case when coalesce(p_trial_days, 0) > 0
-                            then greatest(coalesce(trial_until, now()), now()) + make_interval(days => least(p_trial_days, 60))
-                            else trial_until end
-   where id = p_org and kind in ('centre', 'school');
-  if not found then raise exception 'That isn’t a centre.'; end if;
-  perform public._admin_log('org_plan', null, jsonb_build_object('org', p_org, 'level', p_level, 'paid_until', p_paid_until, 'seats', p_seats, 'trial_days', p_trial_days));
-end $$;
 
 -- ---------------- watched mode: still on the page? ----------------
 create or replace function public.watch_seen(p_attempt uuid) returns void
@@ -10097,6 +10056,117 @@ begin
   return n;
 end $$;
 
+-- =====================================================================
+-- Schools and centres, part 1, update B (23 Oct 2026): one price for schools and tuition centres, the same as the
+-- website (site.config.json → schoolPlan): $15 per learner a year, everything included, at least 30 learners ($450
+-- a year), paid yearly by invoice after a free pilot term. A centre or school always pays for everyone in it (its
+-- tutors don't pay as well) and never at tutor prices. StudyBridge sets each one up (Admin → Schools and centres); a
+-- new centre starts with a free week while its manager asks for an invoice.
+-- =====================================================================
+alter table public.organisations add column if not exists invoice_asked_at timestamptz;
+update public.organisations set billing = 'centre', level = 'plus' where kind in ('centre', 'school') and (billing <> 'centre' or level <> 'plus');
+drop function if exists public.org_set_billing(boolean, text);
+drop function if exists public.admin_set_org_plan(uuid, text, date, int, int);
+
+-- A tutor's own organisation becomes a tuition centre: other tutors join it with its code, it pays for everyone in it
+-- (a free week to start), and its managers see every tutor and learner in it
+create or replace function public.org_make_centre(p_name text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations := public._org_mine_to_change();
+begin
+  if not public._tutor_active() then raise exception 'Your account isn’t approved yet.'; end if;
+  update public.organisations
+     set kind = case when kind = 'tutor' then 'centre' else kind end,
+         name = coalesce(left(nullif(trim(coalesce(p_name, '')), ''), 80), name),
+         join_code = coalesce(join_code, public._new_org_code()),
+         billing = 'centre', level = 'plus',
+         trial_until = coalesce(trial_until, now() + interval '7 days')
+   where id = o.id;
+  return public.my_org();
+end $$;
+
+-- What a centre or school pays a year for this many learners (never fewer than the minimum)
+create or replace function public._school_year_usd(p_learners int) returns numeric
+language sql stable security definer set search_path = public as $$
+  select (p -> 'school' ->> 'year')::numeric * greatest(coalesce(p_learners, 0), (p -> 'school' ->> 'min')::int)
+    from (select pricing p from public.app_config where id = 1) x
+$$;
+
+-- A centre's or school's manager asks StudyBridge for an invoice: the Owner is told, and hello@ gets an email to reply to
+create or replace function public.org_ask_invoice(p_learners int default null, p_note text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  o public.organisations := public._org_mine_to_change();
+  me public.profiles;
+  v_l int;
+  v_t int;
+  v_n int;
+begin
+  if o.kind not in ('centre', 'school') then raise exception 'Make it a centre first.'; end if;
+  select * into me from public.profiles where id = auth.uid();
+  v_l := public._org_learners(o.id);
+  v_t := (select count(*) from public.org_members where org_id = o.id);
+  v_n := greatest(coalesce(p_learners, 0), v_l, (select (pricing -> 'school' ->> 'min')::int from public.app_config where id = 1));
+  update public.organisations set invoice_asked_at = now() where id = o.id;
+  perform public.notify_user(a.user_id, 'feedback', o.name || ' would like an invoice',
+      v_t || ' teacher' || case when v_t = 1 then '' else 's' end || ', ' || v_l || ' learner' || case when v_l = 1 then '' else 's' end
+      || ' now; an invoice for ' || v_n || ' learners. Set it up in Admin → Schools and centres.', jsonb_build_object('org_id', o.id))
+    from public.platform_admins a;
+  perform public._email_us('hello', o.name || ' would like an invoice',
+      coalesce(me.display_name, 'Their manager') || ' asks for an invoice for ' || o.name || ' (' || o.kind || '): ' || v_t || ' teachers and '
+      || v_l || ' learners now, an invoice for ' || v_n || ' learners ($' || public._school_year_usd(v_n) || ' a year).'
+      || coalesce(E'\n\n' || nullif(trim(coalesce(p_note, '')), ''), ''),
+      me.email);
+  return jsonb_build_object('asked_at', now(), 'learners', v_n, 'amount', public._school_year_usd(v_n));
+end $$;
+
+-- Admin → Schools and centres: every centre and school (not the demo), with its plan
+create or replace function public.admin_orgs() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return coalesce((select jsonb_agg(x order by x ->> 'name') from (
+    select jsonb_build_object('id', o.id, 'name', o.name, 'kind', o.kind, 'created_at', o.created_at,
+      'manager', (select jsonb_build_object('name', p.display_name, 'email', p.email) from public.org_members m join public.profiles p on p.id = m.user_id
+                   where m.org_id = o.id and m.role = 'manager' order by m.joined_at limit 1),
+      'teachers', (select count(*) from public.org_members where org_id = o.id),
+      'learners', public._org_learners(o.id),
+      'state', public._bill((select user_id from public.org_members where org_id = o.id order by joined_at limit 1)) ->> 'state',
+      'paid_until', o.paid_until, 'paid_seats', o.paid_seats, 'trial_until', o.trial_until, 'invoice_asked_at', o.invoice_asked_at) x
+      from public.organisations o
+     where o.kind in ('centre', 'school')
+       and not exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = o.id and coalesce(p.demo, false))) z), '[]');
+end $$;
+
+-- The Owner sets up a centre's or school's plan: what it is, paid up to, the learners paid for, free pilot days
+create or replace function public.admin_set_school_plan(p_org uuid, p_paid_until date default null, p_seats int default null,
+  p_pilot_days int default null, p_kind text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_name text; was date;
+begin
+  perform public._admin();
+  if p_kind is not null and p_kind not in ('centre', 'school') then raise exception 'Choose a centre or a school.'; end if;
+  if p_seats is not null and p_seats < 1 then raise exception 'At least 1 learner, or leave it empty for any number.'; end if;
+  select name, paid_until into v_name, was from public.organisations where id = p_org and kind in ('centre', 'school');
+  if v_name is null then raise exception 'That isn’t a centre or school.'; end if;
+  update public.organisations
+     set kind = coalesce(p_kind, kind), billing = 'centre', level = 'plus',
+         paid_until = p_paid_until, paid_seats = p_seats,
+         trial_until = case when coalesce(p_pilot_days, 0) > 0
+                            then greatest(coalesce(trial_until, now()), now()) + make_interval(days => least(p_pilot_days, 120))
+                            else trial_until end
+   where id = p_org;
+  if p_paid_until >= current_date and (was is null or was < current_date or was is distinct from p_paid_until) then
+    perform public.notify_user(m.user_id, 'plan', 'Thank you! ' || v_name || ' is paid up',
+        'Up to ' || public._nice_date(p_paid_until) || case when p_seats is not null then ', for ' || p_seats || ' learners.' else '.' end, '{}')
+      from public.org_members m where m.org_id = p_org and m.role = 'manager';
+  elsif coalesce(p_pilot_days, 0) > 0 then
+    perform public.notify_user(m.user_id, 'plan', v_name || '’s free pilot', 'Free until ' || public._nice_date((select trial_until::date from public.organisations where id = p_org)) || '.', '{}')
+      from public.org_members m where m.org_id = p_org and m.role = 'manager';
+  end if;
+  perform public._admin_log('school_plan', null, jsonb_build_object('org', p_org, 'paid_until', p_paid_until, 'seats', p_seats, 'pilot_days', p_pilot_days, 'kind', p_kind));
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -10179,6 +10249,7 @@ revoke execute on function public._bill_grace(uuid) from public, anon, authentic
 revoke execute on function public._org_member_left() from public, anon, authenticated;
 revoke execute on function public._watch_away() from public, anon, authenticated;
 revoke execute on function public._bill_tick() from public, anon, authenticated;
+revoke execute on function public._school_year_usd(int) from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

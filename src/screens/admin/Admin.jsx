@@ -3,7 +3,7 @@
 // the keys the server uses. It never shows anyone's work, files, marks or messages.
 import { useEffect, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Field, Modal, Page, Toggle, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Field, Link, Modal, Page, Toggle, copyText, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, bytes, PLANS, planName } from '../../lib/format.js';
@@ -379,8 +379,7 @@ export function PlanModal({ t, onClose }) {
                 const days = Math.round(Number(moreDays)) || 0;
                 const places = seatsNow === '' ? null : Math.round(Number(seatsNow));
                 const changed = lv && (levelNow !== lv.level || (paidNow || null) !== (lv.paid_until || null) || places !== (lv.paid_seats ?? null) || days > 0);
-                if (changed && viaCentre) await api.adminSetOrgPlan(lv.org_id, levelNow, paidNow || null, places, days > 0 ? days : null);
-                else if (changed) {
+                if (changed && !viaCentre) {
                   await api.adminSetLevel(t.id, levelNow, paidNow || null, days > 0 ? days : null);
                   if (places !== (lv.paid_seats ?? null)) await api.adminSetSeats(t.id, places);
                 }
@@ -416,9 +415,16 @@ export function PlanModal({ t, onClose }) {
           <input className="input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
         </Field>
       )}
-      {lv ? (
+      {lv && viaCentre ? (
+        <div className="note small">
+          {lv.org_name} pays for everyone in it ({lv.learners} learners), yearly by invoice. Set its plan up in{' '}
+          <Link to="/schools" onClick={onClose}>
+            Schools and centres
+          </Link>
+          .
+        </div>
+      ) : lv ? (
         <>
-          {viaCentre && <div className="note small">{lv.org_name} pays for everyone in it, so these change the centre’s plan ({lv.learners} learners in the centre).</div>}
           <Field label="Level" hint="Plus adds Prof, mocks with grades, the exam camera and StudyBridge’s library.">
             <select className="select" value={levelNow} onChange={(e) => setLevel(e.target.value)}>
               <option value="essentials">Essentials</option>

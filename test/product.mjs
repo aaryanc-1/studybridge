@@ -825,25 +825,42 @@ try {
   await torg.getByText('Aaryan Chouhan', { exact: true }).waitFor();
   assert.equal(await torg.getByRole('button', { name: 'Take out of the centre' }).count(), 0, 'only managers take tutors out');
   await a11y(T3, 'Settings → Your organisation');
-  // one bill for the centre: the manager chooses it, Tom sees the centre pays, and the Owner sees it on Tom's plan
-  await org.getByRole('button', { name: 'The centre pays for everyone' }).click();
-  await A.getByText('The centre pays for everyone now').waitFor();
-  await org.getByText(/One bill for the whole centre/).waitFor();
+  // the centre pays for everyone in it at the school price (by invoice); Tom doesn't pay as well; the Owner sets it up
+  await org.getByText(/The centre pays for everyone in it: \$15 per learner a year/).waitFor();
   await T3.goto(web.url + '#/settings?s=plan');
   await T3.reload();
   const tplan = T3.locator('#set-plan');
-  await tplan.getByText(/Bright Minds Centre pays for StudyBridge for all its tutors/).waitFor();
-  await tplan.getByText('Your centre’s manager chooses the level and pays for everyone in Settings → Your plan.').waitFor();
-  assert.equal(await tplan.getByRole('button', { name: /Ask for|Pay by card|Mobile money/ }).count(), 0, 'only the manager pays');
+  await tplan.getByText(/Bright Minds Centre pays for StudyBridge for everyone in it/).waitFor();
+  await tplan.getByText('Your centre’s manager looks after paying.').waitFor();
+  assert.equal(await tplan.getByRole('button', { name: /Ask for|Pay by card|Mobile money/ }).count(), 0, 'only the manager asks for an invoice');
   await shot(T3, 'tutor-centre-pays');
   await nav(ADM, 'Tutors').click();
   await ADM.locator('.tutor-row', { hasText: 'Tom Phiri' }).getByRole('button', { name: 'Plan & Prof' }).click();
   await ADM.getByRole('dialog').getByText(/Bright Minds Centre pays for everyone in it/).waitFor();
-  await ADM.getByRole('dialog').getByLabel('Learners paid for').waitFor();
   await ADM.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
-  await org.getByRole('button', { name: 'Each tutor pays for their own learners' }).click();
-  await A.getByRole('dialog').getByRole('button', { name: 'Each tutor pays', exact: true }).click();
-  await A.getByText('Each tutor pays for their own learners now').waitFor();
+  await A.goto(web.url + '#/settings?s=plan');
+  const cplan = A.locator('#set-plan');
+  await cplan.getByText('$15', { exact: true }).waitFor();
+  await cplan.getByLabel('Learners to pay for').fill('40');
+  await cplan.getByRole('button', { name: 'Ask for an invoice' }).click();
+  await A.getByText('StudyBridge will send you an invoice').waitFor();
+  await cplan.getByText(/You asked for an invoice on/).waitFor();
+  await shot(A, 'centre-plan');
+  await nav(ADM, 'Schools and centres').click();
+  const crow = ADM.locator('.item', { hasText: 'Bright Minds Centre' });
+  await crow.getByText(/Asked for an invoice/).waitFor();
+  await crow.getByRole('button', { name: 'Set up Bright Minds Centre' }).click();
+  const setup = ADM.getByRole('dialog');
+  const nextYear = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
+  await setup.getByLabel('Paid up to').fill(nextYear);
+  await setup.getByLabel('Learners paid for').fill('40');
+  await setup.getByText(/The invoice for a year: \$600/).waitFor();
+  await setup.getByRole('button', { name: 'Save' }).click();
+  await ADM.getByText('Bright Minds Centre saved').waitFor();
+  await crow.getByText(/for 40 learners/).waitFor();
+  await shot(ADM, 'admin-schools');
+  await A.reload();
+  await cplan.getByText(/Paid up to .* for 40 learners/).waitFor();
   // the manager's Centre page: every tutor and learner, read-only
   await A.reload();
   await nav(A, 'Centre').click();
@@ -1319,18 +1336,27 @@ try {
   await ADM.getByText('Mobile money saved').waitFor();
   await ADM.getByText('Secret hash (saved)').waitFor();
   await shot(ADM, 'admin-selling');
-  await A.goto(web.url + '#/settings');
-  const plan = A.locator('#set-plan');
+  // a tutor on their own (not in a centre) pays the tutor price
+  const SOLO = await (await browser.newContext({ viewport: { width: 1400, height: 900 }, timezoneId: 'Africa/Lusaka' })).newPage();
+  watch(SOLO, 'tutor (on their own)');
+  await signUpTutor(SOLO, 'Mary Mulenga', 'mary@example.com');
+  await SOLO.getByText('Waiting for approval', { exact: true }).waitFor();
+  await srv.db.query(`update public.profiles set status = 'active' where email = 'mary@example.com'`);
+  await SOLO.goto(web.url + '#/settings');
+  await SOLO.reload();
+  const plan = SOLO.locator('#set-plan');
   await plan.getByText(/Essentials from \$5 and Plus from \$8 per learner/).waitFor();
   await plan.getByText(/Plan limits aren’t switched on yet/).waitFor();
   await plan.getByText('Plus is on').first().waitFor(); // (Essentials or Plus: everything is on until plan limits are)
   await plan.locator('.level-card').last().getByRole('button', { name: 'Mobile money' }).click();
-  const mm = A.getByRole('dialog');
+  const mm = SOLO.getByRole('dialog');
   await mm.getByLabel('How long').selectOption('12');
   await mm.getByLabel('Currency').selectOption('ZMW');
   await mm.getByRole('button', { name: /^Pay ZMW [\d,]+$/ }).waitFor();
-  await shot(A, 'tutor-mobile-money');
+  await shot(SOLO, 'tutor-mobile-money');
   await mm.getByRole('button', { name: 'Cancel' }).click();
+  await SOLO.close();
+  await A.goto(web.url + '#/settings');
   await srv.db.query(`update public.platform_secrets set flw_secret = null, flw_hash = null where id = 1`);
   // (the message is watched for from the click on: it can come and go while the download is being caught)
   const [zip] = await Promise.all([

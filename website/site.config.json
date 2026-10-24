@@ -8,7 +8,7 @@
   "releasesRepo": "aaryanc-1/studybridge-releases",
   "trialDays": 7,
   "yearlyMonthsFree": 1,
-  "earlyAccessPayment": "During early access, we arrange payment with you directly. Online checkout is coming.",
+  "earlyAccessPayment": "For now, we arrange payment with you directly.",
   "tutorLevels": [
     {
       "id": "essentials", "name": "Essentials", "blurb": "Everything to run your tutoring, without Prof.",
@@ -22,6 +22,7 @@
     }
   ],
   "selfLearner": { "month": 11, "passMonth": 9, "exampleMonths": 8 },
+  "schoolPlan": { "perLearnerYear": 15, "minLearners": 30 },
   "currencies": [
     { "code": "USD", "symbol": "$", "rate": 1, "label": "US dollars" },
     { "code": "ZMW", "symbol": "K", "rate": 19.69, "label": "Zambian kwacha" },
