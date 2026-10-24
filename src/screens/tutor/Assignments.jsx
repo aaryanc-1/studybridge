@@ -34,7 +34,7 @@ export default function Assignments() {
   const wantsNew = route.query.get('new') === '1';
   useEffect(() => {
     if (!wantsNew) return;
-    setPreset({ subject: route.query.get('subject') || '', topic: route.query.get('topic') || '' });
+    setPreset({ subject: route.query.get('subject') || '', topic: route.query.get('topic') || '', klass: route.query.get('class') || '' });
     setCreating(true);
     go('/assignments', { replace: true });
   }, [wantsNew]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -294,7 +294,15 @@ function NewAssignment({ preset, noPlus, onClose, onMock }) {
     if (!title.trim()) return setErr('Give it a title.');
     try {
       // (the exam camera comes with Plus)
-      const a = await api.save('assignments', { kind, title: title.trim(), subject_id: subject || null, topic_id: topic?.id || null, ...KIND_DEFAULTS[kind], ...(noPlus ? { camera: false } : {}) });
+      const a = await api.save('assignments', {
+        kind,
+        title: title.trim(),
+        subject_id: subject || null,
+        topic_id: topic?.id || null,
+        ...(preset?.klass ? { class_id: preset.klass } : {}), // from a class's page: set for that class
+        ...KIND_DEFAULTS[kind],
+        ...(noPlus ? { camera: false } : {}),
+      });
       invalidate('assignments');
       go(`/assignments/${a.id}`);
     } catch (x) {

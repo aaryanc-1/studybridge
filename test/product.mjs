@@ -747,6 +747,43 @@ try {
   await a11y(A, 'Learners → Classes');
   await Z.reload();
   await Z.getByText('Class homework: fractions').waitFor();
+  // the class's page: its classwork by topic, a gradebook, and a whole class list at once
+  await A.getByRole('link', { name: 'Open Year 10 maths' }).click();
+  await A.getByRole('button', { name: 'Classwork', exact: true }).waitFor();
+  await A.getByText('Class homework: fractions').waitFor();
+  await shot(A, 'class-classwork');
+  await A.getByRole('button', { name: 'Gradebook', exact: true }).click();
+  const gb = A.locator('table.gradebook');
+  await gb.getByText('Zara', { exact: true }).waitFor();
+  await gb.getByText('Class average').waitFor();
+  await A.getByRole('button', { name: /Download \(spreadsheet\)/ }).waitFor();
+  await shot(A, 'class-gradebook');
+  await A.getByRole('button', { name: 'People', exact: true }).click();
+  await A.getByRole('button', { name: 'Add a class list' }).click();
+  const cl = A.getByRole('dialog');
+  await cl.getByLabel('One name per line').fill('Lungu Mwale\nGrace Zulu');
+  await cl.getByRole('button', { name: 'Make 2 codes' }).click();
+  await cl.getByText('Grace Zulu').waitFor();
+  assert.equal(await cl.locator('.code-show').count(), 2, 'a code for each learner');
+  await shot(A, 'class-list-codes');
+  await A.keyboard.press('Escape');
+  await tc.from('invites').update({ revoked: true }).in('name', ['Lungu Mwale', 'Grace Zulu']);
+  // a rubric to mark a written answer with: the question is worth the rubric's marks
+  await A.goto(web.url + '#/assignments/' + chw.id);
+  await A.getByRole('button', { name: /Written answer/ }).first().click();
+  await A.getByLabel('Question 1', { exact: true }).fill('Explain how to add $\\frac{1}{2}$ and $\\frac{1}{3}$.');
+  await A.getByLabel('Mark with a rubric').selectOption('new');
+  const re = A.getByRole('dialog');
+  await re.getByLabel('Name').fill('Short answer');
+  await re.getByRole('button', { name: 'Save rubric' }).click();
+  await A.getByText('Saved Short answer').waitFor();
+  assert.equal(await A.getByLabel('Marks for question 1').inputValue(), '4', 'worth the rubric’s top marks');
+  await A.getByRole('group', { name: 'Rubric: Short answer' }).waitFor();
+  await shot(A, 'rubric-in-editor');
+  await A.getByRole('button', { name: /Save changes/ }).click();
+  await A.getByText('Changes saved. Learners see the new version.').waitFor();
+  assert.ok((await tc.from('questions').select('rubric_id').eq('assignment_id', chw.id)).data.some((x) => x.rubric_id), 'the question keeps its rubric');
+  await nav(A, 'Learners').click();
   // a live lesson for the class
   await nav(A, 'Live').click();
   await A.getByRole('button', { name: 'Schedule' }).click();

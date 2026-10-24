@@ -6,6 +6,7 @@ import Shell from '../shared/Shell.jsx';
 import { LookupsProvider } from '../shared/lookups.jsx';
 import Home from './Home.jsx';
 import Learners, { LearnerDetail } from './Learners.jsx';
+import ClassPage from './ClassPage.jsx';
 import Library, { LessonEditor } from './Library.jsx';
 import Assignments from './Assignments.jsx';
 import AssignmentEditor from './AssignmentEditor.jsx';
@@ -73,6 +74,7 @@ export default function TutorApp() {
   const [a, b, c] = route.parts;
   let page;
   if (!a) page = <Home />;
+  else if (a === 'learners' && b === 'classes' && c) page = <ClassPage id={c} tab={route.parts[3]} />;
   else if (a === 'learners' && b === 'classes') page = <Learners tab="classes" />;
   else if ((a === 'learners' && b === 'reports') || a === 'reports') page = <ParentReports />;
   else if (a === 'see' && b) page = <SeeAs learnerId={b} tab={c} id={route.parts[3]} />;

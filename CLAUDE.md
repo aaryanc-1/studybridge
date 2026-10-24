@@ -411,7 +411,7 @@ $450 a year, yearly by invoice, a free pilot term); centres match schools, never
 (its tutors don't pay as well); StudyBridge sets each one up. Website and app must always match (memory: website-app-match).
 The bigger build 2, "Schools and centres, part 1", ships as three updates: A one login, B school pricing, C classroom (the class
 stream waits until it's been discussed).
-Update A (23 Oct 2026), one login, many places. `learner_links` (learner, tutor, paused_at): a learner with a main tutor
+Update A (23 Oct 2026, app 1.1.83), one login, many places. `learner_links` (learner, tutor, paused_at): a learner with a main tutor
 (profiles.tutor_id, who still looks after the account, password, parents) who types another tutor's invite code gets a link
 (accept_invite), and class codes from any school or centre add classes as before; self-learners are refused. A "place" is a
 centre/school organisation or an independent tutor (`_place_of`, `_place_name`). `_teachers_of(learner)`, `_learners_of(tutor)`,
@@ -445,6 +445,20 @@ places, pilot, invoice asked; demo excluded) and Set up → `admin_set_school_pl
 school, notifies managers), with a note when it has fewer than 3 teachers (the school price is for several teachers).
 `_school_year_usd(n)`. Plan & Prof for a tutor whose centre pays links to Schools and centres. Also fixed: time studied (`log_time`) now
 counts for whoever set the item, not always the main tutor (the wall needs it), and Settings refreshes Your plan after centre changes.
+Update C (24 Oct 2026), classroom part 1 (no class stream yet: Aaryan wants to discuss it first). Each class has a page,
+Learners → Classes → its name (`/learners/classes/:id/:tab`, src/screens/tutor/ClassPage.jsx), for its teachers only
+(`_class_teacher`: the class's tutor or a class teacher; a manager who doesn't teach it sees the Centre page, never marks). Tabs:
+Classwork (`class_work(class)`: assignments, lesson notes and files set for the class by any of its teachers, grouped by topic, with
+posted/draft/hidden/scheduled and hand-ins; "Set work for <class>" opens the editor with `?class=`), Gradebook (`class_gradebook(class)`: each
+learner × each posted assignment, latest try, released or not, late; class average; Download (spreadsheet) = CSV) and People (members,
+"Add a class list": one name per line → `class_invites(class, names)`, up to 200, an 8-digit invite code each that puts them in the
+class; Copy all and Print). Rubrics: `rubrics` (tutor_id, title, criteria jsonb [{name, levels [{label, points, text}]}], 1–12
+criteria, 2–6 levels, checked by `_rubric_ok`; read-only when unpaid via `_paid_guard`), the teacher's own; learners read a rubric
+used by a question they can see. `questions.rubric_id` (`_question_rubric`: only your own rubric), `responses.rubric` ({criterion
+index: level index}). src/screens/shared/Rubric.jsx: RubricPicker in the question editor ("Mark with a rubric", "New rubric…" opens
+RubricEditor; the question becomes worth the rubric's top marks, `_rubric_max`), RubricGrid in Marking (picking levels sets the mark,
+`rubricMark`) and on the learner's results once marks are back (`attempt_detail` gives `rubrics` and each response's `rubric` only
+when released).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

@@ -1349,8 +1349,11 @@ begin
         'step_marks', case when rel or is_tutor then r.step_marks else '[]'::jsonb end,
         'annotation_path', case when rel or is_tutor then r.annotation_path end,
         'mistake', case when rel or is_tutor then r.mistake end,
+        'rubric', case when rel or is_tutor then to_jsonb(r) -> 'rubric' end,
         'self_marks', r.self_marks))
       from public.responses r where r.attempt_id = t.id), '[]'),
+    'rubrics', coalesce((select jsonb_agg(jsonb_build_object('id', ru.id, 'title', ru.title, 'criteria', ru.criteria))
+      from public.rubrics ru where ru.id in (select (to_jsonb(q) ->> 'rubric_id')::uuid from public.questions q where q.assignment_id = t.assignment_id)), '[]'),
     'keys', case when is_tutor or (rel and a.show_answers) or public._self_mark_open(t, a) then coalesce((select jsonb_agg(jsonb_build_object(
         'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
       from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
@@ -10167,6 +10170,157 @@ begin
   perform public._admin_log('school_plan', null, jsonb_build_object('org', p_org, 'paid_until', p_paid_until, 'seats', p_seats, 'pilot_days', p_pilot_days, 'kind', p_kind));
 end $$;
 
+-- =====================================================================
+-- Schools and centres, part 1, update C (23 Oct 2026): classroom. Each class has a page: its classwork by topic (from
+-- every teacher of the class), a gradebook (each learner × each piece of work, with averages and a spreadsheet to
+-- download) and its people, where a teacher adds a whole class list at once (a code for each learner to join with).
+-- Rubrics: criteria, each with levels worth points; a teacher marks a question by picking a level for each criterion,
+-- and the learner sees the levels they reached once marks are given back. (The class stream comes after it's discussed.)
+-- =====================================================================
+create table if not exists public.rubrics (
+  id uuid primary key default gen_random_uuid(),
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  title text not null check (length(title) between 1 and 120),
+  criteria jsonb not null default '[]',   -- [{ name, levels: [{ label, points, text }] }]
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.questions add column if not exists rubric_id uuid references public.rubrics (id) on delete set null;
+alter table public.responses add column if not exists rubric jsonb;
+alter table public.rubrics enable row level security;
+grant select, insert, update, delete on public.rubrics to authenticated;
+drop policy if exists rubrics_tutor on public.rubrics;
+create policy rubrics_tutor on public.rubrics for all using (tutor_id = auth.uid()) with check (tutor_id = auth.uid());
+-- a learner reads the rubrics of questions they can see (to know how they'll be marked)
+drop policy if exists rubrics_learner on public.rubrics;
+create policy rubrics_learner on public.rubrics for select using (exists (
+  select 1 from public.questions q join public.assignments a on a.id = q.assignment_id
+   where q.rubric_id = rubrics.id and public.can_learner_see(a.tutor_id, a.learner_ids, a.subject_id, a.visibility, a.visible_from)));
+drop trigger if exists rubrics_paid on public.rubrics;
+create trigger rubrics_paid before insert or update on public.rubrics for each row execute function public._paid_guard();
+
+-- A rubric's levels make sense: 1–12 criteria, each with 2–6 levels worth 0–100 points
+create or replace function public._rubric_ok() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare c jsonb; l jsonb;
+begin
+  if jsonb_typeof(new.criteria) <> 'array' or jsonb_array_length(new.criteria) not between 1 and 12 then
+    raise exception 'A rubric has 1 to 12 criteria.';
+  end if;
+  for c in select * from jsonb_array_elements(new.criteria) loop
+    if coalesce(trim(c ->> 'name'), '') = '' then raise exception 'Give every criterion a name.'; end if;
+    if jsonb_typeof(c -> 'levels') <> 'array' or jsonb_array_length(c -> 'levels') not between 2 and 6 then
+      raise exception 'Each criterion has 2 to 6 levels.';
+    end if;
+    for l in select * from jsonb_array_elements(c -> 'levels') loop
+      if jsonb_typeof(l -> 'points') <> 'number' or (l ->> 'points')::numeric not between 0 and 100 then
+        raise exception 'Each level is worth 0 to 100 marks.';
+      end if;
+    end loop;
+  end loop;
+  new.updated_at := now();
+  return new;
+end $$;
+drop trigger if exists rubrics_ok on public.rubrics;
+create trigger rubrics_ok before insert or update on public.rubrics for each row execute function public._rubric_ok();
+-- the most a rubric gives (the best level of each criterion)
+create or replace function public._rubric_max(p_rubric uuid) returns numeric
+language sql stable security definer set search_path = public as $$
+  select coalesce(sum((select max((l ->> 'points')::numeric) from jsonb_array_elements(c -> 'levels') l)), 0)
+    from public.rubrics r, jsonb_array_elements(r.criteria) c where r.id = p_rubric
+$$;
+-- a question can only use its own teacher's rubric
+create or replace function public._question_rubric() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.rubric_id is not null and not exists (select 1 from public.rubrics where id = new.rubric_id and tutor_id = new.tutor_id) then
+    raise exception 'That rubric isn’t yours.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists questions_rubric on public.questions;
+create trigger questions_rubric before insert or update of rubric_id on public.questions for each row execute function public._question_rubric();
+
+-- ---------------- a class's page ----------------
+-- Who may open a class's page: its teachers (a centre's manager sees classes, not marks)
+create or replace function public._class_teacher(p_class uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.classes c where c.id = p_class and (c.tutor_id = auth.uid() or public._teaches_class(c.id)))
+$$;
+
+-- Classwork: everything set for the class, by any of its teachers, with its topic
+create or replace function public.class_work(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  return coalesce((select jsonb_agg(x order by x ->> 'topic' nulls last, x ->> 'at') from (
+    select jsonb_build_object('kind', 'assignment', 'id', a.id, 'title', a.title, 'type', a.kind, 'topic_id', a.topic_id,
+             'topic', (select name from public.topics where id = a.topic_id), 'due_at', a.due_at, 'mine', a.tutor_id = auth.uid(),
+             'by', (select display_name from public.profiles where id = a.tutor_id),
+             'state', case when a.draft then 'draft' when a.visibility = 'hidden' then 'hidden'
+                           when a.visibility = 'scheduled' and a.visible_from > now() then 'scheduled' else 'posted' end,
+             'handed_in', (select count(distinct t.learner_id) from public.attempts t where t.assignment_id = a.id and t.submitted_at is not null),
+             'at', coalesce(a.due_at, a.created_at)) x
+      from public.assignments a where a.class_id = p_class and not a.practice
+    union all
+    select jsonb_build_object('kind', 'lesson', 'id', l.id, 'title', l.title, 'topic_id', l.topic_id,
+             'topic', (select name from public.topics where id = l.topic_id), 'mine', l.tutor_id = auth.uid(),
+             'by', (select display_name from public.profiles where id = l.tutor_id),
+             'state', case when l.visibility = 'hidden' then 'hidden' when l.visibility = 'scheduled' and l.visible_from > now() then 'scheduled' else 'posted' end,
+             'at', l.created_at)
+      from public.lessons l where l.class_id = p_class
+    union all
+    select jsonb_build_object('kind', 'file', 'id', f.id, 'title', f.name, 'topic_id', f.topic_id,
+             'topic', (select name from public.topics where id = f.topic_id), 'mine', f.tutor_id = auth.uid(),
+             'by', (select display_name from public.profiles where id = f.tutor_id),
+             'state', case when f.visibility = 'hidden' then 'hidden' when f.visibility = 'scheduled' and f.visible_from > now() then 'scheduled' else 'posted' end,
+             'at', f.created_at)
+      from public.files f where f.class_id = p_class) z), '[]');
+end $$;
+
+-- Gradebook: each learner in the class × each piece of work set for it (their latest try), for its teachers
+create or replace function public.class_gradebook(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c public.classes;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  return jsonb_build_object(
+    'class', c.name,
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
+                   from public.class_members m join public.profiles p on p.id = m.learner_id where m.class_id = c.id),
+    'work', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'due_at', a.due_at,
+                                                          'topic', (select name from public.topics where id = a.topic_id))
+                                       order by coalesce(a.due_at, a.created_at)), '[]')
+               from public.assignments a where a.class_id = c.id and not a.draft and not a.practice),
+    'cells', (select coalesce(jsonb_agg(jsonb_build_object('learner_id', t.learner_id, 'assignment_id', t.assignment_id, 'attempt_id', t.id,
+                                                           'status', t.status, 'score', t.score, 'max', t.max_score, 'released', public._is_released(t),
+                                                           'late', a.due_at is not null and t.submitted_at > a.due_at)), '[]')
+                from (select distinct on (x.assignment_id, x.learner_id) x.* from public.attempts x
+                        join public.assignments a2 on a2.id = x.assignment_id
+                       where a2.class_id = c.id and not a2.draft and not a2.practice
+                       order by x.assignment_id, x.learner_id, x.number desc) t
+                join public.assignments a on a.id = t.assignment_id));
+end $$;
+
+-- A whole class list at once: an invite (with its own code) for each name, which puts them in the class when used
+create or replace function public.class_invites(p_class uuid, p_names text[]) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c public.classes; n text; v public.invites; outv jsonb := '[]';
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  if not public._tutor_active() then raise exception 'Your account needs to be approved first.'; end if;
+  if coalesce(array_length(p_names, 1), 0) > 200 then raise exception 'Up to 200 names at a time.'; end if;
+  foreach n in array coalesce(p_names, '{}') loop
+    n := left(trim(n), 80);
+    continue when n = '';
+    insert into public.invites (tutor_id, name, class_ids) values (auth.uid(), n, array[c.id]) returning * into v;
+    outv := outv || jsonb_build_array(jsonb_build_object('id', v.id, 'name', v.name, 'code', v.code));
+  end loop;
+  return outv;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -10250,6 +10404,10 @@ revoke execute on function public._org_member_left() from public, anon, authenti
 revoke execute on function public._watch_away() from public, anon, authenticated;
 revoke execute on function public._bill_tick() from public, anon, authenticated;
 revoke execute on function public._school_year_usd(int) from public, anon, authenticated;
+revoke execute on function public._rubric_ok() from public, anon, authenticated;
+revoke execute on function public._question_rubric() from public, anon, authenticated;
+revoke execute on function public._rubric_max(uuid) from public, anon, authenticated;
+revoke execute on function public._class_teacher(uuid) from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

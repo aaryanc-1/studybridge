@@ -304,7 +304,9 @@ function Classes({ onNew, onEdit }) {
             return (
               <div key={c.id} className="card">
                 <div className="stack sm">
-                  <div className="strong" style={{ fontSize: 17 }}>{c.name}</div>
+                  <Link to={`/learners/classes/${c.id}`} className="strong" style={{ fontSize: 17 }} aria-label={`Open ${c.name}`}>
+                    {c.name}
+                  </Link>
                   <div className="row wrap small muted" style={{ gap: 8 }}>
                     {c.subject_id && <SubjectTag id={c.subject_id} />}
                     <span>{n ? `${n} learner${n === 1 ? '' : 's'}` : 'Nobody in it yet'}</span>

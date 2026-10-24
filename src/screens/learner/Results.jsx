@@ -10,6 +10,7 @@ import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { Thread } from '../shared/Messages.jsx';
 import { MockResultCard } from '../shared/MockHistory.jsx';
 import { ReportProblem } from './SelfStudy.jsx';
+import { RubricGrid } from '../shared/Rubric.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -144,6 +145,7 @@ export default function Results({ id }) {
                 <Markdown src={r.feedback_md} />
               </div>
             )}
+            {rel && q.rubric_id && r.rubric && <RubricGrid rubric={(d.rubrics || []).find((x) => x.id === q.rubric_id)} picked={r.rubric} />}
             {rel && r.mistake && (
               <div className="small row">
                 <Icon name="flag" size={16} style={{ color: 'var(--red)' }} /> <span className="strong">Mistake:</span> {r.mistake}

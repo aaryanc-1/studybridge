@@ -13,6 +13,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { doneOn, onPage } from '../shared/Live.jsx';
 import { StatusPill } from './Learners.jsx';
+import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 
 export default function Marking() {
   const lk = useLookups();
@@ -421,6 +422,7 @@ export function MarkAttempt({ id }) {
 
 function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate }) {
   const [hints, setHints] = useState(null);
+  const rubric = (useQuery(q.rubric_id ? 'rubrics' : null, api.listRubrics).data || []).find((x) => x.id === q.rubric_id);
   const lines = useMemo(() => (r?.answer?.steps || []).filter((s) => s && s.trim()), [r?.answer?.steps]);
   useEffect(() => {
     if (q.type !== 'steps' || !lines.length) return;
@@ -491,6 +493,22 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
         </div>
       )}
       <hr />
+      {rubric && (
+        <div className="stack sm">
+          <div className="label">Rubric: {rubric.title}</div>
+          <RubricGrid
+            rubric={rubric}
+            picked={r.rubric || {}}
+            n={n}
+            onPick={(i, j) => {
+              const next = { ...(r.rubric || {}) };
+              if (j == null) delete next[i];
+              else next[i] = j;
+              onEdit({ rubric: next, marks: rubricMark(rubric, next) });
+            }}
+          />
+        </div>
+      )}
       <div className="row wrap" style={{ gap: 12 }}>
         <div className="markbox">
           <span className="label">Mark</span>

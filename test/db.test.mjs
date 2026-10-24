@@ -3016,3 +3016,64 @@ test('one login, many places: a second tutor and a school, a wall between them, 
     await fails(as('STU', `select join_class($1)`, [ccode]), /studies on its own/);
   }
 });
+
+test('classroom: a class’s classwork by topic, its gradebook, a whole class list at once, and rubrics', async () => {
+  const mk = async (k, email, name = k) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name }])).rows[0].id;
+  };
+  await mk('CT1', 'ct1@class.x', 'Ms Class');
+  await one('CT1', `select * from become_tutor('Ms Class', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.CT1]);
+  await mk('CT2', 'ct2@class.x', 'Mr Other');
+  await one('CT2', `select * from become_tutor('Mr Other', 'UTC')`);
+  await as('A', `select admin_set_status($1, 'active')`, [U.CT2]);
+  const subj = await val('CT1', `insert into subjects (name) values ('Biology') returning id`);
+  const cells = await val('CT1', `insert into topics (subject_id, name) values ($1, 'Cells') returning id`, [subj]);
+  const cls = await val('CT1', `select save_class(null, 'Form 2 biology', $1, '{}')`, [subj]);
+  // a whole class list at once: a code each, and using it puts them in the class
+  await fails(as('CT2', `select class_invites($1, array['Ann'])`, [cls]), /Not your class/);
+  const codes = await val('CT1', `select class_invites($1, array['Ann Banda', '  ', 'Ben Phiri'])`, [cls]);
+  assert.deepEqual(codes.map((x) => x.name), ['Ann Banda', 'Ben Phiri']);
+  for (const [k, x] of [['CA', codes[0]], ['CB', codes[1]]]) {
+    await mk(k, k.toLowerCase() + '@class.x', x.name);
+    await one(k, `select * from accept_invite($1, $2)`, [x.code, x.name]);
+  }
+  assert.equal(await val('CT1', `select count(*)::int from class_members where class_id = $1`, [cls]), 2);
+  // classwork: what's set for the class, by topic
+  const hw = await val('CT1', `insert into assignments (title, kind, subject_id, topic_id, class_id, visibility, due_at) values ('Cell parts', 'homework', $1, $2, $3, 'visible', now() + interval '2 days') returning id`, [subj, cells, cls]);
+  const q1 = await val('CT1', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Name two parts of a cell.', 4) returning id`, [hw]);
+  await val('CT1', `insert into lessons (title, class_id, topic_id, visibility) values ('Cells notes', $1, $2, 'visible') returning id`, [cls, cells]);
+  const work = await val('CT1', `select class_work($1)`, [cls]);
+  assert.deepEqual(work.map((x) => [x.kind, x.title, x.topic, x.state]).sort(), [['assignment', 'Cell parts', 'Cells', 'posted'], ['lesson', 'Cells notes', 'Cells', 'posted']]);
+  await fails(as('CT2', `select class_work($1)`, [cls]), /Not your class/);
+  // rubrics: the teacher's own, checked; a question uses one; the learner sees it, and the levels once marked
+  await fails(as('CT1', `insert into rubrics (title, criteria) values ('Bad', '[]')`), /1 to 12 criteria/);
+  await fails(as('CT1', `insert into rubrics (title, criteria) values ('Bad', '[{"name": "x", "levels": [{"label": "a", "points": 1}]}]')`), /2 to 6 levels/);
+  const rub = await val('CT1', `insert into rubrics (title, criteria) values ('Short answer', $1) returning id`, [JSON.stringify([
+    { name: 'Parts named', levels: [{ label: 'None', points: 0 }, { label: 'One', points: 1 }, { label: 'Two', points: 2 }] },
+    { name: 'Spelling', levels: [{ label: 'Weak', points: 0 }, { label: 'Good', points: 2 }] },
+  ])]);
+  assert.equal(Number((await db.query(`select public._rubric_max($1) n`, [rub])).rows[0].n), 4);
+  const other = await val('CT2', `insert into rubrics (title, criteria) values ('Theirs', '[{"name": "x", "levels": [{"label": "a", "points": 0}, {"label": "b", "points": 1}]}]') returning id`);
+  await fails(as('CT1', `update questions set rubric_id = $1 where id = $2`, [other, q1]), /isn’t yours/);
+  await as('CT1', `update questions set rubric_id = $1 where id = $2`, [rub, q1]);
+  assert.equal((await as('CA', `select id from rubrics`)).length, 1, 'the learner reads the rubric on her question');
+  assert.equal((await as('CT2', `select id from rubrics where id = $1`, [rub])).length, 0, 'another teacher doesn’t');
+  const t = await one('CA', `select * from start_attempt($1, 'browser')`, [hw]);
+  await as('CA', `select save_response($1, $2, '{"text": "nucleus, membrane"}'::jsonb)`, [t.id, q1]);
+  await as('CA', `select submit_attempt($1)`, [t.id]);
+  await as('CT1', `update responses set rubric = '{"0": 2, "1": 1}', marks = 4 where attempt_id = $1`, [t.id]);
+  const before = await val('CA', `select attempt_detail($1)`, [t.id]);
+  assert.equal(before.responses[0].rubric, null, 'the levels show once marks are given back');
+  assert.equal(before.rubrics[0].title, 'Short answer');
+  await one('CT1', `select * from finish_marking($1, true, 'Well done', false)`, [t.id]);
+  const after = await val('CA', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual(after.responses[0].rubric, { 0: 2, 1: 1 });
+  // the gradebook: each learner × each piece of work (latest try), for the class's teachers only
+  const g = await val('CT1', `select class_gradebook($1)`, [cls]);
+  assert.deepEqual(g.learners.map((x) => x.name), ['Ann Banda', 'Ben Phiri']);
+  assert.deepEqual(g.work.map((x) => x.title), ['Cell parts']);
+  assert.deepEqual(g.cells.map((x) => [x.learner_id, Number(x.score), Number(x.max), x.released]), [[U.CA, 4, 4, true]]);
+  await fails(as('CT2', `select class_gradebook($1)`, [cls]), /Not your class/);
+  await fails(as('CA', `select class_gradebook($1)`, [cls]), /Not your class/);
+});

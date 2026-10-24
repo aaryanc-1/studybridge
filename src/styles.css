@@ -1053,3 +1053,21 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 /* Watched mode and pausing */
 body.watching .side, body.watching .topbar, body.watching .tabbar { display: none !important; }
 .banner.paused { background: var(--amber-tint); color: var(--amber-ink); border-color: var(--amber-line); }
+
+/* ---------- Classroom: a class's gradebook, and rubrics ---------- */
+.gradebook-wrap { overflow-x: auto; }
+.table.gradebook th, .table.gradebook td { white-space: nowrap; text-align: center; vertical-align: middle; }
+.table.gradebook th:first-child, .table.gradebook td:first-child { text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }
+.table.gradebook thead th { vertical-align: bottom; }
+.table.gradebook tbody th { text-transform: none; letter-spacing: normal; font-size: 14px; color: var(--ink, inherit); font-weight: 600; }
+.gb-title { display: block; max-width: 160px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.gb-avg th, .gb-avg td { border-top: 2px solid var(--line); }
+.rubric { display: grid; gap: 8px; }
+.rubric-row { display: grid; grid-template-columns: minmax(110px, 180px) 1fr; gap: 8px; align-items: stretch; }
+.rubric-crit { font-weight: 600; font-size: 14px; padding-top: 8px; }
+.rubric-levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.rubric-level { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; color: inherit; }
+button.rubric-level { cursor: pointer; }
+button.rubric-level:hover { border-color: var(--accent); }
+.rubric-level.on { border-color: var(--accent); background: var(--accent-tint, rgba(14, 116, 112, 0.08)); box-shadow: inset 0 0 0 1px var(--accent); }
+@media (max-width: 640px) { .rubric-row { grid-template-columns: 1fr; } .rubric-crit { padding-top: 0; } }

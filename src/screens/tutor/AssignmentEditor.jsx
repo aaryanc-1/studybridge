@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { RubricPicker } from '../shared/Rubric.jsx';
 import Icon from '../../ui/Icon.jsx';
 import MathText from '../../ui/MathText.jsx';
 import { AudiencePicker, Empty, Field, Link, Loading, Markdown, Modal, Page, Seg, Toggle, VisibilityPicker, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
@@ -173,6 +174,7 @@ export default function AssignmentEditor({ id }) {
             options: q.type === 'mcq' ? q.options : [],
             marks: Number(q.marks) || 0,
             topic_id: q.topic_id || null,
+            rubric_id: q.rubric_id || null,
           });
           await api.saveKey({ question_id: saved.id, answer: q.key.answer || {}, solution_md: q.key.solution_md || null, mark_scheme_md: q.key.mark_scheme_md || null });
           next.push({ ...q, id: saved.id });
@@ -735,6 +737,7 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
           <Field label="Worked solution" hint="Shown to the learner only if you turn on “Show answers & solutions”.">
             <MathText value={q.key.solution_md || ''} onChange={(v) => setKey({ solution_md: v })} label="Worked solution" placeholder="e.g. 2x + 3 = 11, so 2x = 8, so x = 4" minHeight={60} />
           </Field>
+          {!['mcq', 'numeric'].includes(q.type) && <RubricPicker q={q} onChange={onChange} />}
           {!['mcq', 'numeric'].includes(q.type) && (
             <Field label="Mark scheme (for you)">
               <MathText value={q.key.mark_scheme_md || ''} onChange={(v) => setKey({ mark_scheme_md: v })} label="Mark scheme" placeholder="M1 for subtracting 3, A1 for x = 4" minHeight={50} />
