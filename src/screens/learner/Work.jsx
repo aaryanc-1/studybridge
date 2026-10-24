@@ -10,6 +10,7 @@ import { ago, due, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
 import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
+import { FromPlace } from '../shared/places.jsx';
 
 export default function Work() {
   const app = useApp();
@@ -107,6 +108,7 @@ export default function Work() {
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span>
                     <span className={'pill ' + s.tone}>{s.label}</span>
+                    <FromPlace tutorId={a.tutor_id} />
                     <MockPill assignmentId={a.id} paperOf={paperOf} />
                   </span>
                   <span className="strong" style={{ fontSize: 16 }}>{a.title}</span>
@@ -193,6 +195,7 @@ export function WorkDetail({ id }) {
       subtitle={
         <span className="row wrap" style={{ gap: 10 }}>
           {a.subject_id && <SubjectTag id={a.subject_id} />}
+          <FromPlace tutorId={a.tutor_id} />
           <span>{due(a.due_at).text}</span>
           <span className={'pill ' + s.tone}>{s.label}</span>
         </span>

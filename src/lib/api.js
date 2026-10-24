@@ -253,6 +253,12 @@ export async function joinClass(code) {
 }
 // A learner's teachers (their own tutor first), for Messages
 export const myTeachers = () => run(sb().rpc('my_teachers'));
+// A learner's places (main tutor, other tutors, schools and centres): or, for a parent, their child's
+export const myPlaces = (learnerId = null) => run(sb().rpc('my_places', { p_learner: learnerId }));
+export const setShare = (placeId, on, learnerId = null) => run(sb().rpc('set_share', { p_place: placeId, p_on: on, p_learner: learnerId }));
+export const leavePlace = (placeId) => run(sb().rpc('leave_place', { p_place: placeId }));
+// A tutor's learners who added them with a code (their main tutor is someone else)
+export const myLinkedLearners = () => run(sb().rpc('my_linked_learners'));
 export const archiveClass = (id, archived = true) => run(sb().rpc('archive_class', { p_id: id, p_archived: archived }));
 export const deleteClass = (id) => run(sb().rpc('delete_class', { p_id: id }));
 export const createInvite = (inv) => run(sb().from('invites').insert(inv).select().maybeSingle());

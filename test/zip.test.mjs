@@ -1,7 +1,7 @@
 // "Download my data" makes a real ZIP file (checked by unzipping it with the system's own tools)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, readFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +12,8 @@ test('download my data: a ZIP with one JSON file per kind of thing', async () =>
   const bytes = new Uint8Array(await blob.arrayBuffer());
   assert.equal(bytes[0], 0x50);
   assert.equal(bytes[1], 0x4b);
-  const dir = mkdtempSync(join(tmpdir(), 'sbzip-'));
+  // the full folder name: PowerShell's Expand-Archive can quietly unpack nothing into a shortened (8.3) path
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'sbzip-')));
   try {
     const file = join(dir, 'data.zip');
     writeFileSync(file, bytes);

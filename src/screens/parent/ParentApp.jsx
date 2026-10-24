@@ -147,6 +147,7 @@ function Child({ id, kids, section }) {
   const v = q.data;
   if (!v) return <Page title="Progress">{q.error ? <div className="error">{q.error.message}</div> : <Loading />}</Page>;
   const myTz = myTimezone();
+  const many = (v.places || []).length > 1; // a school and tutors: say who set each thing
   const latest = v.reports[0];
   const opened = v.reports.find((r) => r.id === open);
   const topics = (v.topics || []).filter((t) => t.ratio != null).sort((x, y) => y.ratio - x.ratio);
@@ -232,6 +233,7 @@ function Child({ id, kids, section }) {
                     <span className="name">{a.title}</span>
                     <span className="meta">
                       {kindLabel[a.kind]} · was due {when(a.due_at)}
+                      {many && a.from ? ` · ${a.from}` : ''}
                     </span>
                   </span>
                   <span className="pill bad">Not handed in</span>
@@ -247,6 +249,7 @@ function Child({ id, kids, section }) {
                     <span className="meta">
                       {when(s.starts_at)} your time
                       {v.learner.timezone && v.learner.timezone !== myTz ? ` · ${timeIn(s.starts_at, v.learner.timezone)} in ${placeOf(v.learner.timezone)}` : ''} · {s.duration_min} min
+                      {many && s.from ? ` · ${s.from}` : ''}
                     </span>
                   </span>
                   {s.weekly && <span className="pill accent">Weekly</span>}
@@ -258,6 +261,7 @@ function Child({ id, kids, section }) {
                     <span className="name">{a.title}</span>
                     <span className="meta">
                       {kindLabel[a.kind]} · due {when(a.due_at)}
+                      {many && a.from ? ` · ${a.from}` : ''}
                     </span>
                   </span>
                   {a.handed_in ? <span className="pill good">Handed in</span> : <span className="pill">To do</span>}
@@ -284,6 +288,7 @@ function Child({ id, kids, section }) {
                       <span className="meta">
                         {kindLabel[m.kind]} · {day(m.at)}
                         {m.late ? ' · handed in late' : ''}
+                        {many && m.from ? ` · ${m.from}` : ''}
                       </span>
                     </span>
                     <span className="strong">{pct(m.score, m.max)}%</span>

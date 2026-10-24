@@ -1427,9 +1427,15 @@ test('selling basics: plan limits only once switched on; download my data; delet
   await as('A', `select admin_set_selling(p_enforce => true)`);
   try {
     await join('P3'); // the free week: any number
+    const late = await val('TP', `insert into invites (name) values ('P4') returning code`);
     await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.TP]);
-    await fails(join('P4'), /needs paying before new learners can join/);
+    U.P4 = (await db.query(`insert into auth.users (email) values ('p4@x.com') returning id`)).rows[0].id;
+    await fails(as('P4', `select accept_invite($1, 'P4')`, [late]), /needs paying before new learners can join/);
     assert.deepEqual([(await val('TP', `select my_plan()`)).state, (await val('TP', `select my_plan()`)).learners], ['unpaid', 3]);
+    // after the free week, unpaid: read-only (nothing new, nothing changed, nothing deleted)
+    await fails(as('TP', `insert into invites (name) values ('Later') returning code`), /read-only/);
+    await fails(as('TP', `insert into assignments (title, kind) values ('New', 'homework') returning id`), /read-only/);
+    assert.ok((await as('TP', `select id from profiles where tutor_id = auth.uid()`)).length === 3, 'they can still see everything');
     // paid by hand (or with mobile money) for 4 places: one more can join, then it's full
     await as('A', `select admin_set_level($1, 'essentials', (current_date + 30)::date)`, [U.TP]);
     await fails(as('TP', `select admin_set_seats($1, 40)`, [U.TP]), /admins only/i);
@@ -2641,6 +2647,7 @@ test('Essentials and Plus: Plus adds Prof, mock grades, the exam camera and Stud
   await as('A', `select admin_set_selling(p_enforce => true)`);
   try {
     await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.PE]);
+    await as('A', `select admin_set_level($1, 'essentials', (current_date + 30)::date)`, [U.PE]); // paid for Essentials
     const pe = await val('PE', `select my_plan()`);
     assert.deepEqual([pe.level, pe.plus, pe.enforced], ['essentials', false, true]);
     await fails(as('PE', `select prof_ask('Make a quiz', '{}')`), /Prof comes with Plus/);
@@ -2889,4 +2896,112 @@ test('one bill for a centre; places paid for with mobile money; a watched page t
   assert.ok((await val('BM', `select attempt_detail($1)`, [at.id])).attempt.seen_at, 'the tutor sees when it was last there');
   assert.equal((await val('BL1', `select attempt_detail($1)`, [at.id])).attempt.seen_at, null, 'only the tutor');
   await fails(as('BL1', `select public._watch_away()`), /permission denied/);
+});
+
+test('one login, many places: a second tutor and a school, a wall between them, sharing, pausing per place, parents see everything', async () => {
+  const sql = async (q, p) => (await db.query(q, p)).rows[0];
+  const mk = async (k, email, name = k) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name }])).rows[0].id;
+  };
+  for (const [k, name] of [['MA', 'Ms Main'], ['TB', 'Mr Banda'], ['SH', 'Head Teacher']]) {
+    await mk(k, k.toLowerCase() + '@places.x', name);
+    await one(k, `select * from become_tutor($1, 'UTC')`, [name]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  // Zoe joins her main tutor, then a second tutor with his code, then a school's class with its code: one login
+  await mk('ZO', 'zoe@places.x', 'Zoe');
+  const c1 = await val('MA', `insert into invites (name) values ('Zoe') returning code`);
+  await one('ZO', `select * from accept_invite($1, 'Zoe')`, [c1]);
+  const physics = await val('TB', `insert into subjects (name) values ('Physics') returning id`);
+  const c2 = await val('TB', `insert into invites (name, subject_ids) values ('Zoe', $1) returning code`, [[physics]]);
+  const again = await one('ZO', `select * from accept_invite($1, 'Zoe B')`, [c2]);
+  assert.equal(again.tutor_id, U.MA, 'her main tutor stays');
+  assert.equal(again.display_name, 'Zoe', 'and so does her name');
+  const school = await val('SH', `select org_make_centre('Hill School')`);
+  await db.query(`update organisations set kind = 'school' where id = $1`, [school.id]);
+  const cls = await val('SH', `select save_class(null, 'Form 3 biology', null, '{}')`);
+  const ccode = await val('SH', `select class_code($1)`, [cls]);
+  await val('ZO', `select join_class($1)`, [ccode]);
+  // she sees all three, the school as one place
+  const places = await val('ZO', `select my_places()`);
+  assert.deepEqual(places.map((x) => [x.name, x.kind, x.main]), [['Ms Main', 'tutor', true], ['Hill School', 'school', false], ['Mr Banda', 'tutor', false]]);
+  // each place posts work; she sees all of it; each tutor sees only their own
+  const hwMain = await val('MA', `insert into assignments (title, kind, visibility) values ('Main homework', 'homework', 'visible') returning id`);
+  const hwB = await val('TB', `insert into assignments (title, kind, subject_id, visibility) values ('Banda quiz', 'quiz', $1, 'visible') returning id`, [physics]);
+  const hwS = await val('SH', `insert into assignments (title, kind, class_id, visibility) values ('School essay', 'homework', $1, 'visible') returning id`, [cls]);
+  for (const id of [hwMain, hwB, hwS]) await val(id === hwB ? 'TB' : id === hwS ? 'SH' : 'MA', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '1 + 1?', 2) returning id`, [id]);
+  assert.equal((await as('ZO', `select id from assignments where id = any ($1)`, [[hwMain, hwB, hwS]])).length, 3);
+  assert.equal((await as('TB', `select id from profiles where id = $1`, [U.ZO])).length, 1, 'Mr Banda has her as a learner');
+  assert.equal((await as('TB', `select id from assignments where id = any ($1)`, [[hwMain, hwS]])).length, 0, 'but not the others’ work');
+  // the wall: time studied and marks from one place aren't seen by another
+  for (const [t, id, sec] of [['MA', hwMain, 600], ['TB', hwB, 300], ['SH', hwS, 120]]) {
+    await db.query(`insert into activity (learner_id, tutor_id, kind, ref_id, seconds) values ($1, $2, 'assignment', $3, $4)`, [U.ZO, U[t], id, sec]);
+  }
+  const tb = await val('TB', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U.ZO]);
+  assert.equal(Number(tb.seconds), 300, 'Mr Banda sees only the time on his own work');
+  assert.equal(Number((await val('SH', `select learner_progress($1)`, [U.ZO])).total_seconds), 120);
+  assert.equal(Number((await val('ZO', `select learner_progress($1)`, [U.ZO])).total_seconds), 1020, 'she sees all of it');
+  // sharing: she lets Mr Banda see her marks and progress from everywhere (never answers or messages)
+  await fails(as('TB', `select set_share($1, true, $2)`, [U.TB, U.ZO]), /Only the learner/);
+  await val('ZO', `select set_share($1, true)`, [U.TB]);
+  assert.equal(Number((await val('TB', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U.ZO])).seconds), 1020);
+  assert.equal((await as('TB', `select id from assignments where id = $1`, [hwMain])).length, 0, 'still not the work itself');
+  await val('ZO', `select set_share($1, false)`, [U.TB]);
+  assert.equal(Number((await val('TB', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U.ZO])).seconds), 300);
+  // only her main tutor looks after her account
+  await fails(as('TB', `select set_learner_password($1, 'secret99')`, [U.ZO]), /Not your learner/);
+  await fails(as('TB', `select create_parent_invite($1)`, [U.ZO]), /Not your learner/);
+  // a parent sees everything from every place
+  const pcode = (await one('MA', `select * from create_parent_invite($1, 'Dad')`, [U.ZO])).code;
+  await mk('ZD', 'zoedad@places.x', 'Dad');
+  await val('ZD', `select accept_parent_invite($1, 'Dad')`, [pcode]);
+  const due = await db.query(`update assignments set due_at = now() + interval '2 days' where id = any ($1)`, [[hwMain, hwB, hwS]]);
+  const pv = await val('ZD', `select parent_view($1)`, [U.ZO]);
+  assert.deepEqual(pv.due.map((x) => x.from).sort(), ['Hill School', 'Mr Banda', 'Ms Main']);
+  assert.equal(pv.places.length, 3);
+  // pausing is per place: Mr Banda pauses her; her main tutor's work carries on
+  await as('TB', `select pause_learner($1)`, [U.ZO]);
+  await fails(as('ZO', `select start_attempt($1, 'browser')`, [hwB]), /paused/);
+  await as('ZO', `select start_attempt($1, 'browser')`, [hwMain]);
+  assert.equal(await val('ZO', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Your StudyBridge with Mr Banda is paused for now'`), 1);
+  await as('TB', `select pause_learner($1, false)`, [U.ZO]);
+  // each place pays for her
+  assert.equal(await val(null, `select 1`), 1);
+  assert.deepEqual([(await sql(`select public._active_learners($1) n`, [U.TB])).n, (await sql(`select public._org_learners($1) n`, [school.id])).n], [1, 1]);
+  // a place unpaid after its free week: read-only for the tutor; for her, nothing new starts there, and she's told once
+  await as('A', `select admin_set_selling(p_enforce => true)`);
+  try {
+    await db.query(`update profiles set trial_until = now() - interval '1 day' where id = $1`, [U.TB]);
+    await fails(as('ZO', `select start_attempt($1, 'browser')`, [hwB]), /Mr Banda’s StudyBridge is paused for now/);
+    await as('ZO', `select start_attempt($1, 'browser')`, [hwMain]); // the others carry on
+    await db.query(`select public._bill_tick()`);
+    await db.query(`select public._bill_tick()`);
+    assert.equal(await val('ZO', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Mr Banda’s StudyBridge is paused for now'`), 1, 'told once');
+    assert.equal(await val('TB', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Your free week has ended'`), 1);
+    assert.equal((await val('ZO', `select my_places()`)).find((x) => x.name === 'Mr Banda').unpaid, true);
+    await fails(as('TB', `insert into assignments (title, kind) values ('Another', 'homework')`), /read-only/);
+    await as('A', `select admin_set_level($1, 'plus', (current_date + 30)::date)`, [U.TB]);
+    await db.query(`select public._bill_tick()`);
+    assert.equal(await val('ZO', `select count(*)::int from notifications where user_id = auth.uid() and title = 'Mr Banda’s StudyBridge is back on'`), 1);
+  } finally {
+    await as('A', `select admin_set_selling(p_enforce => false)`);
+  }
+  // she leaves Mr Banda (not her main tutor); he can't see her any more
+  await fails(as('ZO', `select leave_place($1)`, [U.MA]), /main tutor/);
+  await as('ZO', `select leave_place($1)`, [U.TB]);
+  assert.equal((await as('TB', `select id from profiles where id = $1`, [U.ZO])).length, 0);
+  // her main tutor leaving hands her account to the next one she added (the school's class stays)
+  const c3 = await val('TB', `insert into invites (name) values ('Zoe') returning code`);
+  await one('ZO', `select * from accept_invite($1, 'Zoe')`, [c3]);
+  await as('MA', `select remove_learner($1)`, [U.ZO]);
+  assert.equal((await sql(`select tutor_id from profiles where id = $1`, [U.ZO])).tutor_id, U.TB);
+  assert.equal((await val('ZD', `select parent_view($1)`, [U.ZO])).learner.name, 'Zoe', 'her parent still follows her');
+  // students on their own can't add a tutor or school
+  const stu = (await sql(`select id from profiles where self_learner and not demo limit 1`))?.id;
+  if (stu) {
+    U.STU = stu;
+    const c4 = await val('MA', `insert into invites (name) values ('Solo') returning code`);
+    await fails(as('STU', `select accept_invite($1, 'Solo')`, [c4]), /studies on its own/);
+    await fails(as('STU', `select join_class($1)`, [ccode]), /studies on its own/);
+  }
 });

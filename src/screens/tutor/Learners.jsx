@@ -10,6 +10,12 @@ import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 
+// When a learner is paused for me: by me as their main tutor (on their account), or on the link if they added me
+function pausedFor(l, me, links) {
+  if (l.tutor_id === me) return l.paused_at || null;
+  return links.find((x) => x.learner_id === l.id)?.paused_at || null;
+}
+
 export default function Learners({ tab = 'learners' }) {
   const app = useApp();
   const lk = useLookups();
@@ -27,6 +33,7 @@ export default function Learners({ tab = 'learners' }) {
   const weekStr = ymd(weekRange(0).from);
   const filterClass = lk.activeClasses.find((c) => c.id === inClass);
   const learners = filterClass ? lk.learners.filter((l) => filterClass.members.includes(l.id)) : lk.learners;
+  const links = useQuery('linked-learners', api.myLinkedLearners).data || [];
   // the classes someone joins when they use the invite
   const joinsOf = (i) => (i.class_ids || []).map((id) => lk.klass(id)?.name).filter(Boolean);
 
@@ -89,10 +96,12 @@ export default function Learners({ tab = 'learners' }) {
                     <Avatar person={l} size="lg" />
                     <div className="grow">
                       <div className="strong" style={{ fontSize: 17 }}>
-                        {l.display_name} {l.paused_at && <span className="pill warn">Paused</span>}
+                        {l.display_name} {pausedFor(l, app.me.id, links) && <span className="pill warn">Paused</span>}
                       </div>
-                      {/* someone else's learner, here because they're in one of my classes */}
-                      <div className="muted small">{l.tutor_id === app.me.id ? lk.programme(l.programme_id)?.name || 'No programme' : <span className="pill">In your class</span>}</div>
+                      {/* someone else's learner, here because they're in one of my classes (a learner who added me with a code is mine) */}
+                      <div className="muted small">
+                        {l.tutor_id === app.me.id ? lk.programme(l.programme_id)?.name || 'No programme' : links.some((x) => x.learner_id === l.id) ? 'Your learner' : <span className="pill">In your class</span>}
+                      </div>
                     </div>
                   </div>
                   <div className="chips small">
@@ -267,7 +276,7 @@ function Classes({ onNew, onEdit }) {
     }
   }
   const codeMessage = (c, code) =>
-    `Join ${c.name} on StudyBridge: open StudyBridge and type the code ${prettyCode(code)} (new accounts: “I have a code from my tutor”; already on StudyBridge: Settings → Join a class).`;
+    `Join ${c.name} on StudyBridge: open StudyBridge and type the code ${prettyCode(code)} (new accounts: “I have a code from my tutor”; already on StudyBridge: Settings → Your schools and tutors → Add).`;
 
   return (
     <>
@@ -770,6 +779,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const attempts = (useQuery('attempts', api.listAttempts).data || []).filter((t) => t.learner_id === id);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const pool = useQuery('class-pool', api.classPool).data;
+  const links = useQuery('linked-learners', api.myLinkedLearners).data || [];
   const [editing, setEditing] = useState(false);
   const [account, setAccount] = useState(false);
   const [classing, setClassing] = useState(false);
@@ -779,14 +789,17 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const classes = lk.classesOf(id).filter((c) => !c.archived);
   const first = l.display_name.split(' ')[0];
   // Someone else's learner in my classes: I teach, mark and message them, but only their own tutor changes their
-  // details, account and parents
-  const own = l.tutor_id === app.me.id;
-  if (!own && tab === 'parents') tab = 'progress';
+  // details, account and parents. A learner who added me with a code is mine to teach, pause or remove, but their main
+  // tutor still looks after their account, name and parents.
+  const main = l.tutor_id === app.me.id;
+  const own = main || links.some((x) => x.learner_id === id);
+  const paused = pausedFor(l, app.me.id, links);
+  if (!main && tab === 'parents') tab = 'progress';
   const taught = lk.activeClasses.filter((c) => c.members.includes(id)).map((c) => c.name);
   const theirTutor = pool && (pool.find((p) => p.id === id)?.tutor || 'another tutor');
   // Pausing: they keep everything and can look, but start nothing new and don't count on the plan
   async function pause() {
-    const on = !l.paused_at;
+    const on = !paused;
     if (
       on &&
       !(await confirm({
@@ -798,7 +811,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       return;
     try {
       await api.pauseLearner(l.id, on);
-      invalidate('learners', 'my-plan');
+      invalidate('learners', 'linked-learners', 'my-plan');
       toast(on ? `${first} is paused` : `${first} is back on`);
     } catch (e) {
       toast({ title: on ? 'Couldn’t pause' : 'Couldn’t unpause', body: e.message, tone: 'bad' });
@@ -817,7 +830,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
         <span className="row" style={{ gap: 14 }}>
           <Avatar person={l} size="lg" />
           {l.display_name}
-          {l.paused_at && <span className="pill warn">Paused</span>}
+          {paused && <span className="pill warn">Paused</span>}
         </span>
       }
       subtitle={
@@ -861,23 +874,25 @@ export function LearnerDetail({ id, tab = 'progress' }) {
               <button className="btn" onClick={() => setEditing(true)}>
                 <Icon name="pen" size={18} /> Edit
               </button>
-              <button className="btn" onClick={() => setAccount(true)}>
-                <Icon name="lock" size={18} /> Account
-              </button>
+              {main && (
+                <button className="btn" onClick={() => setAccount(true)}>
+                  <Icon name="lock" size={18} /> Account
+                </button>
+              )}
               <button className="btn" onClick={pause}>
-                <Icon name={l.paused_at ? 'play' : 'pause'} size={18} /> {l.paused_at ? 'Unpause' : 'Pause'}
+                <Icon name={paused ? 'play' : 'pause'} size={18} /> {paused ? 'Unpause' : 'Pause'}
               </button>
             </>
           )}
         </>
       }
     >
-      {l.paused_at && (
+      {paused && (
         <div className="note warn">
-          {first} is paused (since {day(l.paused_at)}). They can sign in and see their work, but can’t start anything new and aren’t told about new work.
+          {first} is paused (since {day(paused)}). They can sign in and see their work, but can’t start anything new from you and aren’t told about new work.
         </div>
       )}
-      {own && account && <AccountModal l={l} onClose={() => setAccount(false)} />}
+      {main && account && <AccountModal l={l} onClose={() => setAccount(false)} />}
       {classing && <LearnerClasses l={l} onClose={() => setClassing(false)} />}
       <Seg
         value={tab}
@@ -886,7 +901,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'progress', label: 'Progress & summaries' },
           { value: 'work', label: `Work (${attempts.length})` },
           { value: 'study', label: 'Study' },
-          ...(own ? [{ value: 'parents', label: 'Parents' }] : []),
+          ...(main ? [{ value: 'parents', label: 'Parents' }] : []),
         ]}
       />
       {tab === 'parents' ? (
@@ -939,6 +954,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
       {own && editing && (
         <EditLearner
           l={l}
+          main={main}
           onClose={() => setEditing(false)}
           onRemove={async () => {
             if (!(await confirm({ title: `Remove ${l.display_name}?`, body: 'They lose access to your StudyBridge straight away. Their past work stays in your records.', ok: 'Remove', danger: true }))) return;
@@ -1020,7 +1036,7 @@ export function StatusPill({ t }) {
   return t.released ? <span className="pill good">Marked · returned</span> : <span className="pill">Marked · not released</span>;
 }
 
-function EditLearner({ l, onClose, onRemove }) {
+function EditLearner({ l, main = true, onClose, onRemove }) {
   const lk = useLookups();
   const [name, setName] = useState(l.display_name);
   const [programme, setProgramme] = useState(l.programme_id || '');
@@ -1039,19 +1055,25 @@ function EditLearner({ l, onClose, onRemove }) {
   return (
     <Modal title={`Edit ${l.display_name}`} onClose={onClose}>
       <form className="stack" onSubmit={submit}>
-        <Field label="Name">
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Programme">
-          <select className="select" value={programme} onChange={(e) => setProgramme(e.target.value)}>
-            <option value="">None</option>
-            {lk.programmes.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+        {main ? (
+          <>
+            <Field label="Name">
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field label="Programme">
+              <select className="select" value={programme} onChange={(e) => setProgramme(e.target.value)}>
+                <option value="">None</option>
+                {lk.programmes.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </>
+        ) : (
+          <div className="small muted">{l.display_name} added you with your code. Their main tutor looks after their name and account; you choose the subjects you teach them.</div>
+        )}
         <Field label="Subjects">
           <div className="stack sm">
             {lk.subjects.map((s) => (

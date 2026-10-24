@@ -401,8 +401,36 @@ Tutors → Plan & Prof: Pays per learner or Complimentary (old plans show only f
 page calls `watch_seen` every 30 s (`attempts.seen_at`; tutors see "On the page now / Not on the page since …", `onPage` in Live.jsx);
 `_watch_away()` (run by `_auto_hand_in` every minute) logs and tells the tutor once when a watched browser page is quiet for 2 minutes;
 the open marker `sb.watched.<attempt>` is in localStorage now, so closing the tab counts as a try to leave when they come back.
-Open question for Aaryan: should an unpaid tutor (limits on, free week over) also stop posting new work? Today they only can't add
-learners and lose Plus.
+Decided 23 Oct 2026 (Aaryan), for build 2: an unpaid tutor after the free week is "over": read-only (as the website's pricing FAQ
+already promises: nothing deleted, they can see and download everything, pay to switch it all back); their learners see past work
+only, like paused. A learner can have more than one private tutor (and a school), each walled off. Parents see everything about
+their child from every side. Sharing across the wall: marks, mock grades, topic strengths and study time only, never answers, work
+or messages. Students who joined StudyBridge on their own (self_learner) can't add a tutor or school.
+Also decided 23 Oct: schools and centres have one price ($15 per learner a year, everything included, at least 30 learners =
+$450 a year, yearly by invoice, a free pilot term); centres match schools, never tutor prices; the organisation always pays
+(its tutors don't pay as well); StudyBridge sets each one up. Website and app must always match (memory: website-app-match).
+The bigger build 2, "Schools and centres, part 1", ships as three updates: A one login, B school pricing, C classroom (the class
+stream waits until it's been discussed).
+Update A (23 Oct 2026), one login, many places. `learner_links` (learner, tutor, paused_at): a learner with a main tutor
+(profiles.tutor_id, who still looks after the account, password, parents) who types another tutor's invite code gets a link
+(accept_invite), and class codes from any school or centre add classes as before; self-learners are refused. A "place" is a
+centre/school organisation or an independent tutor (`_place_of`, `_place_name`). `_teachers_of(learner)`, `_learners_of(tutor)`,
+`_my_teachers()`, `_teaches`, `_is_linked` include links, so RLS (assignments, files, sessions, subjects, comments, cards, storage)
+follows. The wall: `_sees_from(owner, learner)` (the learner, the owner, the same place, or a place in `learner_shares`) filters
+learner_summary, learner_progress, study_summary, mock_history, org_overview (managers). Sharing: `set_share(place, on, learner)`
+by the learner or a linked parent; `my_places(learner)` (also for parents). Pausing is per place (`_paused_for`: links.paused_at,
+or the main tutor's place via profiles.paused_at); `pause_learner`/`_audience`/`start_attempt` use it. Each place pays
+(`_active_learners`, `_org_learner_ids`); `_room_check` runs on main-tutor changes, new links and class joins. Unpaid after the
+free week (enforce on): `_paid_guard` triggers make a tutor read-only; `start_attempt` starts nothing new from that place
+(`_place_unpaid`); hourly `_bill_tick` (pg_cron studybridge-bills) tells the tutor/centre and each learner "<name>’s StudyBridge is
+paused for now" once (and "back on"). remove_learner: a linked tutor just goes; the main tutor going hands the account to the
+oldest link. Parents see every place (`parent_view` with `from` and `places`, `parent_children`, `_parent_link` no longer tied to
+one tutor); weekly reports come from the main tutor and every linked tutor (`_refresh_reports`). UI: Settings → Your schools and
+tutors (YourPlaces, replaces Join a class: list, Leave, Sharing, Add with a code), parents' Your children → Sharing, `places.jsx`
+(usePlaces, FromPlace labels on My work, PausedPlaces on Today), Learners shows added learners as "Your learner" (no Account or
+Parents for them), Shell's ReadOnlyBar. Fixed on the way: the storage rules at the end of setup.sql had reset the class-teacher
+versions (files and work photos of class teachers who aren't the main tutor). Not yet: practice for a linked tutor's subjects
+uses the main tutor's question bank.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

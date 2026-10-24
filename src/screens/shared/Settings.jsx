@@ -47,7 +47,7 @@ export default function Settings() {
       {app.me.role === 'parent' && <AddWithCode />}
       {isStudent && <ParentCodes />}
       {isLearner && <LinkedParents />}
-      {isLearner && !isStudent && <JoinClass />}
+      {isLearner && !isStudent && <YourPlaces />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <StudyReminder />}
@@ -694,6 +694,7 @@ function MyChildren() {
               <span className="name">{k.name}</span>
               <span className="meta">{k.self ? 'Studying on their own' : `Tutor: ${k.tutor}`}</span>
             </span>
+            <ChildSharing child={k} />
             {k.set_up_by_me && <CloseChildAccount child={k} />}
             <button
               className="btn sm ghost"
@@ -714,6 +715,31 @@ function MyChildren() {
         ))}
       </div>
     </Section>
+  );
+}
+
+// A parent chooses what their child's places can see of each other (only when the child has more than one)
+function ChildSharing({ child }) {
+  const [open, setOpen] = useState(false);
+  const q = useQuery(`child-places:${child.id}`, () => api.myPlaces(child.id));
+  const places = q.data || [];
+  if (places.length < 2) return null;
+  return (
+    <>
+      <button className="btn sm ghost" onClick={() => setOpen(true)}>
+        Sharing
+      </button>
+      {open && (
+        <Modal title={`What ${child.name}’s teachers can see`} onClose={() => setOpen(false)}>
+          <div className="stack sm">
+            <div className="small muted">
+              Each school and tutor sees only the work it set. Switch one on to let it see marks and progress from the others too: never answers, work or messages.
+            </div>
+            <PlaceShares places={places} learnerId={child.id} onChange={() => invalidate(`child-places:${child.id}`)} />
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -981,22 +1007,52 @@ function LinkedParents() {
   );
 }
 
-// A class code from a teacher (at a school, a centre or another tutor): the learner joins that class and keeps their
-// own tutor too
-function JoinClass() {
+// What a place is, in a word
+const PLACE_KIND = { tutor: 'Tutor', centre: 'Tuition centre', school: 'School', studybridge: 'StudyBridge' };
+// Share switches for each of a learner's places (the learner, or a parent for their child)
+function PlaceShares({ places, learnerId = null, onChange }) {
   const toast = useToast();
+  return places.map((pl) => (
+    <Toggle
+      key={pl.id}
+      checked={!!pl.shared}
+      onChange={async (on) => {
+        try {
+          await api.setShare(pl.id, on, learnerId);
+          onChange?.();
+          toast(on ? `${pl.name} can see marks and progress from everywhere` : `${pl.name} sees only their own work again`);
+        } catch (e) {
+          toast({ title: 'Couldn’t change it', body: e.message, tone: 'bad' });
+        }
+      }}
+      title={`Share marks and progress with ${pl.name}`}
+      sub="Marks, mock grades, topic strengths and time studied from your other teachers. Never answers, work or messages."
+    />
+  ));
+}
+
+// A learner's schools and tutors. One login for all of them: each sees only the work it set, unless the learner shares
+// their marks and progress with it. A code from another tutor, a school or a centre adds them (a tutor's code or a
+// class code).
+function YourPlaces() {
+  const app = useApp();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('my-places', () => api.myPlaces());
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  async function submit(e) {
+  const places = q.data || [];
+  const refresh = () => invalidate('my-places', 'assignments', 'lessons', 'files', 'sessions', 'subjects', 'topics', 'learner_subjects', 'my-teachers');
+  async function add(e) {
     e.preventDefault();
     setBusy(true);
     setErr('');
     try {
-      const r = await api.joinClass(code);
+      await api.acceptInvite(code, app.me.display_name);
       setCode('');
-      invalidate('assignments', 'lessons', 'files', 'sessions', 'subjects', 'topics', 'learner_subjects', 'my-teachers');
-      toast(r.already ? `You’re already in ${r.class}` : `You’re in ${r.class} now`);
+      refresh();
+      toast({ title: 'Added', body: 'Their work shows in StudyBridge now, alongside everything else.' });
     } catch (x) {
       setErr(x.message);
     } finally {
@@ -1004,17 +1060,60 @@ function JoinClass() {
     }
   }
   return (
-    <Section id="join-class" icon="users" title="Join a class" sub="Has a teacher given you a class code? Type it here to join their class. You keep your own tutor too.">
-      <form className="row wrap" style={{ alignItems: 'flex-end' }} onSubmit={submit}>
+    <Section
+      id="places"
+      icon="users"
+      title="Your schools and tutors"
+      sub="One login for all of them. Each one sees only the work it set. You see everything, labelled by who set it."
+    >
+      <div className="list">
+        {places.map((pl) => (
+          <div key={pl.id} className="item" style={{ flexWrap: 'wrap' }}>
+            <span className="grow">
+              <span className="name">{pl.name}</span>
+              <span className="meta">
+                <span className="pill">{pl.main ? 'Your main tutor' : PLACE_KIND[pl.kind] || 'Tutor'}</span>
+                {pl.kind !== 'tutor' && <span>{(pl.teachers || []).map((t) => t.name).join(', ')}</span>}
+                {(pl.paused || pl.unpaid) && <span className="pill warn">Paused for now</span>}
+              </span>
+            </span>
+            {!pl.main && (
+              <button
+                className="btn sm ghost"
+                onClick={async () => {
+                  if (!(await confirm({ title: `Leave ${pl.name}?`, body: 'Their work goes from your StudyBridge and they stop seeing you. Your work with everyone else carries on.', ok: 'Leave', danger: true }))) return;
+                  try {
+                    await api.leavePlace(pl.id);
+                    refresh();
+                    toast(`You left ${pl.name}`);
+                  } catch (x) {
+                    toast({ title: 'Couldn’t do that', body: x.message, tone: 'bad' });
+                  }
+                }}
+              >
+                Leave
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {places.length > 1 && (
+        <div className="stack sm">
+          <h3>Sharing</h3>
+          <PlaceShares places={places} onChange={() => invalidate('my-places')} />
+        </div>
+      )}
+      <form className="row wrap" style={{ alignItems: 'flex-end' }} onSubmit={add}>
         <div style={{ maxWidth: 240 }}>
-          <Field label="Class code">
-            <input className="input code-in" value={code} onChange={(e) => (setCode(e.target.value), setErr(''))} placeholder="4829 1375" inputMode="numeric" autoComplete="off" spellCheck={false} />
+          <Field label="Add a school, class or tutor">
+            <input className="input code-in" value={code} onChange={(e) => (setCode(e.target.value), setErr(''))} placeholder="4829 1375" autoComplete="off" spellCheck={false} aria-label="Code from a school, class or tutor" />
           </Field>
         </div>
         <button className="btn primary" disabled={busy || !code.trim()}>
-          Join the class
+          Add
         </button>
       </form>
+      <div className="small muted">Use the code they gave you: a tutor’s code or a class code.</div>
       {err && <div className="error">{err}</div>}
     </Section>
   );

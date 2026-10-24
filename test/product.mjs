@@ -26,16 +26,28 @@ execSync(`npx vite build --outDir "${OUT}" --emptyOutDir`, { cwd: ROOT, stdio: '
 
 function serve(dir) {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream', '.ttf': 'font/ttf' };
-  const s = http.createServer((req, res) => {
+  // (a file just built can be held for a moment, e.g. by a virus scan on Windows: look again for up to 3 seconds)
+  const found = async (f) => {
+    for (let i = 0; i < 30; i++) {
+      try {
+        if (existsSync(f) && !statSync(f).isDirectory()) return readFileSync(f);
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  };
+  const s = http.createServer(async (req, res) => {
     let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
     if (p === '/') p = '/index.html';
     const f = join(dir, p);
-    if (!f.startsWith(dir) || !existsSync(f) || statSync(f).isDirectory()) {
+    const body = f.startsWith(dir) ? await found(f) : null;
+    if (!body) {
+      console.log('  (the test server has no file for', req.url + ')');
       res.writeHead(404);
       return res.end();
     }
     res.writeHead(200, { 'content-type': types[extname(f)] || 'application/octet-stream' });
-    res.end(readFileSync(f));
+    res.end(body);
   });
   return new Promise((r) => s.listen(0, '127.0.0.1', () => r({ url: `http://127.0.0.1:${s.address().port}/`, close: () => s.close() })));
 }
@@ -873,14 +885,34 @@ try {
   const tcode = (await T3.locator('.code-show').first().innerText()).replace(/\s/g, '');
   assert.match(tcode, /^\d{8}$/);
   await shot(T3, 'teacher-class-code');
-  await Z.goto(web.url + '#/settings?s=join-class');
-  await Z.getByLabel('Class code').fill(tcode);
-  await Z.getByRole('button', { name: 'Join the class' }).click();
-  await Z.getByText('You’re in Tom’s revision group now').waitFor();
+  await Z.goto(web.url + '#/settings?s=places');
+  const places = Z.locator('#set-places');
+  await places.getByLabel('Code from a school, class or tutor').fill(tcode);
+  await places.getByRole('button', { name: 'Add', exact: true }).click();
+  await Z.getByText('Added', { exact: true }).waitFor();
   await Z.goto(web.url + '#/messages');
   await Z.getByRole('group', { name: 'Who to message' }).getByRole('button', { name: /Tom Phiri/ }).click();
   await Z.getByPlaceholder('Message Tom Phiri…').waitFor();
   await shot(Z, 'learner-two-teachers');
+  // a private tutor outside the centre: Zara adds him with his code (one login); his work is labelled, she shares her
+  // progress with him, and he sees only what's his
+  const pt = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
+  await pt.auth.signUp({ email: 'banda@example.com', password: 'secret123' });
+  await pt.rpc('become_tutor', { p_name: 'Mr Banda', p_timezone: 'Africa/Lusaka' });
+  await srv.db.query(`update public.profiles set status = 'active' where email = 'banda@example.com'`);
+  const bcode = (await pt.from('invites').insert({ name: 'Zara' }).select().single()).data.code;
+  await pt.from('assignments').insert({ title: 'Banda’s practice sheet', kind: 'homework', visibility: 'visible' });
+  await Z.goto(web.url + '#/settings?s=places');
+  await places.getByLabel('Code from a school, class or tutor').fill(bcode);
+  await places.getByRole('button', { name: 'Add', exact: true }).click();
+  await places.getByText('Mr Banda', { exact: true }).waitFor();
+  await places.getByRole('switch', { name: 'Share marks and progress with Mr Banda' }).click();
+  await Z.getByText('Mr Banda can see marks and progress from everywhere').waitFor();
+  await shot(Z, 'learner-places');
+  await Z.goto(web.url + '#/work');
+  await Z.locator('.work-card', { hasText: 'Banda’s practice sheet' }).locator('.from-place', { hasText: 'Mr Banda' }).waitFor();
+  const bview = (await pt.from('assignments').select('title')).data.map((x) => x.title);
+  assert.deepEqual(bview, ['Banda’s practice sheet'], 'he sees only his own work');
   await T3.close();
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');

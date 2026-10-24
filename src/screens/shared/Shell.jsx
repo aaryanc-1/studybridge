@@ -94,6 +94,7 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
             <span className="grow">Your StudyBridge is paused for now. Your work is all kept: you can look at it, but not start anything new. Your tutor can switch it back on.</span>
           </div>
         )}
+        {app.me.role === 'tutor' && <ReadOnlyBar />}
         {app.me.role !== 'admin' && <Announcements />}
         <SlowConnectionTip />
         <UpdateBanner pending={pending} />
@@ -117,6 +118,29 @@ export default function Shell({ nav, tabs, roleLabel, banner, children, notifica
 
 // In the demo StudyBridge: who you are in it, and the way back to the Owner's own account
 const DEMO_WHO = { manager: 'the centre manager', parent: 'a parent', student: 'a student on their own' };
+// After the free week, unpaid (with plan limits on): StudyBridge is read-only until it's paid; nothing is deleted
+function ReadOnlyBar() {
+  const p = useQuery('my-plan', api.myPlan).data;
+  if (!p?.enforced || p.state !== 'unpaid') return null;
+  const c = p.centre;
+  const payer = !c || c.manager;
+  return (
+    <div className="banner paused" role="status">
+      <Icon name="lock" size={18} />
+      <span className="grow">
+        {c && !c.manager
+          ? `${c.name}’s free week has ended, so StudyBridge is read-only until the centre pays. Your manager looks after it. Nothing is deleted.`
+          : `${c ? `${c.name}’s` : 'Your'} free week has ended, so StudyBridge is read-only until you pay. You can still see and download everything.`}
+      </span>
+      {payer && (
+        <button className="btn sm" onClick={() => go('/settings?s=plan')}>
+          Pay now
+        </button>
+      )}
+    </div>
+  );
+}
+
 function DemoBar() {
   const app = useApp();
   const admin = otherAccounts(app.me.id).find((a) => a.role === 'admin');
@@ -325,7 +349,7 @@ function useAnnouncer(target) {
     // paused or back on: the banner and what they can start follow straight away
     if (fresh.some((n) => n.kind === 'paused')) {
       app.refreshMe?.().catch(() => {});
-      invalidate('assignments');
+      invalidate('assignments', 'my-places');
     }
   }, [q.data]); // eslint-disable-line react-hooks/exhaustive-deps
 

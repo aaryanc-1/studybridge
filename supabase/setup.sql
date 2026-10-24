@@ -966,6 +966,21 @@ begin
   select * into v from public.profiles where id = auth.uid();
   if v.role in ('tutor', 'admin') then raise exception 'Tutor and admin accounts cannot join as learners.'; end if;
   if not public._tutor_active(inv.tutor_id) then raise exception 'This invite can’t be used right now. Ask your tutor.'; end if;
+  if v.role = 'learner' and coalesce(v.self_learner, false) then
+    raise exception 'This account studies on its own with StudyBridge, so it can’t join a tutor. Make a new account with your tutor’s code.';
+  end if;
+  -- already a learner of another tutor: this tutor is added (one login; each tutor sees only their own work)
+  if v.role = 'learner' and v.tutor_id is not null and v.tutor_id <> inv.tutor_id and to_regclass('public.learner_links') is not null then
+    execute 'insert into public.learner_links (learner_id, tutor_id) values ($1, $2) on conflict do nothing' using auth.uid(), inv.tutor_id;
+    insert into public.learner_subjects (learner_id, subject_id, tutor_id)
+      select auth.uid(), s, inv.tutor_id from unnest(inv.subject_ids) s
+      where exists (select 1 from public.subjects where id = s and tutor_id = inv.tutor_id)
+    on conflict do nothing;
+    update public.invites set accepted_by = auth.uid(), accepted_at = now() where id = inv.id;
+    perform public.notify_user(inv.tutor_id, 'joined', v.display_name || ' joined StudyBridge', 'They accepted your invite.',
+      jsonb_build_object('learner_id', auth.uid()));
+    return v;
+  end if;
   update public.profiles
      set role = 'learner', tutor_id = inv.tutor_id, programme_id = inv.programme_id,
          display_name = coalesce(nullif(trim(p_name), ''), nullif(inv.name, ''), display_name),
@@ -2812,7 +2827,7 @@ declare
   v_int numeric;
 begin
   if not exists (select 1 from public.cards c where c.id = p_card
-                  and c.tutor_id = public.my_tutor() and public.my_role() = 'learner'
+                  and c.tutor_id in (select public._my_teachers()) and public.my_role() = 'learner'
                   and (c.learner_id = auth.uid() or (c.learner_id is null and (c.subject_id is null or exists (
                         select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = c.subject_id))))) then
     raise exception 'Card not found.';
@@ -8844,7 +8859,7 @@ declare p public.profiles; o public.organisations; v_org uuid;
 begin
   select * into p from public.profiles where id = p_tutor and role = 'tutor';
   if p.id is null then return null; end if;
-  if p.is_studybridge or (p.plan = 'complimentary' and (p.plan_until is null or p.plan_until >= current_date)) then
+  if p.is_studybridge or coalesce(p.demo, false) or (p.plan = 'complimentary' and (p.plan_until is null or p.plan_until >= current_date)) then
     return jsonb_build_object('payer', 'own', 'state', 'free', 'level', 'plus', 'seats', null,
       'learners', public._active_learners(p.id), 'until', p.plan_until);
   end if;
@@ -9259,6 +9274,829 @@ begin
   return n;
 end $$;
 
+-- =====================================================================
+-- Schools and centres, part 1, update A (23 Oct 2026): one login, many places. A learner can be with a school or
+-- centre (its classes) and with more than one private tutor at once, adding each with a code in Settings. Every
+-- place sees only what it set (a wall between them): the work, marks, messages and time studied on its own work.
+-- The learner sees everything, labelled by who set it. They (or their parent) can share their marks, mock grades,
+-- topic strengths and study time with a place, never answers, work or messages. Parents see everything. Students
+-- who joined StudyBridge on their own can't add a tutor or school. Each place pays for the learner. A tutor (or
+-- centre) whose free week has ended unpaid is read-only (nothing deleted), and their learners are told their
+-- StudyBridge with them is paused for now.
+-- The learner's main tutor (profiles.tutor_id) still looks after their account (password, parents, deleting it).
+-- =====================================================================
+create table if not exists public.learner_links (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  tutor_id uuid not null references public.profiles (id) on delete cascade,
+  paused_at timestamptz,
+  created_at timestamptz not null default now(),
+  primary key (learner_id, tutor_id)
+);
+create index if not exists learner_links_tutor on public.learner_links (tutor_id);
+alter table public.learner_links enable row level security;
+revoke all on public.learner_links from public, anon, authenticated;
+grant select on public.learner_links to authenticated;
+drop policy if exists learner_links_read on public.learner_links;
+create policy learner_links_read on public.learner_links for select using (learner_id = auth.uid() or tutor_id = auth.uid());
+
+-- Places a learner shares their marks and progress with (a tutor's id, or a centre's or school's organisation id)
+create table if not exists public.learner_shares (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  place_id uuid not null,
+  created_at timestamptz not null default now(),
+  primary key (learner_id, place_id)
+);
+alter table public.learner_shares enable row level security;
+revoke all on public.learner_shares from public, anon, authenticated;
+grant select on public.learner_shares to authenticated;
+drop policy if exists learner_shares_read on public.learner_shares;
+create policy learner_shares_read on public.learner_shares for select using (learner_id = auth.uid());
+
+alter table public.profiles add column if not exists unpaid_noted_at timestamptz;
+alter table public.organisations add column if not exists unpaid_noted_at timestamptz;
+
+-- The place a teacher belongs to: their centre or school, or themselves
+create or replace function public._place_of(p_user uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select coalesce((select o.id from public.org_members m join public.organisations o on o.id = m.org_id
+                    where m.user_id = p_user and o.kind in ('centre', 'school')), p_user)
+$$;
+create or replace function public._place_name(p_place uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select name from public.organisations where id = p_place), (select display_name from public.profiles where id = p_place))
+$$;
+
+-- Everyone who teaches a learner: their main tutor, other tutors they added, and their classes' teachers
+create or replace function public._teachers_of(p_learner uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select tutor_id from public.profiles where id = p_learner and role = 'learner' and tutor_id is not null
+  union
+  select tutor_id from public.learner_links where learner_id = p_learner
+  union
+  select ct.teacher_id from public.class_members cm join public.class_teachers ct on ct.class_id = cm.class_id where cm.learner_id = p_learner
+$$;
+create or replace function public._my_teachers() returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select public._teachers_of(auth.uid())
+$$;
+-- Everyone a teacher teaches: their own learners, learners who added them, and their classes' learners
+create or replace function public._learners_of(p_tutor uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select id from public.profiles where tutor_id = p_tutor and role = 'learner'
+  union
+  select learner_id from public.learner_links where tutor_id = p_tutor
+  union
+  select cm.learner_id from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id where ct.teacher_id = p_tutor
+$$;
+create or replace function public._teaches(p_teacher uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = p_learner and tutor_id = p_teacher and role = 'learner')
+      or exists (select 1 from public.learner_links where learner_id = p_learner and tutor_id = p_teacher)
+      or exists (select 1 from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id
+                  where ct.teacher_id = p_teacher and cm.learner_id = p_learner)
+$$;
+-- The signed-in tutor's own learner: their main tutor, or a tutor they added
+create or replace function public._is_linked(p_learner uuid, p_tutor uuid default null) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles where id = p_learner and role = 'learner' and tutor_id = coalesce(p_tutor, auth.uid()))
+      or exists (select 1 from public.learner_links where learner_id = p_learner and tutor_id = coalesce(p_tutor, auth.uid()))
+$$;
+create or replace function public._home_learners() returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select public._learners_of(auth.uid())
+$$;
+
+-- The wall: may the signed-in person see a learner's data that came from this teacher's work? The learner, that
+-- teacher, anyone in the same centre or school, or a place the learner shares their marks and progress with.
+create or replace function public._sees_from(p_owner uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select p_learner = auth.uid() or p_owner = auth.uid()
+      or (p_owner is not null and public._place_of(p_owner) = public._place_of(auth.uid()))
+      or exists (select 1 from public.learner_shares s where s.learner_id = p_learner and s.place_id = public._place_of(auth.uid()))
+$$;
+
+-- Paused: by the learner's main tutor (for that tutor's place) or by a tutor they added (for that tutor)
+create or replace function public._paused_for(p_learner uuid, p_tutor uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.learner_links where learner_id = p_learner and tutor_id = p_tutor and paused_at is not null)
+      or ((select paused_at from public.profiles where id = p_learner) is not null
+          and public._place_of(p_tutor) = public._place_of((select tutor_id from public.profiles where id = p_learner)))
+$$;
+-- A place whose free week has ended unpaid (with plan limits on)
+create or replace function public._place_unpaid(p_tutor uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select enforce_plans from public.app_config where id = 1), false)
+     and coalesce(public._bill(p_tutor) ->> 'state', '') = 'unpaid'
+$$;
+
+-- ---------------- who pays for whom ----------------
+create or replace function public._active_learners(p_tutor uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select count(*)::int from (
+    select id from public.profiles where tutor_id = p_tutor and role = 'learner' and paused_at is null
+    union
+    select learner_id from public.learner_links where tutor_id = p_tutor and paused_at is null
+    union
+    select cm.learner_id from public.class_teachers ct join public.class_members cm on cm.class_id = ct.class_id
+      join public.classes c on c.id = cm.class_id where ct.teacher_id = p_tutor and not c.archived) z
+$$;
+create or replace function public._org_learner_ids(p_org uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l join public.org_members m on m.user_id = l.tutor_id
+   where m.org_id = p_org and l.role = 'learner' and l.paused_at is null
+  union
+  select k.learner_id from public.learner_links k join public.org_members m on m.user_id = k.tutor_id where m.org_id = p_org and k.paused_at is null
+  union
+  select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = p_org and not c.archived
+$$;
+create or replace function public._org_learners(p_org uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select count(*)::int from public._org_learner_ids(p_org)
+$$;
+-- Is this learner already on the bill of whoever pays for this teacher?
+create or replace function public._counted_by(p_tutor uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case when public._billing_org(p_tutor) is not null then p_learner in (select public._org_learner_ids(public._billing_org(p_tutor)))
+              else p_learner in (select public._learners_of(p_tutor)) end
+$$;
+-- A learner can join a place while it has room for them (with plan limits on)
+create or replace function public._room_check(p_tutor uuid, p_learner uuid, p_who text default 'Your tutor') returns void
+language plpgsql security definer set search_path = public as $$
+declare b jsonb;
+begin
+  if not coalesce((select enforce_plans from public.app_config where id = 1), false) then return; end if;
+  b := public._bill(p_tutor);
+  if b is null or b ->> 'state' in ('free', 'trial', 'card') or public._counted_by(p_tutor, p_learner) then return; end if;
+  if b ->> 'state' = 'unpaid' then
+    raise exception '%’s StudyBridge plan needs paying before new learners can join. Ask them, then use the code again.', p_who;
+  end if;
+  if (b ->> 'seats') is not null and (b ->> 'learners')::int >= (b ->> 'seats')::int then
+    raise exception '% has paid for % places and they’re all taken. Ask them to add a place (Settings → Your plan), then use the code again.', p_who, b ->> 'seats';
+  end if;
+end $$;
+create or replace function public._check_plan_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.role = 'learner' and new.tutor_id is not null and new.tutor_id is distinct from old.tutor_id then
+    perform public._room_check(new.tutor_id, new.id);
+  end if;
+  return new;
+end $$;
+create or replace function public._link_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._room_check(new.tutor_id, new.learner_id);
+  return new;
+end $$;
+drop trigger if exists learner_links_room on public.learner_links;
+create trigger learner_links_room before insert on public.learner_links for each row execute function public._link_room();
+create or replace function public._class_room() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare t uuid; k text;
+begin
+  select ct.teacher_id into t from public.class_teachers ct where ct.class_id = new.class_id order by ct.added_at limit 1;
+  if t is null then select tutor_id into t from public.classes where id = new.class_id; end if;
+  select o.kind into k from public.classes c join public.organisations o on o.id = c.org_id where c.id = new.class_id;
+  perform public._room_check(t, new.learner_id, case when k in ('centre', 'school') then 'This school or centre' else 'The class’s tutor' end);
+  return new;
+end $$;
+drop trigger if exists class_members_room on public.class_members;
+create trigger class_members_room before insert on public.class_members for each row execute function public._class_room();
+
+-- ---------------- tutors: their learners from every way in ----------------
+-- Subjects: a tutor gives their own learners (main or added) their own subjects
+drop policy if exists learner_subjects_tutor on public.learner_subjects;
+create policy learner_subjects_tutor on public.learner_subjects for all
+  using (tutor_id = auth.uid()) with check (tutor_id = auth.uid() and public._is_linked(learner_id));
+
+-- Edit a learner: their main tutor changes their name and programme; any of their tutors sets their own subjects
+create or replace function public.set_learner(p_learner uuid, p_name text, p_programme uuid, p_subject_ids uuid[])
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public._is_linked(p_learner) then raise exception 'Not your learner.'; end if;
+  if public.is_my_learner(p_learner) then
+    if p_programme is not null and not exists (select 1 from public.programmes where id = p_programme and tutor_id = auth.uid()) then
+      raise exception 'Unknown programme.';
+    end if;
+    update public.profiles set display_name = coalesce(nullif(trim(p_name), ''), display_name), programme_id = p_programme
+     where id = p_learner;
+  end if;
+  delete from public.learner_subjects where learner_id = p_learner and tutor_id = auth.uid()
+    and not (subject_id = any (coalesce(p_subject_ids, '{}')));
+  insert into public.learner_subjects (learner_id, subject_id, tutor_id)
+    select p_learner, s, auth.uid() from unnest(coalesce(p_subject_ids, '{}')) s
+    where exists (select 1 from public.subjects where id = s and tutor_id = auth.uid())
+  on conflict do nothing;
+end $$;
+
+-- A tutor stops teaching a learner. A tutor they added just goes (with their subjects and classes); their main tutor
+-- going hands the account to the next tutor they added, or (with nobody else) the learner is no longer anyone's.
+create or replace function public.remove_learner(p_learner uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_next public.learner_links; me text := (select display_name from public.profiles where id = auth.uid());
+begin
+  if exists (select 1 from public.learner_links where learner_id = p_learner and tutor_id = auth.uid()) then
+    delete from public.learner_links where learner_id = p_learner and tutor_id = auth.uid();
+    delete from public.learner_subjects where learner_id = p_learner and tutor_id = auth.uid();
+    delete from public.class_members m using public.classes c where m.learner_id = p_learner and c.id = m.class_id and c.tutor_id = auth.uid();
+    perform public.notify_user(p_learner, 'class', 'You’re no longer with ' || coalesce(me, 'a tutor'), 'Your work with your other teachers carries on.', '{}');
+    return;
+  end if;
+  if not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  delete from public.learner_subjects where learner_id = p_learner and tutor_id = auth.uid();
+  select * into v_next from public.learner_links where learner_id = p_learner order by created_at limit 1;
+  if v_next.tutor_id is not null then
+    delete from public.learner_links where learner_id = p_learner and tutor_id = v_next.tutor_id;
+    delete from public.learner_reports where learner_id = p_learner and tutor_id = auth.uid();
+    update public.parent_links set tutor_id = v_next.tutor_id where learner_id = p_learner;
+    update public.profiles set tutor_id = v_next.tutor_id, paused_at = v_next.paused_at, programme_id = null where id = p_learner;
+    perform public.notify_user(p_learner, 'class', 'You’re no longer with ' || coalesce(me, 'a tutor'), 'Your work with your other teachers carries on.', '{}');
+    return;
+  end if;
+  delete from public.learner_reports where learner_id = p_learner; -- the parent's contact goes with the learner
+  delete from public.parent_links where learner_id = p_learner; -- and parents lose access
+  update public.profiles set tutor_id = null, role = null, programme_id = null where id = p_learner;
+end $$;
+
+-- Pause or unpause a learner, for this tutor's place only (they keep their work everywhere)
+create or replace function public.pause_learner(p_learner uuid, p_paused boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+declare b jsonb; v_was timestamptz; v_link boolean; v_many boolean; me text := (select display_name from public.profiles where id = auth.uid());
+begin
+  v_link := exists (select 1 from public.learner_links where learner_id = p_learner and tutor_id = auth.uid());
+  if not v_link and not public.is_my_learner(p_learner) then raise exception 'Not your learner.'; end if;
+  v_was := case when v_link then (select paused_at from public.learner_links where learner_id = p_learner and tutor_id = auth.uid())
+                else (select paused_at from public.profiles where id = p_learner) end;
+  if not p_paused and v_was is not null and (select enforce_plans from public.app_config where id = 1) then
+    b := public._bill(auth.uid());
+    if b ->> 'state' = 'unpaid' then raise exception 'Your plan needs paying first (Settings → Your plan).'; end if;
+    if (b ->> 'seats') is not null and (b ->> 'learners')::int >= (b ->> 'seats')::int then
+      raise exception 'All % places you’ve paid for are taken. Add a place first (Settings → Your plan).', b ->> 'seats';
+    end if;
+  end if;
+  if v_link then
+    update public.learner_links set paused_at = case when p_paused then coalesce(paused_at, now()) end where learner_id = p_learner and tutor_id = auth.uid();
+  else
+    update public.profiles set paused_at = case when p_paused then coalesce(paused_at, now()) end where id = p_learner;
+  end if;
+  v_many := (select count(*) from (select public._place_of(t) from public._teachers_of(p_learner) t group by 1) z) > 1;
+  perform public.notify_user(p_learner, 'paused',
+    case when p_paused then case when v_many then 'Your StudyBridge with ' || coalesce(me, 'your tutor') || ' is paused for now' else 'Your StudyBridge is paused for now' end
+         else case when v_many then 'Your StudyBridge with ' || coalesce(me, 'your tutor') || ' is back on' else 'Your StudyBridge is back on' end end,
+    case when p_paused then 'Your work is all kept. Your tutor can switch it back on any time.' else 'You can start new work again.' end, '{}');
+end $$;
+
+-- Who an item is for: never someone paused for this tutor
+create or replace function public._audience(p_tutor uuid, p_learner_ids uuid[], p_subject uuid)
+returns setof uuid language sql stable security definer set search_path = public as $$
+  select p.id from public.profiles p
+   where p.role = 'learner' and public._teaches(p_tutor, p.id) and not public._paused_for(p.id, p_tutor)
+     and case when p_learner_ids is not null and cardinality(p_learner_ids) > 0 then p.id = any (p_learner_ids)
+              when p_subject is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = p.id and ls.subject_id = p_subject)
+              else public._is_linked(p.id, p_tutor) end
+$$;
+
+-- ---------------- learners: their places ----------------
+-- A learner's places: each tutor, centre or school they're with, whether they share with it, and whether it's paused.
+-- A parent who follows them can ask too (to choose what's shared for a young child).
+create or replace function public.my_places(p_learner uuid default null) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', z.place, 'name', public._place_name(z.place),
+      'kind', coalesce((select kind from public.organisations where id = z.place), 'tutor'),
+      'main', z.place = public._place_of(me.tutor_id),
+      'teachers', z.teachers,
+      'shared', exists (select 1 from public.learner_shares s where s.learner_id = me.id and s.place_id = z.place),
+      'paused', (select bool_or(public._paused_for(me.id, t::uuid)) from jsonb_array_elements_text(z.teacher_ids) t),
+      'unpaid', (select bool_or(public._place_unpaid(t::uuid)) from jsonb_array_elements_text(z.teacher_ids) t))
+      order by z.place = public._place_of(me.tutor_id) desc, public._place_name(z.place)), '[]')
+    from public.profiles me,
+         lateral (select public._place_of(t) place,
+                         jsonb_agg(jsonb_build_object('id', t, 'name', (select display_name from public.profiles where id = t))) teachers,
+                         jsonb_agg(t) teacher_ids
+                    from public._teachers_of(me.id) t group by 1) z
+   where me.id = coalesce(p_learner, auth.uid()) and me.role = 'learner'
+     and (me.id = auth.uid() or exists (select 1 from public.parent_links where parent_id = auth.uid() and learner_id = me.id))
+$$;
+
+-- Share (or stop sharing) marks, mock grades, topic strengths and study time with one of a learner's places. The
+-- learner chooses, or a parent who follows them.
+create or replace function public.set_share(p_place uuid, p_on boolean, p_learner uuid default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_l uuid := coalesce(p_learner, auth.uid());
+begin
+  if not (v_l = auth.uid() and public.my_role() = 'learner')
+     and not exists (select 1 from public.parent_links where parent_id = auth.uid() and learner_id = v_l) then
+    raise exception 'Only the learner or their parent can change this.';
+  end if;
+  if not exists (select 1 from public._teachers_of(v_l) t where public._place_of(t) = p_place) then raise exception 'Not one of their places.'; end if;
+  if p_on then
+    insert into public.learner_shares (learner_id, place_id) values (v_l, p_place) on conflict do nothing;
+  else
+    delete from public.learner_shares where learner_id = v_l and place_id = p_place;
+  end if;
+  return jsonb_build_object('place', p_place, 'shared', p_on);
+end $$;
+
+-- A learner leaves a tutor they added, or a school or centre's classes (not their main tutor)
+create or replace function public.leave_place(p_place uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare me public.profiles; n int := 0;
+begin
+  select * into me from public.profiles where id = auth.uid() and role = 'learner';
+  if me.id is null then raise exception 'For learners.'; end if;
+  if p_place = public._place_of(me.tutor_id) then raise exception 'This is your main tutor. Ask them if you want to stop.'; end if;
+  delete from public.learner_links k where k.learner_id = me.id and public._place_of(k.tutor_id) = p_place;
+  get diagnostics n = row_count;
+  delete from public.learner_subjects ls where ls.learner_id = me.id and public._place_of(ls.tutor_id) = p_place;
+  delete from public.class_members m using public.classes c where m.learner_id = me.id and c.id = m.class_id
+     and (c.org_id = p_place or public._place_of(c.tutor_id) = p_place);
+  delete from public.learner_shares where learner_id = me.id and place_id = p_place;
+end $$;
+
+-- A learner's teachers, for their Messages (their main tutor first), with the place each is in
+create or replace function public.my_teachers() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'main', p.id = (select tutor_id from public.profiles where id = auth.uid()),
+           'place', public._place_name(public._place_of(p.id)),
+           'classes', (select coalesce(jsonb_agg(c.name order by c.name), '[]') from public.class_teachers ct join public.classes c on c.id = ct.class_id
+                        join public.class_members cm on cm.class_id = c.id where ct.teacher_id = p.id and cm.learner_id = auth.uid()))
+         order by p.id = (select tutor_id from public.profiles where id = auth.uid()) desc, p.display_name), '[]')
+    from public.profiles p where p.id in (select public._my_teachers())
+$$;
+
+-- What a tutor knows about who they teach: which of their learners came by a code (added them), for the Learners list
+create or replace function public.my_linked_learners() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('learner_id', learner_id, 'paused_at', paused_at, 'since', created_at)), '[]')
+    from public.learner_links where tutor_id = auth.uid()
+$$;
+
+-- ---------------- the wall, in what tutors see ----------------
+create or replace function public.learner_summary(p_learner uuid, p_from timestamptz, p_to timestamptz)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._can_view_learner(p_learner) then raise exception 'Not allowed.'; end if;
+  return jsonb_build_object(
+    'from', p_from, 'to', p_to,
+    'seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and created_at >= p_from and created_at < p_to
+                          and public._sees_from(tutor_id, p_learner)), 0),
+    'by_day', coalesce((select jsonb_agg(jsonb_build_object('day', d.day, 'seconds', d.s, 'subjects', d.subj) order by d.day)
+                        from (select a.day, sum(a.seconds) s,
+                                     (select coalesce(jsonb_agg(jsonb_build_object('subject', coalesce(sb.name, 'Other'), 'seconds', x.s) order by x.s desc), '[]')
+                                        from (select a2.subject_id, sum(a2.seconds) s from public.activity a2
+                                               where a2.learner_id = p_learner and a2.day = a.day and a2.created_at >= p_from and a2.created_at < p_to
+                                                 and public._sees_from(a2.tutor_id, p_learner)
+                                               group by a2.subject_id) x
+                                        left join public.subjects sb on sb.id = x.subject_id) subj
+                                from public.activity a where a.learner_id = p_learner
+                               and a.created_at >= p_from and a.created_at < p_to and public._sees_from(a.tutor_id, p_learner) group by a.day) d), '[]'),
+    'by_subject', coalesce((select jsonb_agg(jsonb_build_object('subject', coalesce(sb.name, 'Other'), 'seconds', s))
+                            from (select subject_id, sum(seconds) s from public.activity where learner_id = p_learner
+                                   and created_at >= p_from and created_at < p_to and public._sees_from(tutor_id, p_learner) group by subject_id) d
+                            left join public.subjects sb on sb.id = d.subject_id), '[]'),
+    'assignments', coalesce((select jsonb_agg(jsonb_build_object(
+          'title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'submitted_at', t.submitted_at, 'status', t.status,
+          'late', a.due_at is not null and t.submitted_at > a.due_at,
+          'score', case when p_learner <> auth.uid() or public._is_released(t) then t.score end, 'max_score', t.max_score,
+          'lockdown_flags', jsonb_array_length(case when p_learner <> auth.uid() then t.lockdown_events else '[]'::jsonb end))
+          order by t.submitted_at)
+        from public.attempts t join public.assignments a on a.id = t.assignment_id
+        where t.learner_id = p_learner and t.submitted_at >= p_from and t.submitted_at < p_to and public._sees_from(t.tutor_id, p_learner)), '[]'),
+    'missed', coalesce((select jsonb_agg(jsonb_build_object('title', a.title, 'due_at', a.due_at))
+        from public.assignments a
+        where a.tutor_id in (select public._teachers_of(p_learner)) and public._sees_from(a.tutor_id, p_learner)
+          and not a.practice and public._assignment_visible_to(a, p_learner)
+          and (a.learner_ids is not null and cardinality(a.learner_ids) > 0 or a.subject_id is not null or public._is_linked(p_learner, a.tutor_id))
+          and a.due_at >= p_from and a.due_at < least(p_to, now())
+          and not exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner
+                          and t.submitted_at is not null)), '[]'),
+    'notes', (select count(*) from public.comments where learner_id = p_learner and author_id = p_learner
+               and created_at >= p_from and created_at < p_to and public._sees_from(tutor_id, p_learner)),
+    'mistakes', coalesce((select jsonb_agg(r.mistake) from public.responses r join public.attempts t on t.id = r.attempt_id
+        where r.learner_id = p_learner and r.mistake is not null and r.mistake <> '' and t.submitted_at >= p_from and t.submitted_at < p_to
+          and public._sees_from(t.tutor_id, p_learner)
+          and (p_learner <> auth.uid() or public._is_released(t))), '[]')
+  );
+end $$;
+
+create or replace function public.learner_progress(p_learner uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._can_view_learner(p_learner) then raise exception 'Not allowed.'; end if;
+  return jsonb_build_object(
+    'topics', (select coalesce(jsonb_agg(x), '[]') from jsonb_array_elements(public._learner_topics(p_learner, p_learner = auth.uid(), null)) x
+                where p_learner = auth.uid() or public._sees_from((select tutor_id from public.subjects where id = (x ->> 'subject_id')::uuid), p_learner)),
+    'time_by_subject', coalesce((
+      select jsonb_agg(jsonb_build_object('subject_id', s.id, 'subject', coalesce(s.name, 'Other'), 'seconds', z.seconds))
+      from (select subject_id, sum(seconds) seconds from public.activity where learner_id = p_learner and public._sees_from(tutor_id, p_learner) group by subject_id) z
+      left join public.subjects s on s.id = z.subject_id), '[]'),
+    'total_seconds', coalesce((select sum(seconds) from public.activity where learner_id = p_learner and public._sees_from(tutor_id, p_learner)), 0),
+    'mistakes', coalesce((
+      select jsonb_agg(jsonb_build_object('mistake', r.mistake, 'feedback', r.feedback_md, 'question', left(q.prompt_md, 160),
+                                          'assignment', a.title, 'at', t.submitted_at) order by t.submitted_at desc)
+      from public.responses r join public.attempts t on t.id = r.attempt_id
+      join public.questions q on q.id = r.question_id join public.assignments a on a.id = t.assignment_id
+      where r.learner_id = p_learner and r.mistake is not null and r.mistake <> '' and public._sees_from(t.tutor_id, p_learner)
+        and (p_learner <> auth.uid() or public._is_released(t))), '[]')
+  );
+end $$;
+
+create or replace function public.study_summary(p_learner uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  p public.profiles;
+  v_today date;
+  d date;
+  streak int := 0;
+  goal int;
+  v_own boolean;
+begin
+  if auth.uid() is null or v_l is null or not (v_l = auth.uid() or coalesce(public._can_view_learner(v_l), false)) then raise exception 'Not your learner.'; end if;
+  v_own := v_l = auth.uid();
+  select * into p from public.profiles where id = v_l;
+  goal := coalesce(p.study_goal_min, 10) * 60;
+  v_today := (now() at time zone coalesce((select name from pg_timezone_names where name = p.timezone), 'UTC'))::date;
+  -- streak: days in a row with some study (today counts once started; not having started yet today doesn't break it).
+  -- A teacher counts the study on their own place's work (unless the learner shares it with them).
+  d := v_today;
+  if coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = d and (v_own or public._sees_from(tutor_id, v_l))), 0) = 0 then d := d - 1; end if;
+  while coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = d and (v_own or public._sees_from(tutor_id, v_l))), 0) > 0 loop
+    streak := streak + 1;
+    d := d - 1;
+    exit when streak > 999;
+  end loop;
+  return jsonb_build_object(
+    'goal_min', coalesce(p.study_goal_min, 10),
+    'today_sec', coalesce((select sum(seconds) from public.activity where learner_id = v_l and day = v_today and (v_own or public._sees_from(tutor_id, v_l))), 0),
+    'streak', streak,
+    'days', coalesce((select jsonb_agg(jsonb_build_object('day', g::date, 'sec', coalesce((select sum(seconds) from public.activity a where a.learner_id = v_l and a.day = g::date
+                                                                                              and (v_own or public._sees_from(a.tutor_id, v_l))), 0)) order by g)
+                        from generate_series(v_today - 13, v_today, interval '1 day') g), '[]'),
+    'cards_due', (select count(*) from public.cards c
+                   where c.tutor_id in (select public._teachers_of(v_l)) and (v_own or public._sees_from(c.tutor_id, v_l))
+                     and (c.learner_id = v_l or (c.learner_id is null and (c.subject_id is null or exists (
+                          select 1 from public.learner_subjects ls where ls.learner_id = v_l and ls.subject_id = c.subject_id))))
+                     and not exists (select 1 from public.card_reviews r where r.learner_id = v_l and r.card_id = c.id and r.due_at > now())),
+    'cards_learned', (select count(*) from public.card_reviews r join public.cards c on c.id = r.card_id
+                       where r.learner_id = v_l and r.interval_days >= 7 and (v_own or public._sees_from(c.tutor_id, v_l))),
+    'mistakes', (select count(*) from public.cards c where c.learner_id = v_l and c.source = 'mistake' and (v_own or public._sees_from(c.tutor_id, v_l))),
+    'exam', (select jsonb_build_object('name', exam_name, 'date', exam_date) from public.learner_reports where learner_id = v_l and exam_date is not null));
+end $$;
+
+-- Mock grades over time: a learner's from every place; a tutor's own (and, if the learner shares, the others')
+create or replace function public.mock_history(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_l uuid := coalesce(p_learner, auth.uid()); v_own boolean;
+begin
+  if v_l = auth.uid() and public.my_role() = 'learner' then
+    v_own := true;
+  elsif public._can_view_learner(v_l) then
+    v_own := false;
+  else
+    raise exception 'Not your learner.';
+  end if;
+  return coalesce((
+    select jsonb_agg(r order by r ->> 'last_at') from (
+      select jsonb_build_object('id', m.id, 'title', m.title, 'subject_id', m.subject_id) || (public._mock_result(m.id, v_l, v_own or m.tutor_id <> auth.uid()) - 'papers') as r
+        from public.mocks m
+       where m.tutor_id in (select public._teachers_of(v_l)) and (v_own or public._sees_from(m.tutor_id, v_l))
+    ) z
+    where r ->> 'pct' is not null), '[]');
+end $$;
+
+-- The Centre page, a parent's view, weekly reports and starting work, with the wall
+create or replace function public.org_overview() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid := public._org_of(auth.uid()); wk date := (now() - interval '6 days')::date;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._org_manager(v)
+     or (select kind from public.organisations where id = v) not in ('centre', 'school') then
+    raise exception 'Only a centre’s manager can see this.';
+  end if;
+  return jsonb_build_object(
+    'name', (select name from public.organisations where id = v),
+    'tutors', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'role', m.role, 'last_seen_at', p.last_seen_at,
+                  'learners', (select count(*) from public._learners_of(p.id)),
+                  'classes', (select count(*) from public.classes c where c.tutor_id = p.id and not c.archived),
+                  'to_mark', (select count(*) from public.attempts a where a.tutor_id = p.id and a.status = 'submitted'))
+                  order by m.role = 'manager' desc, p.display_name), '[]')
+                 from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = v),
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'tutor_id', l.tutor_id, 'joined_at', l.created_at,
+                  'subjects', (select coalesce(jsonb_agg(s.name order by s.name), '[]') from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id
+                                where ls.learner_id = l.id and public._sees_from(s.tutor_id, l.id)),
+                  'classes', (select coalesce(jsonb_agg(c.name order by c.name), '[]') from public.class_members cm join public.classes c on c.id = cm.class_id
+                                where cm.learner_id = l.id and not c.archived and public._sees_from(c.tutor_id, l.id)),
+                  'week_min', (select coalesce(sum(x.seconds), 0) / 60 from public.activity x where x.learner_id = l.id and x.day >= wk and public._sees_from(x.tutor_id, l.id)),
+                  'last_active', (select max(x.day) from public.activity x where x.learner_id = l.id and public._sees_from(x.tutor_id, l.id)),
+                  'handed_in_week', (select count(*) from public.attempts a where a.learner_id = l.id and a.submitted_at >= now() - interval '7 days'
+                                      and public._sees_from(a.tutor_id, l.id)))
+                  order by l.display_name), '[]')
+                 from public.profiles l where l.role = 'learner' and (l.tutor_id in (select user_id from public.org_members where org_id = v)
+                   or l.id in (select k.learner_id from public.learner_links k join public.org_members m on m.user_id = k.tutor_id where m.org_id = v)
+                   or l.id in (select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = v))));
+end $$;
+
+create or replace function public.parent_view(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  pl public.parent_links;
+  l public.profiles;
+  r public.learner_reports;
+begin
+  pl := public._parent_link(p_learner);
+  if pl.id is null then raise exception 'You can’t see this learner’s progress.'; end if;
+  select * into l from public.profiles where id = p_learner;
+  select * into r from public.learner_reports where learner_id = p_learner order by tutor_id = l.tutor_id desc limit 1;
+  return jsonb_build_object(
+    'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'timezone', l.timezone),
+    'tutor', (select display_name from public.profiles where id = l.tutor_id),
+    -- every place the child is with (a parent sees everything from each of them)
+    'places', (select coalesce(jsonb_agg(distinct public._place_name(public._place_of(t))), '[]') from public._teachers_of(p_learner) t),
+    'self', case when l.self_learner then jsonb_build_object(
+        'exam_date', l.exam_date, 'exam_label', l.exam_label, 'setup_done', l.setup_done, 'hours', l.study_hours,
+        'goal_min', l.study_goal_min, 'plan_start', l.plan_start,
+        'week_seconds', (select coalesce(sum(a.seconds), 0) from public.activity a where a.learner_id = l.id and a.created_at > now() - interval '7 days'),
+        'days_this_week', (select count(distinct a.day) from public.activity a where a.learner_id = l.id and a.created_at > now() - interval '7 days'),
+        'practice_this_week', (select count(*) from public.attempts t join public.assignments a on a.id = t.assignment_id
+                                where t.learner_id = l.id and a.source = 'self' and t.submitted_at > now() - interval '7 days'),
+        'subjects', (select coalesce(jsonb_agg(s.name order by s.position), '[]') from public.learner_subjects ls join public.subjects s on s.id = ls.subject_id where ls.learner_id = l.id),
+        'trial_until', l.trial_until, 'paid_until', l.paid_until, 'paid_plan', l.paid_plan,
+        'set_up_by_me', l.consent_parent = auth.uid()) end,
+    'exam', case when r.exam_date is not null and r.exam_date >= current_date
+                 then jsonb_build_object('name', r.exam_name, 'date', r.exam_date, 'days', r.exam_date - current_date) end,
+    'lessons', coalesce((select jsonb_agg(jsonb_build_object('title', s.title, 'starts_at', s.starts_at, 'duration_min', s.duration_min, 'weekly', s.series_id is not null,
+                                                             'from', public._place_name(public._place_of(s.tutor_id))) order by s.starts_at)
+                           from (select * from public.sessions s where s.tutor_id in (select public._teachers_of(p_learner)) and p_learner = any (s.learner_ids) and not s.cancelled
+                                   and s.starts_at > now() - interval '1 hour' and s.starts_at < now() + interval '21 days' order by s.starts_at limit 12) s), '[]'),
+    'due', coalesce((select jsonb_agg(x order by x ->> 'due_at') from (
+        select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'from', public._place_name(public._place_of(a.tutor_id)),
+                 'handed_in', exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner and t.submitted_at is not null)) as x
+          from public.assignments a
+         where a.tutor_id in (select public._teachers_of(p_learner)) and not a.practice and a.source <> 'self' and public._assignment_visible_to(a, p_learner)
+           and a.due_at > now() - interval '7 days' and a.due_at < now() + interval '21 days'
+         order by a.due_at limit 20) z), '[]'),
+    'marks', coalesce((select jsonb_agg(x order by x ->> 'at' desc) from (
+        select jsonb_build_object('title', a.title, 'kind', a.kind, 'score', t.score, 'max', t.max_score, 'from', public._place_name(public._place_of(t.tutor_id)),
+                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > a.due_at) as x
+          from public.attempts t join public.assignments a on a.id = t.assignment_id
+         where t.learner_id = p_learner and t.tutor_id in (select public._teachers_of(p_learner)) and not a.practice and public._is_released(t) and t.score is not null
+         order by coalesce(t.released_at, t.submitted_at) desc limit 15) z), '[]'),
+    'topics', public._learner_topics(p_learner, true, null),
+    'mocks', coalesce((select jsonb_agg(z.r order by z.r ->> 'last_at') from (
+        select jsonb_build_object('id', m.id, 'title', m.title) || (public._mock_result(m.id, p_learner, true) - 'papers') as r
+          from public.mocks m where m.tutor_id in (select public._teachers_of(p_learner))) z
+       where (z.r ->> 'released')::boolean and z.r ->> 'pct' is not null), '[]'),
+    'reports', coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'week_start', x.week_start, 'data', x.data, 'comment', x.comment,
+                                                             'next_week', x.next_week, 'sent_at', x.sent_at) order by x.week_start desc)
+                           from (select * from public.parent_reports x where x.learner_id = p_learner and x.tutor_id in (select public._teachers_of(p_learner)) and x.status = 'sent'
+                                  order by x.week_start desc limit 26) x), '[]'));
+end $$;
+
+create or replace function public._refresh_reports() returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  l record;
+  v_tz text;
+  v_mon date;
+  v_from timestamptz;
+  v_to timestamptz;
+  r public.parent_reports;
+begin
+  -- each learner's main tutor, and every tutor they added, writes their own report
+  for l in select p.id as learner_id, x.tutor_id, p.display_name, t.timezone,
+                  coalesce(ps.auto_reports, false) as auto,
+                  coalesce(lr.enabled, false) or exists (select 1 from public.parent_links pl where pl.learner_id = p.id) as enabled
+             from (select id as learner_id, tutor_id from public.profiles where role = 'learner' and tutor_id is not null
+                   union
+                   select learner_id, tutor_id from public.learner_links) x
+             join public.profiles p on p.id = x.learner_id and p.role = 'learner'
+             join public.profiles t on t.id = x.tutor_id and t.role = 'tutor' and t.status = 'active'
+             left join public.prof_settings ps on ps.tutor_id = x.tutor_id
+             left join public.learner_reports lr on lr.learner_id = p.id and lr.tutor_id = x.tutor_id loop
+    v_tz := coalesce((select name from pg_timezone_names where name = l.timezone), 'UTC');
+    v_mon := date_trunc('week', now() at time zone v_tz)::date;
+    v_from := v_mon::timestamp at time zone v_tz;
+    v_to := (v_mon + 7)::timestamp at time zone v_tz;
+    -- this week so far
+    insert into public.parent_reports (tutor_id, learner_id, week_start, data)
+    values (l.tutor_id, l.learner_id, v_mon, public._report_numbers(l.tutor_id, l.learner_id, v_from, v_to))
+    on conflict (tutor_id, learner_id, week_start) do update set data = excluded.data, updated_at = now()
+      where parent_reports.status = 'draft' and parent_reports.updated_at < now() - interval '20 hours';
+    -- last week, once it's over
+    select * into r from public.parent_reports where tutor_id = l.tutor_id and learner_id = l.learner_id and week_start = v_mon - 7;
+    if r.id is null or (r.status = 'draft' and r.updated_at < v_from) then
+      insert into public.parent_reports (tutor_id, learner_id, week_start, data)
+      values (l.tutor_id, l.learner_id, v_mon - 7, public._report_numbers(l.tutor_id, l.learner_id, (v_mon - 7)::timestamp at time zone v_tz, v_from))
+      on conflict (tutor_id, learner_id, week_start) do update set data = excluded.data, updated_at = now()
+        where parent_reports.status = 'draft'
+      returning * into r;
+      if r.id is not null and l.enabled then
+        perform public.notify_user(l.tutor_id, 'report_ready', l.display_name || '’s weekly report is ready',
+          'Check it and send it to their parent.', jsonb_build_object('report_id', r.id, 'learner_id', l.learner_id));
+        if l.auto and not r.prof and public._prof_ready(l.tutor_id) is null
+           and not exists (select 1 from public.prof_jobs where kind = 'report' and context ->> 'report_id' = r.id::text) then
+          insert into public.prof_jobs (tutor_id, kind, prompt, context)
+          values (l.tutor_id, 'report', 'Write a weekly parent report', jsonb_build_object('report_id', r.id));
+        end if;
+      end if;
+    end if;
+  end loop;
+end $$;
+
+create or replace function public.start_attempt(p_assignment uuid, p_client text default 'desktop')
+returns public.attempts language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  cur public.attempts;
+  n int;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.draft or not public.can_learner_see(a.tutor_id, a.learner_ids, a.subject_id, a.visibility, a.visible_from) then
+    raise exception 'That assignment is not available.';
+  end if;
+  if public._paused_for(auth.uid(), a.tutor_id) then
+    raise exception 'Your StudyBridge is paused for now, so you can’t start new work. Ask your tutor.';
+  end if;
+  -- the desktop app, or any device in watched mode when the tutor allows it
+  if (a.lockdown or a.camera) and coalesce(p_client, '') <> 'desktop' and not a.watched then
+    raise exception 'Open this in the StudyBridge desktop app: it needs % mode.',
+      case when a.lockdown then 'lockdown' else 'camera' end;
+  end if;
+  select * into cur from public.attempts
+   where assignment_id = p_assignment and learner_id = auth.uid() and status in ('in_progress', 'returned')
+   order by number desc limit 1;
+  if cur.id is not null then
+    if cur.status = 'returned' then
+      update public.attempts set status = 'in_progress' where id = cur.id returning * into cur;
+    elsif public._attempt_timed_out(cur) then
+      cur := public._hand_in(cur.id, 'time ran out');
+    end if;
+    return cur;
+  end if;
+  -- a place whose free week ended unpaid: work already started carries on, nothing new starts
+  if public._place_unpaid(a.tutor_id) then
+    raise exception '%’s StudyBridge is paused for now. You can still see your work and marks.', public._place_name(public._place_of(a.tutor_id));
+  end if;
+  select count(*) into n from public.attempts where assignment_id = p_assignment and learner_id = auth.uid();
+  if n >= a.max_attempts then raise exception 'You have used all your attempts for this.'; end if;
+  insert into public.attempts (assignment_id, learner_id, tutor_id, number, max_score, client)
+  values (p_assignment, auth.uid(), a.tutor_id, n + 1,
+          (select coalesce(sum(marks), 0) from public.questions where assignment_id = p_assignment),
+          case when coalesce(p_client, '') = 'desktop' then 'desktop' else left(coalesce(p_client, 'web'), 20) end)
+  returning * into cur;
+  return cur;
+end $$;
+
+create or replace function public.parent_children() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', l.id, 'name', l.display_name, 'tutor', t.display_name, 'timezone', l.timezone, 'self', l.self_learner, 'set_up_by_me', l.consent_parent = auth.uid(),
+      'next_lesson', (select min(s.starts_at) from public.sessions s where s.tutor_id in (select public._teachers_of(l.id)) and l.id = any (s.learner_ids)
+                       and not s.cancelled and s.starts_at > now()),
+      'reports', (select count(*) from public.parent_reports r where r.learner_id = l.id and r.tutor_id in (select public._teachers_of(l.id)) and r.status = 'sent'),
+      'latest_report', (select max(r.week_start) from public.parent_reports r where r.learner_id = l.id and r.tutor_id in (select public._teachers_of(l.id)) and r.status = 'sent'))
+      order by l.display_name), '[]')
+    from public.parent_links pl
+    join public.profiles l on l.id = pl.learner_id and l.role = 'learner'
+    left join public.profiles t on t.id = l.tutor_id
+   where pl.parent_id = auth.uid() and public.my_role() = 'parent'
+$$;
+
+
+drop policy if exists cards_learner_read on public.cards;
+create policy cards_learner_read on public.cards for select using (
+  tutor_id in (select public._my_teachers()) and public.my_role() = 'learner'
+  and (learner_id = auth.uid()
+       or (learner_id is null and public._student_ok()
+           and (subject_id is null or exists (select 1 from public.learner_subjects ls where ls.learner_id = auth.uid() and ls.subject_id = cards.subject_id)))));
+-- A learner's mocks from every place (the ones with a paper they can see), without boundaries
+create or replace function public.my_mocks() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'title', m.title, 'subject_id', m.subject_id)
+                            || public._mock_result(m.id, auth.uid(), true) order by m.created_at desc), '[]')
+    from public.mocks m
+   where public.my_role() = 'learner' and m.tutor_id in (select public._my_teachers())
+     and exists (select 1 from public.assignments a where a.mock_id = m.id and public._assignment_visible_to(a, auth.uid()))
+$$;
+-- A parent follows their child wherever the child is taught (not only through the tutor who invited them)
+create or replace function public._parent_link(p_learner uuid) returns public.parent_links
+language sql stable security definer set search_path = public as $$
+  select pl.* from public.parent_links pl join public.profiles l on l.id = pl.learner_id
+   where pl.parent_id = auth.uid() and pl.learner_id = p_learner and l.role = 'learner'
+     and public.my_role() = 'parent'
+$$;
+-- A report any of their tutors approved reaches every parent who follows them
+create or replace function public.on_report_sent() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare p uuid;
+begin
+  if new.status = 'sent' and old.status is distinct from 'sent' then
+    for p in select parent_id from public.parent_links where learner_id = new.learner_id loop
+      perform public.notify_user(p, 'report', 'Weekly report: ' || coalesce(new.data ->> 'learner', ''),
+        'From ' || coalesce(new.data ->> 'tutor', 'the tutor') || '. Open StudyBridge to read it.', jsonb_build_object('learner_id', new.learner_id, 'report_id', new.id));
+    end loop;
+  end if;
+  return new;
+end $$;
+create or replace function public._has_parent(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._is_linked(p_learner) and exists (select 1 from public.parent_links where learner_id = p_learner)
+$$;
+drop policy if exists parent_reports_tutor on public.parent_reports;
+create policy parent_reports_tutor on public.parent_reports for all
+  using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and public._is_linked(learner_id)
+              and (status = 'draft'
+                   or exists (select 1 from public.learner_reports r where r.learner_id = parent_reports.learner_id and r.tutor_id = auth.uid() and r.enabled)
+                   or public._has_parent(learner_id)));
+create or replace function public.report_numbers(p_learner uuid, p_from timestamptz, p_to timestamptz)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._is_linked(p_learner) then raise exception 'Not your learner.'; end if;
+  return public._report_numbers(auth.uid(), p_learner, p_from, p_to);
+end $$;
+
+-- ---------------- unpaid after the free week: read-only, and their learners are told ----------------
+-- Is the signed-in tutor's StudyBridge read-only (plan limits on, nothing paid)?
+create or replace function public._tutor_locked() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select enforce_plans from public.app_config where id = 1), false)
+     and public.my_role() = 'tutor'
+     and coalesce(public._bill(auth.uid()) ->> 'state', '') = 'unpaid'
+$$;
+-- Nothing new or changed while it's read-only (the tutor can still look at everything, download it, and pay)
+create or replace function public._paid_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if public._tutor_locked() then
+    raise exception 'Your free week has ended, so StudyBridge is read-only. Pay in Settings → Your plan to carry on. Nothing is deleted.';
+  end if;
+  return new;
+end $$;
+do $$
+declare t text;
+begin
+  foreach t in array array['assignments', 'questions', 'question_keys', 'lessons', 'files', 'sessions', 'lesson_series', 'invites', 'mocks',
+                           'cards', 'subjects', 'topics', 'programmes', 'teaching_plans', 'classes', 'bank_questions', 'comments',
+                           'responses', 'attempts', 'parent_reports'] loop
+    if to_regclass('public.' || t) is not null then
+      execute format('drop trigger if exists %I on public.%I', t || '_paid', t);
+      execute format('create trigger %I before insert or update on public.%I for each row execute function public._paid_guard()', t || '_paid', t);
+    end if;
+  end loop;
+end $$;
+
+-- Hourly: a tutor or centre whose free week has just ended unpaid is told it's read-only, and each of their learners
+-- that their StudyBridge with them is paused for now (once; again only after it's been paid and lapsed again)
+create or replace function public._bill_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare r record; n int := 0; v_title text;
+begin
+  if not coalesce((select enforce_plans from public.app_config where id = 1), false) then return 0; end if;
+  -- tutors who pay for themselves
+  for r in select p.id, p.display_name, p.unpaid_noted_at, public._bill(p.id) ->> 'state' as st
+             from public.profiles p
+            where p.role = 'tutor' and p.status = 'active' and not p.is_studybridge and not coalesce(p.demo, false)
+              and public._billing_org(p.id) is null loop
+    if r.st = 'unpaid' and r.unpaid_noted_at is null then
+      update public.profiles set unpaid_noted_at = now() where id = r.id;
+      perform public.notify_user(r.id, 'plan', 'Your free week has ended', 'StudyBridge is read-only until you pay: Settings → Your plan. Nothing is deleted.', '{}');
+      v_title := coalesce(r.display_name, 'Your tutor') || '’s StudyBridge is paused for now';
+      perform public.notify_user(l, 'paused', v_title, 'You can still see your work and marks. New work will show up here once it’s back on.', '{}')
+         from public._learners_of(r.id) l;
+      n := n + 1;
+    elsif r.st <> 'unpaid' and r.unpaid_noted_at is not null then
+      update public.profiles set unpaid_noted_at = null where id = r.id;
+      perform public.notify_user(l, 'paused', coalesce(r.display_name, 'Your tutor') || '’s StudyBridge is back on', 'New work will show up again.', '{}')
+         from public._learners_of(r.id) l;
+    end if;
+  end loop;
+  -- centres and schools (they pay for everyone in them)
+  for r in select o.id, o.name, o.unpaid_noted_at, public._bill(m.user_id) ->> 'state' as st
+             from public.organisations o
+             join lateral (select user_id from public.org_members where org_id = o.id order by role = 'manager' desc, joined_at limit 1) m on true
+            where o.kind in ('centre', 'school') and o.billing = 'centre'
+              and not exists (select 1 from public.org_members x join public.profiles p on p.id = x.user_id where x.org_id = o.id and coalesce(p.demo, false)) loop
+    if r.st = 'unpaid' and r.unpaid_noted_at is null then
+      update public.organisations set unpaid_noted_at = now() where id = r.id;
+      perform public.notify_user(m.user_id, 'plan', r.name || '’s free week has ended',
+          case when m.role = 'manager' then 'StudyBridge is read-only for the centre until it’s paid: Settings → Your plan. Nothing is deleted.'
+               else 'StudyBridge is read-only until the centre pays. Your manager looks after it. Nothing is deleted.' end, '{}')
+        from public.org_members m where m.org_id = r.id;
+      perform public.notify_user(l, 'paused', r.name || '’s StudyBridge is paused for now', 'You can still see your work and marks. New work will show up here once it’s back on.', '{}')
+         from public._org_learner_ids(r.id) l;
+      n := n + 1;
+    elsif r.st <> 'unpaid' and r.unpaid_noted_at is not null then
+      update public.organisations set unpaid_noted_at = null where id = r.id;
+      perform public.notify_user(l, 'paused', r.name || '’s StudyBridge is back on', 'New work will show up again.', '{}')
+         from public._org_learner_ids(r.id) l;
+    end if;
+  end loop;
+  return n;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -9340,6 +10178,15 @@ revoke execute on function public._bill(uuid) from public, anon, authenticated;
 revoke execute on function public._bill_grace(uuid) from public, anon, authenticated;
 revoke execute on function public._org_member_left() from public, anon, authenticated;
 revoke execute on function public._watch_away() from public, anon, authenticated;
+revoke execute on function public._bill_tick() from public, anon, authenticated;
+revoke execute on function public._paid_guard() from public, anon, authenticated;
+revoke execute on function public._link_room() from public, anon, authenticated;
+revoke execute on function public._class_room() from public, anon, authenticated;
+revoke execute on function public._room_check(uuid, uuid, text) from public, anon, authenticated;
+revoke execute on function public._counted_by(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._org_learner_ids(uuid) from public, anon, authenticated;
+revoke execute on function public._learners_of(uuid) from public, anon, authenticated;
+revoke execute on function public._teachers_of(uuid) from public, anon, authenticated;
 revoke execute on function public._tutor_trial() from public, anon, authenticated;
 revoke execute on function public._plus_only() from public, anon, authenticated;
 -- Prof money is the admin's business only: tutors can't ask for their allowance or read it
@@ -9370,9 +10217,9 @@ create policy sb_library_tutor on storage.objects for all to authenticated
   using (bucket_id = 'library' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'library' and (storage.foldername(name))[1] = auth.uid()::text);
 
--- Learner: question/lesson images, plus library files released to them
+-- Learner: question/lesson images, plus library files released to them, from everyone who teaches them
 create policy sb_library_learner on storage.objects for select to authenticated
-  using (bucket_id = 'library' and (storage.foldername(name))[1] = public.my_tutor()::text and (
+  using (bucket_id = 'library' and (storage.foldername(name))[1] in (select t::text from public._my_teachers() t) and (
     (storage.foldername(name))[2] in ('questions', 'lessons')
     or exists (select 1 from public.files f where f.storage_path = storage.objects.name
                and public.can_learner_see(f.tutor_id, f.learner_ids, f.subject_id, f.visibility, f.visible_from))));
@@ -9382,10 +10229,10 @@ create policy sb_work_learner on storage.objects for all to authenticated
   using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text);
 
--- Tutor: read their learners' work, and write marking annotations
+-- Tutor: read the work of learners they teach, and write marking annotations
 create policy sb_work_tutor on storage.objects for all to authenticated
-  using (bucket_id = 'work' and (storage.foldername(name))[1] in (select id::text from public.profiles where tutor_id = auth.uid()))
-  with check (bucket_id = 'work' and (storage.foldername(name))[1] in (select id::text from public.profiles where tutor_id = auth.uid()));
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid))
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid));
 
 -- ---------------------------------------------------------------------
 -- Live updates in the app
@@ -9412,6 +10259,7 @@ begin
   perform cron.schedule('studybridge-handin', '* * * * *', 'select public._auto_hand_in()');
   perform cron.schedule('studybridge-reminders', '*/10 * * * *', 'select public._study_reminders()');
   perform cron.schedule('studybridge-students', '17 * * * *', 'select public._student_emails_tick()');
+  perform cron.schedule('studybridge-bills', '23 * * * *', 'select public._bill_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

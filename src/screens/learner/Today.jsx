@@ -8,6 +8,7 @@ import * as api from '../../lib/api.js';
 import { ago, due, dur, kindLabel, when, weekRange, ymd } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
+import { FromPlace, PausedPlaces } from '../shared/places.jsx';
 
 export default function Today() {
   const app = useApp();
@@ -82,6 +83,7 @@ export default function Today() {
       </div>
 
       <TrialNote />
+      <PausedPlaces />
       <CheckNudge />
       <SelfPlan />
       <StudyNudge />
