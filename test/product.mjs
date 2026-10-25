@@ -764,8 +764,9 @@ try {
   const cl = A.getByRole('dialog');
   await cl.getByLabel('One name per line').fill('Lungu Mwale\nGrace Zulu');
   await cl.getByRole('button', { name: 'Make 2 codes' }).click();
-  await cl.getByText('Grace Zulu').waitFor();
+  await cl.locator('.code-show').nth(1).waitFor(); // (the names are in the box already: wait for the codes themselves)
   assert.equal(await cl.locator('.code-show').count(), 2, 'a code for each learner');
+  await cl.locator('.item', { hasText: 'Grace Zulu' }).waitFor();
   await shot(A, 'class-list-codes');
   await A.keyboard.press('Escape');
   await tc.from('invites').update({ revoked: true }).in('name', ['Lungu Mwale', 'Grace Zulu']);
@@ -804,16 +805,16 @@ try {
   await zp.getByText('Everyone in the class sees replies, with names.').waitFor();
   await zp.getByLabel(/^Reply to .*’s post$/).fill('Can we use a graphing calculator?');
   await zp.getByRole('button', { name: 'Reply', exact: true }).click();
-  await zp.getByText('Can we use a graphing calculator?').waitFor();
+  await zp.locator('.stream-reply', { hasText: 'Can we use a graphing calculator?' }).waitFor(); // saved, not just typed
   await shot(Z, 'stream-learner');
   await A.reload();
   const ap = A.locator('.stream-post', { hasText: 'bring a calculator' });
-  await ap.getByText('Can we use a graphing calculator?').waitFor();
+  await ap.locator('.stream-reply', { hasText: 'Can we use a graphing calculator?' }).waitFor();
   await ap.getByRole('button', { name: 'Answer', exact: true }).click();
   await ap.getByText('Answering Zara').waitFor();
   await ap.getByLabel(/^Reply to .*’s post$/).fill('Yes, any calculator is fine.');
   await ap.getByRole('button', { name: 'Reply', exact: true }).click();
-  await ap.getByText('Yes, any calculator is fine.').waitFor();
+  await ap.locator('.stream-reply', { hasText: 'Yes, any calculator is fine.' }).waitFor();
   await shot(A, 'stream-tutor');
   await a11y(A, 'A class’s stream');
   const PD = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'Africa/Lusaka' })).newPage();

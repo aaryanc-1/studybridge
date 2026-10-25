@@ -71,7 +71,7 @@ export default function Stream({ classId, learner = false }) {
       ) : (
         timeline.map((x) => (x.post ? <PostCard key={x.post.id} p={x.post} d={d} learner={learner} /> : <WorkCard key={x.work.kind + x.work.id} w={x.work} learner={learner} />))
       )}
-      {writing && <PostEditor classId={classId} onClose={() => setWriting(false)} />}
+      {writing && <PostEditor classId={classId} className={d.class.name} onClose={() => setWriting(false)} />}
     </div>
   );
 }
@@ -398,7 +398,7 @@ function Replies({ p, d, learner }) {
 }
 
 // Writing a post (or changing one): the words, pictures and files, which classes, who can reply, pinned, now or later
-export function PostEditor({ classId, post = null, onClose }) {
+export function PostEditor({ classId, className = '', post = null, onClose }) {
   const toast = useToast();
   const confirm = useConfirm();
   const editing = !!post;
@@ -459,8 +459,7 @@ export function PostEditor({ classId, post = null, onClose }) {
         toast('Post changed');
       } else {
         await api.postToClasses({ classes: picked, body, files, replies, pinned, at: goesUp, group });
-        const names = choices.filter((c) => picked.includes(c.id)).map((c) => c.name);
-        toast(later ? `Scheduled for ${when(goesUp)}` : names.length > 1 ? `Posted to ${names.length} classes` : `Posted to ${names[0] || 'the class'}`);
+        toast(later ? `Scheduled for ${when(goesUp)}` : picked.length > 1 ? `Posted to ${picked.length} classes` : `Posted to ${choices.find((c) => c.id === picked[0])?.name || className || 'the class'}`);
       }
       streamChanged();
       onClose();
