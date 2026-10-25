@@ -51,11 +51,27 @@ jobs:
           exit $status
       - run: npm run build
       - name: Full walkthrough in the browser (tutor + learner + phone + offline)
-        run: node test/walkthrough.mjs
+        run: |
+          set +e
+          node test/walkthrough.mjs 2>&1 | tee walkthrough.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            msg=$(tail -40 walkthrough.txt | tr -d '\r' | awk '{ gsub(/%/, "%25"); printf "%s%%0A", $0 }')
+            echo "::error title=Walkthrough failed::$msg"
+          fi
+          exit $status
         env:
           SHOTS: screenshots
       - name: StudyBridge as a product (sign-up approval, admin, Prof)
-        run: node test/product.mjs
+        run: |
+          set +e
+          node test/product.mjs 2>&1 | tee product.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            msg=$(tail -40 product.txt | tr -d '\r' | awk '{ gsub(/%/, "%25"); printf "%s%%0A", $0 }')
+            echo "::error title=Product walkthrough failed::$msg"
+          fi
+          exit $status
         env:
           SHOTS: screenshots
       - name: PDFs draw their text (browser + desktop)
