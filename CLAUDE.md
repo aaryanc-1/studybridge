@@ -459,7 +459,7 @@ index: level index}). src/screens/shared/Rubric.jsx: RubricPicker in the questio
 RubricEditor; the question becomes worth the rubric's top marks, `_rubric_max`), RubricGrid in Marking (picking levels sets the mark,
 `rubricMark`) and on the learner's results once marks are back (`attempt_detail` gives `rubrics` and each response's `rubric` only
 when released).
-The class stream (25 Oct 2026, Aaryan: learners reply only if the post allows it; classmates see each other's replies, with names,
+The class stream (25 Oct 2026, app 1.1.88; Aaryan: learners reply only if the post allows it; classmates see each other's replies, with names,
 only if allowed; parents see posts, never replies ("too much"); managers read every class stream in their centre and post too; a
 teacher or manager posts to one class, several or all at once). Tables `class_posts` (one row per class, copies share `group_id` so
 replies stay inside each class; `replies` off|teachers|class; `pinned`, one per class; `visible_from` for later; `notified_at`),
@@ -482,7 +482,9 @@ when they're in a class (src/screens/learner/Classes.jsx: `/classes`, `/classes/
 classes" on This week; live-updates refresh 'stream' and 'my-classes' with each notification. Demo: Grace's pinned notice in every
 class and Mercy's question in Year 10 maths with replies. Website: schools.html "A page for every class". Also fixed: re-running
 setup.sql made a manager a teacher of every class they'd made for someone else (the old-classes line now fills only classes with no
-teacher), and `_class_teacher` no longer counts whoever created the class (a manager could open its gradebook).
+teacher), and `_class_teacher` no longer counts whoever created the class (a manager could open its gradebook). CI's walkthrough and product steps
+post their last 40 lines as an error annotation (readable without signing in; 1.1.86 and 1.1.87 failed on a test that waited for
+typed text instead of saved results).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
