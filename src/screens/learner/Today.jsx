@@ -9,6 +9,7 @@ import { ago, due, dur, kindLabel, when, weekRange, ymd } from '../../lib/format
 import { useLookups } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
 import { FromPlace, PausedPlaces } from '../shared/places.jsx';
+import { NewInClasses } from './Classes.jsx';
 
 export default function Today() {
   const app = useApp();
@@ -84,6 +85,7 @@ export default function Today() {
 
       <TrialNote />
       <PausedPlaces />
+      <NewInClasses />
       <CheckNudge />
       <SelfPlan />
       <StudyNudge />

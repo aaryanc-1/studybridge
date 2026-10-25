@@ -7,18 +7,19 @@
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Bar, Loading, Modal, Page, go, useRoute } from '../../ui/kit.jsx';
+import { Bar, Loading, Markdown, Modal, Page, go, useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { SUPPORT_EMAIL } from '../../lib/config.js';
 import { studentAccess } from '../../lib/students.js';
 import { SetUpChild, AddWithCode } from './ChildCodes.jsx';
 import { PayOptions } from '../learner/SelfStudy.jsx';
-import { day, dur, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
+import { ago, day, dur, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
 import Shell from '../shared/Shell.jsx';
 import Settings from '../shared/Settings.jsx';
 import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { gradeLine } from '../shared/MockHistory.jsx';
+import { StreamFiles } from '../shared/Stream.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -215,6 +216,7 @@ function Child({ id, kids, section }) {
               </div>
             )}
           </div>
+          <ClassPosts id={id} name={v.learner.name} />
         </>
       )}
 
@@ -353,5 +355,27 @@ function Child({ id, kids, section }) {
         </Modal>
       )}
     </Page>
+  );
+}
+
+// What teachers posted in the child's classes over the last 30 days (never anyone's replies)
+function ClassPosts({ id, name }) {
+  const posts = useQuery(`parent-posts:${id}`, () => api.parentClassPosts(id)).data || [];
+  if (!posts.length) return null;
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>From {name.split(' ')[0]}’s classes</h2>
+      </div>
+      {posts.map((p) => (
+        <div key={p.id} className="stream-parent">
+          <div className="small muted">
+            <span className="pill">{p.class}</span> {p.author} · {ago(p.at)}
+          </div>
+          {p.body_md && <Markdown src={p.body_md} className="stream-body" />}
+          <StreamFiles files={p.files} />
+        </div>
+      ))}
+    </div>
   );
 }

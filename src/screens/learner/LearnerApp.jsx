@@ -17,6 +17,7 @@ import Live from '../shared/Live.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import Study from './Study.jsx';
+import { ClassList, ClassView, useMyClasses } from './Classes.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
@@ -31,6 +32,7 @@ function notificationTarget(n) {
   if (n.kind === 'session') return '/live';
   if (n.kind === 'assignment' && r.assignment_id) return `/work/${r.assignment_id}`;
   if (n.kind === 'lesson' && r.lesson_id) return `/lesson/${r.lesson_id}`;
+  if ((n.kind === 'class_post' || n.kind === 'stream_reply') && r.class_id) return `/classes/${r.class_id}`;
   return '/';
 }
 
@@ -60,6 +62,9 @@ export default function LearnerApp() {
   const route = useRoute();
   const comments = useQuery('comments', api.listComments);
   const unread = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
+  // Classes only for learners in one (a school's or a centre's, or a tutor's group)
+  const classes = useMyClasses(!app.me.self_learner).data || [];
+  const fresh = classes.reduce((n, c) => n + (c.new || 0), 0);
   const [a, b] = route.parts;
   useBackIntoLockedExam(a === 'attempt');
 
@@ -88,13 +93,15 @@ export default function LearnerApp() {
     : [
         { to: '/', label: 'Today', icon: 'home' },
         { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
+        ...(classes.length ? [{ to: '/classes', label: 'Classes', icon: 'users', count: fresh }] : []),
         { to: '/study', label: 'Study', icon: 'flame' },
         { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
         { to: '/progress', label: 'Progress', icon: 'chart' },
         { to: '/messages', label: 'Messages', icon: 'message', count: unread },
         { to: '/live', label: 'Live', icon: 'video' },
       ];
-  const tabs = self ? nav : [nav[0], nav[1], nav[2], nav[5], nav[3]];
+  const byTo = (to) => nav.find((x) => x.to === to);
+  const tabs = self ? nav : [byTo('/'), byTo('/work'), byTo('/study'), byTo('/messages'), byTo('/library')];
 
   let page;
   if (!a) page = <Today />;
@@ -114,6 +121,8 @@ export default function LearnerApp() {
   else if (a === 'messages') page = <Messages />;
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'settings') page = <Settings />;
+  else if (a === 'classes' && b) page = <ClassView id={b} />;
+  else if (a === 'classes') page = <ClassList />;
   else page = <Today />;
   if (self && a !== 'settings') {
     if (!app.me.setup_done) page = <SelfSetup />;

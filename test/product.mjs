@@ -749,7 +749,8 @@ try {
   await Z.getByText('Class homework: fractions').waitFor();
   // the class's page: its classwork by topic, a gradebook, and a whole class list at once
   await A.getByRole('link', { name: 'Open Year 10 maths' }).click();
-  await A.getByRole('button', { name: 'Classwork', exact: true }).waitFor();
+  await A.getByRole('button', { name: 'Stream', exact: true }).waitFor(); // a class opens on its stream
+  await A.getByRole('button', { name: 'Classwork', exact: true }).click();
   await A.getByText('Class homework: fractions').waitFor();
   await shot(A, 'class-classwork');
   await A.getByRole('button', { name: 'Gradebook', exact: true }).click();
@@ -783,6 +784,46 @@ try {
   await A.getByRole('button', { name: /Save changes/ }).click();
   await A.getByText('Changes saved. Learners see the new version.').waitFor();
   assert.ok((await tc.from('questions').select('rubric_id').eq('assignment_id', chw.id)).data.some((x) => x.rubric_id), 'the question keeps its rubric');
+  // the class stream: a post whose replies the class sees, Zara replies, the tutor answers her; Anaya's dad sees the post, never the replies
+  await A.goto(web.url + '#/learners/classes/' + klass.id);
+  await A.locator('.stream-work', { hasText: 'Class homework: fractions' }).waitFor(); // set for the class, so it's in its stream
+  await A.getByRole('button', { name: /^Post to Year 10 maths/ }).click();
+  const pe = A.getByRole('dialog');
+  await pe.getByLabel('What do you want to say?').fill('Test on Friday: bring a calculator. Any questions?');
+  await pe.getByRole('radio', { name: /see each other’s replies/ }).check();
+  await shot(A, 'stream-new-post');
+  await pe.getByRole('button', { name: 'Post', exact: true }).click();
+  await A.getByText('Posted to Year 10 maths').waitFor();
+  await A.locator('.stream-post', { hasText: 'bring a calculator' }).waitFor();
+  await Z.goto(web.url + '#/');
+  await Z.reload();
+  await Z.getByText('New in your classes').waitFor();
+  await Z.goto(web.url + '#/classes');
+  await Z.getByRole('link', { name: 'Open Year 10 maths' }).click();
+  const zp = Z.locator('.stream-post', { hasText: 'bring a calculator' });
+  await zp.getByText('Everyone in the class sees replies, with names.').waitFor();
+  await zp.getByLabel(/^Reply to .*’s post$/).fill('Can we use a graphing calculator?');
+  await zp.getByRole('button', { name: 'Reply', exact: true }).click();
+  await zp.getByText('Can we use a graphing calculator?').waitFor();
+  await shot(Z, 'stream-learner');
+  await A.reload();
+  const ap = A.locator('.stream-post', { hasText: 'bring a calculator' });
+  await ap.getByText('Can we use a graphing calculator?').waitFor();
+  await ap.getByRole('button', { name: 'Answer', exact: true }).click();
+  await ap.getByText('Answering Zara').waitFor();
+  await ap.getByLabel(/^Reply to .*’s post$/).fill('Yes, any calculator is fine.');
+  await ap.getByRole('button', { name: 'Reply', exact: true }).click();
+  await ap.getByText('Yes, any calculator is fine.').waitFor();
+  await shot(A, 'stream-tutor');
+  await a11y(A, 'A class’s stream');
+  const PD = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'Africa/Lusaka' })).newPage();
+  watch(PD, 'parent (class posts)');
+  await (await import('./sweep.mjs')).signIn(PD, web.url, 'dad@example.com');
+  await PD.getByText('From Anaya’s classes').waitFor();
+  await PD.getByText(/bring a calculator/).waitFor();
+  assert.equal(await PD.getByText('Can we use a graphing calculator?').count(), 0, 'parents never see replies');
+  await shot(PD, 'stream-parent');
+  await PD.close();
   await nav(A, 'Learners').click();
   // a live lesson for the class
   await nav(A, 'Live').click();

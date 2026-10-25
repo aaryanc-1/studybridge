@@ -445,7 +445,7 @@ places, pilot, invoice asked; demo excluded) and Set up → `admin_set_school_pl
 school, notifies managers), with a note when it has fewer than 3 teachers (the school price is for several teachers).
 `_school_year_usd(n)`. Plan & Prof for a tutor whose centre pays links to Schools and centres. Also fixed: time studied (`log_time`) now
 counts for whoever set the item, not always the main tutor (the wall needs it), and Settings refreshes Your plan after centre changes.
-Update C (24 Oct 2026), classroom part 1 (no class stream yet: Aaryan wants to discuss it first). Each class has a page,
+Update C (24 Oct 2026, app 1.1.85), classroom part 1 (the class stream came next, below). Each class has a page,
 Learners → Classes → its name (`/learners/classes/:id/:tab`, src/screens/tutor/ClassPage.jsx), for its teachers only
 (`_class_teacher`: the class's tutor or a class teacher; a manager who doesn't teach it sees the Centre page, never marks). Tabs:
 Classwork (`class_work(class)`: assignments, lesson notes and files set for the class by any of its teachers, grouped by topic, with
@@ -459,6 +459,30 @@ index: level index}). src/screens/shared/Rubric.jsx: RubricPicker in the questio
 RubricEditor; the question becomes worth the rubric's top marks, `_rubric_max`), RubricGrid in Marking (picking levels sets the mark,
 `rubricMark`) and on the learner's results once marks are back (`attempt_detail` gives `rubrics` and each response's `rubric` only
 when released).
+The class stream (25 Oct 2026, Aaryan: learners reply only if the post allows it; classmates see each other's replies, with names,
+only if allowed; parents see posts, never replies ("too much"); managers read every class stream in their centre and post too; a
+teacher or manager posts to one class, several or all at once). Tables `class_posts` (one row per class, copies share `group_id` so
+replies stay inside each class; `replies` off|teachers|class; `pinned`, one per class; `visible_from` for later; `notified_at`),
+`class_post_replies` (`reply_to`; `removed_at`/`removed_by`: removed replies stay visible to the class's staff, marked), `class_mutes`,
+`class_members.stream_seen_at`; RLS on with no policies, so everything goes through functions. `_stream_staff(class)` = its teachers
+(`_class_teacher`) or its organisation's managers (`_class_org_manager`). `stream_classes()`, `post_to_classes(classes, body, files,
+replies, pinned, at, group)`, `edit_class_post` (only the poster; every copy), `delete_class_post(post, everywhere)` (one class: its
+staff or the poster; everywhere: the poster or a manager), `pin_class_post`, `reply_to_post(post, body, reply_to)` (learners: in the
+class, replies on, not muted, not paused, place not unpaid, 20 per 10 minutes), `remove_reply`, `mute_in_class`, `class_stream(class)`
+(posts via `_post_json`, which filters replies per viewer: staff all; learners own + teachers' general replies + answers to them, or
+everyone's in 'class' mode; plus `_class_cards`: work, notes, files, one-off and weekly live lessons set for the class), `my_classes()`
+(teachers, new since `stream_seen_at`, latest post), `stream_seen`, `parent_class_posts(child)` (last 30 days, no replies).
+Notifications: `_notify_post(group)` once per person per post ('class_post', not paused learners, the class's other teachers);
+'stream_reply' to the poster and teachers (once until read) or to the learner a teacher answered; `_stream_tick` (pg_cron
+`studybridge-stream` every 5 minutes) for scheduled posts. Pictures/files: uploaded first to `library/<uid>/stream/<group>/…`
+(`api.uploadStreamFile`), checked by `_stream_files_ok`, read through storage policy `sb_library_stream` → `_can_see_post_files`
+(staff, learners in the class, their parents). UI: src/screens/shared/Stream.jsx (Stream, PostEditor, StreamFiles), the class page
+opens on Stream (`/learners/classes/:id/stream`; a manager who doesn't teach it gets only the Stream tab), learners' Classes menu item
+when they're in a class (src/screens/learner/Classes.jsx: `/classes`, `/classes/:id`, NewInClasses on Today), parents' "From <name>'s
+classes" on This week; live-updates refresh 'stream' and 'my-classes' with each notification. Demo: Grace's pinned notice in every
+class and Mercy's question in Year 10 maths with replies. Website: schools.html "A page for every class". Also fixed: re-running
+setup.sql made a manager a teacher of every class they'd made for someone else (the old-classes line now fills only classes with no
+teacher), and `_class_teacher` no longer counts whoever created the class (a manager could open its gradebook).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

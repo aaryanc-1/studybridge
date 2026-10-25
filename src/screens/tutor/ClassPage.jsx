@@ -1,22 +1,36 @@
-// One class's page, for its teachers: its classwork by topic (from every teacher of the class), a gradebook (each learner ×
-// each piece of work, with averages and a spreadsheet to download), and its people, where a teacher adds a whole class
-// list at once (an invite with its own code for each learner).
+// One class's page, for its teachers: its stream (posts to the class, and what's been set for it), its classwork by topic
+// (from every teacher of the class), a gradebook (each learner × each piece of work, with averages and a spreadsheet to
+// download), and its people, where a teacher adds a whole class list at once (an invite with its own code for each
+// learner). A centre's manager who doesn't teach the class sees its stream only (never marks).
 import { useState } from 'react';
+import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Modal, Page, Seg, copyText, go, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { day, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
+import Stream from '../shared/Stream.jsx';
 
 const prettyCode = (c) => (/^\d{8}$/.test(String(c)) ? `${String(c).slice(0, 4)} ${String(c).slice(4)}` : c);
 const STATE = { draft: 'Draft', hidden: 'Hidden', scheduled: 'Scheduled', posted: 'Posted' };
 
-export default function ClassPage({ id, tab = 'classwork' }) {
+export default function ClassPage({ id, tab = 'stream' }) {
   const lk = useLookups();
+  const app = useApp();
   const c = lk.klass(id);
   if (!c) return <Page title="Class">{lk.ready ? <Empty>This class isn’t in your list.</Empty> : <Loading />}</Page>;
   const members = lk.membersOf(id);
+  const teaches = lk.teachersOf(id).includes(app.me.id);
+  const tabs = teaches
+    ? [
+        { value: 'stream', label: 'Stream' },
+        { value: 'classwork', label: 'Classwork' },
+        { value: 'gradebook', label: 'Gradebook' },
+        { value: 'people', label: 'People' },
+      ]
+    : [{ value: 'stream', label: 'Stream' }];
+  const shown = tabs.some((t) => t.value === tab) ? tab : 'stream';
   return (
     <Page
       eyebrow={
@@ -32,21 +46,23 @@ export default function ClassPage({ id, tab = 'classwork' }) {
         </span>
       }
       actions={
-        <button className="btn primary" onClick={() => go(`/assignments?new=1&class=${id}${c.subject_id ? `&subject=${c.subject_id}` : ''}`)}>
-          <Icon name="plus" size={18} /> Set work for {c.name}
-        </button>
+        teaches && (
+          <button className="btn primary" onClick={() => go(`/assignments?new=1&class=${id}${c.subject_id ? `&subject=${c.subject_id}` : ''}`)}>
+            <Icon name="plus" size={18} /> Set work for {c.name}
+          </button>
+        )
       }
     >
-      <Seg
-        value={tab}
-        onChange={(t) => go(`/learners/classes/${id}/${t}`, { replace: true })}
-        options={[
-          { value: 'classwork', label: 'Classwork' },
-          { value: 'gradebook', label: 'Gradebook' },
-          { value: 'people', label: 'People' },
-        ]}
-      />
-      {tab === 'gradebook' ? <Gradebook id={id} name={c.name} /> : tab === 'people' ? <People c={c} /> : <Classwork id={id} />}
+      {tabs.length > 1 && <Seg value={shown} onChange={(t) => go(`/learners/classes/${id}/${t}`, { replace: true })} options={tabs} />}
+      {shown === 'gradebook' ? (
+        <Gradebook id={id} name={c.name} />
+      ) : shown === 'people' ? (
+        <People c={c} />
+      ) : shown === 'classwork' ? (
+        <Classwork id={id} />
+      ) : (
+        <Stream classId={id} />
+      )}
     </Page>
   );
 }

@@ -3,7 +3,7 @@ import { sb } from './supabase.js';
 import { invalidate } from './data.js';
 
 const MAP = {
-  notifications: ['notifications'],
+  notifications: ['notifications', 'stream', 'my-classes'], // class posts and replies arrive with one
   comments: ['comments'],
   attempts: ['attempts', 'attempt', 'myattempts'],
   responses: ['attempt'],

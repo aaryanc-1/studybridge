@@ -2466,6 +2466,9 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   assert.deepEqual(d.accounts.map((a) => a.label), roles);
   assert.deepEqual(d.accounts.map((a) => a.role), ['tutor', 'tutor', 'tutor', 'tutor', 'learner', 'learner', 'learner', 'learner', 'learner', 'learner', 'parent', 'learner']);
   await fails(as('A', `select admin_demo_build($1)`, [await make()]), /demo already/);
+  // its class streams: the manager's notice in every class, and a question in Year 10 maths with the class's replies
+  assert.equal((await db.query(`select count(*)::int n from class_posts where author_id = $1`, [ids.manager])).rows[0].n, 3);
+  assert.equal((await db.query(`select count(*)::int n from class_post_replies r join class_posts p on p.id = r.post_id where p.author_id = $1`, [ids.tutor1])).rows[0].n, 3);
 
   // a sign-in for any demo account, never anyone else's
   const open = async (label) => {
@@ -3076,4 +3079,186 @@ test('classroom: a class’s classwork by topic, its gradebook, a whole class li
   assert.deepEqual(g.cells.map((x) => [x.learner_id, Number(x.score), Number(x.max), x.released]), [[U.CA, 4, 4, true]]);
   await fails(as('CT2', `select class_gradebook($1)`, [cls]), /Not your class/);
   await fails(as('CA', `select class_gradebook($1)`, [cls]), /Not your class/);
+});
+
+test('the class stream: teachers and managers post to one class or several; replies only when a post allows them, seen by classmates only when it says so; parents see posts, never replies', async () => {
+  const mk = async (k, email, name = k) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name }])).rows[0].id;
+  };
+  for (const [k, n] of [['CSM', 'Mrs Phiri'], ['CST1', 'Mr Lungu'], ['CST2', 'Ms Tembo'], ['CSO', 'Mr Outside']]) {
+    await mk(k, k.toLowerCase() + '@stream.x', n);
+    await one(k, `select * from become_tutor($1, 'UTC')`, [n]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const code = (await val('CSM', `select org_make_centre('Lakeside School')`)).code;
+  await val('CST1', `select org_join($1)`, [code]);
+  await val('CST2', `select org_join($1)`, [code]);
+  const join = async (tutor, k, name) => {
+    await mk(k, k.toLowerCase() + '@stream.x', name);
+    const c = await val(tutor, `insert into invites (name) values ($1) returning code`, [name]);
+    await one(k, `select * from accept_invite($1, $2)`, [c, name]);
+  };
+  await join('CST1', 'CSL1', 'Mutale');
+  await join('CST1', 'CSL2', 'Bwalya');
+  await join('CST2', 'CSL3', 'Chanda');
+  await join('CSO', 'CSLX', 'Someone else');
+  const maths = await val('CSM', `select save_class(null, 'Form 1 maths', null, $1, $2)`, [[U.CSL1, U.CSL2], [U.CST1]]);
+  const sci = await val('CSM', `select save_class(null, 'Form 1 science', null, $1, $2)`, [[U.CSL1, U.CSL3], [U.CST2]]);
+  const club = await val('CST1', `select save_class(null, 'Maths club', null, $1)`, [[U.CSL2]]);
+  // running setup.sql again (every release does) keeps the manager out of the classes she made for others
+  await db.exec(SETUP);
+  assert.equal((await db.query(`select count(*)::int n from class_teachers where class_id = $1 and teacher_id = $2`, [maths, U.CSM])).rows[0].n, 0);
+  await fails(as('CSM', `select class_gradebook($1)`, [maths]), /Not your class/);
+
+  // who can post where: a teacher to the classes they teach, the manager to every class in the school, nobody else
+  assert.deepEqual((await val('CST1', `select stream_classes()`)).map((c) => c.name).sort(), ['Form 1 maths', 'Maths club']);
+  assert.deepEqual((await val('CSM', `select stream_classes()`)).map((c) => [c.name, c.teaches]).sort(), [['Form 1 maths', false], ['Form 1 science', false], ['Maths club', false]]);
+  assert.deepEqual(await val('CSO', `select stream_classes()`), []);
+  assert.deepEqual(await val('CSL1', `select stream_classes()`), []);
+  await fails(as('CST1', `select post_to_classes($1, 'Hello', '[]', 'off')`, [[sci]]), /classes you teach/);
+  await fails(as('CSO', `select post_to_classes($1, 'Hello', '[]', 'off')`, [[maths]]), /classes you teach/);
+  await fails(as('CSL1', `select post_to_classes($1, 'Hello', '[]', 'off')`, [[maths]]), /Only teachers/);
+  await fails(as('CST1', `select post_to_classes($1, '   ', '[]', 'off')`, [[maths]]), /Write something/);
+  await fails(as('CST1', `select post_to_classes($1, 'Hi', '[]', 'everyone')`, [[maths]]), /who can reply/);
+
+  // Mr Lungu asks both his classes a question; replies on, only teachers see them
+  const g1 = await val('CST1', `select post_to_classes($1, 'What did you find hardest this week?', '[]', 'teachers')`, [[maths, club]]);
+  // the manager tells every class at once; no replies
+  const g2 = await val('CSM', `select post_to_classes($1, 'School closes early on Friday.', '[]', 'off')`, [[maths, sci, club]]);
+  const toldOf = async (k, g) => (await db.query(`select count(*)::int n from notifications where user_id = $1 and kind = 'class_post' and ref ->> 'post_id' in (select id::text from class_posts where group_id = $2)`, [U[k], g])).rows[0].n;
+  assert.equal(await toldOf('CSL1', g2), 1, 'told once, though she’s in two of the classes');
+  assert.equal(await val('CST1', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'class_post'`), 1, 'her teachers hear about the manager’s post too');
+  assert.equal(await val('CSLX', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'class_post'`), 0);
+
+  // learners read their own classes' streams, no one else's; the copies of one post are separate in each class
+  const s1 = await val('CSL1', `select class_stream($1)`, [maths]);
+  assert.equal(s1.staff, false);
+  assert.deepEqual(s1.posts.map((p) => p.body_md).sort(), ['School closes early on Friday.', 'What did you find hardest this week?']);
+  assert.equal(s1.posts[0].classes, null, 'learners aren’t told which other classes got it');
+  await fails(as('CSL3', `select class_stream($1)`, [maths]), /Not your class/);
+  await fails(as('CSLX', `select class_stream($1)`, [maths]), /Not your class/);
+  await fails(as('CST2', `select class_stream($1)`, [maths]), /Not your class/);
+  const q = s1.posts.find((p) => p.replies_mode === 'teachers');
+  const qClub = (await val('CSL2', `select class_stream($1)`, [club])).posts.find((p) => p.replies_mode === 'teachers');
+  assert.notEqual(q.id, qClub.id);
+  const notice = s1.posts.find((p) => p.replies_mode === 'off');
+  await fails(as('CSL1', `select reply_to_post($1, 'ok')`, [notice.id]), /Replies are off/);
+  await fails(as('CSL3', `select reply_to_post($1, 'sneaky')`, [q.id]), /Not your class/);
+
+  // replies only teachers see: each learner sees their own, and the teacher's answer to them
+  const r1 = await val('CSL1', `select reply_to_post($1, 'Fractions with different bottoms')`, [q.id]);
+  await val('CSL2', `select reply_to_post($1, 'Negative numbers')`, [q.id]);
+  await val('CSL2', `select reply_to_post($1, 'And rounding')`, [q.id]);
+  const seen = async (k, cls = maths) => (await val(k, `select class_stream($1)`, [cls])).posts.find((p) => p.group_id === g1).replies.map((r) => r.body);
+  assert.deepEqual(await seen('CSL1'), ['Fractions with different bottoms']);
+  assert.deepEqual(await seen('CSL2'), ['Negative numbers', 'And rounding']);
+  assert.deepEqual(await seen('CST1'), ['Fractions with different bottoms', 'Negative numbers', 'And rounding']);
+  assert.deepEqual(await seen('CSL2', club), [], 'the club copy has its own replies');
+  assert.equal(await val('CST1', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'stream_reply'`), 1, 'one alert until he looks, not one per reply');
+  await val('CST1', `select reply_to_post($1, 'We’ll do those on Monday', $2)`, [q.id, r1]);
+  assert.deepEqual(await seen('CSL1'), ['Fractions with different bottoms', 'We’ll do those on Monday']);
+  assert.deepEqual(await seen('CSL2'), ['Negative numbers', 'And rounding'], 'an answer to someone else stays theirs');
+  assert.equal(await val('CSL1', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'stream_reply'`), 1);
+
+  // he lets the class see each other's replies (with names)
+  await fails(as('CSM', `select edit_class_post($1, 'Changed', '[]', 'class')`, [q.id]), /Only the person who posted/);
+  await val('CST1', `select edit_class_post($1, 'What did you find hardest this week?', '[]', 'class')`, [q.id]);
+  const shared = (await val('CSL2', `select class_stream($1)`, [maths])).posts.find((p) => p.group_id === g1);
+  assert.deepEqual(shared.replies.map((r) => [r.author.name, r.body, r.teacher]), [
+    ['Mutale', 'Fractions with different bottoms', false], ['Bwalya', 'Negative numbers', false], ['Bwalya', 'And rounding', false], ['Mr Lungu', 'We’ll do those on Monday', true],
+  ]);
+  assert.equal((await val('CSL2', `select class_stream($1)`, [club])).posts.find((p) => p.group_id === g1).replies_mode, 'class', 'the change reaches every class it went to');
+
+  // keeping it safe: a teacher stops someone replying, and takes a reply down; it stays on record for the teachers
+  await fails(as('CSL2', `select mute_in_class($1, $2, true)`, [maths, U.CSL1]), /Not your class/);
+  await val('CST1', `select mute_in_class($1, $2, true)`, [maths, U.CSL2]);
+  assert.equal((await val('CSL2', `select class_stream($1)`, [maths])).muted, true);
+  await fails(as('CSL2', `select reply_to_post($1, 'hello?')`, [q.id]), /turned off your replies/);
+  await val('CST1', `select mute_in_class($1, $2, false)`, [maths, U.CSL2]);
+  const rude = await val('CSL2', `select reply_to_post($1, 'something unkind')`, [q.id]);
+  await fails(as('CSL1', `select remove_reply($1)`, [rude]), /your own replies/);
+  await val('CST1', `select remove_reply($1)`, [rude]);
+  assert.ok(!(await seen('CSL1')).includes('something unkind'));
+  const onRecord = (await val('CSM', `select class_stream($1)`, [maths])).posts.find((p) => p.group_id === g1).replies.find((r) => r.id === rude);
+  assert.deepEqual([onRecord.body, onRecord.removed], ['something unkind', true], 'the manager sees it, marked removed');
+  await val('CSL1', `select remove_reply($1)`, [r1]);
+
+  // the manager reads every stream in the school, posts and replies, though she teaches none of them
+  const ms = await val('CSM', `select class_stream($1)`, [sci]);
+  assert.deepEqual([ms.staff, ms.teaches], [true, false]);
+  assert.deepEqual((await val('CSM', `select class_stream($1)`, [maths])).posts.find((p) => p.group_id === g1).classes.map((c) => c.name), ['Form 1 maths', 'Maths club']);
+
+  // a post for later: nobody sees it or hears about it until then
+  const g3 = await val('CST1', `select post_to_classes($1, 'Quiz on Thursday', '[]', 'off', false, now() + interval '1 day')`, [[maths]]);
+  assert.ok(!(await val('CSL1', `select class_stream($1)`, [maths])).posts.some((p) => p.group_id === g3));
+  assert.equal((await val('CST1', `select class_stream($1)`, [maths])).posts.find((p) => p.group_id === g3).scheduled, true);
+  await db.query(`update class_posts set visible_from = now() - interval '1 minute' where group_id = $1`, [g3]);
+  assert.equal((await db.query(`select public._stream_tick() n`)).rows[0].n, 1);
+  assert.equal(await val('CSL1', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New in Form 1 maths' and body like '%Quiz on Thursday'`), 1);
+  assert.equal((await db.query(`select public._stream_tick() n`)).rows[0].n, 0, 'once');
+
+  // pinned to the top of its class
+  const quiz = (await val('CSL1', `select class_stream($1)`, [maths])).posts.find((p) => p.group_id === g3);
+  await fails(as('CSL1', `select pin_class_post($1, true)`, [quiz.id]), /Not your class/);
+  await val('CST1', `select pin_class_post($1, true)`, [quiz.id]);
+  assert.equal((await val('CSL1', `select class_stream($1)`, [maths])).posts[0].group_id, g3);
+
+  // a paused learner reads but doesn't reply, and isn't told about new posts
+  await as('CST1', `select pause_learner($1, true)`, [U.CSL2]);
+  await fails(as('CSL2', `select reply_to_post($1, 'hi')`, [q.id]), /paused/);
+  assert.equal((await val('CSL2', `select class_stream($1)`, [maths])).closed, true);
+  const g4 = await val('CST1', `select post_to_classes($1, 'Homework is up', '[]', 'off')`, [[maths]]);
+  assert.equal(await toldOf('CSL2', g4), 0);
+  assert.equal(await toldOf('CSL1', g4), 1);
+  await as('CST1', `select pause_learner($1, false)`, [U.CSL2]);
+
+  // pictures and files: added under the poster's own folder for that post, then seen by whoever sees the post
+  const g5 = '0a0a0a0a-0000-4000-8000-000000000005';
+  await fails(as('CST1', `select post_to_classes($1, 'Sheet', $2, 'off', false, null, $3)`, [[maths], JSON.stringify([{ path: `${U.CST2}/stream/${g5}/a.pdf`, name: 'a.pdf' }]), g5]), /added here/);
+  const path = `${U.CST1}/stream/${g5}/worksheet.pdf`;
+  await as('CST1', `insert into storage.objects (bucket_id, name) values ('library', $1)`, [path]);
+  await val('CST1', `select post_to_classes($1, 'Worksheet for Monday', $2, 'off', false, null, $3)`, [[maths], JSON.stringify([{ path, name: 'worksheet.pdf' }]), g5]);
+  await fails(as('CST1', `select post_to_classes($1, 'Again', '[]', 'off', false, null, $2)`, [[maths], g5]), /already up/);
+  const canOpen = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'library' and name = $1`, [path])).length;
+  assert.equal(await canOpen('CSL1'), 1);
+  assert.equal(await canOpen('CSM'), 1);
+  assert.equal(await canOpen('CSL3'), 0, 'not in the class');
+  assert.equal(await canOpen('CSLX'), 0);
+
+  // what's set for the class shows in the stream by itself
+  await val('CST1', `insert into assignments (title, kind, class_id, visibility) values ('Fractions practice', 'homework', $1, 'visible') returning id`, [maths]);
+  await val('CST1', `insert into assignments (title, kind, class_id, visibility) values ('Not yet', 'homework', $1, 'hidden') returning id`, [maths]);
+  assert.deepEqual((await val('CSL1', `select class_stream($1)`, [maths])).work.map((w) => [w.kind, w.title, w.by]), [['assignment', 'Fractions practice', 'Mr Lungu']]);
+
+  // a learner's classes, and what's new since they looked
+  const mine = await val('CSL1', `select my_classes()`);
+  assert.deepEqual(mine.map((c) => [c.name, c.teachers]), [['Form 1 maths', ['Mr Lungu']], ['Form 1 science', ['Ms Tembo']]]);
+  assert.ok(mine[0].new >= 3);
+  await as('CSL1', `select stream_seen($1)`, [maths]);
+  assert.equal((await val('CSL1', `select my_classes()`))[0].new, 0);
+  assert.deepEqual(await val('CST1', `select my_classes()`), []);
+
+  // parents: the teachers' posts in their child's classes (and their pictures), never anyone's replies
+  await mk('CSP', 'csp@stream.x', 'Mutale’s mum');
+  const inv = await one('CST1', `select * from create_parent_invite($1, 'Mum')`, [U.CSL1]);
+  await one('CSP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const pp = await val('CSP', `select parent_class_posts($1)`, [U.CSL1]);
+  assert.ok(pp.some((p) => p.body_md === 'School closes early on Friday.' && p.class === 'Form 1 science'));
+  assert.ok(pp.some((p) => p.body_md === 'What did you find hardest this week?'));
+  assert.ok(pp.every((p) => !('replies' in p)));
+  assert.equal(await canOpen('CSP'), 1);
+  await fails(as('CSP', `select parent_class_posts($1)`, [U.CSL3]), /can’t see/);
+  await fails(as('CSL1', `select parent_class_posts($1)`, [U.CSL1]), /can’t see/);
+
+  // taking a post down: from one class (any of its teachers), or from every class (whoever posted it, or a manager)
+  const clubCopy = (await val('CST1', `select class_stream($1)`, [club])).posts.find((p) => p.group_id === g2);
+  await fails(as('CST1', `select delete_class_post($1, true)`, [clubCopy.id]), /every class/);
+  assert.equal(await val('CST1', `select delete_class_post($1, false)`, [clubCopy.id]), 2, 'still in the other two');
+  await fails(as('CSL1', `select delete_class_post($1, false)`, [notice.id]), /Not your class/);
+  assert.equal(await val('CSM', `select delete_class_post($1, true)`, [notice.id]), 0);
+
+  // her own replies come with her data
+  const mineData = await val('CSL1', `select export_my_data()`);
+  assert.deepEqual(mineData.class_replies.map((r) => [r.class, r.removed]), [['Form 1 maths', true]]);
+  assert.ok((await val('CST1', `select export_my_data()`)).class_posts.length >= 3);
 });

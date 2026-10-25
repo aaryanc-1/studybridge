@@ -259,6 +259,31 @@ export const myTeachers = () => run(sb().rpc('my_teachers'));
 export const classWork = (classId) => run(sb().rpc('class_work', { p_class: classId }));
 export const classGradebook = (classId) => run(sb().rpc('class_gradebook', { p_class: classId }));
 export const classInvites = (classId, names) => run(sb().rpc('class_invites', { p_class: classId, p_names: names }));
+// The class stream: posts to one class or several at once, replies when a post allows them
+export const streamClasses = () => run(sb().rpc('stream_classes'));
+export const classStream = (classId) => run(sb().rpc('class_stream', { p_class: classId }));
+export const postToClasses = ({ classes, body, files = [], replies = 'off', pinned = false, at = null, group = null }) =>
+  run(sb().rpc('post_to_classes', { p_classes: classes, p_body: body, p_files: files, p_replies: replies, p_pinned: pinned, p_at: at, p_group: group }));
+export const editClassPost = (postId, { body, files = [], replies = 'off', at = null }) =>
+  run(sb().rpc('edit_class_post', { p_post: postId, p_body: body, p_files: files, p_replies: replies, p_at: at }));
+export const deleteClassPost = (postId, everywhere = false) => run(sb().rpc('delete_class_post', { p_post: postId, p_everywhere: everywhere }));
+export const pinClassPost = (postId, on) => run(sb().rpc('pin_class_post', { p_post: postId, p_on: on }));
+export const replyToPost = (postId, body, replyTo = null) => run(sb().rpc('reply_to_post', { p_post: postId, p_body: body, p_reply_to: replyTo }));
+export const removeReply = (replyId) => run(sb().rpc('remove_reply', { p_reply: replyId }));
+export const muteInClass = (classId, learnerId, on) => run(sb().rpc('mute_in_class', { p_class: classId, p_learner: learnerId, p_on: on }));
+export const myClasses = () => run(sb().rpc('my_classes'));
+export const streamSeen = (classId) => run(sb().rpc('stream_seen', { p_class: classId }));
+export const parentClassPosts = (learnerId) => run(sb().rpc('parent_class_posts', { p_learner: learnerId }));
+// A picture or file for a post, put in the poster's own folder for that post before it goes up
+export async function uploadStreamFile(file, group) {
+  const safe = (file.name || 'file').replace(/[^\w.() -]+/g, '_').slice(-80) || 'file';
+  const path = `${uid()}/stream/${group}/${uuid().slice(0, 8)}-${safe}`;
+  const bytes = await file.arrayBuffer();
+  await run(sb().storage.from('library').upload(path, bytes, { contentType: file.type || 'application/octet-stream' }));
+  await store.blobs.set(`library/${path}`, new Blob([bytes], { type: file.type || 'application/octet-stream' }));
+  return { path, name: file.name || safe, type: file.type || '', size: file.size || bytes.byteLength };
+}
+export const removeStreamFiles = (paths) => (paths.length ? sb().storage.from('library').remove(paths).catch(() => {}) : Promise.resolve());
 // Rubrics (a teacher's own; a learner reads the ones on their questions)
 export const listRubrics = () => run(sb().from('rubrics').select('*').order('title'));
 // A learner's places (main tutor, other tutors, schools and centres): or, for a parent, their child's

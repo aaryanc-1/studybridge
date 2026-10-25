@@ -81,6 +81,8 @@ const P = {
   shield: 'M12 3 5 6v5.5c0 4.4 3 8 7 9.5 4-1.5 7-5.1 7-9.5V6l-7-3ZM9 12l2 2 4-4',
   cap: 'M2.5 9 12 4.5 21.5 9 12 13.5 2.5 9ZM6.5 11v4.5c0 1.4 2.5 3 5.5 3s5.5-1.6 5.5-3V11M21.5 9v5',
   pause: 'M9 5v14M15 5v14',
+  pin: 'M9 4h6M10 4v5l-3 4h10l-3-4V4M12 13v7',
+  megaphone: 'M4 10v4h3l7 4V6L7 10H4ZM17.5 9.5a3.5 3.5 0 0 1 0 5M7 14l1.5 5h2.5l-1.5-5',
 };
 
 export default function Icon({ name, size = 20, stroke = 1.8, className, style, title }) {

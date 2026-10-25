@@ -4937,6 +4937,10 @@ begin
         into rows using me.id;
       v := v || jsonb_build_object('class_members', rows);
     end if;
+    if to_regclass('public.class_posts') is not null then
+      execute 'select coalesce(jsonb_agg(to_jsonb(p)), ''[]'') from public.class_posts p where p.author_id = $1' into rows using me.id;
+      v := v || jsonb_build_object('class_posts', rows);
+    end if;
   elsif me.role = 'learner' then
     v := v || jsonb_build_object(
       'tutor', (select display_name from public.profiles where id = me.tutor_id),
@@ -4952,6 +4956,10 @@ begin
       'messages', (select coalesce(jsonb_agg(jsonb_build_object('at', c.created_at, 'from_me', c.author_id = me.id, 'text', c.body) order by c.created_at), '[]')
                      from public.comments c where c.learner_id = me.id),
       'time_studied', (select coalesce(jsonb_agg(to_jsonb(x) - 'tutor_id'), '[]') from public.activity x where x.learner_id = me.id),
+      'class_replies', (select coalesce(jsonb_agg(jsonb_build_object('at', r.created_at, 'class', c.name, 'text', r.body, 'removed', r.removed_at is not null)
+                                                  order by r.created_at), '[]')
+                          from public.class_post_replies r join public.class_posts cp on cp.id = r.post_id join public.classes c on c.id = cp.class_id
+                         where r.author_id = me.id),
       'flashcard_reviews', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.card_reviews x where x.learner_id = me.id),
       'my_flashcards', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.cards x where x.learner_id = me.id and x.source in ('own', 'mistake')),
       'study_notes', (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from public.study_notes x where x.learner_id = me.id),
@@ -7653,6 +7661,7 @@ declare
   wk date := (date_trunc('week', now()) - interval '7 days')::date;
   d int;
   sub uuid;
+  sp uuid;
 begin
   perform public._admin();
   if exists (select 1 from public.profiles where demo) then raise exception 'There’s a demo already. Remove it first, or use Reset.'; end if;
@@ -7840,6 +7849,21 @@ begin
     insert into public.parent_links (parent_id, learner_id, tutor_id) values (par, stu, c) on conflict do nothing;
   end if;
 
+  -- the class stream: the manager tells every class at once (pinned), and Mercy asks Year 10 maths a question the class sees
+  if to_regclass('public.class_posts') is not null then
+    v_id := gen_random_uuid();
+    insert into public.class_posts (class_id, group_id, author_id, body_md, replies, pinned, visible_from, notified_at)
+    select x, v_id, g, 'Half term starts on Friday. Enjoy the break, and keep your streak going!', 'off', true, now() - interval '2 days', now()
+      from unnest(array[y10, y11, y9]) x;
+    insert into public.class_posts (class_id, group_id, author_id, body_md, replies, visible_from, notified_at)
+    values (y10, gen_random_uuid(), m, 'Which topic should we go over again before the mock? Reply below.', 'class', now() - interval '1 day', now())
+    returning id into sp;
+    insert into public.class_post_replies (post_id, author_id, body, created_at) values
+      (sp, l1, 'Simultaneous equations, please', now() - interval '20 hours'),
+      (sp, l2, 'Same, and the graph questions', now() - interval '18 hours'),
+      (sp, m, 'Good idea. We’ll start with those on Monday.', now() - interval '17 hours');
+  end if;
+
   perform public._admin_log('demo_made', null, jsonb_build_object('accounts', p_accounts));
   return public.admin_demo();
 end $$;
@@ -7948,8 +7972,11 @@ revoke all on public.class_teachers from public, anon, authenticated;
 grant select on public.class_teachers to authenticated;
 alter table public.classes add column if not exists org_id uuid references public.organisations (id) on delete set null;
 alter table public.classes add column if not exists join_code text unique;
--- classes from before: the tutor who made it teaches it, in their organisation
-insert into public.class_teachers (class_id, teacher_id) select id, tutor_id from public.classes on conflict do nothing;
+-- classes from before: the tutor who made it teaches it, in their organisation (only classes with no teacher at all: a
+-- manager who made a class for someone else doesn't become its teacher each time this file runs again)
+insert into public.class_teachers (class_id, teacher_id)
+select c.id, c.tutor_id from public.classes c where not exists (select 1 from public.class_teachers t where t.class_id = c.id)
+on conflict do nothing;
 update public.classes c set org_id = public._org_of(c.tutor_id) where org_id is null;
 
 -- However a class is made, whoever made it teaches it, in their organisation (a manager's save_class then sets the teachers)
@@ -10245,7 +10272,7 @@ create trigger questions_rubric before insert or update of rubric_id on public.q
 -- Who may open a class's page: its teachers (a centre's manager sees classes, not marks)
 create or replace function public._class_teacher(p_class uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.classes c where c.id = p_class and (c.tutor_id = auth.uid() or public._teaches_class(c.id)))
+  select public._teaches_class(p_class)
 $$;
 
 -- Classwork: everything set for the class, by any of its teachers, with its topic
@@ -10319,6 +10346,454 @@ begin
     outv := outv || jsonb_build_array(jsonb_build_object('id', v.id, 'name', v.name, 'code', v.code));
   end loop;
   return outv;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- The class stream (decided with Aaryan 25 Oct 2026): a noticeboard on each class. Its teachers, and the managers of
+-- its centre or school, post to one class or several at once (a copy per class sharing group_id, so replies stay inside
+-- each class). Learners reply only when the post allows it, and see each other's replies (with names) only when it says
+-- so. Managers read every stream in their centre. Parents see teachers' posts, never replies. Work, notes, files and
+-- live lessons set for the class show in it by themselves. Everything goes through the functions below.
+-- ---------------------------------------------------------------------
+create table if not exists public.class_posts (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  group_id uuid not null,
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  body_md text not null default '' check (length(body_md) <= 5000),
+  files jsonb not null default '[]',
+  replies text not null default 'off' check (replies in ('off', 'teachers', 'class')),
+  pinned boolean not null default false,
+  visible_from timestamptz not null default now(),
+  notified_at timestamptz,
+  created_at timestamptz not null default now(),
+  edited_at timestamptz
+);
+create index if not exists class_posts_class on public.class_posts (class_id, visible_from desc);
+create index if not exists class_posts_group on public.class_posts (group_id);
+create table if not exists public.class_post_replies (
+  id uuid primary key default gen_random_uuid(),
+  post_id uuid not null references public.class_posts (id) on delete cascade,
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  reply_to uuid references public.class_post_replies (id) on delete set null,
+  body text not null check (length(trim(body)) between 1 and 2000),
+  created_at timestamptz not null default now(),
+  removed_at timestamptz,
+  removed_by uuid references public.profiles (id) on delete set null
+);
+create index if not exists class_post_replies_post on public.class_post_replies (post_id, created_at);
+create index if not exists class_post_replies_author on public.class_post_replies (author_id, created_at);
+-- Learners a teacher has stopped replying in one class (they still read it)
+create table if not exists public.class_mutes (
+  class_id uuid not null references public.classes (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  muted_by uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (class_id, learner_id)
+);
+alter table public.class_members add column if not exists stream_seen_at timestamptz;
+alter table public.class_posts enable row level security;
+alter table public.class_post_replies enable row level security;
+alter table public.class_mutes enable row level security;
+revoke all on public.class_posts from public, anon, authenticated;
+revoke all on public.class_post_replies from public, anon, authenticated;
+revoke all on public.class_mutes from public, anon, authenticated;
+drop trigger if exists class_posts_paid on public.class_posts;
+create trigger class_posts_paid before insert or update on public.class_posts for each row execute function public._paid_guard();
+drop trigger if exists class_post_replies_paid on public.class_post_replies;
+create trigger class_post_replies_paid before insert or update on public.class_post_replies for each row execute function public._paid_guard();
+
+-- Who writes in a class's stream and looks after it: its teachers, and the managers of its centre or school
+create or replace function public._stream_staff(p_class uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._class_teacher(p_class) or public._class_org_manager(p_class)
+$$;
+
+-- The classes someone can post to: the ones they teach, and (a manager) every class in their centre
+create or replace function public.stream_classes() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'subject_id', c.subject_id, 'teaches', public._class_teacher(c.id))
+                            order by public._class_teacher(c.id) desc, c.name), '[]')
+    from public.classes c
+   where not c.archived and public.my_role() = 'tutor' and public._stream_staff(c.id)
+$$;
+
+-- One post as the viewer sees it, with the replies they may read
+create or replace function public._post_json(p public.class_posts, p_staff boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', p.id, 'group_id', p.group_id, 'class_id', p.class_id,
+    'author', jsonb_build_object('id', a.id, 'name', a.display_name), 'mine', p.author_id = auth.uid(),
+    'body_md', p.body_md, 'files', p.files, 'replies_mode', p.replies, 'pinned', p.pinned,
+    'visible_from', p.visible_from, 'scheduled', p.visible_from > now(), 'created_at', p.created_at, 'edited_at', p.edited_at,
+    'classes', case when p_staff then (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name), '[]')
+                                         from public.class_posts o join public.classes c on c.id = o.class_id where o.group_id = p.group_id) end,
+    'replies', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', r.id, 'reply_to', r.reply_to, 'body', case when r.removed_at is null or p_staff then r.body end,
+        'removed', r.removed_at is not null, 'removed_by_author', r.removed_by = r.author_id,
+        'author', jsonb_build_object('id', u.id, 'name', u.display_name), 'teacher', u.role <> 'learner', 'mine', r.author_id = auth.uid(),
+        'created_at', r.created_at) order by r.created_at)
+      from public.class_post_replies r join public.profiles u on u.id = r.author_id
+     where r.post_id = p.id
+       and (p_staff or (r.removed_at is null and (
+              p.replies = 'class'
+              or r.author_id = auth.uid()
+              or (u.role <> 'learner' and (r.reply_to is null
+                    or exists (select 1 from public.class_post_replies q where q.id = r.reply_to and q.author_id = auth.uid()))))))), '[]'))
+  from public.profiles a where a.id = p.author_id
+$$;
+
+-- Work, notes, files and live lessons set for the class, as the viewer would see them (newest first)
+create or replace function public._class_cards(p_class uuid, p_staff boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(z.x order by z.x ->> 'at' desc), '[]') from (
+    select u.x from (
+      select jsonb_build_object('kind', 'assignment', 'id', a.id, 'title', a.title, 'type', a.kind, 'due_at', a.due_at, 'mine', a.tutor_id = auth.uid(),
+               'by', (select display_name from public.profiles where id = a.tutor_id),
+               'at', case when a.visibility = 'scheduled' and a.visible_from is not null then a.visible_from else a.created_at end) x
+        from public.assignments a
+       where a.class_id = p_class and not a.practice and not a.draft
+         and (a.visibility = 'visible' or (a.visibility = 'scheduled' and a.visible_from <= now()))
+         and (p_staff or public._assignment_visible_to(a, auth.uid()))
+      union all
+      select jsonb_build_object('kind', 'lesson', 'id', l.id, 'title', l.title, 'mine', l.tutor_id = auth.uid(),
+               'by', (select display_name from public.profiles where id = l.tutor_id),
+               'at', case when l.visibility = 'scheduled' and l.visible_from is not null then l.visible_from else l.created_at end)
+        from public.lessons l
+       where l.class_id = p_class and (l.visibility = 'visible' or (l.visibility = 'scheduled' and l.visible_from <= now()))
+         and (p_staff or public.can_learner_see(l.tutor_id, l.learner_ids, l.subject_id, l.visibility, l.visible_from))
+      union all
+      select jsonb_build_object('kind', 'file', 'id', f.id, 'title', f.name, 'mine', f.tutor_id = auth.uid(),
+               'by', (select display_name from public.profiles where id = f.tutor_id),
+               'at', case when f.visibility = 'scheduled' and f.visible_from is not null then f.visible_from else f.created_at end)
+        from public.files f
+       where f.class_id = p_class and (f.visibility = 'visible' or (f.visibility = 'scheduled' and f.visible_from <= now()))
+         and (p_staff or public.can_learner_see(f.tutor_id, f.learner_ids, f.subject_id, f.visibility, f.visible_from))
+      union all
+      select jsonb_build_object('kind', 'session', 'id', s.id, 'title', s.title, 'starts_at', s.starts_at, 'mine', s.tutor_id = auth.uid(),
+               'by', (select display_name from public.profiles where id = s.tutor_id), 'at', s.created_at)
+        from public.sessions s
+       where s.class_id = p_class and s.series_id is null and not s.cancelled and s.starts_at > now() - interval '1 day'
+         and (p_staff or auth.uid() = any (s.learner_ids))
+      union all
+      select jsonb_build_object('kind', 'series', 'id', ls.id, 'title', ls.title, 'weekday', ls.weekday, 'start_time', ls.start_time,
+               'timezone', ls.timezone, 'mine', ls.tutor_id = auth.uid(), 'by', (select display_name from public.profiles where id = ls.tutor_id),
+               'at', ls.created_at)
+        from public.lesson_series ls
+       where ls.class_id = p_class and (ls.ends_on is null or ls.ends_on >= current_date)
+         and (p_staff or auth.uid() = any (ls.learner_ids))
+    ) u order by u.x ->> 'at' desc limit 60
+  ) z
+$$;
+
+-- A class's stream: its posts (pinned first) and what's been set for it. For its teachers and managers, and its learners.
+create or replace function public.class_stream(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  c public.classes;
+  staff boolean;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null then raise exception 'Not your class.'; end if;
+  staff := public._stream_staff(p_class);
+  if not staff and not public._in_class(p_class) then raise exception 'Not your class.'; end if;
+  return jsonb_build_object(
+    'class', jsonb_build_object('id', c.id, 'name', c.name, 'subject_id', c.subject_id, 'archived', c.archived, 'tutor_id', c.tutor_id),
+    'staff', staff,
+    'teaches', public._class_teacher(p_class),
+    'manager', public._class_org_manager(p_class),
+    'muted', exists (select 1 from public.class_mutes where class_id = p_class and learner_id = auth.uid()),
+    'closed', not staff and (public._place_unpaid(c.tutor_id) or public._paused_for(auth.uid(), c.tutor_id)),
+    'muted_learners', case when staff then (select coalesce(jsonb_agg(learner_id), '[]') from public.class_mutes where class_id = p_class) end,
+    'posts', coalesce((select jsonb_agg(public._post_json(p, staff) order by p.pinned desc, p.visible_from desc)
+                         from public.class_posts p
+                        where p.id in (select x.id from public.class_posts x where x.class_id = p_class and (staff or x.visible_from <= now())
+                                        order by x.visible_from desc limit 100)), '[]'),
+    'work', public._class_cards(p_class, staff));
+end $$;
+
+-- Tell the class (and its other teachers) about a post once it's up: once per person, however many classes it went to
+create or replace function public._notify_post(p_group uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  v_author text;
+  v_snip text;
+begin
+  update public.class_posts set notified_at = now() where group_id = p_group and notified_at is null and visible_from <= now();
+  if not found then return; end if;
+  select a.display_name, p.body_md into v_author, v_snip
+    from public.class_posts p join public.profiles a on a.id = p.author_id where p.group_id = p_group limit 1;
+  v_snip := left(trim(regexp_replace(coalesce(v_snip, ''), '[$*#_`>\\{}]+', '', 'g')), 140);
+  if v_snip = '' then v_snip := 'Shared a picture or file.'; end if;
+  for r in
+    select distinct on (u.id) u.id, cp.class_id, c.name, cp.id as post_id
+      from public.class_posts cp
+      join public.classes c on c.id = cp.class_id
+      join lateral (
+        select m.learner_id as id from public.class_members m
+         where m.class_id = cp.class_id and not public._paused_for(m.learner_id, c.tutor_id)
+        union select c.tutor_id
+        union select t.teacher_id from public.class_teachers t where t.class_id = cp.class_id
+      ) u on true
+     where cp.group_id = p_group and u.id <> cp.author_id
+     order by u.id, c.name
+  loop
+    perform public.notify_user(r.id, 'class_post', 'New in ' || r.name, coalesce(v_author, 'Your teacher') || ': ' || v_snip,
+                               jsonb_build_object('class_id', r.class_id, 'post_id', r.post_id));
+  end loop;
+end $$;
+
+-- Pictures and files in a post sit under library/<author>/stream/<group>/…, put there before posting
+create or replace function public._stream_files_ok(p_files jsonb, p_group uuid) returns boolean
+language plpgsql stable as $$
+declare f jsonb;
+begin
+  if p_files is null or jsonb_typeof(p_files) <> 'array' or jsonb_array_length(p_files) > 6 then return false; end if;
+  for f in select * from jsonb_array_elements(p_files) loop
+    if jsonb_typeof(f) <> 'object' or coalesce(f ->> 'path', '') not like '%/stream/' || p_group::text || '/%'
+       or split_part(f ->> 'path', '/', 1) <> coalesce(auth.uid()::text, '') then
+      return false;
+    end if;
+  end loop;
+  return true;
+end $$;
+
+-- Post to one class or several at once (now, or from a time). Pinning puts it at the top of each class.
+create or replace function public.post_to_classes(p_classes uuid[], p_body text, p_files jsonb default '[]', p_replies text default 'off',
+                                                  p_pinned boolean default false, p_at timestamptz default null, p_group uuid default null)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  v_group uuid := coalesce(p_group, gen_random_uuid());
+  v_body text := left(trim(coalesce(p_body, '')), 5000);
+  v_files jsonb := coalesce(p_files, '[]');
+  v_at timestamptz := greatest(coalesce(p_at, now()), now());
+  c uuid;
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Only teachers post in a class.'; end if;
+  if coalesce(cardinality(p_classes), 0) = 0 then raise exception 'Choose at least one class.'; end if;
+  if coalesce(p_replies, '') not in ('off', 'teachers', 'class') then raise exception 'Choose who can reply.'; end if;
+  if not public._stream_files_ok(v_files, v_group) then raise exception 'Up to 6 pictures or files a post, added here.'; end if;
+  if v_body = '' and jsonb_array_length(v_files) = 0 then raise exception 'Write something, or add a picture or file.'; end if;
+  if exists (select 1 from public.class_posts where group_id = v_group) then raise exception 'That post is already up.'; end if;
+  foreach c in array (select array_agg(distinct x) from unnest(p_classes) x) loop
+    if not exists (select 1 from public.classes where id = c and not archived) or not public._stream_staff(c) then
+      raise exception 'You can only post to classes you teach (or, as a manager, the classes in your centre).';
+    end if;
+    if p_pinned then update public.class_posts set pinned = false where class_id = c and pinned; end if;
+    insert into public.class_posts (class_id, group_id, author_id, body_md, files, replies, pinned, visible_from)
+    values (c, v_group, auth.uid(), v_body, v_files, p_replies, coalesce(p_pinned, false), v_at);
+  end loop;
+  perform public._notify_post(v_group);
+  return v_group;
+end $$;
+
+-- Change a post (every class it went to). Only the person who posted it.
+create or replace function public.edit_class_post(p_post uuid, p_body text, p_files jsonb, p_replies text, p_at timestamptz default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  p public.class_posts;
+  v_body text := left(trim(coalesce(p_body, '')), 5000);
+  v_files jsonb := coalesce(p_files, '[]');
+begin
+  select * into p from public.class_posts where id = p_post;
+  if p.id is null then raise exception 'That post is gone.'; end if;
+  if p.author_id <> auth.uid() or not public._stream_staff(p.class_id) then raise exception 'Only the person who posted it can change it.'; end if;
+  if coalesce(p_replies, '') not in ('off', 'teachers', 'class') then raise exception 'Choose who can reply.'; end if;
+  if not public._stream_files_ok(v_files, p.group_id) then raise exception 'Up to 6 pictures or files a post, added here.'; end if;
+  if v_body = '' and jsonb_array_length(v_files) = 0 then raise exception 'Write something, or add a picture or file.'; end if;
+  update public.class_posts
+     set body_md = v_body, files = v_files, replies = p_replies, edited_at = now(),
+         visible_from = case when visible_from > now() and p_at is not null then greatest(p_at, now()) else visible_from end
+   where group_id = p.group_id;
+  perform public._notify_post(p.group_id);
+end $$;
+
+-- Take a post down from one class (any of its teachers or managers), or from every class it went to (the person who posted
+-- it, or a manager). Says how many copies are left, so the app can tidy its pictures away when none are.
+create or replace function public.delete_class_post(p_post uuid, p_everywhere boolean default false) returns int
+language plpgsql security definer set search_path = public as $$
+declare p public.class_posts;
+begin
+  select * into p from public.class_posts where id = p_post;
+  if p.id is null then return 0; end if;
+  if p_everywhere then
+    if p.author_id <> auth.uid() and not public._class_org_manager(p.class_id) then
+      raise exception 'Only the person who posted it can take it down from every class.';
+    end if;
+    delete from public.class_posts where group_id = p.group_id;
+  else
+    if p.author_id <> auth.uid() and not public._stream_staff(p.class_id) then raise exception 'Not your class.'; end if;
+    delete from public.class_posts where id = p.id;
+  end if;
+  return (select count(*)::int from public.class_posts where group_id = p.group_id);
+end $$;
+
+-- Pin a post to the top of its class (one at a time), or unpin it
+create or replace function public.pin_class_post(p_post uuid, p_on boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare p public.class_posts;
+begin
+  select * into p from public.class_posts where id = p_post;
+  if p.id is null or not public._stream_staff(p.class_id) then raise exception 'Not your class.'; end if;
+  if p_on then update public.class_posts set pinned = false where class_id = p.class_id and pinned and id <> p.id; end if;
+  update public.class_posts set pinned = coalesce(p_on, false) where id = p.id;
+end $$;
+
+-- Reply under a post. Learners only when the post allows replies, they're in the class, not stopped from replying, and the
+-- class isn't paused for them. Teachers can always reply (to the class, or answering one learner's reply).
+create or replace function public.reply_to_post(p_post uuid, p_body text, p_reply_to uuid default null) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  p public.class_posts;
+  c public.classes;
+  staff boolean;
+  v_body text := left(trim(coalesce(p_body, '')), 2000);
+  v_to public.class_post_replies;
+  v_id uuid;
+  v_me text;
+  t uuid;
+begin
+  select * into p from public.class_posts where id = p_post;
+  if p.id is null then raise exception 'That post is gone.'; end if;
+  select * into c from public.classes where id = p.class_id;
+  staff := public._stream_staff(p.class_id);
+  if v_body = '' then raise exception 'Write your reply first.'; end if;
+  if not staff then
+    if public.my_role() is distinct from 'learner' or not public._in_class(p.class_id) or p.visible_from > now() then raise exception 'Not your class.'; end if;
+    if p.replies = 'off' then raise exception 'Replies are off for this post.'; end if;
+    if exists (select 1 from public.class_mutes where class_id = p.class_id and learner_id = auth.uid()) then
+      raise exception 'Your teacher has turned off your replies in this class.';
+    end if;
+    if public._place_unpaid(c.tutor_id) or public._paused_for(auth.uid(), c.tutor_id) then
+      raise exception 'This class is paused for now, so you can’t reply.';
+    end if;
+    if (select count(*) from public.class_post_replies where author_id = auth.uid() and created_at > now() - interval '10 minutes') >= 20 then
+      raise exception 'That’s a lot of replies. Wait a few minutes, then try again.';
+    end if;
+  end if;
+  if p_reply_to is not null then
+    select * into v_to from public.class_post_replies where id = p_reply_to and post_id = p.id and removed_at is null;
+    if v_to.id is null then raise exception 'That reply is gone.'; end if;
+    -- learners answer each other only where they can see each other's replies
+    if not staff and p.replies <> 'class' and v_to.author_id <> auth.uid() then v_to := null; end if;
+  end if;
+  insert into public.class_post_replies (post_id, author_id, reply_to, body) values (p.id, auth.uid(), v_to.id, v_body) returning id into v_id;
+  select display_name into v_me from public.profiles where id = auth.uid();
+  if staff then
+    if v_to.id is not null and v_to.author_id <> auth.uid() then
+      perform public.notify_user(v_to.author_id, 'stream_reply', coalesce(v_me, 'Your teacher') || ' answered you in ' || c.name, left(v_body, 140),
+                                 jsonb_build_object('class_id', c.id, 'post_id', p.id));
+    end if;
+  else
+    -- the person who posted it and the class's teachers, once until they've looked
+    for t in select distinct x from (select p.author_id as x union select c.tutor_id union select ct.teacher_id from public.class_teachers ct where ct.class_id = c.id) z
+              where x <> auth.uid() loop
+      continue when exists (select 1 from public.notifications n where n.user_id = t and n.kind = 'stream_reply' and n.read_at is null and n.ref ->> 'post_id' = p.id::text);
+      perform public.notify_user(t, 'stream_reply', coalesce(v_me, 'A learner') || ' replied in ' || c.name, left(v_body, 140),
+                                 jsonb_build_object('class_id', c.id, 'post_id', p.id));
+    end loop;
+  end if;
+  return v_id;
+end $$;
+
+-- Take a reply down: your own, or any reply in a class you look after. It stays (marked removed) for the class's teachers
+-- and managers, so there's a record if something goes wrong.
+create or replace function public.remove_reply(p_reply uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  r public.class_post_replies;
+  v_class uuid;
+begin
+  select * into r from public.class_post_replies where id = p_reply;
+  if r.id is null then return; end if;
+  select class_id into v_class from public.class_posts where id = r.post_id;
+  if r.author_id <> auth.uid() and not public._stream_staff(v_class) then raise exception 'You can only remove your own replies.'; end if;
+  update public.class_post_replies set removed_at = now(), removed_by = auth.uid() where id = r.id and removed_at is null;
+end $$;
+
+-- Stop a learner replying in one class (they still read it), or let them again
+create or replace function public.mute_in_class(p_class uuid, p_learner uuid, p_on boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public._stream_staff(p_class) then raise exception 'Not your class.'; end if;
+  if p_on then
+    if not exists (select 1 from public.class_members where class_id = p_class and learner_id = p_learner) then raise exception 'They aren’t in this class.'; end if;
+    insert into public.class_mutes (class_id, learner_id, muted_by) values (p_class, p_learner, auth.uid()) on conflict do nothing;
+  else
+    delete from public.class_mutes where class_id = p_class and learner_id = p_learner;
+  end if;
+end $$;
+
+-- A learner's classes: who teaches each, what's new since they last looked, and the latest post
+create or replace function public.my_classes() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', c.id, 'name', c.name, 'subject_id', c.subject_id, 'tutor_id', c.tutor_id,
+      'teachers', case when exists (select 1 from public.class_teachers where class_id = c.id)
+                       then (select coalesce(jsonb_agg(t.display_name order by t.display_name), '[]') from public.profiles t
+                              where t.id in (select teacher_id from public.class_teachers where class_id = c.id))
+                       else (select jsonb_build_array(t.display_name) from public.profiles t where t.id = c.tutor_id) end,
+      'new', (select count(*) from public.class_posts p where p.class_id = c.id and p.visible_from <= now()
+                and p.visible_from > coalesce(m.stream_seen_at, m.added_at)),
+      'latest', (select jsonb_build_object('body_md', left(p.body_md, 300), 'at', p.visible_from, 'author', a.display_name, 'files', jsonb_array_length(p.files))
+                   from public.class_posts p join public.profiles a on a.id = p.author_id
+                  where p.class_id = c.id and p.visible_from <= now() order by p.visible_from desc limit 1)
+    ) order by c.name), '[]')
+    from public.class_members m join public.classes c on c.id = m.class_id
+   where m.learner_id = auth.uid() and not c.archived and public.my_role() = 'learner'
+$$;
+
+-- A learner has looked at a class's stream
+create or replace function public.stream_seen(p_class uuid) returns void
+language sql security definer set search_path = public as $$
+  update public.class_members set stream_seen_at = now() where class_id = p_class and learner_id = auth.uid()
+$$;
+
+-- Parents: the teachers' posts in their child's classes from the last 30 days (never anyone's replies)
+create or replace function public.parent_class_posts(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare pl public.parent_links;
+begin
+  pl := public._parent_link(p_learner);
+  if pl.id is null then raise exception 'You can’t see this learner’s progress.'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'class', c.name, 'author', a.display_name, 'body_md', p.body_md,
+                                                       'files', p.files, 'at', p.visible_from, 'pinned', p.pinned) order by p.visible_from desc)
+                     from public.class_posts p join public.classes c on c.id = p.class_id join public.profiles a on a.id = p.author_id
+                    where p.id in (select x.id from public.class_posts x join public.class_members m on m.class_id = x.class_id
+                                    join public.classes xc on xc.id = x.class_id
+                                   where m.learner_id = p_learner and not xc.archived
+                                     and x.visible_from <= now() and x.visible_from > now() - interval '30 days'
+                                   order by x.visible_from desc limit 10)), '[]');
+end $$;
+
+-- Who may open a post's pictures and files: whoever can see the post (its class's teachers and managers, its learners, and
+-- their parents once it's up)
+create or replace function public._can_see_post_files(p_group text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if coalesce(p_group, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return false; end if;
+  return exists (
+    select 1 from public.class_posts p
+     where p.group_id = p_group::uuid
+       and (public._stream_staff(p.class_id)
+            or (p.visible_from <= now() and (public._in_class(p.class_id)
+                or exists (select 1 from public.class_members m join public.parent_links pl on pl.learner_id = m.learner_id
+                            where m.class_id = p.class_id and pl.parent_id = auth.uid())))));
+end $$;
+
+-- Scheduled posts: tell the class when they go up
+create or replace function public._stream_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  g uuid;
+  n int := 0;
+begin
+  for g in select distinct group_id from public.class_posts where notified_at is null and visible_from <= now() loop
+    perform public._notify_post(g);
+    n := n + 1;
+  end loop;
+  return n;
 end $$;
 
 grant execute on all functions in schema public to authenticated;
@@ -10408,6 +10883,12 @@ revoke execute on function public._rubric_ok() from public, anon, authenticated;
 revoke execute on function public._question_rubric() from public, anon, authenticated;
 revoke execute on function public._rubric_max(uuid) from public, anon, authenticated;
 revoke execute on function public._class_teacher(uuid) from public, anon, authenticated;
+revoke execute on function public._stream_staff(uuid) from public, anon, authenticated;
+revoke execute on function public._post_json(public.class_posts, boolean) from public, anon, authenticated;
+revoke execute on function public._class_cards(uuid, boolean) from public, anon, authenticated;
+revoke execute on function public._notify_post(uuid) from public, anon, authenticated;
+revoke execute on function public._stream_files_ok(jsonb, uuid) from public, anon, authenticated;
+revoke execute on function public._stream_tick() from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;
@@ -10463,6 +10944,11 @@ create policy sb_work_tutor on storage.objects for all to authenticated
   using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid))
   with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid));
 
+-- Pictures and files in a class's stream (library/<author>/stream/<post group>/…): whoever can see the post
+drop policy if exists sb_library_stream on storage.objects;
+create policy sb_library_stream on storage.objects for select to authenticated
+  using (bucket_id = 'library' and (storage.foldername(name))[2] = 'stream' and public._can_see_post_files((storage.foldername(name))[3]));
+
 -- ---------------------------------------------------------------------
 -- Live updates in the app
 -- ---------------------------------------------------------------------
@@ -10489,6 +10975,7 @@ begin
   perform cron.schedule('studybridge-reminders', '*/10 * * * *', 'select public._study_reminders()');
   perform cron.schedule('studybridge-students', '17 * * * *', 'select public._student_emails_tick()');
   perform cron.schedule('studybridge-bills', '23 * * * *', 'select public._bill_tick()');
+  perform cron.schedule('studybridge-stream', '*/5 * * * *', 'select public._stream_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;
