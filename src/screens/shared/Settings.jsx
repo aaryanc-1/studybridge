@@ -48,6 +48,7 @@ export default function Settings() {
       {isStudent && <ParentCodes />}
       {isLearner && <LinkedParents />}
       {isLearner && !isStudent && <YourPlaces />}
+      {isLearner && !isStudent && <MyAccess />}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <StudyReminder />}
@@ -58,6 +59,29 @@ export default function Settings() {
       <YourData />
       <About />
     </Page>
+  );
+}
+
+// A learner's access arrangements (set by their teachers): extra time and extra days, from each place
+function MyAccess() {
+  const list = useQuery('my-access', () => api.myAccess()).data || [];
+  if (!list.length) return null;
+  return (
+    <Section id="access" icon="clock" title="Extra time and deadlines" sub="Your teachers set these. They apply by themselves.">
+      <div className="list">
+        {list.map((r) => (
+          <div key={r.place_id} className="item">
+            <span className="grow">
+              <span className="name">{r.place}</span>
+              <span className="meta">
+                {r.extra_time_pct > 0 && <span>{r.extra_time_pct}% extra time on timed tests and exams</span>}
+                {r.extra_days > 0 && <span>{r.extra_days} extra day{r.extra_days === 1 ? '' : 's'} on deadlines</span>}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 

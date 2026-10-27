@@ -1115,3 +1115,17 @@ button.rubric-level:hover { border-color: var(--accent); }
 .slips { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .slip { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; }
 .slip .code-show { white-space: nowrap; font-size: 18px; letter-spacing: .04em; }
+
+/* ---------- The exam room, and messages on a learner's exam screen ---------- */
+.exam-message { align-items: center; gap: 10px; }
+.exam-sent { flex-basis: 100%; }
+.exam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.exam-tile { gap: 8px; padding: 14px 16px; }
+.exam-tile.good { border-color: var(--accent-line); }
+.exam-tile.warn { border-color: var(--amber-line); background: var(--amber-tint); }
+.exam-tile.done { opacity: .8; }
+.exam-tile .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.exam-clock { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.exam-note { display: flex; gap: 10px; align-items: flex-start; background: var(--accent-tint); border: 1px solid var(--accent-line); border-radius: var(--radius); padding: 12px 14px; }
+.banner.exam-msg { background: var(--accent-tint); color: var(--accent-ink); border-color: var(--accent-line); font-size: 15px; }
+.extra-time { padding: 4px 16px 0; }

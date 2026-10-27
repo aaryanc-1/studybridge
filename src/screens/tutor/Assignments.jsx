@@ -268,6 +268,11 @@ function AssignmentOptions({ a, stats, onClose }) {
               <Icon name="checkCircle" size={18} /> Handed in ({stats.submitted}){stats.toMark ? ` · ${stats.toMark} to mark` : ''}
             </button>
           )}
+          {!waiting && (a.time_limit_min || a.lockdown || a.kind === 'test' || a.kind === 'exam') && (
+            <button className="btn" onClick={() => go(`/exam/${a.id}`)}>
+              <Icon name="users" size={18} /> Exam room
+            </button>
+          )}
           <button className="btn" disabled={!!busy} onClick={dup}>
             <Icon name="copy" size={18} /> Duplicate
           </button>

@@ -13,6 +13,12 @@ import { createClient } from '@supabase/supabase-js';
 import { startFakeSupabase } from './fake-supabase.mjs';
 import { startFakeClaude, seen } from './fake-claude.mjs';
 
+// The whole run takes about 20 minutes: if it's still going after 75, something is stuck, so stop and say so
+setTimeout(() => {
+  console.error('Product walkthrough FAILED: still running after 75 minutes, so something is stuck (the sweep prints the screen it was on).');
+  process.exit(1);
+}, 75 * 60 * 1000).unref();
+
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT = join(ROOT, 'test', '.dist-product');
 const SHOTS = process.env.SHOTS || join(ROOT, 'test', 'screenshots');
@@ -825,6 +831,45 @@ try {
   assert.equal(await PD.getByText('Can we use a graphing calculator?').count(), 0, 'parents never see replies');
   await shot(PD, 'stream-parent');
   await PD.close();
+  // access arrangements and the exam room: Zara gets 25% extra time; a 20-minute class test gives her 5 more minutes; the
+  // tutor watches the room, adds time for her, messages everyone, and ends it for everyone
+  const zid = (await tc.from('profiles').select('id').eq('display_name', 'Zara').eq('role', 'learner').single()).data.id;
+  await A.goto(web.url + '#/learners/' + zid);
+  await A.getByRole('button', { name: 'Give Zara access arrangements' }).click();
+  const acc = A.getByRole('dialog', { name: 'Zara’s access arrangements' });
+  await acc.getByLabel('Extra time on timed work').selectOption('25');
+  await acc.getByLabel('Extra days on deadlines').fill('2');
+  await acc.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Access arrangements: 25% extra time · 2 extra days on deadlines').waitFor();
+  const ctest = (await tc.from('assignments').insert({ title: 'Class test: fractions', kind: 'test', time_limit_min: 20, class_id: klass.id, visibility: 'visible' }).select().single()).data;
+  await tc.from('questions').insert({ assignment_id: ctest.id, type: 'numeric', prompt_md: 'What is $\\frac{1}{2} + \\frac{1}{4}$ as a decimal?', marks: 1 });
+  await Z.goto(web.url + '#/work/' + ctest.id);
+  await Z.getByRole('button', { name: /^Start/ }).first().click();
+  const ready = Z.getByRole('dialog', { name: 'Ready?' });
+  await ready.waitFor({ timeout: 4000 }).then(() => ready.getByRole('button', { name: /^Start/ }).click(), () => {});
+  await Z.getByText('You have 5 extra minutes on this.').waitFor();
+  await A.goto(web.url + '#/exam/' + ctest.id);
+  await A.getByRole('heading', { name: 'Exam room: Class test: fractions' }).waitFor();
+  const ztile = A.locator('.exam-tile', { hasText: 'Zara' });
+  await ztile.getByText('Doing it').waitFor();
+  await ztile.locator('.meta').getByText('+5 min').waitFor(); // her 25% of 20 minutes
+  await ztile.getByRole('button', { name: 'Add 5 minutes for Zara' }).click();
+  await A.getByText('5 more minutes for Zara').waitFor();
+  await A.getByLabel('Message everyone').fill('Ten minutes left. Check your working.');
+  await A.getByRole('button', { name: 'Message everyone' }).click();
+  await A.getByText('Sent to everyone doing it').waitFor();
+  await shot(A, 'exam-room');
+  await a11y(A, 'The exam room');
+  await Z.getByText('Ten minutes left. Check your working.').waitFor({ timeout: 40000 });
+  await Z.getByText('You have 10 extra minutes on this.').waitFor();
+  await shot(Z, 'exam-message');
+  await A.getByRole('button', { name: 'End for everyone' }).click();
+  await A.getByRole('dialog', { name: /End Class test: fractions for everyone/ }).getByRole('button', { name: 'End it for everyone' }).click();
+  await A.getByText(/Ended: 1 handed in/).waitFor();
+  await ztile.getByText('Handed in').first().waitFor();
+  await Z.goto(web.url + '#/settings?s=access');
+  await Z.getByRole('heading', { name: 'Extra time and deadlines' }).waitFor();
+  await tc.rpc('set_access', { p_learner: zid, p_extra_time: 0, p_extra_days: 0 });
   await nav(A, 'Learners').click();
   // a live lesson for the class
   await nav(A, 'Live').click();

@@ -1125,6 +1125,19 @@ begin
   return cur;
 end $$;
 
+-- When a piece of work is due for this learner: their own extension (access arrangements, below), or the due date plus
+-- their extra days with the place that set it
+create or replace function public._due_for(a public.assignments, p_learner uuid) returns timestamptz
+language plpgsql stable security definer set search_path = public as $$
+declare v timestamptz;
+begin
+  if a.due_at is null then return null; end if;
+  if to_regclass('public.work_extensions') is null then return a.due_at; end if;
+  select e.due_at into v from public.work_extensions e where e.assignment_id = a.id and e.learner_id = p_learner and e.due_at is not null;
+  return coalesce(v, a.due_at + make_interval(days => coalesce((select r.extra_days from public.access_arrangements r
+                                                                  where r.learner_id = p_learner and r.place_id = public._place_of(a.tutor_id)), 0)));
+end $$;
+
 -- Is the attempt past its time limit? (small grace for slow connections)
 create or replace function public._attempt_timed_out(p_attempt public.attempts) returns boolean
 language sql stable set search_path = public as $$
@@ -1349,6 +1362,7 @@ begin
     'attempt', jsonb_build_object('id', t.id, 'assignment_id', t.assignment_id, 'learner_id', t.learner_id, 'number', t.number,
       'client', case when is_tutor then to_jsonb(t) ->> 'client' end,
       'seen_at', case when is_tutor then to_jsonb(t) ->> 'seen_at' end,
+      'extra_min', coalesce((to_jsonb(t) ->> 'extra_min')::int, 0),
       'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
       'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
       'feedback_md', case when rel or is_tutor then t.feedback_md end,
@@ -1518,7 +1532,7 @@ begin
                             left join public.subjects sb on sb.id = d.subject_id), '[]'),
     'assignments', coalesce((select jsonb_agg(jsonb_build_object(
           'title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'submitted_at', t.submitted_at, 'status', t.status,
-          'late', a.due_at is not null and t.submitted_at > a.due_at,
+          'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id),
           'score', case when p_learner <> auth.uid() or public._is_released(t) then t.score end, 'max_score', t.max_score,
           'lockdown_flags', jsonb_array_length(case when p_learner <> auth.uid() then t.lockdown_events else '[]'::jsonb end))
           order by t.submitted_at)
@@ -1527,7 +1541,7 @@ begin
     'missed', coalesce((select jsonb_agg(jsonb_build_object('title', a.title, 'due_at', a.due_at))
         from public.assignments a
         where a.tutor_id = (select tutor_id from public.profiles where id = p_learner)
-          and not a.draft and a.due_at >= p_from and a.due_at < least(p_to, now())
+          and not a.draft and a.due_at >= p_from and public._due_for(a, p_learner) < least(p_to, now())
           and (a.learner_ids is null or cardinality(a.learner_ids) = 0 or p_learner = any (a.learner_ids))
           and not exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner
                           and t.submitted_at is not null)), '[]'),
@@ -2213,8 +2227,8 @@ begin
                           and created_at >= p_from and created_at < p_to), 0),
     'work', coalesce((select jsonb_agg(w order by w ->> 'due_at') from (
         select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at,
-          'status', case when t.submitted_at is null then case when a.due_at < now() then 'missing' else 'open' end
-                         when a.due_at is not null and t.submitted_at > a.due_at then 'late' else 'on_time' end,
+          'status', case when t.submitted_at is null then case when public._due_for(a, p_learner) < now() then 'missing' else 'open' end
+                         when a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id) then 'late' else 'on_time' end,
           'score', case when t.rel then t.score end, 'max', t.max_score) as w
         from public.assignments a
         left join lateral (select x.*, public._is_released(x) as rel from public.attempts x where x.assignment_id = a.id and x.learner_id = p_learner
@@ -4631,7 +4645,7 @@ begin
          order by a.due_at limit 20) z), '[]'),
     'marks', coalesce((select jsonb_agg(x order by x ->> 'at' desc) from (
         select jsonb_build_object('title', a.title, 'kind', a.kind, 'score', t.score, 'max', t.max_score,
-                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > a.due_at) as x
+                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id)) as x
           from public.attempts t join public.assignments a on a.id = t.assignment_id
          where t.learner_id = p_learner and t.tutor_id = pl.tutor_id and not a.practice and public._is_released(t) and t.score is not null
          order by coalesce(t.released_at, t.submitted_at) desc limit 15) z), '[]'),
@@ -9661,7 +9675,7 @@ begin
                             left join public.subjects sb on sb.id = d.subject_id), '[]'),
     'assignments', coalesce((select jsonb_agg(jsonb_build_object(
           'title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'submitted_at', t.submitted_at, 'status', t.status,
-          'late', a.due_at is not null and t.submitted_at > a.due_at,
+          'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id),
           'score', case when p_learner <> auth.uid() or public._is_released(t) then t.score end, 'max_score', t.max_score,
           'lockdown_flags', jsonb_array_length(case when p_learner <> auth.uid() then t.lockdown_events else '[]'::jsonb end))
           order by t.submitted_at)
@@ -9672,7 +9686,7 @@ begin
         where a.tutor_id in (select public._teachers_of(p_learner)) and public._sees_from(a.tutor_id, p_learner)
           and not a.practice and public._assignment_visible_to(a, p_learner)
           and (a.learner_ids is not null and cardinality(a.learner_ids) > 0 or a.subject_id is not null or public._is_linked(p_learner, a.tutor_id))
-          and a.due_at >= p_from and a.due_at < least(p_to, now())
+          and a.due_at >= p_from and public._due_for(a, p_learner) < least(p_to, now())
           and not exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner
                           and t.submitted_at is not null)), '[]'),
     'notes', (select count(*) from public.comments where learner_id = p_learner and author_id = p_learner
@@ -9835,7 +9849,7 @@ begin
                            from (select * from public.sessions s where s.tutor_id in (select public._teachers_of(p_learner)) and p_learner = any (s.learner_ids) and not s.cancelled
                                    and s.starts_at > now() - interval '1 hour' and s.starts_at < now() + interval '21 days' order by s.starts_at limit 12) s), '[]'),
     'due', coalesce((select jsonb_agg(x order by x ->> 'due_at') from (
-        select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'from', public._place_name(public._place_of(a.tutor_id)),
+        select jsonb_build_object('title', a.title, 'kind', a.kind, 'due_at', public._due_for(a, p_learner), 'from', public._place_name(public._place_of(a.tutor_id)),
                  'handed_in', exists (select 1 from public.attempts t where t.assignment_id = a.id and t.learner_id = p_learner and t.submitted_at is not null)) as x
           from public.assignments a
          where a.tutor_id in (select public._teachers_of(p_learner)) and not a.practice and a.source <> 'self' and public._assignment_visible_to(a, p_learner)
@@ -9843,7 +9857,7 @@ begin
          order by a.due_at limit 20) z), '[]'),
     'marks', coalesce((select jsonb_agg(x order by x ->> 'at' desc) from (
         select jsonb_build_object('title', a.title, 'kind', a.kind, 'score', t.score, 'max', t.max_score, 'from', public._place_name(public._place_of(t.tutor_id)),
-                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > a.due_at) as x
+                 'at', coalesce(t.released_at, t.submitted_at), 'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id)) as x
           from public.attempts t join public.assignments a on a.id = t.assignment_id
          where t.learner_id = p_learner and t.tutor_id in (select public._teachers_of(p_learner)) and not a.practice and public._is_released(t) and t.score is not null
          order by coalesce(t.released_at, t.submitted_at) desc limit 15) z), '[]'),
@@ -10340,7 +10354,7 @@ begin
                from public.assignments a where a.class_id = c.id and not a.draft and not a.practice),
     'cells', (select coalesce(jsonb_agg(jsonb_build_object('learner_id', t.learner_id, 'assignment_id', t.assignment_id, 'attempt_id', t.id,
                                                            'status', t.status, 'score', t.score, 'max', t.max_score, 'released', public._is_released(t),
-                                                           'late', a.due_at is not null and t.submitted_at > a.due_at)), '[]')
+                                                           'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id))), '[]')
                 from (select distinct on (x.assignment_id, x.learner_id) x.* from public.attempts x
                         join public.assignments a2 on a2.id = x.assignment_id
                        where a2.class_id = c.id and not a2.draft and not a2.practice
@@ -11309,6 +11323,231 @@ end $$;
 drop trigger if exists class_members_main on public.class_members;
 create trigger class_members_main after insert on public.class_members for each row execute function public._class_member_main();
 
+-- ---------------------------------------------------------------------
+-- Schools part 2b (decided with Aaryan 26 Oct 2026): access arrangements and the exam room.
+-- A learner's teachers or managers (in that place) give extra time on timed work and extra days on deadlines; it applies
+-- by itself to everything that place sets. Learners and their parents see their own; classmates never do. A teacher can also
+-- give one learner more time on one piece of work. The exam room: one screen for a whole class doing a timed or locked-down
+-- test, where the teacher adds time for one learner or everyone, ends it for everyone, and messages everyone.
+-- ---------------------------------------------------------------------
+create table if not exists public.access_arrangements (
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  place_id uuid not null,
+  extra_time_pct int not null default 0 check (extra_time_pct between 0 and 100),
+  extra_days int not null default 0 check (extra_days between 0 and 30),
+  note text check (note is null or length(note) <= 300),
+  set_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (learner_id, place_id)
+);
+create table if not exists public.work_extensions (
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  due_at timestamptz,
+  extra_min int not null default 0 check (extra_min between 0 and 600),
+  set_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (assignment_id, learner_id)
+);
+create table if not exists public.exam_messages (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  body text not null check (length(trim(body)) between 1 and 300),
+  created_at timestamptz not null default now()
+);
+create index if not exists exam_messages_assignment on public.exam_messages (assignment_id, created_at);
+alter table public.attempts add column if not exists extra_min int not null default 0;
+alter table public.access_arrangements enable row level security;
+alter table public.work_extensions enable row level security;
+alter table public.exam_messages enable row level security;
+revoke all on public.access_arrangements from public, anon, authenticated;
+revoke all on public.work_extensions from public, anon, authenticated;
+revoke all on public.exam_messages from public, anon, authenticated;
+
+-- A learner's arrangement with the place that set a piece of work (a school or centre, or an independent tutor)
+create or replace function public._access(p_learner uuid, p_tutor uuid) returns public.access_arrangements
+language sql stable security definer set search_path = public as $$
+  select * from public.access_arrangements where learner_id = p_learner and place_id = public._place_of(p_tutor)
+$$;
+-- Who can give a learner access arrangements: one of their teachers, or a manager of the centre or school they're in
+create or replace function public._can_arrange(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.my_role() = 'tutor' and (public._teaches(auth.uid(), p_learner)
+     or (public._org_manager(public._org_of(auth.uid())) and p_learner in (select public._org_learner_ids(public._org_of(auth.uid())))))
+$$;
+
+-- Extra time added when they start timed work: their arrangement's share of the time limit, and any one-off extra minutes
+create or replace function public._attempt_extra() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  v_pct int;
+begin
+  select * into a from public.assignments where id = new.assignment_id;
+  if a.time_limit_min is null then return new; end if;
+  v_pct := coalesce((public._access(new.learner_id, a.tutor_id)).extra_time_pct, 0);
+  new.extra_min := coalesce(new.extra_min, 0) + round(a.time_limit_min * v_pct / 100.0)::int
+                 + coalesce((select extra_min from public.work_extensions where assignment_id = a.id and learner_id = new.learner_id), 0);
+  return new;
+end $$;
+drop trigger if exists attempts_extra on public.attempts;
+create trigger attempts_extra before insert on public.attempts for each row execute function public._attempt_extra();
+
+-- Past its time (with the learner's extra time), with a small grace for slow connections
+create or replace function public._attempt_timed_out(p_attempt public.attempts) returns boolean
+language sql stable set search_path = public as $$
+  select coalesce((select a.time_limit_min is not null
+                      and now() > p_attempt.started_at + make_interval(mins => a.time_limit_min + coalesce(p_attempt.extra_min, 0)) + interval '2 minutes'
+                     from public.assignments a where a.id = p_attempt.assignment_id), false)
+     and not exists (select 1 from public.responses r where r.attempt_id = p_attempt.id and r.redo)
+$$;
+
+-- Set (or clear, with zeros) a learner's arrangements for my place
+create or replace function public.set_access(p_learner uuid, p_extra_time int, p_extra_days int, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public._can_arrange(p_learner) then raise exception 'Not your learner.'; end if;
+  if coalesce(p_extra_time, 0) not between 0 and 100 then raise exception 'Extra time is 0 to 100%%.'; end if;
+  if coalesce(p_extra_days, 0) not between 0 and 30 then raise exception 'Extra days are 0 to 30.'; end if;
+  if coalesce(p_extra_time, 0) = 0 and coalesce(p_extra_days, 0) = 0 then
+    delete from public.access_arrangements where learner_id = p_learner and place_id = public._place_of(auth.uid());
+    return;
+  end if;
+  insert into public.access_arrangements (learner_id, place_id, extra_time_pct, extra_days, note, set_by, updated_at)
+  values (p_learner, public._place_of(auth.uid()), coalesce(p_extra_time, 0), coalesce(p_extra_days, 0), nullif(left(trim(coalesce(p_note, '')), 300), ''), auth.uid(), now())
+  on conflict (learner_id, place_id) do update
+    set extra_time_pct = excluded.extra_time_pct, extra_days = excluded.extra_days, note = excluded.note, set_by = auth.uid(), updated_at = now();
+end $$;
+-- A teacher's view of one learner's arrangements (with the note, for staff only)
+create or replace function public.access_for(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r public.access_arrangements;
+begin
+  if not public._can_arrange(p_learner) then raise exception 'Not your learner.'; end if;
+  select * into r from public.access_arrangements where learner_id = p_learner and place_id = public._place_of(auth.uid());
+  return jsonb_build_object('extra_time_pct', coalesce(r.extra_time_pct, 0), 'extra_days', coalesce(r.extra_days, 0), 'note', r.note,
+                            'by', (select display_name from public.profiles where id = r.set_by), 'updated_at', r.updated_at);
+end $$;
+-- A learner's own arrangements (or a parent's child's), from every place: extra time and extra days, never the staff note
+create or replace function public.my_access(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid := coalesce(p_learner, auth.uid());
+begin
+  if v <> auth.uid() and (public._parent_link(v)).id is null then raise exception 'You can’t see this.'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('place_id', r.place_id, 'place', public._place_name(r.place_id),
+                                                       'extra_time_pct', r.extra_time_pct, 'extra_days', r.extra_days) order by r.updated_at)
+                     from public.access_arrangements r where r.learner_id = v), '[]');
+end $$;
+-- Due dates that are later for me than for the class (extra days or an extension), for the app to show
+create or replace function public.my_due_changes() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'due_at', public._due_for(a, auth.uid()))), '[]')
+    from public.assignments a
+   where public.my_role() = 'learner' and a.due_at is not null and a.tutor_id in (select public._my_teachers())
+     and public._assignment_visible_to(a, auth.uid()) and public._due_for(a, auth.uid()) is distinct from a.due_at
+$$;
+
+-- More time on one piece of work for one learner: a later due date, and/or extra minutes on its time limit
+create or replace function public.extend_work(p_assignment uuid, p_learner uuid, p_due_at timestamptz, p_extra_min int default 0) returns void
+language plpgsql security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not (a.tutor_id = auth.uid() or public._class_teacher(a.class_id)) or not public._teaches(auth.uid(), p_learner) then
+    raise exception 'Not your work.';
+  end if;
+  if coalesce(p_extra_min, 0) not between 0 and 600 then raise exception 'Extra minutes are 0 to 600.'; end if;
+  if p_due_at is null and coalesce(p_extra_min, 0) = 0 then
+    delete from public.work_extensions where assignment_id = p_assignment and learner_id = p_learner;
+    return;
+  end if;
+  insert into public.work_extensions (assignment_id, learner_id, due_at, extra_min, set_by, updated_at)
+  values (p_assignment, p_learner, p_due_at, coalesce(p_extra_min, 0), auth.uid(), now())
+  on conflict (assignment_id, learner_id) do update set due_at = excluded.due_at, extra_min = excluded.extra_min, set_by = auth.uid(), updated_at = now();
+  perform public.notify_user(p_learner, 'assignment', 'More time for ' || a.title,
+    case when p_due_at is not null then 'It’s due ' || to_char(p_due_at at time zone coalesce((select timezone from public.profiles where id = p_learner), 'UTC'), 'Dy DD Mon, HH24:MI') || ' for you now.'
+         else 'You have ' || p_extra_min || ' extra minutes on it.' end,
+    jsonb_build_object('assignment_id', a.id));
+end $$;
+
+-- Who runs the exam room: whoever set the work, or one of its class's teachers
+create or replace function public._exam_staff(p_assignment uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.assignments a where a.id = p_assignment and (a.tutor_id = auth.uid() or (a.class_id is not null and public._class_teacher(a.class_id))))
+$$;
+-- The exam room: everyone the work is for, their latest try, time left (with their extra time), strikes and whether the page is open
+create or replace function public.exam_room(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  return jsonb_build_object(
+    'assignment', jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'time_limit_min', a.time_limit_min, 'lockdown', a.lockdown,
+                                     'watched', to_jsonb(a) -> 'watched', 'camera', a.camera, 'due_at', a.due_at, 'leave_warnings', to_jsonb(a) -> 'leave_warnings'),
+    'now', now(),
+    'learners', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', l.id, 'name', l.display_name,
+        'extra_pct', coalesce((public._access(l.id, a.tutor_id)).extra_time_pct, 0),
+        'attempt', (select jsonb_build_object('id', t.id, 'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at,
+                      'extra_min', t.extra_min, 'strikes', t.strikes, 'client', to_jsonb(t) ->> 'client', 'seen_at', to_jsonb(t) ->> 'seen_at',
+                      'left_full_screen', t.left_full_screen,
+                      'ends_at', case when a.time_limit_min is not null then t.started_at + make_interval(mins => a.time_limit_min + t.extra_min) end)
+                      from public.attempts t where t.assignment_id = a.id and t.learner_id = l.id order by t.number desc limit 1)
+      ) order by l.display_name)
+      from public.profiles l where l.id in (select public._audience(a.tutor_id, a.learner_ids, a.subject_id))), '[]'),
+    'messages', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'body', m.body, 'at', m.created_at,
+                                                              'by', (select display_name from public.profiles where id = m.author_id)) order by m.created_at)
+                            from public.exam_messages m where m.assignment_id = a.id), '[]'));
+end $$;
+-- Add minutes for one learner doing it now, or everyone doing it now
+create or replace function public.exam_add_time(p_assignment uuid, p_minutes int, p_learner uuid default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  if coalesce(p_minutes, 0) not between 1 and 120 then raise exception 'Add 1 to 120 minutes at a time.'; end if;
+  update public.attempts set extra_min = least(extra_min + p_minutes, 600)
+   where assignment_id = p_assignment and status = 'in_progress' and (p_learner is null or learner_id = p_learner);
+  get diagnostics n = row_count;
+  return n;
+end $$;
+-- End it for everyone still doing it: their answers are handed in
+create or replace function public.exam_end(p_assignment uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  if not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  for r in select id from public.attempts where assignment_id = p_assignment and status = 'in_progress' for update skip locked loop
+    perform public._hand_in(r.id, 'your teacher ended it');
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+-- A message to everyone doing it (shown on their screen, even when it's locked down)
+create or replace function public.exam_message(p_assignment uuid, p_body text) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  if not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  insert into public.exam_messages (assignment_id, author_id, body) values (p_assignment, auth.uid(), left(trim(coalesce(p_body, '')), 300)) returning id into v;
+  return v;
+end $$;
+-- What a learner doing it needs every few seconds: their extra minutes and the teacher's messages
+create or replace function public.exam_updates(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare t public.attempts;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
+  if t.id is null then raise exception 'Not found.'; end if;
+  return jsonb_build_object('extra_min', t.extra_min, 'status', t.status,
+    'messages', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'body', m.body, 'at', m.created_at) order by m.created_at)
+                            from public.exam_messages m where m.assignment_id = t.assignment_id and m.created_at >= t.started_at - interval '10 minutes'), '[]'));
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -11411,6 +11650,11 @@ revoke execute on function public._school_staff(uuid) from public, anon, authent
 revoke execute on function public._school_main_teacher(uuid, uuid) from public, anon, authenticated;
 revoke execute on function public._school_place(uuid) from public, anon, authenticated;
 revoke execute on function public._class_member_main() from public, anon, authenticated;
+revoke execute on function public._access(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._due_for(public.assignments, uuid) from public, anon, authenticated;
+revoke execute on function public._can_arrange(uuid) from public, anon, authenticated;
+revoke execute on function public._attempt_extra() from public, anon, authenticated;
+revoke execute on function public._exam_staff(uuid) from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

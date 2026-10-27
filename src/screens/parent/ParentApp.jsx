@@ -217,6 +217,7 @@ function Child({ id, kids, section }) {
             )}
           </div>
           <ClassPosts id={id} name={v.learner.name} />
+          <ChildAccess id={id} name={v.learner.name} />
         </>
       )}
 
@@ -376,6 +377,30 @@ function ClassPosts({ id, name }) {
           <StreamFiles files={p.files} />
         </div>
       ))}
+    </div>
+  );
+}
+
+// Their child's access arrangements (extra time, extra days), as their teachers set them
+function ChildAccess({ id, name }) {
+  const list = useQuery(`parent-access:${id}`, () => api.myAccess(id)).data || [];
+  if (!list.length) return null;
+  return (
+    <div className="card">
+      <h2>{name.split(' ')[0]}’s extra time and deadlines</h2>
+      <div className="list">
+        {list.map((r) => (
+          <div key={r.place_id} className="item">
+            <span className="grow">
+              <span className="name">{r.place}</span>
+              <span className="meta">
+                {r.extra_time_pct > 0 && <span>{r.extra_time_pct}% extra time on timed tests and exams</span>}
+                {r.extra_days > 0 && <span>{r.extra_days} extra day{r.extra_days === 1 ? '' : 's'} on deadlines</span>}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

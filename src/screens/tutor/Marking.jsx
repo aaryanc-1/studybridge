@@ -12,6 +12,7 @@ import { ago, dur, forKind, kindLabel, pct, typeLabel, when } from '../../lib/fo
 import { useLookups } from '../shared/lookups.jsx';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { doneOn, onPage } from '../shared/Live.jsx';
+import { ExtendWork } from './Access.jsx';
 import { StatusPill } from './Learners.jsx';
 import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 
@@ -21,6 +22,7 @@ export default function Marking() {
   const attempts = useQuery('attempts', api.listAttempts);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const [tab, setTab] = useState('submitted');
+  const [extending, setExtending] = useState(null); // more time for one learner on one piece of work
   const only = route.query.get('a');
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const all = (attempts.data || []).filter((t) => !only || t.assignment_id === only);
@@ -66,6 +68,7 @@ export default function Marking() {
           { value: 'missing', label: `Not handed in (${missing.length})` },
         ]}
       />
+      {extending && <ExtendWork a={extending.a} l={extending.l} onClose={() => setExtending(null)} />}
       {tab === 'missing' ? (
         missing.length === 0 ? (
           <Empty>Everyone has handed in{only ? ' this one' : ' everything that’s posted'}.</Empty>
@@ -78,6 +81,7 @@ export default function Marking() {
                   <th>Assignment</th>
                   <th>Due</th>
                   <th>Status</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -98,6 +102,11 @@ export default function Marking() {
                       <td data-label="Due">{a.due_at ? when(a.due_at) : 'No due date'}</td>
                       <td data-label="Status">
                         <span className={'pill ' + (late ? 'bad' : '')}>{late ? 'Overdue' : started ? 'Started' : 'Not started'}</span>
+                      </td>
+                      <td>
+                        <button className="btn sm" onClick={(e) => (e.stopPropagation(), setExtending({ a, l }))} aria-label={`Give ${l.display_name} more time on ${a.title}`}>
+                          More time
+                        </button>
                       </td>
                     </tr>
                   );

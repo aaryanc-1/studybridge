@@ -120,6 +120,18 @@ export const schoolRosterList = () => run(sb().rpc('school_roster_list'));
 export const schoolRosterRemove = (id) => run(sb().rpc('school_roster_remove', { p_id: id }));
 export const makeSchoolAccounts = (ids) => callProf('school_accounts', { ids });
 export const passwordChanged = () => run(sb().rpc('password_changed'));
+// Access arrangements (extra time on timed work, extra days on deadlines) and the exam room
+export const setAccess = (learnerId, extraTime, extraDays, note = null) =>
+  run(sb().rpc('set_access', { p_learner: learnerId, p_extra_time: extraTime, p_extra_days: extraDays, p_note: note }));
+export const accessFor = (learnerId) => run(sb().rpc('access_for', { p_learner: learnerId }));
+export const myAccess = (learnerId = null) => run(sb().rpc('my_access', { p_learner: learnerId }));
+export const extendWork = (assignmentId, learnerId, dueAt, extraMin = 0) =>
+  run(sb().rpc('extend_work', { p_assignment: assignmentId, p_learner: learnerId, p_due_at: dueAt, p_extra_min: extraMin }));
+export const examRoom = (assignmentId) => run(sb().rpc('exam_room', { p_assignment: assignmentId }));
+export const examAddTime = (assignmentId, minutes, learnerId = null) => run(sb().rpc('exam_add_time', { p_assignment: assignmentId, p_minutes: minutes, p_learner: learnerId }));
+export const examEnd = (assignmentId) => run(sb().rpc('exam_end', { p_assignment: assignmentId }));
+export const examMessage = (assignmentId, body) => run(sb().rpc('exam_message', { p_assignment: assignmentId, p_body: body }));
+export const examUpdates = (attemptId) => run(sb().rpc('exam_updates', { p_attempt: attemptId }));
 export const orgWaitingTeachers = () => run(sb().rpc('org_waiting_teachers'));
 export const orgApproveTeacher = (userId, ok) => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
@@ -635,7 +647,15 @@ export const listLessons = () => {
 export const listAssignments = () => {
   const as = asLearner();
   const rows = run(sb().from('assignments').select('*').order('created_at', { ascending: false }));
-  return as ? rows.then((r) => seenBy(as, r)) : rows;
+  if (as) return rows.then((r) => seenBy(as, r));
+  // a learner with extra days (access arrangements) or a one-off extension sees their own due date
+  if (me?.role !== 'learner') return rows;
+  return rows.then(async (r) => {
+    const later = await run(sb().rpc('my_due_changes')).catch(() => []);
+    if (!later?.length) return r;
+    const due = Object.fromEntries(later.map((x) => [x.id, x.due_at]));
+    return r.map((a) => (due[a.id] ? { ...a, class_due_at: a.due_at, due_at: due[a.id] } : a));
+  });
 };
 export const getAssignment = (id) => run(sb().from('assignments').select('*').eq('id', id).maybeSingle());
 export const listQuestions = (aid) => run(sb().from('questions').select('*').eq('assignment_id', aid).order('position'));

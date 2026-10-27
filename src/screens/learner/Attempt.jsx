@@ -257,10 +257,30 @@ export default function Attempt({ id }) {
     [id], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // Extra minutes (access arrangements, or added in the exam room) and the teacher's messages to everyone doing it
+  const [extraMin, setExtraMin] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [hidden, setHidden] = useState([]);
+  const checkRoom = useCallback(async () => {
+    try {
+      const u = await api.examUpdates(id);
+      if (u) {
+        setExtraMin(Number(u.extra_min) || 0);
+        setNotes(u.messages || []);
+      }
+    } catch {
+      /* offline or an older server: keep going */
+    }
+  }, [id]);
+  useEffect(() => {
+    if (t?.status === 'in_progress' && !done) checkRoom();
+  }, [t?.status, done, checkRoom]);
+
   // The tutor can end it, and the server hands it in when time runs out: notice either within seconds
   useEffect(() => {
     if (!t || t.status !== 'in_progress' || done || !aid) return;
     const iv = setInterval(async () => {
+      checkRoom();
       try {
         const mine = await api.myAttempts(aid);
         const now = (mine || []).find((x) => x.id === id);
@@ -330,7 +350,8 @@ export default function Attempt({ id }) {
     const iv = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(iv);
   }, []);
-  const left = a?.time_limit_min && t && !redoOnly ? a.time_limit_min * 60 - (now - new Date(t.started_at).getTime()) / 1000 : null;
+  const extra = extraMin ?? (Number(t?.extra_min) || 0);
+  const left = a?.time_limit_min && t && !redoOnly ? (a.time_limit_min + extra) * 60 - (now - new Date(t.started_at).getTime()) / 1000 : null;
 
   // Exam conditions (students on their own, in a browser; chosen before starting): full screen until it's handed in.
   // Leaving full screen is counted on the attempt and they're asked to go back. Phones that can't go full screen
@@ -570,6 +591,22 @@ export default function Attempt({ id }) {
           Hand in
         </button>
       </div>
+      {notes
+        .filter((m) => !hidden.includes(m.id))
+        .map((m) => (
+          <div key={m.id} className="banner exam-msg" role="alert">
+            <Icon name="megaphone" size={18} />
+            <span className="grow">
+              <b>From your teacher:</b> {m.body}
+            </span>
+            <button className="btn sm ghost" onClick={() => setHidden((h) => [...h, m.id])} aria-label="Got it">
+              Got it
+            </button>
+          </div>
+        ))}
+      {extra > 0 && a.time_limit_min && !redoOnly && t?.status === 'in_progress' && (
+        <div className="tiny muted extra-time">You have {extra} extra minute{extra === 1 ? '' : 's'} on this.</div>
+      )}
       {warning && (
         <div className="banner off" role="alert">
           <Icon name="alert" size={18} />

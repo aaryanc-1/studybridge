@@ -3398,3 +3398,84 @@ test('schools: sign up with the school email (a code, or Google), wait on "New f
   await db.query(`update platform_secrets set resend_key = null where id = 1`);
   await db.query(`update app_config set email_from = null where id = 1`);
 });
+
+test('access arrangements and the exam room: extra time and extra days per learner, one-off extensions; the teacher adds time, messages everyone and ends it for everyone', async () => {
+  const mk = async (k, email, name = k) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name }])).rows[0].id;
+  };
+  for (const [k, n] of [['EX1', 'Ms Exam'], ['EX2', 'Mr Other']]) {
+    await mk(k, k.toLowerCase() + '@exam.x', n);
+    await one(k, `select * from become_tutor($1, 'UTC')`, [n]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const [k, n] of [['EL1', 'Nalu'], ['EL2', 'Mapalo']]) {
+    await mk(k, k.toLowerCase() + '@exam.x', n);
+    const c = await val('EX1', `insert into invites (name) values ($1) returning code`, [n]);
+    await one(k, `select * from accept_invite($1, $2)`, [c, n]);
+  }
+  // her teacher gives Nalu 25% extra time and 2 extra days; nobody else can
+  await fails(as('EX2', `select set_access($1, 25, 2)`, [U.EL1]), /Not your learner/);
+  await fails(as('EL1', `select set_access($1, 25, 2)`, [U.EL1]), /Not your learner/);
+  await fails(as('EX1', `select set_access($1, 150, 0)`, [U.EL1]), /0 to 100/);
+  await as('EX1', `select set_access($1, 25, 2, 'Reads slowly')`, [U.EL1]);
+  assert.deepEqual((({ extra_time_pct, extra_days, note }) => ({ extra_time_pct, extra_days, note }))(await val('EX1', `select access_for($1)`, [U.EL1])), { extra_time_pct: 25, extra_days: 2, note: 'Reads slowly' });
+  const mine = await val('EL1', `select my_access()`);
+  assert.deepEqual(mine.map((x) => [x.place, x.extra_time_pct, x.extra_days, 'note' in x]), [['Ms Exam', 25, 2, false]], 'she sees hers, not the note');
+  assert.deepEqual(await val('EL2', `select my_access()`), []);
+  await fails(as('EL2', `select my_access($1)`, [U.EL1]), /can’t see/);
+  // her parent sees them too
+  await mk('EP', 'ep@exam.x', 'Nalu’s dad');
+  const inv = await one('EX1', `select * from create_parent_invite($1, 'Dad')`, [U.EL1]);
+  await one('EP', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [inv.code]);
+  assert.equal((await val('EP', `select my_access($1)`, [U.EL1]))[0].extra_time_pct, 25);
+
+  // a 40-minute test: she gets 10 more minutes, worked out when she starts; the server hands in only when *her* time is up
+  const test1 = await val('EX1', `insert into assignments (title, kind, time_limit_min, visibility, learner_ids, due_at) values ('Algebra test', 'test', 40, 'visible', $1, now() + interval '1 day') returning id`, [[U.EL1, U.EL2]]);
+  await val('EX1', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '2 + 2?', 1) returning id`, [test1]);
+  const a1 = await one('EL1', `select * from start_attempt($1)`, [test1]);
+  const a2 = await one('EL2', `select * from start_attempt($1)`, [test1]);
+  assert.deepEqual([a1.extra_min, a2.extra_min], [10, 0]);
+  assert.equal((await val('EL1', `select attempt_detail($1)`, [a1.id])).attempt.extra_min, 10);
+  await db.query(`update attempts set started_at = now() - interval '45 minutes' where id = any($1)`, [[a1.id, a2.id]]);
+  await db.query(`select public._auto_hand_in()`);
+  const st = async (id) => (await db.query(`select status from attempts where id = $1`, [id])).rows[0].status;
+  assert.equal(await st(a1.id), 'in_progress', 'she still has time');
+  assert.notEqual(await st(a2.id), 'in_progress', 'his time ran out');
+  // her due dates are later (2 extra days); his aren't
+  assert.equal((await val('EL1', `select my_due_changes()`)).filter((x) => x.id === test1).length, 1);
+  assert.deepEqual(await val('EL2', `select my_due_changes()`), []);
+
+  // the exam room: everyone it's for, their try, time left, extra time
+  await fails(as('EX2', `select exam_room($1)`, [test1]), /Not your work/);
+  await fails(as('EL1', `select exam_room($1)`, [test1]), /Not your work/);
+  const room = await val('EX1', `select exam_room($1)`, [test1]);
+  assert.deepEqual(room.learners.map((l) => [l.name, l.extra_pct, l.attempt.status === 'in_progress', l.attempt.extra_min]), [['Mapalo', 0, false, 0], ['Nalu', 25, true, 10]]);
+  // add time for everyone still doing it, message everyone, then end it for everyone
+  assert.equal(await val('EX1', `select exam_add_time($1, 5)`, [test1]), 1);
+  await fails(as('EX1', `select exam_add_time($1, 0)`, [test1]), /1 to 120/);
+  await val('EX1', `select exam_message($1, 'Ten minutes left. Check your working.')`, [test1]);
+  const upd = await val('EL1', `select exam_updates($1)`, [a1.id]);
+  assert.deepEqual([upd.extra_min, upd.messages.map((m) => m.body)], [15, ['Ten minutes left. Check your working.']]);
+  await fails(as('EL2', `select exam_updates($1)`, [a1.id]), /Not found/);
+  assert.equal(await val('EX1', `select exam_end($1)`, [test1]), 1);
+  assert.notEqual(await st(a1.id), 'in_progress');
+
+  // one-off: Mapalo missed the homework (due an hour ago); his teacher gives him until tomorrow, and he's told
+  const hw = await val('EX1', `insert into assignments (title, kind, visibility, learner_ids, due_at) values ('Fractions homework', 'homework', 'visible', $1, now() - interval '1 hour') returning id`, [[U.EL1, U.EL2]]);
+  await val('EX1', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '1/2 + 1/2?', 1) returning id`, [hw]);
+  await fails(as('EX2', `select extend_work($1, $2, now() + interval '1 day')`, [hw, U.EL2]), /Not your work/);
+  await as('EX1', `select extend_work($1, $2, now() + interval '1 day')`, [hw, U.EL2]);
+  assert.equal(await val('EL2', `select count(*)::int from notifications where user_id = auth.uid() and title = 'More time for Fractions homework'`), 1);
+  assert.ok((await val('EL2', `select my_due_changes()`)).some((x) => x.id === hw));
+  // handed in now: late for neither of them (her 2 extra days, his extension)
+  for (const k of ['EL1', 'EL2']) {
+    const t = await one(k, `select * from start_attempt($1)`, [hw]);
+    await as(k, `select submit_attempt($1)`, [t.id]);
+  }
+  const late = async (k) => (await val('EX1', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U[k]])).assignments.find((x) => x.title === 'Fractions homework').late;
+  assert.equal(await late('EL1'), false);
+  assert.equal(await late('EL2'), false);
+  // clearing it: back to the class's due date
+  await as('EX1', `select set_access($1, 0, 0)`, [U.EL1]);
+  assert.deepEqual(await val('EL1', `select my_access()`), []);
+});

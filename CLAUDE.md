@@ -509,6 +509,26 @@ joins that school (own org removed), pending, `school_id` set, managers told; Se
 (`org_waiting_teachers`, `org_approve_teacher(user, ok)`: not ours → back to their own organisation, waiting for StudyBridge);
 WaitingForApproval names the school. Website: schools.html step 3 "Everyone signs up with the school email". test/fake-supabase.mjs
 has auth.users.raw_app_meta_data and `admin/users`.
+Access arrangements and the exam room (27 Oct 2026; Aaryan: teachers and managers set them; parents see them; teachers message the
+whole room). `access_arrangements` (learner, place_id = `_place_of` the teacher; extra_time_pct 0–100, extra_days 0–30, a staff-only
+note): `set_access` (zeros clear it), `access_for` (staff), `my_access(learner)` (the learner or a parent; no note), `_can_arrange`
+(one of their teachers, or a manager of their centre). Extra time is fixed when they start: trigger `attempts_extra` →
+`attempts.extra_min` (their % of the time limit + a one-off `work_extensions.extra_min`); `_attempt_timed_out` adds `extra_min`, so
+`_auto_hand_in` waits for them. Due dates: `_due_for(assignment, learner)` (plpgsql, defined near the top of setup.sql because plain SQL
+functions there use it) = their extension's date or due + extra days; every "late"/"missing" check uses it (learner_summary,
+report_numbers, parent_view marks and due list, class_gradebook); `my_due_changes()` → api.listAssignments shows a learner their own
+due date (`class_due_at` keeps the class's). One-off: `extend_work(assignment, learner, due_at, extra_min)` from Marking → Not handed
+in → More time (`ExtendWork` in src/screens/tutor/Access.jsx; the learner is told). UI: the learner page's "Access arrangements" line
+(`AccessLine`), Settings → Extra time and deadlines (learners), "<name>’s extra time and deadlines" on parents' This week. The exam
+room (`/exam/:assignment`, src/screens/tutor/ExamRoom.jsx; from the assignment's options and its editor, for timed/locked/test/exam
+work; the poster or the class's teachers, `_exam_staff`): `exam_room` (everyone it's for, latest try, `ends_at` with extra time,
+strikes, seen_at, client; polls every 5 s), `exam_add_time(assignment, minutes, learner?)` (in-progress tries), `exam_end`
+(hands in all), `exam_message` (`exam_messages`); the learner's exam page asks `exam_updates(attempt)` every 15 s (extra minutes and
+messages, shown as "From your teacher" banners even locked down, "You have N extra minutes on this."). Website: schools.html "Real
+mocks" mentions the exam room and extra time. Tests: a product.mjs run froze for 10 hours on 27 Oct (in the content account's sweep;
+not seen again), so the sweep now prints each screen ("· <who>: <path>"), logs each press once a screen passes a minute, fails a screen
+after 10 minutes ("stuck"), and product.mjs exits after 75 minutes. A normal run is about 20–25 minutes; the content account's
+Library → Subjects (87 subjects, each Edit pop-up) takes about 4 of them.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

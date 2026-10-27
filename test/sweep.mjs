@@ -93,6 +93,7 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
         if (!(await page.locator('[role="dialog"]').count())) return;
       }
       errors = [];
+      slow(`“${opener}” → “${n2}”`);
       const ok = await page.locator('[role="dialog"]').last().getByRole('button', { name: n2, exact: true }).first().click({ timeout: 2500 }).then(() => true, () => false);
       if (!ok) continue;
       report.inPopups++;
@@ -107,11 +108,33 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
   const queue = await page.evaluate(() => [...document.querySelectorAll('aside a[href^="#/"], nav.tabbar a[href^="#/"]')].map((a) => a.getAttribute('href').slice(1)));
   queue.push('/settings');
   const seen = new Set();
+  // A screen that never finishes (a page that hangs) fails with its name instead of stopping the whole run: each screen
+  // gets 3 minutes, and the progress line says where the sweep is
+  const STUCK_MS = 10 * 60 * 1000;
+  let started = Date.now(); // when this screen began: after a minute, each press is logged, to show where a slow one spends its time
+  const slow = (what) => Date.now() - started > 60000 && console.log(`      ${Math.round((Date.now() - started) / 1000)} s: ${what}`);
   while (queue.length && report.routes.length < maxRoutes) {
     const path = queue.shift();
     const pat = pattern(path);
     if (seen.has(pat) || SKIP_ROUTE.test(path)) continue;
     seen.add(pat);
+    console.log(`    · ${who}: ${path}`);
+    started = Date.now();
+    let timer;
+    const stuck = new Promise((_, no) => (timer = setTimeout(() => no(new Error(`stuck for ${STUCK_MS / 60000} minutes`)), STUCK_MS)));
+    try {
+      await Promise.race([screen(path), stuck]);
+    } catch (e) {
+      report.failures.push({ where: path, what: e.message, errors: [...errors] });
+      break; // the page may be wedged: stop this account here
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  report.skipped = [...report.skipped];
+  return report;
+
+  async function screen(path) {
     errors = [];
     await go('#' + path);
     report.routes.push(path);
@@ -139,6 +162,7 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
       if (nth >= 2) continue; // a long list of the same button: the first two are enough
       const before = await state();
       errors = [];
+      slow(`“${name}”`);
       if (!(await press(name, nth))) continue; // gone, covered or moved: not a real button press
       report.clicked++;
       await page.waitForTimeout(450);
@@ -156,8 +180,6 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
       if ((await page.evaluate(() => location.hash)) !== '#' + path) await go('#' + path);
     }
   }
-  report.skipped = [...report.skipped];
-  return report;
 }
 
 export function writeReport(reports, dir) {

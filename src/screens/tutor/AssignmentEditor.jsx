@@ -254,6 +254,11 @@ export default function AssignmentEditor({ id }) {
           <button className="btn" onClick={() => go(`/marking?a=${a.id}`)}>
             <Icon name="checkCircle" size={18} /> Submissions
           </button>
+          {live && (a.time_limit_min || a.lockdown || a.kind === 'test' || a.kind === 'exam') && (
+            <button className="btn" onClick={() => go(`/exam/${a.id}`)}>
+              <Icon name="users" size={18} /> Exam room
+            </button>
+          )}
           {!a.draft && (
             <button className="btn ghost" onClick={() => removeIt()} disabled={busy} aria-label={`Delete ${a.title}`}>
               <Icon name="trash" size={16} /> Delete
