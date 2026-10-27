@@ -846,6 +846,21 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 :root[data-theme='dark'] .rc-head { background: #12514D; }
 :root[data-theme='dark'] img.wordmark { background: #F6F4EF; border-radius: 12px; padding: 6px 12px; box-sizing: content-box; }
 :root[data-theme='dark'] .pill.dark { background: #ECEDEF; color: #15171A; }
+/* Things painted in the text colour (near-white in dark mode) with white writing on them: pop-up notifications, the
+   lockdown and watched-mode warnings, the camera chip and question numbers get their own dark-mode colours */
+:root[data-theme='dark'] .toast { background: #2C3036; color: #F3F4F6; border: 1px solid #474C54; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55); }
+:root[data-theme='dark'] .toast.bad { background: #4A201B; color: #FFE5DF; border-color: #7A3A31; }
+:root[data-theme='dark'] .banner.lock { background: #2C3036; color: #F3F4F6; border-color: #474C54; }
+:root[data-theme='dark'] .qnum, :root[data-theme='dark'] .camchip { background: #ECEDEF; color: #15171A; }
+:root[data-theme='dark'] .theme-learner .qnum { background: linear-gradient(135deg, #5B4BC4, #0E7C7B); color: #fff; }
+/* white writing on the bright dark-mode teal (and orange, green) was faint: a deeper colour behind it */
+:root[data-theme='dark'] .btn.primary, :root[data-theme='dark'] .chip-pick.on, :root[data-theme='dark'] .paper-chip.sb, :root[data-theme='dark'] .bubble.mine { background: #1A7F74; border-color: #1A7F74; }
+:root[data-theme='dark'] .btn.primary:hover { background: #1F8A7E; }
+:root[data-theme='dark'] .theme-learner .btn.primary { background: linear-gradient(135deg, #0E7C7B 0%, #13937F 100%); border-color: transparent; }
+:root[data-theme='dark'] .nav .count, :root[data-theme='dark'] .tabbar .count, :root[data-theme='dark'] .pill.pick.on, :root[data-theme='dark'] .setup-steps li.now::before, :root[data-theme='dark'] .update-banner { background: #1A7F74; }
+:root[data-theme='dark'] .update-banner .btn { color: #1A7F74; }
+:root[data-theme='dark'] .btn.claude { background: #B5532B; border-color: #B5532B; }
+:root[data-theme='dark'] .tick.ok[aria-pressed='true'] { background: #1F7A52; border-color: #1F7A52; }
 
 /* data saver: a picture that loads when tapped */
 .tap-image { display: inline-flex; align-items: center; gap: 8px; padding: 14px 16px; border: 1px dashed var(--btn-line); border-radius: 10px; background: var(--sunk); color: var(--muted); cursor: pointer; font-size: 14px; }
@@ -1007,7 +1022,7 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .home-when b { font-size: 14px; }
 .home-when span { font-size: 12px; color: var(--muted); }
 .home-centre { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-.home-learners { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.home-learners { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .home-learner { gap: 12px; }
 .home-learner-name { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
 .home-learner-name h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1028,7 +1043,43 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .home-plan { border-top: 1px solid var(--line-soft); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .home-plan-row { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
 .home-quick { display: flex; flex-wrap: wrap; gap: 10px; }
+/* the week in numbers */
+.home-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.home-stat { gap: 2px; padding: 14px 16px; text-decoration: none; color: inherit; transition: border-color .15s, transform .15s; }
+.home-stat:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.home-stat svg { color: var(--accent); margin-bottom: 6px; }
+.home-stat b { font-family: var(--serif); font-size: 28px; font-weight: 600; line-height: 1.15; white-space: nowrap; }
+.home-stat span { font-size: 13px; color: var(--muted); line-height: 1.3; }
+.home-stat.warn b, .home-stat.warn svg { color: var(--claude); }
+.split.home-top { align-items: stretch; }
+/* an empty card that still looks finished */
+.home-clear { display: flex; gap: 14px; align-items: center; padding: 6px 0; }
+.home-clear-icon { width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; background: var(--accent-tint); color: var(--accent); }
+.home-clear .grow { display: flex; flex-direction: column; gap: 2px; }
+.home-clear b { font-size: 15px; }
+.home-clear .grow > span { font-size: 13.5px; color: var(--muted); }
+/* recent activity: the learner, with what they did as a small badge */
+.home-activity .item { padding: 10px 0; text-decoration: none; color: inherit; }
+.home-activity .item:first-child { border-top: 0; }
+.home-activity .name { font-weight: 500; font-size: 14px; }
+.home-activity-who { position: relative; flex-shrink: 0; }
+.home-activity-who svg { position: absolute; right: -7px; bottom: -5px; width: 17px; height: 17px; padding: 3px; border-radius: 50%; background: var(--card); color: var(--accent); box-shadow: 0 0 0 1px var(--line); }
+/* learner Today: things to try when nothing is due */
+.grid.g2.today-week { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.today-ideas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.today-idea { display: flex; flex-direction: column; gap: 2px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--sunk); color: inherit; text-decoration: none; min-width: 0; transition: border-color .15s, transform .15s; }
+.today-idea:hover { border-color: var(--accent-line); transform: translateY(-1px); }
+.today-idea svg { color: var(--accent); margin-bottom: 6px; }
+.today-idea b { font-size: 15px; }
+.today-idea span { font-size: 13px; color: var(--muted); }
 @media (max-width: 600px) {
+  .today-ideas { grid-template-columns: minmax(0, 1fr); }
+  .today-idea { flex-direction: row; flex-wrap: wrap; align-items: center; column-gap: 10px; }
+  .today-idea svg { margin: 0; }
+  .today-idea span { flex-basis: 100%; padding-left: 30px; }
+  .home-stats { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; margin: 0 -16px; padding: 2px 16px 4px; scrollbar-width: none; }
+  .home-stats::-webkit-scrollbar { display: none; }
+  .home-stat { flex: 0 0 42%; scroll-snap-align: start; }
   .home-row { flex-wrap: wrap; }
   .home-row .grow { min-width: 55%; }
   .home-acts { margin-left: auto; }

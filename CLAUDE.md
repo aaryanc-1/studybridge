@@ -529,6 +529,21 @@ mocks" mentions the exam room and extra time. Tests: a product.mjs run froze for
 not seen again), so the sweep now prints each screen ("· <who>: <path>"), logs each press once a screen passes a minute, fails a screen
 after 10 minutes ("stuck"), and product.mjs exits after 75 minutes. A normal run is about 20–25 minutes; the content account's
 Library → Subjects (87 subjects, each Edit pop-up) takes about 4 of them.
+Readable dark mode and fuller Home pages (27 Oct 2026; Aaryan: "cant read the notifications white and white", "home page looks
+slightly blank"). Dark mode painted pop-ups (`.toast`), the lockdown/watched banner (`.banner.lock`), the camera chip and question
+numbers in `--ink` (near-white there) with white writing; they have their own dark colours now (end of the dark block in styles.css),
+and white writing on the bright dark-mode teal/orange/green (primary buttons, counts, picked chips, tick buttons) sits on deeper
+colours (#1A7F74, #B5532B, #1F7A52). product.mjs's `contrast()` fails any text under 3:1 against its solid background (gradients
+skipped), with sample pop-ups, a lockdown banner, a camera chip and a question number added for the check, on Settings and Home in
+dark mode and Settings in light. Tutor Home: a row of five numbers (`.home-stats`: to mark, due in 7 days, live lessons in 7 days,
+studied this week, marks returned this week; each opens its page; a sideways-scrolling row on phones), empty cards that still look
+finished (`Clear`: "You’re all caught up"; "Nothing in the next 7 days" says what's next after that), learner cards beside "Your
+classes" (teachers with classes) and "Recent activity" (`RecentActivity`: hand-ins, practice, marks going back, messages and time
+studied in the last week, from attempts/comments/activity the tutor can already see; 4 lines with one or two learners, 7 otherwise,
+"Show more"); learner cards stretch when there are few. Learner Today: an exam countdown in the hero for tutored learners
+(`study_summary().exam`), "Nothing to do right now" offers Flashcards, Practise (their weakest topic) and My progress, This week has
+four numbers (marks back, handed in, practice done, minutes today of their goal), and Marks back moves beside To do when that side
+is otherwise empty. `activity.day` is read as `String(day).slice(0, 10)` (the test server sends a full timestamp).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

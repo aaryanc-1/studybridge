@@ -46,10 +46,13 @@ export default function Home() {
   const attempts = attemptsQ.data || [];
   const comments = commentsQ.data || [];
   const drafts = draftsQ.data || [];
-  const assignments = useQuery('assignments', api.listAssignments).data || [];
+  const assignmentsQ = useQuery('assignments', api.listAssignments);
+  const assignments = assignmentsQ.data || [];
   const lessons = useQuery('lessons', api.listLessons).data || [];
-  const sessions = useQuery('sessions', api.listSessions).data || [];
-  const activity = useQuery('activity', api.listActivity).data || [];
+  const sessionsQ = useQuery('sessions', api.listSessions);
+  const sessions = sessionsQ.data || [];
+  const activityQ = useQuery('activity', api.listActivity);
+  const activity = activityQ.data || [];
   const profJobs = useQuery('prof-jobs', api.profJobs).data || [];
   const reportSettings = useQuery('learner-reports', api.listLearnerReports).data || [];
   const reports = useQuery('parent-reports', api.listParentReports).data || [];
@@ -295,9 +298,10 @@ export default function Home() {
     const keys = new Set(days.map(ymd));
     const out = {};
     for (const x of activity) {
-      if (!keys.has(x.day)) continue;
+      const d = String(x.day).slice(0, 10);
+      if (!keys.has(d)) continue;
       out[x.learner_id] = out[x.learner_id] || {};
-      out[x.learner_id][x.day] = (out[x.learner_id][x.day] || 0) + x.seconds;
+      out[x.learner_id][d] = (out[x.learner_id][d] || 0) + x.seconds;
     }
     return out;
   }, [activity, monday]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -334,6 +338,24 @@ export default function Home() {
     ? `${lessonsToday ? `${plural(lessonsToday, 'lesson')} today` : 'No lessons today'} · ${needs.length ? `${needs.length} ${needs.length === 1 ? 'thing needs' : 'things need'} you` : 'you’re all caught up'}`
     : undefined;
   const centreToMark = (centre?.tutors || []).reduce((s, t) => s + Number(t.to_mark || 0), 0);
+
+  // ---------- the week in numbers: each one opens the page behind it ----------
+  const studied = Object.values(week).reduce((s, byDay) => s + Object.values(byDay).reduce((a, b) => a + b, 0), 0);
+  const marksBack = attempts.filter((t) => t.released && t.released_at && new Date(t.released_at) >= monFrom).length;
+  const known = (q, n) => (q.data ? n : '—');
+  const stats = [
+    { n: known(attemptsQ, toMark.length), l: 'To mark', icon: 'checkCircle', to: '/marking', warn: toMark.length > 0 },
+    { n: known(assignmentsQ, soon.length), l: 'Due in 7 days', icon: 'clipboard', to: '/assignments' },
+    { n: known(sessionsQ, lessonsSoon.length), l: 'Live lessons in 7 days', icon: 'video', to: '/live' },
+    { n: known(activityQ, short(studied)), l: 'Studied this week', icon: 'clock', to: '/learners' },
+    { n: known(attemptsQ, marksBack), l: 'Marks returned this week', icon: 'send', to: '/marking' },
+  ];
+  // nothing in the next 7 days: say what's next after that
+  const later = [
+    ...sessions.filter((s) => new Date(s.starts_at).getTime() >= weekEnd).map((s) => ({ at: s.starts_at, what: s.title || 'Live lesson' })),
+    ...assignments.filter((a) => !a.draft && a.visibility !== 'hidden' && a.source !== 'self' && a.due_at && new Date(a.due_at).getTime() >= weekEnd).map((a) => ({ at: a.due_at, what: `${a.title} is due` })),
+  ].sort((x, y) => new Date(x.at) - new Date(y.at))[0];
+  const myClasses = lk.activeClasses;
 
   return (
     <Page eyebrow={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} title={`${greeting()}, ${app.me.display_name.split(' ')[0]}`} subtitle={todayLine}>
@@ -378,6 +400,16 @@ export default function Home() {
         </div>
       )}
 
+      <div className="home-stats" aria-label="This week in numbers">
+        {stats.map((s) => (
+          <Link key={s.l} to={s.to} className={'card home-stat' + (s.warn ? ' warn' : '')}>
+            <Icon name={s.icon} size={18} />
+            <b>{s.n}</b>
+            <span>{s.l}</span>
+          </Link>
+        ))}
+      </div>
+
       {manager && (
         <div className="card home-centre">
           <div className="stack sm">
@@ -394,13 +426,15 @@ export default function Home() {
         </div>
       )}
 
-      <div className="split even">
+      <div className="split even home-top">
         <section className="card">
           <h2>Needs you</h2>
           {!needsReady ? (
             <Loading />
           ) : needs.length === 0 ? (
-            <div className="muted small">You’re all caught up. Work handed in, notes from learners and Prof’s drafts show up here.</div>
+            <Clear icon="checkCircle" title="You’re all caught up">
+              Work handed in, notes from learners and Prof’s drafts show up here.
+            </Clear>
           ) : (
             <>
               <div className="list">
@@ -429,7 +463,9 @@ export default function Home() {
         <section className="card">
           <h2>Today and this week</h2>
           {agenda.length === 0 ? (
-            <div className="muted small">No lessons or due dates in the next 7 days.</div>
+            <Clear icon="calendar" title="Nothing in the next 7 days">
+              {later ? `Next: ${later.what}, ${when(later.at)}.` : 'Live lessons and due dates show up here. Book a lesson or set work below.'}
+            </Clear>
           ) : (
             <div className="list">
               {agenda.map(({ at, s, a }) =>
@@ -488,16 +524,9 @@ export default function Home() {
         </section>
       </div>
 
-      <section className="stack">
-        <div className="card-head">
+      {lk.learners.length === 0 ? (
+        <section className="stack">
           <h2 className="home-h2">Your learners</h2>
-          {lk.learners.length > 0 && (
-            <Link to="/learners" className="small">
-              All learners
-            </Link>
-          )}
-        </div>
-        {lk.learners.length === 0 ? (
           <Empty
             action={
               <button className="btn primary" onClick={() => go('/learners?invite=1')}>
@@ -507,14 +536,51 @@ export default function Home() {
           >
             No learners yet.
           </Empty>
-        ) : (
-          <div className="home-learners">
-            {lk.learners.map((l) => (
-              <LearnerCard key={l.id} l={l} days={days} secs={week[l.id] || {}} f={facts[l.id]} loaded={!!home} />
-            ))}
+        </section>
+      ) : (
+        <div className="split home-lower">
+          <section className="stack">
+            <div className="card-head">
+              <h2 className="home-h2">Your learners</h2>
+              <Link to="/learners" className="small">
+                All learners
+              </Link>
+            </div>
+            <div className="home-learners">
+              {lk.learners.map((l) => (
+                <LearnerCard key={l.id} l={l} days={days} secs={week[l.id] || {}} f={facts[l.id]} loaded={!!home} />
+              ))}
+            </div>
+          </section>
+          <div className="stack lg">
+            {myClasses.length > 0 && (
+              <section className="card">
+                <div className="card-head">
+                  <h2>Your classes</h2>
+                  <Link to="/learners/classes" className="small">
+                    All classes
+                  </Link>
+                </div>
+                <div className="list">
+                  {myClasses.slice(0, 6).map((c) => (
+                    <Link key={c.id} to={`/learners/classes/${c.id}/stream`} className="item">
+                      <Icon name="users" style={{ color: 'var(--accent)' }} />
+                      <span className="grow">
+                        <span className="name">{c.name}</span>
+                        <span className="meta">
+                          {[lk.subject(c.subject_id)?.name, plural(c.members.length, 'learner')].filter(Boolean).join(' · ')}
+                        </span>
+                      </span>
+                      <Icon name="right" size={18} />
+                    </Link>
+                  ))}
+                </div>
+              </section>
+            )}
+            <RecentActivity attempts={attempts} comments={comments} activity={activity} aById={aById} name={firstName} me={app.me.id} few={lk.learners.length <= 2} />
           </div>
-        )}
-      </section>
+        </div>
+      )}
 
       <div className="home-quick" role="group" aria-label="Quick actions">
         <button className="btn" onClick={() => go('/assignments?new=1')}>
@@ -531,6 +597,123 @@ export default function Home() {
         </button>
       </div>
     </Page>
+  );
+}
+
+// "12 min", "2.5 h", "14 h": short enough for a number tile
+function short(sec) {
+  const m = Math.round((sec || 0) / 60);
+  if (m < 60) return `${m} min`;
+  const h = m / 60;
+  return `${h < 10 ? Math.round(h * 10) / 10 : Math.round(h)} h`;
+}
+
+// An empty card that still looks finished: an icon, what it is, and what will show up
+function Clear({ icon, title, children }) {
+  return (
+    <div className="home-clear">
+      <span className="home-clear-icon" aria-hidden="true">
+        <Icon name={icon} size={20} />
+      </span>
+      <span className="grow">
+        <b>{title}</b>
+        <span>{children}</span>
+      </span>
+    </div>
+  );
+}
+
+// What learners did in the last week, newest first: hand-ins, practice, marks going back, messages and time studied
+function RecentActivity({ attempts, comments, activity, aById, name, me, few }) {
+  const lk = useLookups();
+  const [all, setAll] = useState(false);
+  const now = Date.now();
+  const recent = (d) => d && now - new Date(d).getTime() < 7 * DAY;
+  const items = [];
+  for (const t of attempts) {
+    const a = aById[t.assignment_id];
+    if (!a) continue;
+    const score = t.score != null && t.max_score ? ` · ${+t.score}/${+t.max_score}` : '';
+    if (t.status === 'in_progress' && now - new Date(t.started_at).getTime() < DAY) {
+      items.push({ key: 'p' + t.id, at: t.started_at, who: t.learner_id, icon: 'pen', text: `${name(t.learner_id)} is working on ${a.title}`, to: `/learners/${t.learner_id}` });
+    }
+    if (t.status !== 'in_progress' && recent(t.submitted_at)) {
+      items.push(
+        a.practice
+          ? { key: 's' + t.id, at: t.submitted_at, who: t.learner_id, icon: 'target', text: `${name(t.learner_id)} practised ${a.title}${t.released ? score : ''}`, to: `/learners/${t.learner_id}` }
+          : { key: 's' + t.id, at: t.submitted_at, who: t.learner_id, icon: 'clipboard', text: `${name(t.learner_id)} handed in ${a.title}`, to: `/marking/${t.id}` },
+      );
+    }
+    // marks going back (not work that marks itself as it's handed in: that's the line above)
+    if (!a.practice && t.released && recent(t.released_at) && new Date(t.released_at) - new Date(t.submitted_at || 0) > 60000) {
+      items.push({ key: 'r' + t.id, at: t.released_at, who: t.learner_id, icon: 'checkCircle', text: `Marks back to ${name(t.learner_id)}: ${a.title}${score}`, to: `/marking/${t.id}` });
+    }
+  }
+  // messages and notes from learners: one line per learner a day
+  const notes = {};
+  for (const c of comments) {
+    if (c.author_id === me || c.author_id !== c.learner_id || !recent(c.created_at)) continue;
+    const k = c.learner_id + ymd(c.created_at);
+    if (notes[k]) {
+      notes[k].n++;
+      notes[k].at = c.created_at > notes[k].at ? c.created_at : notes[k].at;
+    } else notes[k] = { learner: c.learner_id, at: c.created_at, n: 1 };
+  }
+  for (const [k, x] of Object.entries(notes)) {
+    items.push({ key: 'n' + k, at: x.at, who: x.learner, icon: 'message', text: `${name(x.learner)} sent ${x.n === 1 ? 'a message' : `${x.n} messages`}`, to: `/messages/${x.learner}` });
+  }
+  // time studied, a line per learner a day (today's sits at "now": it's still adding up)
+  const studied = {};
+  for (const x of activity) {
+    const d = String(x.day).slice(0, 10);
+    const at = new Date(d + 'T23:59:00');
+    if (!(now - at.getTime() <= 7 * DAY)) continue;
+    const k = x.learner_id + d;
+    studied[k] = studied[k] || { learner: x.learner_id, day: d, at: Math.min(at.getTime(), now), sec: 0 };
+    studied[k].sec += x.seconds;
+  }
+  for (const [k, x] of Object.entries(studied)) {
+    if (x.sec < 60) continue;
+    items.push({ key: 't' + k, at: new Date(x.at).toISOString(), day: x.day, who: x.learner, icon: 'clock', text: `${name(x.learner)} studied for ${dur(x.sec)}`, to: `/learners/${x.learner}` });
+  }
+  items.sort((x, y) => new Date(y.at) - new Date(x.at));
+  // about as tall as the learner cards beside it: fewer lines when there are only one or two cards
+  const shown = all ? items.slice(0, 30) : items.slice(0, few ? 4 : 7);
+  const dayOf = (d) =>
+    d === ymd(new Date(now)) ? 'Today' : d === ymd(new Date(now - DAY)) ? 'Yesterday' : new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long' });
+  return (
+    <section className="card">
+      <h2>Recent activity</h2>
+      {items.length === 0 ? (
+        <Clear icon="chart" title="Quiet so far">
+          Hand-ins, practice, time studied and messages from the last week show up here.
+        </Clear>
+      ) : (
+        <>
+          <div className="list home-activity">
+            {shown.map((x) => (
+              <Link key={x.key} to={x.to} className="item">
+                <span className="home-activity-who">
+                  <Avatar person={lk.learner(x.who)} size="sm" />
+                  <Icon name={x.icon} size={12} />
+                </span>
+                <span className="grow">
+                  <span className="name">{x.text}</span>
+                  <span className="meta">{x.day ? dayOf(x.day) : ago(x.at)}</span>
+                </span>
+              </Link>
+            ))}
+          </div>
+          {items.length > shown.length && !all && (
+            <div>
+              <button className="linkbtn small" onClick={() => setAll(true)}>
+                Show more
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

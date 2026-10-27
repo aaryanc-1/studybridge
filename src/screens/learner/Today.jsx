@@ -2,7 +2,7 @@ import { useApp } from '../../App.jsx';
 import { StudyNudge } from './Study.jsx';
 import { CheckNudge, SelfPlan, TrialNote } from './SelfStudy.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Link, go } from '../../ui/kit.jsx';
+import { Link, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, due, dur, kindLabel, when, weekRange, ymd } from '../../lib/format.js';
@@ -49,6 +49,13 @@ export default function Today() {
   const weekDays = Array.from({ length: 7 }, (_, i) => new Date(monday.getTime() + i * 86400000));
   const hour = new Date().getHours();
   const next = todo[0];
+  // this week: marks back, work handed in, practice done (students on their own see the exam countdown in their plan)
+  const marksBack = attempts.filter((t) => t.released && new Date(t.released_at || t.submitted_at) >= monday).length;
+  const practised = attempts.filter((t) => aById[t.assignment_id]?.practice && t.submitted_at && new Date(t.submitted_at) >= monday).length;
+  const exam = !app.me.self_learner && study?.exam?.date && examWeeks(study.exam);
+  // marks back sit under To do, or beside it when that side has nothing else (so neither side is left empty)
+  const marksSide = unread.length || nextSession || fresh.length ? 'left' : 'right';
+  const practiseLink = weak[0] ? `/study?subject=${weak[0].subject_id}&topic=${encodeURIComponent(weak[0].topic)}` : '/study';
 
   return (
     <div className="page">
@@ -80,6 +87,14 @@ export default function Today() {
               ))}
             </div>
           </div>
+          {exam && (
+            <div className="hero-stat">
+              <div className="n">
+                <Icon name="calendar" size={20} /> {exam.n}
+              </div>
+              <div className="l">{exam.l}</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -140,7 +155,34 @@ export default function Today() {
               </Link>
             </div>
             {todo.length === 0 ? (
-              <Empty>Nothing to do right now. New work shows up here.</Empty>
+              <>
+                <div className="home-clear">
+                  <span className="home-clear-icon" aria-hidden="true">
+                    <Icon name="checkCircle" size={20} />
+                  </span>
+                  <span className="grow">
+                    <b>Nothing to do right now</b>
+                    <span>New work shows up here. Got a few minutes? Try one of these.</span>
+                  </span>
+                </div>
+                <div className="today-ideas">
+                  <Link to="/study" className="today-idea">
+                    <Icon name="flame" size={20} />
+                    <b>Flashcards</b>
+                    <span>{study?.cards_due ? `${study.cards_due} to do` : 'The daily quiz and drills'}</span>
+                  </Link>
+                  <Link to={practiseLink} className="today-idea">
+                    <Icon name="target" size={20} />
+                    <b>Practise</b>
+                    <span className="ellipsis">{weak[0] ? weak[0].topic : 'Questions on your topics'}</span>
+                  </Link>
+                  <Link to="/progress" className="today-idea">
+                    <Icon name="chart" size={20} />
+                    <b>My progress</b>
+                    <span>What’s strong, what needs work</span>
+                  </Link>
+                </div>
+              </>
             ) : (
               <div className="stack">
                 {todo.map(({ a, s }) => {
@@ -178,7 +220,7 @@ export default function Today() {
               <Icon name="right" />
             </Link>
           )}
-          {back.length > 0 && (
+          {back.length > 0 && marksSide === 'left' && (
             <div className="card">
               <h2>Marks back</h2>
               <div className="list">
@@ -199,14 +241,22 @@ export default function Today() {
         <div className="stack lg">
           <div className="card">
             <h2>This week</h2>
-            <div className="grid g2" style={{ gap: 12 }}>
+            <div className="grid g2 today-week" style={{ gap: 12 }}>
               <div className="stat">
-                <div className="n">{attempts.filter((t) => t.released && new Date(t.released_at || t.submitted_at) >= weekRange(0).from).length}</div>
+                <div className="n">{marksBack}</div>
                 <div className="l">Marks back</div>
               </div>
               <div className="stat">
                 <div className="n">{week ? week.assignments.length : '—'}</div>
                 <div className="l">Handed in</div>
+              </div>
+              <div className="stat">
+                <div className="n">{practised}</div>
+                <div className="l">Practice done</div>
+              </div>
+              <div className="stat">
+                <div className="n">{study ? `${Math.round((study.today_sec || 0) / 60)} min` : '—'}</div>
+                <div className="l">Today{study ? `, of ${study.goal_min} min` : ''}</div>
               </div>
             </div>
             {weak.length > 0 && (
@@ -219,6 +269,23 @@ export default function Today() {
               See my progress
             </Link>
           </div>
+          {back.length > 0 && marksSide === 'right' && (
+            <div className="card">
+              <h2>Marks back</h2>
+              <div className="list">
+                {back.map((t) => (
+                  <Link key={t.id} to={`/results/${t.id}`} className="item">
+                    <Icon name="checkCircle" style={{ color: 'var(--good)' }} />
+                    <span className="grow">
+                      <span className="name">{aById[t.assignment_id]?.title || 'Assignment'}</span>
+                      <span className="meta">Submitted {ago(t.submitted_at)}</span>
+                    </span>
+                    <span className="strong">{t.score != null ? `${Number(t.score)} / ${Number(t.max_score)}` : ''}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
           {unread.length > 0 && (
             <div className="card">
               <h2>New messages</h2>
@@ -260,4 +327,15 @@ export default function Today() {
       </div>
     </div>
   );
+}
+
+// "26" over "weeks to IGCSE", or "9" over "days to the exams"
+function examWeeks(exam) {
+  const n = new Date();
+  const days = Math.round((new Date(String(exam.date).slice(0, 10) + 'T12:00:00') - new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12)) / 86400000);
+  if (days < 0) return null;
+  const name = exam.name || 'the exams';
+  if (days < 14) return { n: days, l: `${days === 1 ? 'day' : 'days'} to ${name}` };
+  const w = Math.floor(days / 7);
+  return { n: w, l: `weeks to ${name}` };
 }

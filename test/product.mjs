@@ -95,6 +95,56 @@ async function a11y(page, where) {
   });
   if (problems.length) throw new Error(`Accessibility on ${where}:\n  ${problems.join('\n  ')}`);
 }
+// Readable colours: no writing too close to the colour behind it (in dark mode, white on near-white once hid every
+// pop-up). Pop-ups, an error pop-up, the lockdown warning, the camera chip and a question number are added to the page
+// for a moment so they're checked too.
+async function contrast(page, where) {
+  // colours fade when the theme changes: measure once they've finished (at most 3 seconds)
+  await page.evaluate(() =>
+    Promise.race([
+      Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.catch(() => {}))),
+      new Promise((r) => setTimeout(r, 3000)),
+    ]),
+  );
+  await page.waitForTimeout(200);
+  const problems = await page.evaluate(() => {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `<div id="contrast-samples"><div class="toasts"><div class="toast"><div><div class="t">A pop-up</div><div class="b">What happened</div></div></div>
+       <div class="toast bad"><div><div class="t">Couldn’t save that</div><div class="b">Try again</div></div></div></div>
+       <div style="position:fixed;left:0;right:0;top:0;z-index:70"><div class="banner lock">Locked until you hand in.</div>
+       <span class="qnum">1</span><span class="camchip">Tutor can see you</span></div></div>`,
+    );
+    const rgb = (s) => (s.match(/[\d.]+/g) || []).map(Number);
+    const lum = ([r, g, b]) => {
+      const f = (c) => ((c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    // the colour behind: the nearest solid background (a gradient or picture can't be judged, so it's skipped)
+    const behind = (el) => {
+      for (let e = el; e; e = e.parentElement) {
+        const cs = getComputedStyle(e);
+        if (cs.backgroundImage && cs.backgroundImage !== 'none') return null;
+        const c = rgb(cs.backgroundColor);
+        if (c.length >= 3 && (c.length < 4 || c[3] > 0.5)) return c;
+      }
+      return [255, 255, 255];
+    };
+    const out = [];
+    for (const el of document.querySelectorAll('body *')) {
+      if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+      if (!(el.offsetWidth || el.offsetHeight) || getComputedStyle(el).visibility === 'hidden') continue;
+      const bg = behind(el);
+      if (!bg) continue;
+      const [a, b] = [lum(rgb(getComputedStyle(el).color)), lum(bg)].sort((x, y) => y - x);
+      const ratio = (a + 0.05) / (b + 0.05);
+      if (ratio < 3) out.push(`${ratio.toFixed(1)}:1 “${el.textContent.trim().slice(0, 40)}” (${el.tagName.toLowerCase()}.${[...el.classList].join('.')})`);
+    }
+    document.getElementById('contrast-samples').remove();
+    return [...new Set(out)];
+  });
+  if (problems.length) throw new Error(`Hard to read on ${where}:\n  ${problems.join('\n  ')}`);
+}
 async function expectValue(loc, re, ms = 30000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -419,7 +469,14 @@ try {
   await A.getByRole('group', { name: 'Appearance' }).getByRole('button', { name: 'Dark' }).click();
   assert.equal(await A.evaluate(() => document.documentElement.dataset.theme), 'dark');
   await shot(A, 'settings-dark');
+  await contrast(A, 'Settings in dark mode');
+  await A.evaluate(() => (location.hash = '#/'));
+  await A.locator('.home-stats').waitFor();
+  await contrast(A, 'Home in dark mode');
+  await shot(A, 'home-dark');
+  await A.evaluate(() => (location.hash = '#/settings'));
   await A.getByRole('group', { name: 'Appearance' }).getByRole('button', { name: 'Light' }).click();
+  await contrast(A, 'Settings in light mode');
   await nav(A, 'Library').click();
   await A.getByRole('button', { name: 'Free textbooks' }).click();
   await A.getByText('Prealgebra 2e').waitFor();
