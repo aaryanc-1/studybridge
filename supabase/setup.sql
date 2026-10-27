@@ -870,6 +870,8 @@ declare
   v public.profiles;
   v_first boolean;
   a uuid;
+  v_school uuid;
+  v_own uuid;
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into v from public.profiles where id = auth.uid();
@@ -881,9 +883,13 @@ begin
     update public.profiles set display_name = coalesce(nullif(trim(p_name), ''), display_name) where id = auth.uid() returning * into v;
     return v;
   end if;
-  -- The very first tutor is the StudyBridge admin; everyone after waits for the admin's approval.
+  -- The very first tutor is the StudyBridge admin; everyone after waits for the admin's approval (or, with a school's
+  -- email, for that school's manager).
   v_first := not exists (select 1 from public.platform_admins);
-  if not v_first and not (select tutor_signups_open from public.app_config where id = 1) then
+  if not v_first and to_regclass('public.school_roster') is not null then
+    execute 'select public._school_by_domain($1)' into v_school using v.email;
+  end if;
+  if not v_first and v_school is null and not (select tutor_signups_open from public.app_config where id = 1) then
     raise exception 'StudyBridge isn’t taking new tutors right now.';
   end if;
   update public.profiles
@@ -893,7 +899,16 @@ begin
            'subjects', left(p_signup ->> 'subjects', 300), 'country', left(p_signup ->> 'country', 100), 'learners', left(p_signup ->> 'learners', 50)))
    where id = auth.uid() returning * into v;
   insert into public.tutor_settings (tutor_id) values (auth.uid()) on conflict do nothing;
-  if v_first then
+  if v_school is not null then
+    select org_id into v_own from public.org_members where user_id = auth.uid();
+    delete from public.org_members where user_id = auth.uid();
+    delete from public.organisations o where o.id = v_own and o.kind = 'tutor' and not exists (select 1 from public.org_members m where m.org_id = o.id);
+    insert into public.org_members (org_id, user_id, role) values (v_school, auth.uid(), 'tutor') on conflict do nothing;
+    execute 'update public.profiles set school_id = $2 where id = $1' using auth.uid(), v_school;
+    perform public.notify_user(m.user_id, 'org', 'New teacher waiting: ' || v.display_name,
+      coalesce(v.email, '') || ' signed up with your school email. Approve them in Settings → Your organisation.', jsonb_build_object('org_id', v_school))
+      from public.org_members m where m.org_id = v_school and m.role = 'manager';
+  elsif v_first then
     insert into public.platform_admins (user_id) values (auth.uid()) on conflict do nothing;
   else
     for a in select user_id from public.platform_admins loop
@@ -10162,7 +10177,10 @@ begin
       'teachers', (select count(*) from public.org_members where org_id = o.id),
       'learners', public._org_learners(o.id),
       'state', public._bill((select user_id from public.org_members where org_id = o.id order by joined_at limit 1)) ->> 'state',
-      'paid_until', o.paid_until, 'paid_seats', o.paid_seats, 'trial_until', o.trial_until, 'invoice_asked_at', o.invoice_asked_at) x
+      'paid_until', o.paid_until, 'paid_seats', o.paid_seats, 'trial_until', o.trial_until, 'invoice_asked_at', o.invoice_asked_at,
+      'email_domains', to_jsonb(o) -> 'email_domains',
+      'waiting', (select count(*) from public.profiles l where l.school_id = o.id and l.role = 'learner'
+                    and not exists (select 1 from public.class_members m join public.classes c on c.id = m.class_id where m.learner_id = l.id and c.org_id = o.id))) x
       from public.organisations o
      where o.kind in ('centre', 'school')
        and not exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = o.id and coalesce(p.demo, false))) z), '[]');
@@ -10796,6 +10814,501 @@ begin
   return n;
 end $$;
 
+-- ---------------------------------------------------------------------
+-- Schools part 2 (decided with Aaryan 26 Oct 2026): signing up with a school email. StudyBridge adds a school's email
+-- endings (Admin → Schools). A student who signs up with one (and proves it: a 6-digit code emailed to them, or Google)
+-- is in the school straight away, with their year, and waits on "New from your school" until a teacher adds them to a
+-- class (or a class code, or the school's spreadsheet, puts them in one). Teachers who sign up with a school email wait for
+-- the school's manager, not StudyBridge. A school can also add a spreadsheet of learners (email, name, year, classes) and
+-- make their accounts in advance, with starting passwords they change the first time they sign in.
+-- ---------------------------------------------------------------------
+alter table public.organisations add column if not exists email_domains text[] not null default '{}';
+alter table public.profiles add column if not exists school_id uuid references public.organisations (id) on delete set null;
+alter table public.profiles add column if not exists school_ok boolean not null default false;
+alter table public.profiles add column if not exists must_change_password boolean not null default false;
+create index if not exists profiles_school on public.profiles (school_id) where school_id is not null;
+
+-- A school's spreadsheet: one row per learner it expects (any email; classes by id)
+create table if not exists public.school_roster (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  email text not null,
+  name text,
+  grade int,
+  class_ids uuid[] not null default '{}',
+  added_by uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  account_id uuid references public.profiles (id) on delete set null,
+  joined_at timestamptz
+);
+create unique index if not exists school_roster_email on public.school_roster (org_id, lower(email));
+alter table public.school_roster enable row level security;
+revoke all on public.school_roster from public, anon, authenticated;
+
+-- The 6-digit code that proves a school email is theirs (kept as a hash; 30 minutes; 5 tries)
+create table if not exists public.school_email_codes (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  code_hash text not null,
+  sent_at timestamptz not null default now(),
+  tries int not null default 0
+);
+alter table public.school_email_codes enable row level security;
+revoke all on public.school_email_codes from public, anon, authenticated;
+
+create or replace function public._email_domain(p_email text) returns text
+language sql immutable as $$
+  select nullif(lower(trim(split_part(coalesce(p_email, ''), '@', 2))), '')
+$$;
+-- The school (or centre) an email belongs to, by its ending
+create or replace function public._school_by_domain(p_email text) returns uuid
+language sql stable security definer set search_path = public as $$
+  select o.id from public.organisations o
+   where o.kind in ('school', 'centre') and public._email_domain(p_email) = any (o.email_domains)
+   order by o.created_at limit 1
+$$;
+-- …or on a school's spreadsheet (any email)
+create or replace function public._school_by_roster(p_email text) returns uuid
+language sql stable security definer set search_path = public as $$
+  select r.org_id from public.school_roster r join public.organisations o on o.id = r.org_id
+   where lower(r.email) = lower(trim(coalesce(p_email, ''))) and o.kind in ('school', 'centre')
+   order by r.created_at desc limit 1
+$$;
+-- Email can go out (Resend set up in Admin → Selling)
+create or replace function public._email_on() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select s.resend_key is not null from public.platform_secrets s where s.id = 1), false)
+     and coalesce((select c.email_from is not null from public.app_config c where c.id = 1), false)
+$$;
+-- Signed in with Google: Google has already checked the email is theirs
+create or replace function public._email_proven(p_user uuid) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  return exists (select 1 from auth.users u where u.id = p_user
+                   and (coalesce(u.raw_app_meta_data -> 'providers', '[]'::jsonb) ? 'google' or u.raw_app_meta_data ->> 'provider' = 'google'));
+exception when others then
+  return false;
+end $$;
+-- Someone who looks after a school's learners: an approved teacher or manager in it
+create or replace function public._school_staff(p_org uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id join public.organisations o on o.id = m.org_id
+                  where m.org_id = p_org and m.user_id = auth.uid() and p.role = 'tutor' and p.status = 'active' and o.kind in ('school', 'centre'))
+$$;
+-- A learner without a main teacher yet gets the first teacher of the first class they're put in
+create or replace function public._school_main_teacher(p_learner uuid, p_class uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.profiles
+     set tutor_id = coalesce((select teacher_id from public.class_teachers where class_id = p_class order by added_at limit 1),
+                             (select tutor_id from public.classes where id = p_class))
+   where id = p_learner and role = 'learner' and tutor_id is null;
+end $$;
+-- Put a learner who has just proved their school email in the classes the school's spreadsheet lists for them
+create or replace function public._school_place(p_learner uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  r public.school_roster;
+  c uuid;
+begin
+  select * into me from public.profiles where id = p_learner;
+  if me.id is null or me.school_id is null or not me.school_ok then return; end if;
+  for r in select * from public.school_roster where org_id = me.school_id and lower(email) = lower(coalesce(me.email, '')) and account_id is null loop
+    update public.profiles
+       set grade = coalesce(grade, r.grade),
+           display_name = case when coalesce(trim(display_name), '') = '' or display_name = split_part(coalesce(email, ''), '@', 1)
+                               then coalesce(nullif(trim(r.name), ''), display_name) else display_name end
+     where id = p_learner;
+    foreach c in array r.class_ids loop
+      if exists (select 1 from public.classes where id = c and org_id = me.school_id and not archived) then
+        if not exists (select 1 from public.class_members where class_id = c and learner_id = p_learner) then perform public._add_to_class(c, p_learner); end if;
+        perform public._school_main_teacher(p_learner, c);
+      end if;
+    end loop;
+    update public.school_roster set account_id = p_learner, joined_at = now() where id = r.id;
+  end loop;
+end $$;
+
+-- Sign up as a student at a school, with the school email (the account is made first). Google: straight in. Otherwise a
+-- 6-digit code is emailed, or (no email set up yet) a teacher lets them in by adding them to a class.
+create or replace function public.start_school_learner(p_name text, p_grade int, p_timezone text default 'UTC') returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  v_org uuid;
+  v_mgr uuid;
+  v_name text;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null then raise exception 'Not signed in.'; end if;
+  if me.role is not null and not (me.role = 'learner' and me.school_id is not null) then
+    raise exception 'This account is already set up. Sign in with it as it is, or use your school email for a new account.';
+  end if;
+  v_org := coalesce(public._school_by_domain(me.email), public._school_by_roster(me.email));
+  if v_org is null then
+    raise exception 'We don’t know a school with that email yet. Check it’s your school email, or ask your teacher for a class code.';
+  end if;
+  if p_grade is null or p_grade < 1 or p_grade > 13 then raise exception 'Choose your year.'; end if;
+  select name into v_name from public.organisations where id = v_org;
+  select user_id into v_mgr from public.org_members where org_id = v_org and role = 'manager' order by joined_at limit 1;
+  if me.role is null and v_mgr is not null then perform public._room_check(v_mgr, me.id, v_name); end if;
+  update public.profiles
+     set role = 'learner', school_id = v_org, grade = p_grade, timezone = coalesce(p_timezone, timezone),
+         display_name = coalesce(nullif(trim(p_name), ''), display_name),
+         school_ok = school_ok or public._email_proven(me.id)
+   where id = me.id returning * into me;
+  if me.school_ok then
+    perform public._school_place(me.id);
+    return jsonb_build_object('state', 'in', 'school', v_name);
+  end if;
+  if public._email_on() then
+    perform public.send_school_code();
+    return jsonb_build_object('state', 'code', 'school', v_name, 'email', me.email);
+  end if;
+  return jsonb_build_object('state', 'teacher', 'school', v_name);
+end $$;
+
+-- Email a new 6-digit code (not more than once a minute)
+create or replace function public.send_school_code() returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  b bytea;
+  v_code text;
+  v_school text;
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null or me.school_id is null then raise exception 'This account isn’t joining a school.'; end if;
+  if me.school_ok then return jsonb_build_object('state', 'in'); end if;
+  if not public._email_on() then return jsonb_build_object('state', 'teacher'); end if;
+  if exists (select 1 from public.school_email_codes where user_id = me.id and sent_at > now() - interval '1 minute') then
+    raise exception 'We’ve just sent one. Wait a minute, then ask again.';
+  end if;
+  b := extensions.gen_random_bytes(3);
+  v_code := lpad(((get_byte(b, 0) * 65536 + get_byte(b, 1) * 256 + get_byte(b, 2)) % 1000000)::text, 6, '0');
+  insert into public.school_email_codes (user_id, code_hash, sent_at, tries)
+  values (me.id, extensions.crypt(v_code, extensions.gen_salt('bf')), now(), 0)
+  on conflict (user_id) do update set code_hash = excluded.code_hash, sent_at = now(), tries = 0;
+  select name into v_school from public.organisations where id = me.school_id;
+  insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+  values (me.email, 'Your StudyBridge code: ' || v_code,
+          'Hi ' || coalesce(split_part(me.display_name, ' ', 1), '') || E',\n\nYour code is ' || v_code || '. Type it in StudyBridge to join '
+          || coalesce(v_school, 'your school') || E'. It works for 30 minutes.\n\nIf you didn’t ask for it, you can ignore this email.\n\nThe StudyBridge team',
+          (select support_email from public.app_config where id = 1));
+  perform public._prof_kick();
+  return jsonb_build_object('state', 'code', 'email', me.email);
+end $$;
+
+-- Type the code from the email: they're in the school (and in any classes its spreadsheet lists for them)
+create or replace function public.confirm_school_email(p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  me public.profiles;
+  c public.school_email_codes;
+  v text := regexp_replace(coalesce(p_code, ''), '[^0-9]', '', 'g');
+begin
+  select * into me from public.profiles where id = auth.uid();
+  if me.id is null or me.school_id is null then raise exception 'This account isn’t joining a school.'; end if;
+  if me.school_ok then return jsonb_build_object('state', 'in'); end if;
+  select * into c from public.school_email_codes where user_id = me.id;
+  if c.user_id is null or c.sent_at < now() - interval '30 minutes' then raise exception 'That code has run out. Ask for a new one.'; end if;
+  if c.tries >= 5 then raise exception 'Too many wrong codes. Ask for a new one.'; end if;
+  if extensions.crypt(v, c.code_hash) <> c.code_hash then
+    update public.school_email_codes set tries = tries + 1 where user_id = me.id;
+    return jsonb_build_object('state', 'wrong', 'left', 4 - c.tries);
+  end if;
+  delete from public.school_email_codes where user_id = me.id;
+  update public.profiles set school_ok = true where id = me.id;
+  perform public._school_place(me.id);
+  return jsonb_build_object('state', 'in');
+end $$;
+
+-- What a learner (or a teacher waiting for the manager) needs to know about their school
+create or replace function public.my_school() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select case when p.school_id is null then null else jsonb_build_object(
+    'id', o.id, 'name', o.name, 'ok', p.school_ok, 'email', p.email, 'email_on', public._email_on(),
+    'classes', (select count(*) from public.class_members m join public.classes c on c.id = m.class_id where m.learner_id = p.id and c.org_id = o.id and not c.archived),
+    'code_sent', (select sent_at from public.school_email_codes where user_id = p.id)) end
+    from public.profiles p left join public.organisations o on o.id = p.school_id
+   where p.id = auth.uid()
+$$;
+
+-- "New from your school": learners who joined with the school email and aren't in any of its classes yet (every teacher
+-- and manager in the school sees it: names, emails and years only)
+create or replace function public.school_waiting() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if v_org is null or not public._school_staff(v_org) then return '[]'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'email', l.email, 'grade', l.grade,
+                                                       'ok', l.school_ok, 'joined_at', l.created_at) order by l.grade nulls last, l.display_name)
+                     from public.profiles l
+                    where l.school_id = v_org and l.role = 'learner'
+                      and not exists (select 1 from public.class_members m join public.classes c on c.id = m.class_id
+                                       where m.learner_id = l.id and c.org_id = v_org and not c.archived)), '[]');
+end $$;
+
+-- Add learners from the school to a class you teach (a manager: any class in the school). Adding someone whose email
+-- isn't confirmed yet vouches for them.
+create or replace function public.school_add_to_class(p_class uuid, p_learners uuid[]) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  c public.classes;
+  l uuid;
+  n int := 0;
+begin
+  select * into c from public.classes where id = p_class and not archived;
+  if c.id is null or not (public._class_teacher(p_class) or public._class_org_manager(p_class)) then raise exception 'Not your class.'; end if;
+  foreach l in array coalesce(p_learners, '{}') loop
+    if not exists (select 1 from public.profiles where id = l and role = 'learner' and school_id = c.org_id) then
+      raise exception 'Only learners from your school can be added here.';
+    end if;
+    update public.profiles set school_ok = true where id = l and not school_ok;
+    delete from public.school_email_codes where user_id = l;
+    if not exists (select 1 from public.class_members where class_id = p_class and learner_id = l) then
+      perform public._add_to_class(p_class, l);
+      n := n + 1;
+    end if;
+    perform public._school_main_teacher(l, p_class);
+  end loop;
+  return n;
+end $$;
+
+-- A manager: "Not in our school" (someone who used the email ending but doesn't belong): back to a blank account
+create or replace function public.school_remove(p_learner uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare me public.profiles;
+begin
+  select * into me from public.profiles where id = p_learner;
+  if me.id is null or me.school_id is null or not public._org_manager(me.school_id) then raise exception 'Not someone in your school.'; end if;
+  if exists (select 1 from public.class_members m join public.classes c on c.id = m.class_id where m.learner_id = p_learner and c.org_id = me.school_id) then
+    raise exception 'They’re in a class. Take them out of their classes first.';
+  end if;
+  update public.profiles set school_id = null, school_ok = false, role = case when tutor_id is null then null else role end where id = p_learner;
+  delete from public.school_email_codes where user_id = p_learner;
+end $$;
+
+-- The school's spreadsheet: add or update rows (email, name, year, classes by name). Teachers can name the classes they
+-- teach; managers any class in the school. People already in the school are put in their classes straight away.
+create or replace function public.school_roster_save(p_rows jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._org_of(auth.uid());
+  v_manager boolean;
+  r jsonb;
+  cn text;
+  cid uuid;
+  ids uuid[];
+  unknown text[] := '{}';
+  v_email text;
+  saved int := 0;
+  l uuid;
+begin
+  if v_org is null or not public._school_staff(v_org) then raise exception 'Only teachers in a school or centre can add a class list.'; end if;
+  if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 2000 then raise exception 'Up to 2,000 learners at a time.'; end if;
+  v_manager := public._org_manager(v_org);
+  for r in select * from jsonb_array_elements(p_rows) loop
+    v_email := lower(trim(coalesce(r ->> 'email', '')));
+    continue when v_email !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$';
+    ids := '{}';
+    for cn in select trim(x) from jsonb_array_elements_text(coalesce(r -> 'classes', '[]')) x where trim(x) <> '' loop
+      cid := null;
+      select c.id into cid from public.classes c
+       where c.org_id = v_org and not c.archived and lower(c.name) = lower(cn)
+         and (v_manager or public._teaches_class(c.id))
+       order by c.created_at limit 1;
+      if cid is null then unknown := array_append(unknown, cn); else ids := array_append(ids, cid); end if;
+    end loop;
+    insert into public.school_roster (org_id, email, name, grade, class_ids, added_by)
+    values (v_org, v_email, nullif(left(trim(coalesce(r ->> 'name', '')), 80), ''),
+            case when coalesce(r ->> 'grade', '') ~ '^[0-9]{1,2}$' and (r ->> 'grade')::int between 1 and 13 then (r ->> 'grade')::int end,
+            ids, auth.uid())
+    on conflict (org_id, lower(email)) do update
+      set name = coalesce(excluded.name, school_roster.name), grade = coalesce(excluded.grade, school_roster.grade),
+          class_ids = (select coalesce(array_agg(distinct x), '{}') from unnest(school_roster.class_ids || excluded.class_ids) x);
+    saved := saved + 1;
+    -- already in the school (signed up before the list came): into their classes now
+    l := null;
+    select id into l from public.profiles where lower(email) = v_email and school_id = v_org and school_ok and role = 'learner';
+    if l is not null then
+      foreach cid in array ids loop
+        if not exists (select 1 from public.class_members where class_id = cid and learner_id = l) then perform public._add_to_class(cid, l); end if;
+        perform public._school_main_teacher(l, cid);
+      end loop;
+      update public.school_roster set account_id = l, joined_at = coalesce(joined_at, now()) where org_id = v_org and lower(email) = v_email;
+    end if;
+  end loop;
+  return jsonb_build_object('saved', saved, 'unknown_classes', (select coalesce(jsonb_agg(distinct u), '[]') from unnest(unknown) u));
+end $$;
+
+-- The school's spreadsheet as it stands: who's on it, their classes, and whether they've joined
+create or replace function public.school_roster_list() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if v_org is null or not public._school_staff(v_org) then return '[]'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', r.id, 'email', r.email, 'name', r.name, 'grade', r.grade,
+                     'classes', (select coalesce(jsonb_agg(c.name order by c.name), '[]') from public.classes c where c.id = any (r.class_ids)),
+                     'joined', r.account_id is not null, 'joined_at', r.joined_at,
+                     'has_account', r.account_id is not null or exists (select 1 from public.profiles u where lower(u.email) = lower(r.email)))
+                   order by r.grade nulls last, r.name nulls last, r.email)
+                     from public.school_roster r where r.org_id = v_org), '[]');
+end $$;
+
+create or replace function public.school_roster_remove(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.school_roster r where r.id = p_id and public._school_staff(r.org_id)) then raise exception 'Not your school’s list.'; end if;
+  delete from public.school_roster where id = p_id;
+end $$;
+
+-- Accounts made in advance (the Prof server makes the sign-ins, with starting passwords): which rows this person may make
+create or replace function public._school_accounts_todo(p_user uuid, p_ids uuid[]) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid;
+begin
+  select m.org_id into v_org from public.org_members m join public.profiles p on p.id = m.user_id join public.organisations o on o.id = m.org_id
+   where m.user_id = p_user and p.role = 'tutor' and p.status = 'active' and o.kind in ('school', 'centre');
+  if v_org is null then raise exception 'Only teachers in a school or centre can make accounts.'; end if;
+  if coalesce(cardinality(p_ids), 0) > 500 then raise exception 'Up to 500 accounts at a time.'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', r.id, 'email', r.email, 'name', r.name))
+                     from public.school_roster r
+                    where r.org_id = v_org and r.id = any (p_ids) and r.account_id is null
+                      and not exists (select 1 from public.profiles u where lower(u.email) = lower(r.email))), '[]');
+end $$;
+-- …and once the sign-in is made: a learner in the school, who chooses their own password the first time
+create or replace function public._school_account_made(p_roster uuid, p_account uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare r public.school_roster;
+begin
+  select * into r from public.school_roster where id = p_roster;
+  if r.id is null then return; end if;
+  update public.profiles
+     set role = 'learner', school_id = r.org_id, school_ok = true, must_change_password = true, grade = r.grade,
+         display_name = coalesce(nullif(trim(r.name), ''), display_name)
+   where id = p_account and role is null;
+  perform public._school_place(p_account);
+end $$;
+
+-- Chose their own password after signing in with a starting one
+create or replace function public.password_changed() returns void
+language sql security definer set search_path = public as $$
+  update public.profiles set must_change_password = false where id = auth.uid()
+$$;
+
+-- Teachers who signed up with the school email, waiting for its manager
+create or replace function public.org_waiting_teachers() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if v_org is null or not public._org_manager(v_org) then return '[]'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'email', p.email, 'at', p.created_at) order by p.created_at)
+                     from public.org_members m join public.profiles p on p.id = m.user_id
+                    where m.org_id = v_org and p.role = 'tutor' and p.status = 'pending'), '[]');
+end $$;
+-- The manager lets a teacher in (approved, in the school) or says they aren't one of theirs (they go back to waiting for
+-- StudyBridge, outside the school)
+create or replace function public.org_approve_teacher(p_user uuid, p_ok boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._org_of(auth.uid());
+  t public.profiles;
+  v_name text;
+begin
+  if v_org is null or not public._org_manager(v_org) then raise exception 'Only the school’s manager can do that.'; end if;
+  select * into t from public.profiles where id = p_user;
+  if t.id is null or t.role <> 'tutor' or t.status <> 'pending' or not exists (select 1 from public.org_members where org_id = v_org and user_id = p_user) then
+    raise exception 'They aren’t waiting to join your school.';
+  end if;
+  select name into v_name from public.organisations where id = v_org;
+  if p_ok then
+    update public.profiles set status = 'active' where id = p_user;
+    perform public.notify_user(p_user, 'approved', 'You’re in ' || v_name || '!', 'Your manager approved your teacher account. Your classes are in Learners → Classes.', '{}');
+  else
+    delete from public.org_members where org_id = v_org and user_id = p_user;
+    update public.profiles set school_id = null where id = p_user;
+    perform public._ensure_org(p_user);
+    perform public.notify_user(a.user_id, 'tutor_signup', 'New tutor waiting: ' || t.display_name,
+      coalesce(t.email, '') || ' signed up with ' || v_name || '’s email, but its manager says they aren’t one of its teachers.', jsonb_build_object('user_id', t.id))
+      from public.platform_admins a;
+  end if;
+end $$;
+
+-- StudyBridge sets a school's email endings (never a public email service, never one another school has)
+create or replace function public.admin_set_school_domains(p_org uuid, p_domains text[]) returns text[]
+language plpgsql security definer set search_path = public as $$
+declare
+  v text[];
+  d text;
+  clash text;
+begin
+  perform public._admin();
+  if not exists (select 1 from public.organisations where id = p_org and kind in ('school', 'centre')) then raise exception 'That isn’t a centre or school.'; end if;
+  select coalesce(array_agg(distinct x), '{}') into v
+    from (select lower(trim(both '@ ' from trim(y))) x from unnest(coalesce(p_domains, '{}')) y) z where x <> '';
+  foreach d in array v loop
+    if d !~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' then raise exception '“%” isn’t an email ending like hillside.ac.zm.', d; end if;
+    if d in ('gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'yahoo.co.uk', 'icloud.com', 'me.com',
+             'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'yandex.com', 'mail.ru', 'qq.com', '163.com', 'rediffmail.com', 'zoho.com') then
+      raise exception '% is a public email service, not a school’s own.', d;
+    end if;
+    clash := null;
+    select name into clash from public.organisations where id <> p_org and d = any (email_domains) limit 1;
+    if clash is not null then raise exception '% already belongs to %.', d, clash; end if;
+  end loop;
+  update public.organisations set email_domains = v where id = p_org;
+  perform public._admin_log('school_domains', null, jsonb_build_object('org', p_org, 'domains', v));
+  return v;
+end $$;
+
+-- A learner who joined with the school email but isn't in a class yet still belongs to the school
+create or replace function public._org_of(p_user uuid) returns uuid
+language sql stable security definer set search_path = public as $$
+  select coalesce(
+    (select m.org_id from public.org_members m
+      where m.user_id = (select case when p.role = 'learner' then p.tutor_id else p.id end from public.profiles p where p.id = p_user)),
+    (select p.school_id from public.profiles p where p.id = p_user and p.role = 'learner'))
+$$;
+-- …and counts as one of its learners (the school pays for them)
+create or replace function public._org_learner_ids(p_org uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l join public.org_members m on m.user_id = l.tutor_id
+   where m.org_id = p_org and l.role = 'learner' and l.paused_at is null
+  union
+  select k.learner_id from public.learner_links k join public.org_members m on m.user_id = k.tutor_id where m.org_id = p_org and k.paused_at is null
+  union
+  select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = p_org and not c.archived
+  union
+  select l.id from public.profiles l where l.school_id = p_org and l.role = 'learner' and l.paused_at is null
+$$;
+-- Who a teacher can put in a class: their own learners and their classes', a manager everyone in the centre, and (in a
+-- school) anyone who joined it with its email
+create or replace function public._class_pool(p_org uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l where l.role = 'learner' and l.tutor_id = auth.uid()
+  union
+  select cm.learner_id from public.class_members cm join public.class_teachers ct on ct.class_id = cm.class_id where ct.teacher_id = auth.uid()
+  union
+  select l.id from public.profiles l join public.org_members m on m.user_id = l.tutor_id
+   where public._org_manager(p_org) and m.org_id = p_org and l.role = 'learner'
+  union
+  select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id
+   where public._org_manager(p_org) and c.org_id = p_org
+  union
+  select l.id from public.profiles l where l.school_id = p_org and l.role = 'learner' and l.school_ok and public._school_staff(p_org)
+$$;
+-- However someone ends up in a class (the list, a class code, the class editor, the spreadsheet), a learner with no main
+-- teacher yet gets that class's first teacher
+create or replace function public._class_member_main() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public._school_main_teacher(new.learner_id, new.class_id);
+  return null;
+end $$;
+drop trigger if exists class_members_main on public.class_members;
+create trigger class_members_main after insert on public.class_members for each row execute function public._class_member_main();
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -10803,7 +11316,8 @@ declare f text;
 begin
   foreach f in array array['_mobile_payment_new(uuid, text, int, text, uuid, int)', '_mobile_payment_done(text, numeric, text, text)', '_set_paid_level(uuid, text, text, text, text, timestamptz)',
                            '_seats_due()', '_seats_synced(uuid, int)', '_set_org_paid(uuid, text, text, text, text, timestamptz)', '_org_seats_synced(uuid, int)', '_checkout_target(uuid)', '_selling()', 'prof_hello(text)', 'prof_claim(uuid)', 'prof_save(uuid, text, jsonb, jsonb, text, text, int, int, numeric, text, int, jsonb)',
-                           'prof_context(uuid)', 'prof_mark_context(uuid)', 'prof_orphan_files()', 'prof_tick()', '_prof_kick()'] loop
+                           'prof_context(uuid)', 'prof_mark_context(uuid)', 'prof_orphan_files()', 'prof_tick()', '_prof_kick()',
+                           '_school_accounts_todo(uuid, uuid[])', '_school_account_made(uuid, uuid)'] loop
     execute format('revoke execute on function public.%s from public, anon, authenticated', f);
     execute format('grant execute on function public.%s to service_role', f);
   end loop;
@@ -10889,6 +11403,14 @@ revoke execute on function public._class_cards(uuid, boolean) from public, anon,
 revoke execute on function public._notify_post(uuid) from public, anon, authenticated;
 revoke execute on function public._stream_files_ok(jsonb, uuid) from public, anon, authenticated;
 revoke execute on function public._stream_tick() from public, anon, authenticated;
+revoke execute on function public._school_by_domain(text) from public, anon, authenticated;
+revoke execute on function public._school_by_roster(text) from public, anon, authenticated;
+revoke execute on function public._email_on() from public, anon, authenticated;
+revoke execute on function public._email_proven(uuid) from public, anon, authenticated;
+revoke execute on function public._school_staff(uuid) from public, anon, authenticated;
+revoke execute on function public._school_main_teacher(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._school_place(uuid) from public, anon, authenticated;
+revoke execute on function public._class_member_main() from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

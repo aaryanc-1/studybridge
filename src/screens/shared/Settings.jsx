@@ -180,6 +180,50 @@ function CentrePays({ manager, kind }) {
   );
 }
 
+// Teachers who signed up with the school's email: its manager lets them in (StudyBridge doesn't)
+function WaitingTeachers() {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const q = useQuery('org-waiting-teachers', api.orgWaitingTeachers);
+  const list = q.data || [];
+  if (!list.length) return null;
+  async function decide(t, ok) {
+    if (!ok && !(await confirm({ title: `${t.name} isn’t one of your teachers?`, body: 'They won’t join your school. StudyBridge looks at their account instead.', ok: 'Not one of ours' }))) return;
+    try {
+      await api.orgApproveTeacher(t.id, ok);
+      q.refresh();
+      invalidate('org', 'org-overview');
+      toast(ok ? `${t.name} is in` : `${t.name} isn’t in your school`);
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <div className="stack sm">
+      <h3>Teachers waiting for you</h3>
+      <div className="small muted">They signed up with your school email. Let them in if they teach here.</div>
+      <div className="list">
+        {list.map((t) => (
+          <div key={t.id} className="item">
+            <span className="grow">
+              <span className="name">{t.name}</span>
+              <span className="meta">
+                {t.email} · {ago(t.at)}
+              </span>
+            </span>
+            <button className="btn sm primary" onClick={() => decide(t, true)} aria-label={`Let ${t.name} in`}>
+              Let them in
+            </button>
+            <button className="btn sm ghost" onClick={() => decide(t, false)} aria-label={`${t.name} isn’t one of ours`}>
+              Not one of ours
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function YourOrganisation() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -225,6 +269,7 @@ function YourOrganisation() {
         <div className="strong">{o.name}</div>
         <div className="small muted">{about}</div>
       </div>
+      {centre && manager && <WaitingTeachers />}
       {o.kind !== 'studybridge' && (
         <>
           {manager && (

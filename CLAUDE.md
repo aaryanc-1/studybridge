@@ -485,6 +485,30 @@ setup.sql made a manager a teacher of every class they'd made for someone else (
 teacher), and `_class_teacher` no longer counts whoever created the class (a manager could open its gradebook). CI's walkthrough and product steps
 post their last 40 lines as an error annotation (readable without signing in; 1.1.86 and 1.1.87 failed on a test that waited for
 typed text instead of saved results).
+School sign-up (26 Oct 2026; Aaryan: no Microsoft sign-in for now; both a school-email sign-up and spreadsheets; year only; every
+teacher sees the waiting list; the manager approves teachers). `organisations.email_domains` (set by the Owner in Admin → Schools,
+`admin_set_school_domains`: never a public email service or another school's). Welcome → "I’m at a school" (`#start=school`): name,
+school email, password, year (`SCHOOL_GRADES` in students.js) → `start_school_learner(name, grade, tz)`: the school by email ending
+(`_school_by_domain`) or by its spreadsheet (`_school_by_roster`, any email); sets role learner, `profiles.school_id`, grade;
+`school_ok` straight away with Google (`_email_proven`: auth.users raw_app_meta_data provider google), else a 6-digit code emailed
+(`send_school_code`, `school_email_codes` hashed with crypt, 30 min, 5 tries, `confirm_school_email`) when email is on (`_email_on`:
+Resend key + sender), else state 'teacher' (a teacher adding them vouches). Until they're in a class (`tutor_id` null) LearnerApp shows
+only `SchoolWaiting` (src/screens/learner/SchoolJoin.jsx: the code box, a class code box, polls `my_school()`). `_org_of` falls back to
+`school_id` for learners; `_org_learner_ids` counts them; `_class_pool` includes confirmed school learners for school staff
+(`_school_staff`). Learners → "New from your school" (`/learners/school`, src/screens/tutor/SchoolLearners.jsx, tab only in a
+school/centre, count in its label): `school_waiting()` by year, tick + "Add to class" (`school_add_to_class`, also confirms them),
+managers' "Not in our school" (`school_remove`). Any way into a class gives a learner with no main teacher that class's first teacher
+(trigger `class_members_main` → `_school_main_teacher`). Spreadsheets: `school_roster` (org, email, name, grade, class_ids, account_id);
+paste or .csv (`parseTable`: tab/comma/semicolon, header names or email,name,year,classes; "Year 10" = grade 9) → `school_roster_save`
+(classes by name: teachers only their own, managers any; people already in are placed now; unknown classes reported),
+`school_roster_list`, `school_roster_remove`; `_school_place` puts a confirmed learner in their listed classes. Accounts in advance:
+Prof action `school_accounts` (`_school_accounts_todo` → GoTrue admin API `POST /auth/v1/admin/users` with email_confirm → 
+`_school_account_made`: `must_change_password`), starting passwords like "kite-4827" shown once as printable slips (a hidden iframe
+prints only them); App.jsx shows `NewPassword first` until `password_changed()`. Teachers: `become_tutor` with a school's email ending
+joins that school (own org removed), pending, `school_id` set, managers told; Settings → Your organisation → "Teachers waiting for you"
+(`org_waiting_teachers`, `org_approve_teacher(user, ok)`: not ours → back to their own organisation, waiting for StudyBridge);
+WaitingForApproval names the school. Website: schools.html step 3 "Everyone signs up with the school email". test/fake-supabase.mjs
+has auth.users.raw_app_meta_data and `admin/users`.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

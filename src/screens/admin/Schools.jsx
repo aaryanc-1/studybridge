@@ -1,6 +1,7 @@
 // Admin → Schools and centres: every tuition centre and school. They pay one price for everyone in them (per learner
 // a year, at least the minimum, website/site.config.json → schoolPlan), yearly by invoice after a free pilot term. The
-// Owner sets each one up here: centre or school, paid up to, the learners paid for, free pilot days.
+// Owner sets each one up here: centre or school, paid up to, the learners paid for, free pilot days, and its email endings
+// (students and teachers who sign up with one join it: students wait for a class, teachers for its manager).
 import { useState } from 'react';
 import { Empty, Field, Modal, Page, Seg, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
@@ -47,6 +48,8 @@ export default function SchoolsPage() {
                 )}
                 {o.state === 'trial' && o.trial_until && <span>until {day(o.trial_until)}</span>}
                 {o.invoice_asked_at && <span className="pill accent">Asked for an invoice {day(o.invoice_asked_at)}</span>}
+                {(o.email_domains || []).length > 0 && <span>@{o.email_domains.join(', @')}</span>}
+                {o.waiting > 0 && <span>{o.waiting} waiting for a class</span>}
               </span>
             </span>
             <button className="btn sm" onClick={() => setOpen(o)} aria-label={`Set up ${o.name}`}>
@@ -66,11 +69,14 @@ function SetUp({ o, onClose }) {
   const [paid, setPaid] = useState(o.paid_until || '');
   const [seats, setSeats] = useState(o.paid_seats ? String(o.paid_seats) : String(Math.max(o.learners, SP.minLearners)));
   const [pilot, setPilot] = useState('');
+  const [domains, setDomains] = useState((o.email_domains || []).join(', '));
   const [busy, setBusy] = useState(false);
   async function save() {
     setBusy(true);
     try {
       await api.adminSetSchoolPlan(o.id, paid || null, seats === '' ? null : Math.round(Number(seats)), Math.round(Number(pilot)) || null, kind);
+      const list = domains.split(/[\s,;]+/).map((d) => d.trim()).filter(Boolean);
+      if (list.join(',') !== (o.email_domains || []).join(',')) await api.adminSetSchoolDomains(o.id, list);
       invalidate('admin-orgs', 'admin-tutors');
       toast(`${o.name} saved`);
       onClose();
@@ -118,6 +124,9 @@ function SetUp({ o, onClose }) {
             <input className="input" type="number" min="1" step="1" value={seats} onChange={(e) => setSeats(e.target.value)} />
           </Field>
         </div>
+        <Field label="School email endings" hint="Like hillside.ac.zm. Students who sign up with one join this school and wait for a class; teachers wait for its manager. Several: separate with commas.">
+          <input className="input" value={domains} onChange={(e) => setDomains(e.target.value)} placeholder="hillside.ac.zm" spellCheck={false} />
+        </Field>
         <Field label="Free pilot days" hint="Days to add to their free time (up to 120). Empty: none.">
           <input className="input" type="number" min="1" max="120" step="1" value={pilot} placeholder="None" onChange={(e) => setPilot(e.target.value)} />
         </Field>

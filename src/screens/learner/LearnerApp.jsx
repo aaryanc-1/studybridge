@@ -18,6 +18,7 @@ import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import Study from './Study.jsx';
 import { ClassList, ClassView, useMyClasses } from './Classes.jsx';
+import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
@@ -82,7 +83,11 @@ export default function LearnerApp() {
 
   // A student on their own: no tutor to message or meet live; a setup first, and a free week before paying
   const self = !!app.me.self_learner;
-  const nav = self
+  // joined a school with its email, not in a class yet: one page until a teacher adds them (or they type a class code)
+  const waiting = !self && !!app.me.school_id && !app.me.tutor_id;
+  const nav = waiting
+    ? [{ to: '/', label: 'My school', icon: 'cap' }]
+    : self
     ? [
         { to: '/', label: 'Today', icon: 'home', also: ['/setup', '/check'] },
         { to: '/study', label: 'Study', icon: 'flame' },
@@ -101,7 +106,7 @@ export default function LearnerApp() {
         { to: '/live', label: 'Live', icon: 'video' },
       ];
   const byTo = (to) => nav.find((x) => x.to === to);
-  const tabs = self ? nav : [byTo('/'), byTo('/work'), byTo('/study'), byTo('/messages'), byTo('/library')];
+  const tabs = self || waiting ? nav : [byTo('/'), byTo('/work'), byTo('/study'), byTo('/messages'), byTo('/library')];
 
   let page;
   if (!a) page = <Today />;
@@ -124,6 +129,7 @@ export default function LearnerApp() {
   else if (a === 'classes' && b) page = <ClassView id={b} />;
   else if (a === 'classes') page = <ClassList />;
   else page = <Today />;
+  if (waiting && a !== 'settings') page = <SchoolWaiting />;
   if (self && a !== 'settings') {
     if (!app.me.setup_done) page = <SelfSetup />;
     else if (a === 'setup') page = <SelfSetup again />;

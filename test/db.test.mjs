@@ -3262,3 +3262,139 @@ test('the class stream: teachers and managers post to one class or several; repl
   assert.deepEqual(mineData.class_replies.map((r) => [r.class, r.removed]), [['Form 1 maths', true]]);
   assert.ok((await val('CST1', `select export_my_data()`)).class_posts.length >= 3);
 });
+
+test('schools: sign up with the school email (a code, or Google), wait on "New from your school" until a teacher adds you to a class; spreadsheets; accounts made in advance; teachers approved by the manager', async () => {
+  const mk = async (k, email, name = k, app = {}) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data, raw_app_meta_data) values ($1, $2, $3) returning id`, [email, { name }, app])).rows[0].id;
+  };
+  for (const [k, n] of [['JM', 'Mrs Mulenga'], ['JT', 'Mr Tembo']]) {
+    await mk(k, k.toLowerCase() + '@staff.x', n);
+    await one(k, `select * from become_tutor($1, 'Africa/Lusaka')`, [n]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const kabwe = await val('JM', `select org_make_centre('Kabwe Secondary')`);
+  await val('JT', `select org_join($1)`, [kabwe.code]);
+  const org = (await db.query(`select org_id from org_members where user_id = $1`, [U.JM])).rows[0].org_id;
+  const f2 = await val('JM', `select save_class(null, 'Form 2 maths', null, '{}', $1)`, [[U.JT]]);
+  const f3 = await val('JM', `select save_class(null, 'Form 3 science', null, '{}', $1)`, [[U.JM]]);
+
+  // StudyBridge sets the school's email endings: its own, never a public one or another school's
+  await fails(as('JM', `select admin_set_school_domains($1, $2)`, [org, ['kabwe.edu.zm']]), /admin/i);
+  await fails(as('A', `select admin_set_school_domains($1, $2)`, [org, ['gmail.com']]), /public email service/);
+  await fails(as('A', `select admin_set_school_domains($1, $2)`, [org, ['not an ending']]), /isn’t an email ending/);
+  assert.deepEqual(await val('A', `select admin_set_school_domains($1, $2)`, [org, ['@Kabwe.edu.zm ', 'kabwe.edu.zm']]), ['kabwe.edu.zm']);
+  const other = (await db.query(`select id from organisations where kind in ('school', 'centre') and id <> $1 limit 1`, [org])).rows[0].id;
+  await fails(as('A', `select admin_set_school_domains($1, $2)`, [other, ['kabwe.edu.zm']]), /already belongs to Kabwe Secondary/);
+  assert.deepEqual((await val('A', `select admin_orgs()`)).find((o) => o.id === org).email_domains, ['kabwe.edu.zm']);
+
+  // no email set up yet: a student signs up with the school email and waits for a teacher to let them in
+  await db.query(`update platform_secrets set resend_key = null where id = 1`);
+  await db.query(`update app_config set email_from = null where id = 1`);
+  await mk('JS1', 'mwila@kabwe.edu.zm', 'mwila');
+  await fails(as('JS1', `select start_school_learner('Mwila', 0)`), /Choose your year/);
+  assert.deepEqual(await val('JS1', `select start_school_learner('Mwila Banda', 9, 'Africa/Lusaka')`), { state: 'teacher', school: 'Kabwe Secondary' });
+  assert.deepEqual((({ name, ok, classes }) => ({ name, ok, classes }))(await val('JS1', `select my_school()`)), { name: 'Kabwe Secondary', ok: false, classes: 0 });
+  await mk('JX', 'someone@elsewhere.zm');
+  await fails(as('JX', `select start_school_learner('X', 9)`), /don’t know a school with that email/);
+  assert.equal(await val('JX', `select my_school()`), null);
+  // "New from your school": every teacher and manager in the school sees who's waiting (names, emails, years)
+  const waiting = async (k) => (await val(k, `select school_waiting()`)).map((w) => [w.name, w.grade, w.ok]);
+  assert.deepEqual(await waiting('JT'), [['Mwila Banda', 9, false]]);
+  assert.deepEqual(await waiting('JM'), [['Mwila Banda', 9, false]]);
+  assert.deepEqual(await val('JS1', `select school_waiting()`), []);
+  assert.deepEqual(await val('T', `select school_waiting()`), []);
+  assert.equal(Number((await db.query(`select public._org_learners($1) n`, [org])).rows[0].n), 1, 'the school counts them');
+  // Mr Tembo adds her to his class (vouching for her email); she gets him as her teacher and drops off the list
+  await fails(as('JT', `select school_add_to_class($1, $2)`, [f3, [U.JS1]]), /Not your class/);
+  await fails(as('JT', `select school_add_to_class($1, $2)`, [f2, [U.L]]), /Only learners from your school/);
+  assert.equal(await val('JT', `select school_add_to_class($1, $2)`, [f2, [U.JS1]]), 1);
+  const mwila = (await db.query(`select tutor_id, school_ok from profiles where id = $1`, [U.JS1])).rows[0];
+  assert.deepEqual([mwila.tutor_id, mwila.school_ok], [U.JT, true]);
+  assert.deepEqual(await waiting('JT'), []);
+  assert.equal((await val('JS1', `select my_school()`)).classes, 1);
+
+  // with email on: a 6-digit code goes to the school email; wrong codes are counted
+  await db.query(`update platform_secrets set resend_key = 're_test' where id = 1`);
+  await db.query(`update app_config set email_from = 'StudyBridge <hello@gostudybridge.com>' where id = 1`);
+  await mk('JS2', 'bupe@kabwe.edu.zm', 'bupe');
+  assert.deepEqual(await val('JS2', `select start_school_learner('Bupe', 10)`), { state: 'code', school: 'Kabwe Secondary', email: 'bupe@kabwe.edu.zm' });
+  const mail = (await db.query(`select subject, body from outgoing_emails where to_addr = 'bupe@kabwe.edu.zm' order by created_at desc limit 1`)).rows[0];
+  const code = mail.subject.match(/\d{6}/)[0];
+  assert.ok(mail.body.includes(code) && mail.body.includes('Kabwe Secondary'));
+  await fails(as('JS2', `select send_school_code()`), /just sent one/);
+  assert.equal((await val('JS2', `select confirm_school_email('000000')`)).state, code === '000000' ? 'in' : 'wrong');
+  assert.deepEqual(await val('JS2', `select confirm_school_email($1)`, [code.slice(0, 3) + ' ' + code.slice(3)]), { state: 'in' });
+  assert.equal((await val('JS2', `select my_school()`)).ok, true);
+  // Google has already checked the email: straight in
+  await mk('JS3', 'chanda@kabwe.edu.zm', 'chanda', { provider: 'google', providers: ['google'] });
+  assert.equal((await val('JS3', `select start_school_learner('Chanda', 10)`)).state, 'in');
+  assert.deepEqual((await waiting('JM')).sort(), [['Bupe', 10, true], ['Chanda', 10, true]]);
+
+  // the school's spreadsheet: classes by name (a teacher only his own); people already in the school are placed at once
+  const r1 = await val('JT', `select school_roster_save($1)`, [JSON.stringify([
+    { email: 'Chola@kabwe.edu.zm', name: 'Chola Phiri', grade: '9', classes: ['form 2 maths', 'Form 3 science', 'Nope'] },
+    { email: 'kapa@gmail.com', name: 'Kapa Mumba', grade: 8, classes: ['Form 2 maths'] },
+    { email: 'not an email', name: 'Skipped' },
+  ])]);
+  assert.deepEqual([r1.saved, r1.unknown_classes.sort()], [2, ['Form 3 science', 'Nope']]);
+  await val('JM', `select school_roster_save($1)`, [JSON.stringify([{ email: 'bupe@kabwe.edu.zm', classes: ['Form 3 science'] }])]);
+  assert.equal((await db.query(`select count(*)::int n from class_members where class_id = $1 and learner_id = $2`, [f3, U.JS2])).rows[0].n, 1, 'Bupe, already in, goes straight in');
+  await fails(as('JS1', `select school_roster_save('[]')`), /Only teachers/);
+  // Chola signs up later: the code proves it's her, and the list puts her in her class
+  await mk('JS4', 'chola@kabwe.edu.zm', 'chola');
+  await val('JS4', `select start_school_learner('Chola', 9)`);
+  const c4 = (await db.query(`select subject from outgoing_emails where to_addr = 'chola@kabwe.edu.zm' order by created_at desc limit 1`)).rows[0].subject.match(/\d{6}/)[0];
+  await val('JS4', `select confirm_school_email($1)`, [c4]);
+  assert.equal((await db.query(`select count(*)::int n from class_members where class_id = $1 and learner_id = $2`, [f2, U.JS4])).rows[0].n, 1);
+  assert.equal((await db.query(`select tutor_id from profiles where id = $1`, [U.JS4])).rows[0].tutor_id, U.JT);
+  // the list works for any email: Kapa uses her own gmail
+  await mk('JS5', 'kapa@gmail.com', 'kapa');
+  assert.equal((await val('JS5', `select start_school_learner('Kapa', 8)`)).state, 'code');
+  const roster = await val('JT', `select school_roster_list()`);
+  assert.deepEqual(roster.map((r) => [r.email, r.joined]).sort(), [['bupe@kabwe.edu.zm', true], ['chola@kabwe.edu.zm', true], ['kapa@gmail.com', false]]);
+
+  // accounts made in advance (the Prof server does this with the service key): starting passwords, changed at first sign-in
+  const extra = await val('JT', `select school_roster_save($1)`, [JSON.stringify([{ email: 'natasha@kabwe.edu.zm', name: 'Natasha Zulu', grade: 9, classes: ['Form 2 maths'] }])]);
+  assert.equal(extra.saved, 1);
+  const ids = (await val('JT', `select school_roster_list()`)).map((r) => r.id);
+  await fails(as('JT', `select _school_accounts_todo($1, $2)`, [U.JT, ids]), /permission denied/);
+  const todo = (await db.query(`select public._school_accounts_todo($1, $2) j`, [U.JT, ids])).rows[0].j;
+  assert.deepEqual(todo.map((x) => x.email), ['natasha@kabwe.edu.zm'], 'not people who already have an account');
+  await fails(db.query(`select public._school_accounts_todo($1, $2)`, [U.JS1, ids]), /Only teachers/);
+  await mk('JS6', 'natasha@kabwe.edu.zm', '');
+  await db.query(`select public._school_account_made($1, $2)`, [todo[0].id, U.JS6]);
+  const nat = (await db.query(`select role, display_name, must_change_password, school_ok, tutor_id from profiles where id = $1`, [U.JS6])).rows[0];
+  assert.deepEqual([nat.role, nat.display_name, nat.must_change_password, nat.school_ok, nat.tutor_id], ['learner', 'Natasha Zulu', true, true, U.JT]);
+  await as('JS6', `select password_changed()`);
+  assert.equal((await db.query(`select must_change_password from profiles where id = $1`, [U.JS6])).rows[0].must_change_password, false);
+
+  // teachers who sign up with the school email wait for the manager, not StudyBridge
+  await mk('JT2', 'banda@kabwe.edu.zm', 'Mr Banda');
+  const t2 = await one('JT2', `select * from become_tutor('Mr Banda', 'Africa/Lusaka')`);
+  assert.equal(t2.status, 'pending');
+  assert.equal((await db.query(`select org_id from org_members where user_id = $1`, [U.JT2])).rows[0].org_id, org);
+  assert.equal(await val('JM', `select count(*)::int from notifications where user_id = auth.uid() and title = 'New teacher waiting: Mr Banda'`), 1);
+  assert.deepEqual((await val('JM', `select org_waiting_teachers()`)).map((t) => t.name), ['Mr Banda']);
+  assert.deepEqual(await val('JT', `select org_waiting_teachers()`), []);
+  await fails(as('JT', `select org_approve_teacher($1, true)`, [U.JT2]), /manager/);
+  assert.deepEqual(await val('JT2', `select school_waiting()`), [], 'not before they’re approved');
+  await as('JM', `select org_approve_teacher($1, true)`, [U.JT2]);
+  assert.equal((await db.query(`select status from profiles where id = $1`, [U.JT2])).rows[0].status, 'active');
+  // someone who isn't one of theirs goes back to waiting for StudyBridge, outside the school
+  await mk('JT3', 'imposter@kabwe.edu.zm', 'Imposter');
+  await one('JT3', `select * from become_tutor('Imposter', 'UTC')`);
+  await as('JM', `select org_approve_teacher($1, false)`, [U.JT3]);
+  assert.notEqual((await db.query(`select org_id from org_members where user_id = $1`, [U.JT3])).rows[0].org_id, org);
+  assert.equal((await db.query(`select status from profiles where id = $1`, [U.JT3])).rows[0].status, 'pending');
+
+  // a manager can say someone isn't in the school (only while they're in no class)
+  await mk('JS7', 'random@kabwe.edu.zm', 'random');
+  await val('JS7', `select start_school_learner('Not a pupil', 11)`);
+  await fails(as('JT', `select school_remove($1)`, [U.JS7]), /Not someone in your school/);
+  await fails(as('JM', `select school_remove($1)`, [U.JS1]), /in a class/);
+  await as('JM', `select school_remove($1)`, [U.JS7]);
+  assert.equal((await db.query(`select role from profiles where id = $1`, [U.JS7])).rows[0].role, null);
+
+  await db.query(`update platform_secrets set resend_key = null where id = 1`);
+  await db.query(`update app_config set email_from = null where id = 1`);
+});

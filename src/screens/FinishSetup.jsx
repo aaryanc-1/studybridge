@@ -164,6 +164,11 @@ export default function FinishSetup() {
 export function WaitingForApproval() {
   const app = useApp();
   const paused = app.me.status === 'suspended';
+  // signed up with a school's email: that school's manager approves them, not StudyBridge
+  const [school, setSchool] = useState(null);
+  useEffect(() => {
+    if (app.me.school_id) api.mySchool().then(setSchool, () => {});
+  }, [app.me.school_id]);
   useEffect(() => {
     if (paused) return;
     const t = setInterval(() => app.refreshMe(), 15000);
@@ -178,7 +183,9 @@ export function WaitingForApproval() {
           <p className="lead">
             {paused
               ? 'StudyBridge has paused this tutor account. Your learners’ work is kept safe. Contact StudyBridge to switch it back on.'
-              : 'Your tutor account is waiting for approval. This page opens StudyBridge for you as soon as you’re approved.'}
+              : school
+                ? `Your teacher account is waiting for ${school.name}’s manager to approve it. This page opens StudyBridge for you as soon as they do.`
+                : 'Your tutor account is waiting for approval. This page opens StudyBridge for you as soon as you’re approved.'}
           </p>
         </div>
         <div className="card">
@@ -186,7 +193,7 @@ export function WaitingForApproval() {
             <Icon name={paused ? 'pause' : 'clock'} style={{ color: 'var(--accent)' }} />
             <div className="grow">
               <div className="strong">{app.me.email}</div>
-              <div className="small muted">{paused ? 'Paused' : 'Waiting for approval'}</div>
+              <div className="small muted">{paused ? 'Paused' : school ? `Waiting for ${school.name}` : 'Waiting for approval'}</div>
             </div>
           </div>
           <div className="row">

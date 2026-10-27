@@ -9,6 +9,9 @@ export function studentAccess(me, now = new Date()) {
   return { ok: false };
 }
 
+// A school's years, for students signing up with their school email
+export const SCHOOL_GRADES = Array.from({ length: 12 }, (_, i) => [i + 1, `Grade ${i + 1} (Year ${i + 2})`]);
+
 export const GRADES = [
   [6, 'Grade 6 (Year 7)'],
   [7, 'Grade 7 (Year 8)'],

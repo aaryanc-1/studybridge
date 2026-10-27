@@ -1216,6 +1216,10 @@ function AccountModal({ l, onClose }) {
 
 // Learners · Classes · Reports: the parent reports live with the learners they're about
 export function LearnerTabs({ tab }) {
+  // in a school or centre: students who signed up with its email and aren't in a class yet
+  const org = useQuery('org', api.myOrg).data;
+  const school = org?.kind === 'school' || org?.kind === 'centre';
+  const waiting = (useQuery(school ? 'school-waiting' : null, api.schoolWaiting).data || []).length;
   return (
     <Seg
       value={tab}
@@ -1223,6 +1227,7 @@ export function LearnerTabs({ tab }) {
       options={[
         { value: 'learners', label: 'Learners', icon: 'user' },
         { value: 'classes', label: 'Classes', icon: 'users' },
+        ...(school ? [{ value: 'school', label: waiting ? `New from your school (${waiting})` : 'New from your school', icon: 'cap' }] : []),
         { value: 'reports', label: 'Reports', icon: 'send' },
       ]}
     />

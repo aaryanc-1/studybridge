@@ -14,7 +14,7 @@ const SETUP = readFileSync(new URL('../supabase/setup.sql', import.meta.url), 'u
 export const STUBS = `
 create role authenticated nologin; create role anon nologin; create role service_role nologin bypassrls;
 create schema auth;
-create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
+create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}', raw_app_meta_data jsonb default '{}',
   encrypted_password text, email_confirmed_at timestamptz default now(), last_sign_in_at timestamptz, created_at timestamptz default now(),
   banned_until timestamptz);
 create function auth.uid() returns uuid language sql stable as $$
@@ -443,6 +443,17 @@ export async function startFakeSupabase({ port = 0, log = false, anthropicUrl = 
         return [200, session(u, 'aal2')];
       }
       return [404, { msg: 'Not found' }];
+    }
+    if (route === 'admin/users' && req.method === 'POST') {
+      if (caller(req) !== SERVICE) return [401, { code: 401, msg: 'This endpoint requires a valid service role key' }];
+      const email = String(b.email || '').toLowerCase();
+      if (!email || !b.password) return [422, { code: 422, msg: 'Email and password are needed' }];
+      if (users.has(email) || (await db.query(`select 1 from auth.users where lower(email) = $1`, [email])).rows.length)
+        return [422, { code: 422, error_code: 'email_exists', msg: 'A user with this email address has already been registered' }];
+      const r = await db.query(`insert into auth.users (email, raw_user_meta_data, encrypted_password) values ($1, $2, extensions.crypt($3, extensions.gen_salt('bf'))) returning id`, [email, b.user_metadata || {}, b.password]);
+      const u = { id: r.rows[0].id, email, password: b.password, meta: b.user_metadata || {} };
+      users.set(email, u);
+      return [200, userJson(u)];
     }
     if (route === 'logout') return [204, null];
     if (route === 'settings') return [200, { external: { email: true }, disable_signup: false, mailer_autoconfirm: true }];

@@ -773,3 +773,46 @@ test('Change this part: Prof changes one question, or just its mark scheme, only
   const r = await T.rpc('prof_revise', { p_question: qn.id, p_part: 'question', p_instruction: 'Easier' });
   assert.match(r.error.message, /Learners can already see this/);
 });
+
+test('a school makes its learners’ accounts in advance from its spreadsheet: starting passwords, changed at first sign-in; only its teachers can', async () => {
+  const A = await admin();
+  const H = client();
+  await q(H.auth.signUp({ email: 'head@kalulu.x', password: 'secret123' }));
+  const head = (await H.auth.getUser()).data.user.id;
+  await q(H.rpc('become_tutor', { p_name: 'Mrs Kalulu', p_timezone: 'Africa/Lusaka' }));
+  await q(A.rpc('admin_set_status', { p_user: head, p_status: 'active' }));
+  await q(H.rpc('org_make_centre', { p_name: 'Kalulu School' }));
+  const cls = await q(H.rpc('save_class', { p_id: null, p_name: 'Grade 9 maths', p_subject: null, p_learner_ids: [] }));
+  await q(H.rpc('school_roster_save', { p_rows: [{ email: 'mutinta@kalulu.x', name: 'Mutinta Hamoonga', grade: 9, classes: ['Grade 9 maths'] }, { email: 'tutor@x.com', name: 'Has one already' }] }));
+  const ids = (await q(H.rpc('school_roster_list'))).map((r) => r.id);
+  const call = async (body, c = H) => {
+    const { data } = await c.auth.getSession();
+    const r = await fetch(`${srv.url}/functions/v1/prof`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: srv.anonKey, authorization: `Bearer ${data.session.access_token}` },
+      body: JSON.stringify(body),
+    });
+    return [r.status, await r.json()];
+  };
+  // another school's (or no school's) teacher can't make them
+  const T = client();
+  await q(T.auth.signInWithPassword({ email: 'tutor@x.com', password: 'secret123' }));
+  let [st, r] = await call({ action: 'school_accounts', ids }, T);
+  assert.equal(st, 400);
+  assert.match(r.error, /Only teachers in a school/);
+  [st, r] = await call({ action: 'school_accounts', ids });
+  assert.equal(st, 200, JSON.stringify(r));
+  assert.deepEqual(r.made.map((m) => [m.name, m.email]), [['Mutinta Hamoonga', 'mutinta@kalulu.x']], 'not someone who already has an account');
+  assert.match(r.made[0].password, /^[a-z]{4}-\d{4}$/);
+  // she signs in with it, is in her class, and is asked to choose her own password
+  const M = client();
+  await q(M.auth.signInWithPassword({ email: 'mutinta@kalulu.x', password: r.made[0].password }));
+  const me = await q(M.from('profiles').select('role, display_name, must_change_password').eq('id', (await M.auth.getUser()).data.user.id).single());
+  assert.deepEqual([me.role, me.display_name, me.must_change_password], ['learner', 'Mutinta Hamoonga', true]);
+  assert.equal((await q(M.rpc('my_school'))).classes, 1);
+  assert.deepEqual((await q(H.rpc('school_roster_list'))).find((x) => x.email === 'mutinta@kalulu.x').joined, true);
+  // asking again makes nothing twice
+  [st, r] = await call({ action: 'school_accounts', ids });
+  assert.deepEqual(r.made, []);
+  void cls;
+});

@@ -106,6 +106,22 @@ export const adminSetSeats = (userId, seats) => run(sb().rpc('admin_set_seats', 
 export const adminOrgs = () => run(sb().rpc('admin_orgs'));
 export const adminSetSchoolPlan = (orgId, paidUntil = null, seats = null, pilotDays = null, kind = null) =>
   run(sb().rpc('admin_set_school_plan', { p_org: orgId, p_paid_until: paidUntil || null, p_seats: seats, p_pilot_days: pilotDays, p_kind: kind }));
+export const adminSetSchoolDomains = (orgId, domains) => run(sb().rpc('admin_set_school_domains', { p_org: orgId, p_domains: domains }));
+// Schools: signing up with the school email (a 6-digit code, or Google), waiting for a class, the school's spreadsheet
+export const startSchoolLearner = (name, grade) => run(sb().rpc('start_school_learner', { p_name: name, p_grade: grade, p_timezone: timezone() }));
+export const sendSchoolCode = () => run(sb().rpc('send_school_code'));
+export const confirmSchoolEmail = (code) => run(sb().rpc('confirm_school_email', { p_code: code }));
+export const mySchool = () => run(sb().rpc('my_school'));
+export const schoolWaiting = () => run(sb().rpc('school_waiting'));
+export const schoolAddToClass = (classId, learnerIds) => run(sb().rpc('school_add_to_class', { p_class: classId, p_learners: learnerIds }));
+export const schoolRemove = (learnerId) => run(sb().rpc('school_remove', { p_learner: learnerId }));
+export const schoolRosterSave = (rows) => run(sb().rpc('school_roster_save', { p_rows: rows }));
+export const schoolRosterList = () => run(sb().rpc('school_roster_list'));
+export const schoolRosterRemove = (id) => run(sb().rpc('school_roster_remove', { p_id: id }));
+export const makeSchoolAccounts = (ids) => callProf('school_accounts', { ids });
+export const passwordChanged = () => run(sb().rpc('password_changed'));
+export const orgWaitingTeachers = () => run(sb().rpc('org_waiting_teachers'));
+export const orgApproveTeacher = (userId, ok) => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));

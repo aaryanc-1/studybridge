@@ -1657,6 +1657,42 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
   // ---------------- mobile money (Flutterwave) ----------------
   // A tutor (1–12 months of a level) or a student (a month, or an exam pass by the month; or their parent) pays in their own currency
   // on Flutterwave's page; it only counts once Flutterwave confirms the payment to us (flutterwaveWebhook)
+  // A school's learners made in advance from its spreadsheet: each gets a sign-in with a starting password (shown once, to
+  // print), and chooses their own the first time they sign in. Only teachers and managers in that school.
+  function startingPassword() {
+    const letters = 'abcdefghjkmnpqrstuvwxyz';
+    const digits = '23456789';
+    const b = crypto.getRandomValues(new Uint8Array(8));
+    return [...b.slice(0, 4)].map((x) => letters[x % letters.length]).join('') + '-' + [...b.slice(4)].map((x) => digits[x % digits.length]).join('');
+  }
+  async function schoolAccounts(user, body) {
+    let todo;
+    try {
+      todo = await rpc('_school_accounts_todo', { p_user: user.id, p_ids: (Array.isArray(body.ids) ? body.ids : []).slice(0, 500) });
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+    const made = [];
+    const skipped = [];
+    for (const r of todo || []) {
+      const password = startingPassword();
+      const res = await fetch(`${SB}/auth/v1/admin/users`, {
+        method: 'POST',
+        headers: { ...auth(KEY), 'content-type': 'application/json' },
+        body: JSON.stringify({ email: r.email, password, email_confirm: true, user_metadata: { name: r.name || '' } }),
+      });
+      const d = await res.json().catch(() => ({}));
+      const id = d?.id || d?.user?.id;
+      if (!res.ok || !id) {
+        skipped.push({ email: r.email, why: /already/i.test(d?.msg || d?.message || '') ? 'already has an account' : `couldn’t make it (${res.status})` });
+        continue;
+      }
+      await rpc('_school_account_made', { p_roster: r.id, p_account: id });
+      made.push({ name: r.name || '', email: r.email, password });
+    }
+    return json({ made, skipped });
+  }
+
   async function mobilePay(user, body) {
     const sell = await rpc('_selling', {});
     if (!sell?.flw_secret || !sell?.flw_hash) return json({ error: 'Mobile money isn’t open yet.' }, 400);
@@ -1965,6 +2001,14 @@ ${r.next_week ? `<p><b>Next week:</b> ${esc(plain(r.next_week))}</p>` : ''}
       if (!user || (!['tutor', 'learner', 'parent'].includes(user.role))) return json({ error: 'Not signed in.' }, 401);
       try {
         return await mobilePay(user, body);
+      } catch (e) {
+        return json({ error: e.message }, 502);
+      }
+    }
+    if (action === 'school_accounts') {
+      if (!user || user.role !== 'tutor' || user.status !== 'active') return json({ error: 'Teachers only.' }, 403);
+      try {
+        return await schoolAccounts(user, body);
       } catch (e) {
         return json({ error: e.message }, 502);
       }

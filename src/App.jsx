@@ -37,7 +37,7 @@ function storedUser() {
 }
 
 // Opened from the "set a new password" email: choose one, then carry on
-function NewPassword({ onDone }) {
+function NewPassword({ onDone, first = false }) {
   const [pw, setPw] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -52,6 +52,7 @@ function NewPassword({ onDone }) {
             setBusy(true);
             try {
               await api.changePassword(pw);
+              if (first) await api.passwordChanged();
               onDone();
             } catch (x) {
               setErr(x.message);
@@ -59,7 +60,8 @@ function NewPassword({ onDone }) {
             }
           }}
         >
-          <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>Set a new password</h2>
+          <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{first ? 'Choose your own password' : 'Set a new password'}</h2>
+          {first && <p className="small muted">You signed in with the starting password your school gave you. Choose your own now: only you will know it.</p>}
           <input className="input" type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} placeholder="New password" aria-label="New password" autoComplete="new-password" />
           {err && <div className="error">{err}</div>}
           <button className="btn primary" disabled={busy}>
@@ -99,6 +101,7 @@ export default function App() {
           if (setup.role === 'tutor') await api.becomeTutor(nm, setup.about || null);
           else if (setup.role === 'student') await api.startSelfLearner(nm, setup.grade, setup.country || '', setup.code || null);
           else if (setup.role === 'parent-self') await api.startParent(nm);
+          else if (setup.role === 'school') await api.startSchoolLearner(nm, setup.grade);
           p = await api.getProfile(u.id);
         } catch (e) {
           sessionStorage.setItem('sb.setupError', e.message); // shown on the "Almost there" screen, where they can try again
@@ -221,6 +224,7 @@ export default function App() {
   else if (user === undefined || (user && profile === undefined)) body = <Loading label="Opening StudyBridge…" />;
   else if (!server || !user) body = <Welcome />;
   else if (!profile || !profile.role) body = <FinishSetup />;
+  else if (profile.must_change_password) body = <NewPassword first onDone={() => ctx.refreshMe()} />;
   else if (profile.role === 'admin') body = <AdminApp />;
   else if (profile.role === 'tutor' && profile.status !== 'active') body = <WaitingForApproval />;
   else if (profile.role === 'tutor') body = <TutorApp />;

@@ -1107,3 +1107,11 @@ button.rubric-level:hover { border-color: var(--accent); }
 .stream-parent:first-of-type { border-top: 0; padding-top: 0; }
 .stream-reply-acts { gap: 4px 14px; }
 .stream-reply-acts .linkbtn { font-size: 13px; }
+
+/* ---------- Schools: New from your school, class lists, starting-password slips ---------- */
+.school-row { cursor: pointer; align-items: center; }
+.school-row input[type=checkbox] { width: 18px; height: 18px; flex: none; }
+.school-add { position: sticky; bottom: 12px; z-index: 2; box-shadow: var(--shadow); }
+.slips { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.slip { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; }
+.slip .code-show { white-space: nowrap; font-size: 18px; letter-spacing: .04em; }

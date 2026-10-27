@@ -1011,6 +1011,84 @@ try {
   assert.deepEqual(bview, ['Banda’s practice sheet'], 'he sees only his own work');
   await T3.close();
 
+  // school email: StudyBridge adds the centre's email ending; a student signs up with it (a 6-digit code by email) and
+  // waits on "New from your school" until a teacher adds her to a class; the centre's spreadsheet makes another learner's
+  // account with a starting password, which she changes; a teacher who signs up with the school email waits for the manager
+  await nav(ADM, 'Schools and centres').click();
+  await ADM.locator('.item', { hasText: 'Bright Minds Centre' }).getByRole('button', { name: 'Set up Bright Minds Centre' }).click();
+  await ADM.getByRole('dialog').getByLabel('School email endings').fill('brightminds.test');
+  await ADM.getByRole('dialog').getByRole('button', { name: 'Save' }).click();
+  await ADM.getByText('Bright Minds Centre saved').waitFor();
+  await ADM.locator('.item', { hasText: 'Bright Minds Centre' }).getByText('@brightminds.test').waitFor();
+  await srv.db.query(`update public.platform_secrets set resend_key = 're_test' where id = 1`); // email on (the code waits in the queue)
+  await srv.db.query(`update public.app_config set email_from = 'StudyBridge <hello@gostudybridge.com>' where id = 1`);
+  const SS = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(SS, 'school student');
+  await SS.goto(web.url + '#start=school');
+  await SS.getByLabel('Your name').fill('Mutale Phiri');
+  await SS.getByLabel('Your school email').fill('mutale@brightminds.test');
+  await SS.getByLabel('Password').fill('secret123');
+  await SS.getByLabel('Your year').selectOption({ label: 'Grade 9 (Year 10)' });
+  await SS.getByRole('button', { name: 'Create account' }).click();
+  await SS.getByRole('heading', { name: 'You’re in Bright Minds Centre' }).waitFor();
+  const smail = (await srv.db.query(`select subject from public.outgoing_emails where to_addr = 'mutale@brightminds.test' order by created_at desc limit 1`)).rows[0];
+  await SS.getByLabel('6-digit code').fill(smail.subject.match(/\d{6}/)[0]);
+  await SS.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await SS.getByText('Thanks! You’re in Bright Minds Centre.').waitFor();
+  await shot(SS, 'school-waiting');
+  await A.goto(web.url + '#/learners/school');
+  await A.reload();
+  await A.getByRole('heading', { name: 'Grade 9 (Year 10)' }).waitFor();
+  await A.getByLabel('Choose Mutale Phiri').check();
+  await A.getByLabel('Class to add them to').selectOption({ label: 'Year 10 maths' });
+  await shot(A, 'school-new');
+  await a11y(A, 'Learners → New from your school');
+  await A.getByRole('button', { name: 'Add to class' }).click();
+  await A.getByText('1 added to Year 10 maths').waitFor();
+  await A.getByText('Nobody waiting').waitFor();
+  await SS.reload();
+  await SS.getByText(/, Mutale!/).waitFor(); // in a class: StudyBridge opens
+  await SS.close();
+  // the centre's spreadsheet: Ama's account is made in advance; she signs in with the starting password and chooses her own
+  await A.getByRole('button', { name: 'Add a spreadsheet' }).click();
+  const sp = A.getByRole('dialog');
+  await sp.getByLabel('Paste from your spreadsheet').fill('Email\tName\tYear\tClasses\nama@brightminds.test\tAma Mensah\tYear 10\tYear 10 maths');
+  await sp.getByText('1 learner found').waitFor();
+  await sp.getByRole('button', { name: 'Save 1 learner' }).click();
+  await A.getByText('Saved 1 learner').waitFor();
+  await A.getByRole('button', { name: 'Make accounts for 1' }).click();
+  await A.getByRole('dialog', { name: /Make accounts for 1 learner/ }).getByRole('button', { name: 'Make the accounts' }).click();
+  const slips = A.getByRole('dialog', { name: '1 account made' });
+  const startPw = (await slips.locator('.slip .code-show').innerText()).trim();
+  assert.match(startPw, /^[a-z]{4}-\d{4}$/);
+  await shot(A, 'school-slips');
+  await slips.getByRole('button', { name: 'Close' }).click();
+  const AM = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true })).newPage();
+  watch(AM, 'school account made in advance');
+  await AM.goto(web.url);
+  await AM.getByText(/already have an account|Sign in/).first().click();
+  await AM.getByLabel('Email').fill('ama@brightminds.test');
+  await AM.getByLabel('Password').fill(startPw);
+  await AM.getByRole('button', { name: 'Sign in' }).click();
+  await AM.getByRole('heading', { name: 'Choose your own password' }).waitFor();
+  await AM.getByLabel('New password').fill('amas-own-1');
+  await AM.getByRole('button', { name: 'Save and continue' }).click();
+  await AM.getByText(/, Ama!/).waitFor();
+  await AM.close();
+  // a teacher with the school email waits for the manager, who lets him in
+  const kt = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
+  await kt.auth.signUp({ email: 'kunda@brightminds.test', password: 'secret123' });
+  await kt.rpc('become_tutor', { p_name: 'Kunda Sakala', p_timezone: 'Africa/Lusaka' });
+  await A.goto(web.url + '#/settings?s=org');
+  await A.reload();
+  await A.getByRole('heading', { name: 'Teachers waiting for you' }).waitFor();
+  await shot(A, 'school-teacher-waiting');
+  await A.getByRole('button', { name: 'Let Kunda Sakala in' }).click();
+  await A.getByText('Kunda Sakala is in').waitFor();
+  assert.equal((await srv.db.query(`select status from public.profiles where email = 'kunda@brightminds.test'`)).rows[0].status, 'active');
+  await srv.db.query(`update public.platform_secrets set resend_key = null where id = 1`);
+  await srv.db.query(`update public.app_config set email_from = null where id = 1`);
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
