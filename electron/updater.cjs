@@ -2,8 +2,8 @@
 //
 // Most updates only change the app's screens (the "bundle"): the app downloads
 // the new bundle in the background, checks it, and switches to it on the next
-// start. Works on Windows and Mac. If a new bundle fails to start, the app goes
-// back to the one it came with.
+// start. Works on Windows and Mac. If a new bundle fails to start twice, the app
+// goes back to the last one that started properly (or the one it came with).
 //
 // Rarely, the desktop shell itself changes (lockdown, camera permissions…).
 // Then Windows downloads the new installer and runs it quietly on restart, and
@@ -101,29 +101,38 @@ function createUpdater({ getWindow, isLocked }) {
       if (s.current || s.pending) write({ shell: SHELL, bad: s.bad || [] });
       return builtIn;
     }
-    // last time a new version didn't start properly: go back to the built-in one
+    const usable = (v) => v && !(s.bad || []).includes(v) && newer(v, cfg.bundleVersion) && fs.existsSync(path.join(root, v, 'index.html'));
+    // Last time this version didn't say it started properly. That also happens when StudyBridge is closed (or the
+    // computer sleeps or shuts down) straight after switching, so it gets a second go; only a second miss sets it
+    // aside, and then the last version that did start properly is used, not the one StudyBridge came with
     if (s.trying && !s.confirmed) {
-      s.bad = [...new Set([...(s.bad || []), s.trying])];
-      s.current = null;
-      s.trying = null;
-      write(s);
-      return builtIn;
+      s.fails = (s.fails || 0) + 1;
+      if (s.fails >= 2) {
+        s.bad = [...new Set([...(s.bad || []), s.trying])];
+        s.current = s.good !== s.trying && usable(s.good) ? s.good : null;
+        s.confirmed = !!s.current;
+        s.trying = null;
+        s.fails = 0;
+      }
     }
-    if (s.pending && !(s.bad || []).includes(s.pending) && fs.existsSync(path.join(root, s.pending, 'index.html'))) {
+    if (usable(s.pending)) {
       // the version that was running stays on disk as a spare: a window still open on it keeps all its files
       if (s.current && s.current !== s.pending) s.previous = s.current;
       s.current = s.pending;
       s.pending = null;
       s.confirmed = false;
+      s.fails = 0;
     }
-    tidy([s.current, s.previous, s.pending]);
-    if (s.current && newer(s.current, cfg.bundleVersion) && fs.existsSync(path.join(root, s.current, 'index.html'))) {
-      if (!s.confirmed) s.trying = s.current;
-      write(s);
-      status.current = s.current;
-      return path.join(root, s.current, 'index.html');
+    if (!usable(s.current)) {
+      s.current = null;
+      s.trying = null;
     }
-    return builtIn;
+    tidy([s.current, s.previous, s.pending, s.good]);
+    if (s.current && !s.confirmed) s.trying = s.current;
+    write({ ...s, shell: SHELL });
+    if (!s.current) return builtIn;
+    status.current = s.current;
+    return path.join(root, s.current, 'index.html');
   }
 
   // Old versions are removed only here, when the app starts and before any window opens. The newest, the one
@@ -131,19 +140,23 @@ function createUpdater({ getWindow, isLocked }) {
   function tidy(keep) {
     try {
       for (const d of fs.readdirSync(root)) {
-        if (/^\d+\.\d+\.\d+$/.test(d) && !keep.includes(d)) fs.rmSync(path.join(root, d), { recursive: true, force: true });
+        if (/^\d+\.\d+\.\d+(\.part)?$/.test(d) && !keep.includes(d)) fs.rmSync(path.join(root, d), { recursive: true, force: true });
       }
     } catch {
       /* nothing to tidy */
     }
   }
 
-  // The app started fine with this version
+  // The app started fine with this version (only the version this window runs: another start may have moved on)
   function confirm() {
     const s = read();
-    if (s.trying || !s.confirmed) {
+    const mine = newer(status.current, cfg.bundleVersion) ? status.current : null;
+    if ((s.current || null) !== mine) return;
+    if (s.trying || !s.confirmed || s.fails || (mine && s.good !== mine)) {
       s.trying = null;
       s.confirmed = true;
+      s.fails = 0;
+      if (mine) s.good = mine;
       write(s);
     }
   }
@@ -155,28 +168,36 @@ function createUpdater({ getWindow, isLocked }) {
   }
   const sha512 = (b) => crypto.createHash('sha512').update(b).digest('base64');
 
+  // `retry` (the person pressed Check now): a version set aside as "didn't start" gets another go
   let checking = null;
-  async function check() {
+  async function check({ retry = false } = {}) {
     if (!cfg.url) return status;
     if (checking) return checking;
     checking = (async () => {
       try {
-        set({ state: 'checking' });
+        set({ state: 'checking', skipped: null });
         const base = cfg.url.endsWith('/') ? cfg.url : cfg.url + '/';
         const m = JSON.parse((await fetchBuf(base + 'manifest.json')).toString('utf8'));
-        const s = read();
-        const have = s.pending || status.current;
+        let s = read();
+        if (retry && (s.bad || []).includes(m.version)) write((s = { ...s, bad: s.bad.filter((v) => v !== m.version) }));
+        // what this computer already has, whichever start of StudyBridge fetched it: never download it again
+        const have = [s.pending, s.current].reduce((a, v) => (v && newer(v, a) ? v : a), status.current);
         if (m.shell === SHELL) {
           if (!m.bundle || !newer(m.version, have) || (s.bad || []).includes(m.version)) {
             // a version downloaded earlier is still waiting for a restart: say so, not "up to date"
             if (s.pending && newer(s.pending, status.current)) return set({ state: 'ready', kind: 'restart', version: s.pending, checkedAt: Date.now() });
-            return set({ state: 'up-to-date', checkedAt: Date.now() });
+            const skipped = (s.bad || []).includes(m.version) && newer(m.version, status.current) ? m.version : null;
+            return set({ state: 'up-to-date', skipped, checkedAt: Date.now() });
           }
           set({ state: 'downloading', version: m.version });
           const buf = await fetchBuf(base + m.bundle.file);
           if (sha512(buf) !== m.bundle.sha512) throw new Error('The update didn’t download properly.');
-          unpack(buf, path.join(root, m.version));
-          write({ ...s, shell: SHELL, pending: m.version });
+          // unpacked beside it first, so a window already open on that folder never sees it half-written
+          const dir = path.join(root, m.version);
+          unpack(buf, dir + '.part');
+          fs.rmSync(dir, { recursive: true, force: true });
+          fs.renameSync(dir + '.part', dir);
+          write({ ...read(), shell: SHELL, pending: m.version });
           return set({ state: 'ready', kind: 'restart', version: m.version, notes: m.notes || '', checkedAt: Date.now() });
         }
         // the desktop shell changed: needs the installer

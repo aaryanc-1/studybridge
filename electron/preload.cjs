@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('studybridge', {
   openConnector: () => ipcRenderer.invoke('connector:open'),
   updates: {
     get: () => ipcRenderer.invoke('update:get'),
-    check: () => ipcRenderer.invoke('update:check'),
+    check: (opts) => ipcRenderer.invoke('update:check', opts),
     apply: () => ipcRenderer.invoke('update:apply'),
     ok: () => ipcRenderer.invoke('update:ok'),
     onStatus: (cb) => {

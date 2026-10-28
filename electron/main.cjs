@@ -9,9 +9,11 @@ if (process.env.SB_USER_DATA) app.setPath('userData', process.env.SB_USER_DATA);
 if (process.platform === 'win32') app.setAppUserModelId('app.studybridge.desktop');
 
 const isTest = !!process.env.SB_TEST;
-if (!isTest && !app.requestSingleInstanceLock()) {
-  app.quit();
-}
+// One StudyBridge at a time. A second copy (opened again while it's running) hands over to the first and stops here,
+// before it opens a window or touches updates: app.quit() let it carry on, and on its way out it set a fresh update
+// aside as "didn't start" (28 Oct 2026)
+const primary = isTest || app.requestSingleInstanceLock();
+if (!primary) app.exit(0);
 
 let win = null;
 let tray = null;
@@ -169,6 +171,7 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(() => {
+  if (!primary) return;
   const ses = session.defaultSession;
   const allowed = new Set(['media', 'notifications', 'display-capture', 'fullscreen', 'clipboard-sanitized-write', 'clipboard-read']);
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(allowed.has(permission)));
@@ -196,7 +199,7 @@ ipcMain.on('app:info', (e) => {
   e.returnValue = { version: app.getVersion(), platform: process.platform, desktop: true, updatesOn: updater.enabled };
 });
 ipcMain.handle('update:get', () => updater.status());
-ipcMain.handle('update:check', () => updater.check());
+ipcMain.handle('update:check', (_e, opts) => updater.check({ retry: !!opts?.retry }));
 ipcMain.handle('update:apply', () => updater.apply());
 ipcMain.handle('update:ok', () => updater.confirm());
 ipcMain.handle('app:focus', () => showWindow());

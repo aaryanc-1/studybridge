@@ -7,10 +7,10 @@ A tutor–learner app by Aaryan Chouhan (GitHub aaryanc-1): Electron desktop app
 phone web app, React 19 + Vite (`base: './'`, hash routing), Supabase behind it. Not sold yet; Aaryan is
 the only tutor and his sister is a test learner. It's meant to become a paid product for other tutors.
 
-- **Database:** `supabase/setup.sql` (RLS, SECURITY DEFINER functions, pg_cron). Safe to re-run; Aaryan
-  pastes it into the Supabase SQL editor after every change to it.
+- **Database:** `supabase/setup.sql` (RLS, SECURITY DEFINER functions, pg_cron). Safe to re-run; CI's `server` job runs it
+  on every release (secret SUPABASE_DB_URL is set; seen running on 28 Oct 2026), so nothing needs pasting.
 - **Prof** (the tutor-only AI assistant): Supabase edge function `supabase/functions/prof/index.ts`
-  (service role, `--no-verify-jwt`). Aaryan pastes it into Supabase and redeploys after changes. It also
+  (service role, `--no-verify-jwt`). CI's `server` job deploys it on every release (SUPABASE_ACCESS_TOKEN). It also
   serves the calendar (ICS) links.
 - **Accounts:** one sign-in page; the role decides tutor / learner / admin. The admin is a separate
   account (role 'admin', `aaryanchouhan1+admin@gmail.com`). No authenticator/two-step.
@@ -560,6 +560,18 @@ Teachers' "Late" and "Overdue" (Home, Marking) use each learner's own date: `due
 the content account's 87 subject pop-ups once pushed Library → Subjects past the 10-minute limit. When the sweep moves to
 the next screen it answers "Leave without saving?" with yes (`leaving` in sweep.mjs): answering no had kept it in the first editor it changed,
 so every later tutor screen was really that editor again (slow, and those screens were never swept).
+Desktop updates stuck on the version it came with (28 Oct 2026, app 1.1.94; Aaryan: "it updates and brings me back there").
+His PC ran 1.1.75 and said "latest version": eight updates had been set aside as "didn't start" (`bad` in
+%APPDATA%/StudyBridge/app-updates/state.json). Cause: a second copy of StudyBridge (`app.quit()` after a failed single-instance
+lock doesn't stop it) still ran `startPage()` on its way out, marking the version the first copy was opening as bad; a copy
+still on an older version could also re-download a version into the folder another window was loading. Now (a shell change,
+so every desktop reinstalls once): a second copy `app.exit(0)`s and `whenReady` does nothing without the lock (`primary` in
+main.cjs); a start that never says it started gets a second go, the second miss sets it aside (`fails`) and opens the last
+version that did start (`good`), not the built-in one; `check()` counts the state file's `current`/`pending` as already here,
+unpacks into `<version>.part` and renames, and re-reads state before writing; `confirm()` only confirms the version its own
+window runs; Settings → About says "Version X didn’t start properly on this computer" (`status.skipped`) and its Check now
+passes `{ retry: true }`, which clears that mark. The app says it started as soon as App mounts, not after the sign-in check.
+test/updater.test.mjs runs updater.cjs with a pretend Electron.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

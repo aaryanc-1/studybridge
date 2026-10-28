@@ -1693,7 +1693,7 @@ try {
   const D = await (await browser.newContext({ viewport: { width: 1300, height: 860 } })).newPage();
   watch(D, 'desktop');
   await D.addInitScript(() => {
-    const u = (window.upd = { st: { state: 'up-to-date', current: '1.1.70', checkedAt: Date.now() - 20 * 60 * 1000 }, subs: [], checks: 0, restarts: 0, next: null });
+    const u = (window.upd = { st: { state: 'up-to-date', current: '1.1.70', checkedAt: Date.now() - 20 * 60 * 1000 }, subs: [], checks: 0, restarts: 0, next: null, oks: 0, retries: 0 });
     const tell = () => u.subs.forEach((f) => f(u.st));
     const known = {
       version: '1.1.0',
@@ -1703,14 +1703,17 @@ try {
       restart: async () => (u.restarts++, { ok: true }),
       updates: {
         get: async () => u.st,
-        check: async () => {
+        check: async (opts) => {
           u.checks++;
+          if (opts?.retry) u.retries++;
           u.st = u.next ? { ...u.st, state: 'ready', kind: 'restart', version: u.next, checkedAt: Date.now() } : { ...u.st, state: 'up-to-date', checkedAt: Date.now() };
           tell();
           return u.st;
         },
         apply: async () => ({ ok: true }),
-        ok: async () => {},
+        ok: async () => {
+          u.oks++;
+        },
         onStatus: (cb) => (u.subs.push(cb), () => {}),
       },
       lockdown: { enter: async () => true, exit: async () => true, onEvent: () => () => {} },
@@ -1728,6 +1731,9 @@ try {
     };
   });
   await D.goto(web.url);
+  // it tells the desktop app it started as soon as the screen is up, before anyone signs in (28 Oct 2026: waiting
+  // for the sign-in check let a closed app set a good update aside)
+  await D.waitForFunction(() => window.upd.oks >= 1);
   await D.getByText(/already have an account|Sign in/).first().click().catch(() => {});
   await D.getByLabel('Email').fill('aaryan@example.com');
   await D.getByLabel('Password').fill('secret123');
@@ -1760,6 +1766,16 @@ try {
   await D.goto(web.url);
   await D.getByRole('heading', { name: 'Assignments' }).waitFor();
   assert.match(D.url(), /#\/assignments/);
+  // a version that didn't start properly here: About says so, and Check now gives it another go
+  await D.evaluate(() => {
+    window.upd.next = null;
+    window.upd.st = { state: 'up-to-date', current: '1.1.71', skipped: '1.1.72', checkedAt: Date.now() };
+    window.upd.subs.forEach((f) => f(window.upd.st));
+    location.hash = '#/settings';
+  });
+  await D.getByText('Version 1.1.72 didn’t start properly on this computer').waitFor();
+  await D.getByRole('button', { name: 'Check now', exact: true }).click();
+  await D.waitForFunction(() => window.upd.retries === 1);
   await D.close();
 
   // SWEEP=1: every screen and button, for each kind of account (test/sweep.mjs); the report goes next to the screenshots

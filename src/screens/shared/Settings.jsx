@@ -1996,9 +1996,11 @@ function About() {
                 ? `Downloading version ${st.version}…`
                 : st.state === 'error'
                   ? 'Couldn’t update just now. Try again, or get it from gostudybridge.com/download.'
-                  : st.state === 'up-to-date'
-                    ? `You have the latest version${st.checkedAt ? ` (checked ${ago(st.checkedAt)})` : ''}. It looks again every 15 minutes.`
-                    : 'Updates install by themselves.'}
+                  : st.state === 'up-to-date' && st.skipped
+                    ? `Version ${st.skipped} didn’t start properly on this computer, so StudyBridge stayed on this one. Check now gives it another go.`
+                    : st.state === 'up-to-date'
+                      ? `You have the latest version${st.checkedAt ? ` (checked ${ago(st.checkedAt)})` : ''}. It looks again every 15 minutes.`
+                      : 'Updates install by themselves.'}
           </span>
           {restartWaiting(st) && (
             <button className="linkbtn small" onClick={() => restartDesktop()}>
@@ -2011,7 +2013,7 @@ function About() {
               disabled={busy}
               onClick={async () => {
                 setBusy(true);
-                await desktop.updates.check().catch(() => {});
+                await desktop.updates.check({ retry: true }).catch(() => {});
                 setBusy(false);
               }}
             >

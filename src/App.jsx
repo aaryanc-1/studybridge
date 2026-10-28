@@ -201,10 +201,12 @@ export default function App() {
     [server, user, profile, offlineBoot, bootError, loadProfile],
   );
 
-  // Tell the desktop app this version started properly (so it keeps it after an update)
+  // Tell the desktop app this version started properly (so it keeps it after an update): as soon as the screen is
+  // up. Waiting for the sign-in check (which needs the internet) left time for a closed app or a sleeping computer to
+  // set a good version aside.
   useEffect(() => {
-    if (user !== undefined) desktop?.updates?.ok?.().catch?.(() => {});
-  }, [user]);
+    desktop?.updates?.ok?.().catch?.(() => {});
+  }, []);
 
   // The admin can require a minimum version (e.g. after a database change old apps can't handle)
   const [tooOld, setTooOld] = useState(null);
