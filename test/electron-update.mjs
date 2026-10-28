@@ -1,10 +1,11 @@
 // Desktop updates: the app finds a new version on the releases page, downloads
-// and checks it, switches to it on the next start, and goes back to the built-in
-// version if a new one fails to start.
+// and checks it, switches to it on the next start, and if a new one fails to
+// start twice goes back to the last version that started (Check now retries it).
+// A second copy of the app leaves the updates alone.
 //   npm run build && xvfb-run -a node test/electron-update.mjs
 import { _electron as electron } from 'playwright';
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,11 +40,14 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const UPDATE_URL = `http://127.0.0.1:${server.address().port}/`;
 const userData = join(work, 'userdata');
 
-async function launch() {
+const ELECTRON = join(ROOT, 'node_modules', 'electron', 'dist', 'electron');
+const appEnv = { ...process.env, SB_USER_DATA: userData, SB_UPDATE_URL: UPDATE_URL, SB_UPDATE_CHECK_DELAY: '300' };
+// SB_TEST skips the one-copy-at-a-time lock; `single` keeps it, like the real app
+async function launch({ single = false } = {}) {
   const app = await electron.launch({
-    executablePath: join(ROOT, 'node_modules', 'electron', 'dist', 'electron'),
+    executablePath: ELECTRON,
     args: ['--no-sandbox', ROOT],
-    env: { ...process.env, SB_USER_DATA: userData, SB_TEST: '1', SB_UPDATE_URL: UPDATE_URL, SB_UPDATE_CHECK_DELAY: '300' },
+    env: single ? appEnv : { ...appEnv, SB_TEST: '1' },
   });
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -81,7 +85,28 @@ try {
   await win.waitForTimeout(500);
   await app.close();
 
-  // 3. A broken version: it never starts, so the app goes back to the built-in one
+  // 3. A second copy, opened while the app is still starting a new version, leaves the updates alone (on 28 Oct 2026
+  // it set a good version aside as "didn't start", and the app went back to the one it was installed with)
+  ({ app, win } = await launch({ single: true }));
+  await win.getByText('Welcome to StudyBridge').waitFor();
+  const stateFile = join(userData, 'app-updates', 'state.json');
+  const starting = { ...JSON.parse(readFileSync(stateFile, 'utf8')), trying: '9.9.9', confirmed: false };
+  writeFileSync(stateFile, JSON.stringify(starting));
+  const second = spawn(ELECTRON, ['--no-sandbox', ROOT], { env: appEnv, stdio: 'ignore' });
+  const code = await new Promise((r, no) => {
+    const t = setTimeout(() => no(new Error('the second copy kept running')), 20000);
+    second.on('exit', (c) => (clearTimeout(t), r(c)));
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), starting, 'the second copy changed nothing');
+  await app.close();
+  console.log('• A second copy hands over and leaves the updates alone');
+
+  // 4. A broken version: it never starts. It gets a second go (it may only have been closed too soon), then the app
+  // goes back to the last version that started, 9.9.9, not the built-in one
+  ({ app, win } = await launch());
+  await win.getByText('Welcome to StudyBridge').waitFor();
+  await app.close();
   release('9.9.10', (h) => h.replace('<title>StudyBridge</title>', '<title>BROKEN</title>').replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
   ({ app, win } = await launch());
   await waitFor(win, (s) => s.state === 'ready' && s.version === '9.9.10', 'the broken update');
@@ -91,12 +116,21 @@ try {
   assert.ok(existsSync(join(userData, 'app-updates', '9.9.9', 'index.html')), 'the version before stays on disk as a spare');
   await app.close();
   ({ app, win } = await launch());
+  assert.equal(await win.title(), 'BROKEN', 'a second go');
+  await app.close();
+  ({ app, win } = await launch());
   await win.getByText('Welcome to StudyBridge').waitFor();
-  assert.equal(await win.title(), 'StudyBridge', 'fell back to the built-in version');
-  // ...and it doesn't download that broken version again
+  assert.equal(await win.title(), 'StudyBridge UPDATED', 'back on the last version that started');
+  assert.equal((await win.evaluate(() => window.studybridge.updates.get())).current, '9.9.9');
+  // ...it doesn't download that broken version again, and says so
   const after = await waitFor(win, (s) => s.state === 'up-to-date' || s.state === 'ready' || s.state === 'error', 'a check');
   assert.equal(after.state, 'up-to-date');
-  console.log('• A version that fails to start is rolled back and skipped');
+  assert.equal(after.skipped, '9.9.10');
+  console.log('• A version that fails to start twice is set aside; the last good one opens');
+  // Check now gives it another go
+  await win.evaluate(() => window.studybridge.updates.check({ retry: true }));
+  await waitFor(win, (s) => s.state === 'ready' && s.version === '9.9.10', 'Check now to try it again');
+  console.log('• Check now tries it again');
   await app.close();
   ok = true;
   console.log('\nDesktop updates passed.');

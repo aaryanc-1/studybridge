@@ -571,7 +571,8 @@ version that did start (`good`), not the built-in one; `check()` counts the stat
 unpacks into `<version>.part` and renames, and re-reads state before writing; `confirm()` only confirms the version its own
 window runs; Settings → About says "Version X didn’t start properly on this computer" (`status.skipped`) and its Check now
 passes `{ retry: true }`, which clears that mark. The app says it started as soon as App mounts, not after the sign-in check.
-test/updater.test.mjs runs updater.cjs with a pretend Electron.
+test/updater.test.mjs runs updater.cjs with a pretend Electron; test/electron-update.mjs (CI, real Electron under xvfb)
+checks a second copy changes nothing, the second go, the fall-back to the last good version and Check now's retry.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
