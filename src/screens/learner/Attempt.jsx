@@ -268,6 +268,7 @@ export default function Attempt({ id }) {
         setExtraMin(Number(u.extra_min) || 0);
         setNotes(u.messages || []);
       }
+      return u;
     } catch {
       /* offline or an older server: keep going */
     }
@@ -449,10 +450,23 @@ export default function Attempt({ id }) {
     [id, submitting, toast, qs, answers],
   );
 
-  // Hand in automatically when time runs out
+  // Hand in automatically when time runs out, first asking once whether the teacher has just added time (the room is
+  // only checked every 15 seconds)
+  const askedAt = useRef(null);
+  const asking = useRef(false);
   useEffect(() => {
-    if (left != null && left <= 0 && t?.status === 'in_progress' && !done && !submitting) submit(true);
-  }, [left, t?.status, done, submitting, submit]);
+    if (left == null || left > 0 || t?.status !== 'in_progress' || done || submitting || asking.current) return;
+    if (askedAt.current !== extra) {
+      askedAt.current = extra;
+      asking.current = true;
+      checkRoom().then((u) => {
+        asking.current = false;
+        if (!(u && Number(u.extra_min) > extra)) submit(true);
+      });
+      return;
+    }
+    submit(true);
+  }, [left, t?.status, done, submitting, submit, extra, checkRoom]);
 
   if (detail.error && !d) return <CenterMessage title="This work couldn’t open" body={detail.error.message} />;
   if (!d || !a || !questions.data || !answers) return <Loading label="Opening your work…" />;

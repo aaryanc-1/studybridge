@@ -12,7 +12,7 @@ import { ago, dur, forKind, kindLabel, pct, typeLabel, when } from '../../lib/fo
 import { useLookups } from '../shared/lookups.jsx';
 import { QuestionPrompt, AnswerDisplay } from '../shared/Answer.jsx';
 import { doneOn, onPage } from '../shared/Live.jsx';
-import { ExtendWork } from './Access.jsx';
+import { ExtendWork, useDueFor } from './Access.jsx';
 import { StatusPill } from './Learners.jsx';
 import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 
@@ -23,6 +23,7 @@ export default function Marking() {
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const [tab, setTab] = useState('submitted');
   const [extending, setExtending] = useState(null); // more time for one learner on one piece of work
+  const dueFor = useDueFor();
   const only = route.query.get('a');
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const all = (attempts.data || []).filter((t) => !only || t.assignment_id === only);
@@ -43,7 +44,8 @@ export default function Marking() {
         .filter((l) => !(attempts.data || []).some((t) => t.assignment_id === a.id && t.learner_id === l.id && t.submitted_at))
         .map((l) => ({ a, l, started: (attempts.data || []).some((t) => t.assignment_id === a.id && t.learner_id === l.id) })),
     )
-    .sort((x, y) => (x.a.due_at || '9999').localeCompare(y.a.due_at || '9999'));
+    .map((x) => ({ ...x, due: dueFor(x.a, x.l.id) }))
+    .sort((x, y) => (x.due || '9999').localeCompare(y.due || '9999'));
 
   return (
     <Page
@@ -85,8 +87,8 @@ export default function Marking() {
                 </tr>
               </thead>
               <tbody>
-                {missing.map(({ a, l, started }) => {
-                  const late = a.due_at && new Date(a.due_at) < new Date();
+                {missing.map(({ a, l, started, due }) => {
+                  const late = due && new Date(due) < new Date();
                   return (
                     <tr key={a.id + l.id} className="click" onClick={() => go(`/learners/${l.id}`)}>
                       <td data-label="Learner">
@@ -99,7 +101,7 @@ export default function Marking() {
                         <div className="strong">{a.title}</div>
                         <div className={'kind ' + a.kind}>{kindLabel[a.kind]}</div>
                       </td>
-                      <td data-label="Due">{a.due_at ? when(a.due_at) : 'No due date'}</td>
+                      <td data-label="Due">{due ? when(due) : 'No due date'}</td>
                       <td data-label="Status">
                         <span className={'pill ' + (late ? 'bad' : '')}>{late ? 'Overdue' : started ? 'Started' : 'Not started'}</span>
                       </td>
@@ -133,7 +135,8 @@ export default function Marking() {
             <tbody>
               {list.map((t) => {
                 const a = aById[t.assignment_id];
-                const late = a?.due_at && t.submitted_at && new Date(t.submitted_at) > new Date(a.due_at);
+                const due = dueFor(a, t.learner_id);
+                const late = due && t.submitted_at && new Date(t.submitted_at) > new Date(due);
                 return (
                   <tr key={t.id} className="click" onClick={() => go(t.status === 'in_progress' && a?.camera ? `/watch/${t.id}` : `/marking/${t.id}`)}>
                     <td data-label="Learner">
@@ -180,6 +183,7 @@ export function MarkAttempt({ id }) {
   const questions = useQuery(assignmentId ? `questions:${assignmentId}` : null, () => api.listQuestions(assignmentId));
   const comments = useQuery('comments', api.listComments).data || [];
   const attempts = useQuery('attempts', api.listAttempts).data || [];
+  const dueFor = useDueFor();
   const [local, setLocal] = useState({}); // response id -> edits
   const [feedback, setFeedback] = useState(null);
   const [saving, setSaving] = useState(0);
@@ -266,7 +270,8 @@ export function MarkAttempt({ id }) {
   const max = qs.reduce((s, q) => s + Number(q.marks || 0), 0);
   const unmarked = qs.filter((q) => responses[q.id]?.marks == null).length;
   const redoCount = qs.filter((q) => responses[q.id]?.redo).length;
-  const late = a.due_at && d.attempt.submitted_at && new Date(d.attempt.submitted_at) > new Date(a.due_at);
+  const due = dueFor(a, d.attempt.learner_id);
+  const late = due && d.attempt.submitted_at && new Date(d.attempt.submitted_at) > new Date(due);
   const others = attempts.filter((t) => t.assignment_id === a.id && t.status === 'submitted' && t.id !== id);
   const device = [doneOn({ client: d.attempt.client ?? attempts.find((t) => t.id === id)?.client }, a), onPage(d.attempt, a)].filter(Boolean).join(' · ');
 

@@ -6501,14 +6501,15 @@ begin
   if t.id is null then raise exception 'Not found.'; end if;
   if t.status = 'in_progress' then raise exception 'They’re still working on it.'; end if;
   select * into a from public.assignments where id = t.assignment_id;
+  -- the time they had left, at least 5 minutes, out of the time limit with their extra time (which the clock adds once)
   if a.time_limit_min is not null then
-    v_left := greatest(300, a.time_limit_min * 60 - coalesce(t.time_spent_sec, 0));
+    v_left := greatest(300, (a.time_limit_min + coalesce(t.extra_min, 0)) * 60 - coalesce(t.time_spent_sec, 0));
   end if;
   update public.attempts
      set status = 'in_progress', submitted_at = null, score = null, released = false, released_at = null,
          auto_reason = null, strikes = 0, self_marked_at = null,
          started_at = case when a.time_limit_min is null then started_at
-                           else now() - make_interval(secs => a.time_limit_min * 60 - v_left) end
+                           else now() - make_interval(secs => (a.time_limit_min + coalesce(t.extra_min, 0)) * 60 - v_left) end
    where id = t.id;
   update public.responses set marks = null, auto_marks = null, step_marks = '[]', mistake = null, self_marks = null
    where attempt_id = t.id;
@@ -7358,11 +7359,41 @@ begin
   if exists (select 1 from public.org_members where org_id = mine and user_id <> auth.uid()) then
     raise exception 'Other tutors are in your centre. Leave it first (Settings → Your organisation).';
   end if;
+  update public.classes set org_id = o.id where org_id = mine;
   delete from public.org_members where user_id = auth.uid();
   insert into public.org_members (org_id, user_id, role) values (o.id, auth.uid(), 'tutor');
   perform public.notify_user(m.user_id, 'org', me || ' joined ' || o.name, 'They’re a tutor in your centre now. See them in Centre.', jsonb_build_object('org_id', o.id))
      from public.org_members m where m.org_id = o.id and m.role = 'manager' and m.user_id <> auth.uid();
   return public.my_org();
+end $$;
+
+-- A teacher moved out of an organisation (left, taken out, or turned away by a school's manager). A class goes with them
+-- only when it's theirs alone: nobody else there teaches it and every learner in it is theirs. Every other class stays,
+-- they stop teaching it, and someone who still teaches it (or a manager) looks after it.
+create or replace function public._classes_follow(p_user uuid, p_old uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_new uuid := public._org_of(p_user); c public.classes; v_keep uuid;
+begin
+  if p_old is null or v_new is null or p_old = v_new then return; end if;
+  for c in select * from public.classes
+            where org_id = p_old and (tutor_id = p_user or id in (select class_id from public.class_teachers where teacher_id = p_user)) loop
+    if not exists (select 1 from public.class_teachers t join public.org_members m on m.user_id = t.teacher_id and m.org_id = p_old
+                    where t.class_id = c.id and t.teacher_id <> p_user)
+       and not exists (select 1 from public.class_members cm join public.profiles l on l.id = cm.learner_id
+                        where cm.class_id = c.id and l.tutor_id is distinct from p_user
+                          and not exists (select 1 from public.learner_links k where k.learner_id = l.id and k.tutor_id = p_user)) then
+      update public.classes set org_id = v_new, tutor_id = p_user where id = c.id;
+      insert into public.class_teachers (class_id, teacher_id) values (c.id, p_user) on conflict do nothing;
+    else
+      delete from public.class_teachers where class_id = c.id and teacher_id = p_user;
+      if c.tutor_id = p_user then
+        v_keep := coalesce((select t.teacher_id from public.class_teachers t join public.org_members m on m.user_id = t.teacher_id and m.org_id = p_old
+                             where t.class_id = c.id order by t.added_at limit 1),
+                           (select user_id from public.org_members where org_id = p_old and role = 'manager' order by joined_at limit 1));
+        if v_keep is not null then update public.classes set tutor_id = v_keep where id = c.id; end if;
+      end if;
+    end if;
+  end loop;
 end $$;
 
 -- Leave a centre: the tutor goes back to an organisation of their own, with their learners and work.
@@ -7384,7 +7415,8 @@ begin
   end if;
   delete from public.org_members where org_id = o.id and user_id = auth.uid();
   perform public._ensure_org(auth.uid());
-  perform public.notify_user(m.user_id, 'org', me || ' left ' || o.name, 'Their learners and work went with them.', jsonb_build_object('org_id', o.id))
+  perform public._classes_follow(auth.uid(), o.id);
+  perform public.notify_user(m.user_id, 'org', me || ' left ' || o.name, 'Their own learners went with them. Classes someone else teaches stay here.', jsonb_build_object('org_id', o.id))
      from public.org_members m where m.org_id = o.id and m.role = 'manager';
   return public.my_org();
 end $$;
@@ -7399,7 +7431,8 @@ begin
   delete from public.org_members where org_id = o.id and user_id = p_user;
   if not found then raise exception 'They aren’t in your centre.'; end if;
   perform public._ensure_org(p_user);
-  perform public.notify_user(p_user, 'org', 'You’re no longer in ' || o.name, 'Your learners, classes and work stay with you.', '{}');
+  perform public._classes_follow(p_user, o.id);
+  perform public.notify_user(p_user, 'org', 'You’re no longer in ' || o.name, 'Your own learners and work stay with you. Classes others teach there stay with the centre.', '{}');
   return public.my_org();
 end $$;
 
@@ -10866,6 +10899,8 @@ create table if not exists public.school_email_codes (
   sent_at timestamptz not null default now(),
   tries int not null default 0
 );
+alter table public.school_email_codes add column if not exists sends int not null default 0;
+alter table public.school_email_codes add column if not exists sends_day date;
 alter table public.school_email_codes enable row level security;
 revoke all on public.school_email_codes from public, anon, authenticated;
 
@@ -10897,8 +10932,10 @@ $$;
 create or replace function public._email_proven(p_user uuid) returns boolean
 language plpgsql stable security definer set search_path = public as $$
 begin
-  return exists (select 1 from auth.users u where u.id = p_user
-                   and (coalesce(u.raw_app_meta_data -> 'providers', '[]'::jsonb) ? 'google' or u.raw_app_meta_data ->> 'provider' = 'google'));
+  return exists (select 1 from auth.identities i join auth.users u on u.id = i.user_id
+                  where i.user_id = p_user and i.provider = 'google' and u.email is not null
+                    and lower(i.identity_data ->> 'email') = lower(u.email)
+                    and coalesce(i.identity_data ->> 'email_verified', 'true') <> 'false');
 exception when others then
   return false;
 end $$;
@@ -10998,11 +11035,15 @@ begin
   if exists (select 1 from public.school_email_codes where user_id = me.id and sent_at > now() - interval '1 minute') then
     raise exception 'We’ve just sent one. Wait a minute, then ask again.';
   end if;
+  if exists (select 1 from public.school_email_codes where user_id = me.id and sends_day = current_date and sends >= 5) then
+    raise exception 'That’s 5 codes today. Try again tomorrow, or ask a teacher to add you to your class.';
+  end if;
   b := extensions.gen_random_bytes(3);
   v_code := lpad(((get_byte(b, 0) * 65536 + get_byte(b, 1) * 256 + get_byte(b, 2)) % 1000000)::text, 6, '0');
-  insert into public.school_email_codes (user_id, code_hash, sent_at, tries)
-  values (me.id, extensions.crypt(v_code, extensions.gen_salt('bf')), now(), 0)
-  on conflict (user_id) do update set code_hash = excluded.code_hash, sent_at = now(), tries = 0;
+  insert into public.school_email_codes (user_id, code_hash, sent_at, tries, sends, sends_day)
+  values (me.id, extensions.crypt(v_code, extensions.gen_salt('bf')), now(), 0, 1, current_date)
+  on conflict (user_id) do update set code_hash = excluded.code_hash, sent_at = now(), tries = 0,
+    sends = case when public.school_email_codes.sends_day = current_date then public.school_email_codes.sends + 1 else 1 end, sends_day = current_date;
   select name into v_school from public.organisations where id = me.school_id;
   insert into public.outgoing_emails (to_addr, subject, body, reply_to)
   values (me.email, 'Your StudyBridge code: ' || v_code,
@@ -11027,8 +11068,14 @@ begin
   select * into c from public.school_email_codes where user_id = me.id;
   if c.user_id is null or c.sent_at < now() - interval '30 minutes' then raise exception 'That code has run out. Ask for a new one.'; end if;
   if c.tries >= 5 then raise exception 'Too many wrong codes. Ask for a new one.'; end if;
+  -- however many codes they ask for: 10 wrong ones an hour, 20 a day
+  if (select count(*) from public.invite_tries where user_id = me.id and at > now() - interval '1 hour') >= 10
+     or (select count(*) from public.invite_tries where user_id = me.id and at > now() - interval '1 day') >= 20 then
+    raise exception 'Too many wrong codes. Wait a while, or ask a teacher to add you to your class.';
+  end if;
   if extensions.crypt(v, c.code_hash) <> c.code_hash then
     update public.school_email_codes set tries = tries + 1 where user_id = me.id;
+    insert into public.invite_tries (user_id) values (me.id);
     return jsonb_build_object('state', 'wrong', 'left', 4 - c.tries);
   end if;
   delete from public.school_email_codes where user_id = me.id;
@@ -11243,6 +11290,7 @@ begin
     delete from public.org_members where org_id = v_org and user_id = p_user;
     update public.profiles set school_id = null where id = p_user;
     perform public._ensure_org(p_user);
+    perform public._classes_follow(p_user, v_org);
     perform public.notify_user(a.user_id, 'tutor_signup', 'New tutor waiting: ' || t.display_name,
       coalesce(t.email, '') || ' signed up with ' || v_name || '’s email, but its manager says they aren’t one of its teachers.', jsonb_build_object('user_id', t.id))
       from public.platform_admins a;
@@ -11294,7 +11342,7 @@ language sql stable security definer set search_path = public as $$
   union
   select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = p_org and not c.archived
   union
-  select l.id from public.profiles l where l.school_id = p_org and l.role = 'learner' and l.paused_at is null
+  select l.id from public.profiles l where l.school_id = p_org and l.role = 'learner' and l.paused_at is null and l.school_ok
 $$;
 -- Who a teacher can put in a class: their own learners and their classes', a manager everyone in the centre, and (in a
 -- school) anyone who joined it with its email
@@ -11448,16 +11496,36 @@ language sql stable security definer set search_path = public as $$
      and public._assignment_visible_to(a, auth.uid()) and public._due_for(a, auth.uid()) is distinct from a.due_at
 $$;
 
+-- For teachers: due dates that are later for one learner than for everyone (an extension, or extra days), on work they set
+-- or work for a class they teach, so the app says "Late" and "Overdue" by each learner's own date
+create or replace function public.due_changes() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('assignment_id', x.id, 'learner_id', x.learner_id, 'due_at', x.due)), '[]') from (
+    select distinct a.id, z.learner_id, public._due_for(a, z.learner_id) due, a.due_at
+      from public.assignments a
+      join (select assignment_id aid, learner_id, null::uuid place_id from public.work_extensions
+            union
+            select null, learner_id, place_id from public.access_arrangements where extra_days > 0) z
+        on (z.aid = a.id or (z.aid is null and z.place_id = public._place_of(a.tutor_id)))
+     where public.my_role() = 'tutor' and a.due_at is not null
+       and (a.tutor_id = auth.uid() or (a.class_id is not null and public._class_teacher(a.class_id)))) x
+   where x.due is distinct from x.due_at
+$$;
+
 -- More time on one piece of work for one learner: a later due date, and/or extra minutes on its time limit
 create or replace function public.extend_work(p_assignment uuid, p_learner uuid, p_due_at timestamptz, p_extra_min int default 0) returns void
 language plpgsql security definer set search_path = public as $$
-declare a public.assignments;
+declare a public.assignments; v_was int;
 begin
   select * into a from public.assignments where id = p_assignment;
   if a.id is null or not (a.tutor_id = auth.uid() or public._class_teacher(a.class_id)) or not public._teaches(auth.uid(), p_learner) then
     raise exception 'Not your work.';
   end if;
   if coalesce(p_extra_min, 0) not between 0 and 600 then raise exception 'Extra minutes are 0 to 600.'; end if;
+  -- a try they've already started gets the change in extra minutes straight away (new tries get it when they start)
+  v_was := coalesce((select extra_min from public.work_extensions where assignment_id = p_assignment and learner_id = p_learner), 0);
+  update public.attempts set extra_min = greatest(0, extra_min + coalesce(p_extra_min, 0) - v_was)
+   where assignment_id = p_assignment and learner_id = p_learner and status = 'in_progress';
   if p_due_at is null and coalesce(p_extra_min, 0) = 0 then
     delete from public.work_extensions where assignment_id = p_assignment and learner_id = p_learner;
     return;
@@ -11613,6 +11681,7 @@ revoke execute on function public._ensure_org(uuid) from public, anon, authentic
 revoke execute on function public._new_org_code() from public, anon, authenticated;
 revoke execute on function public._profile_org() from public, anon, authenticated;
 revoke execute on function public._org_tidy() from public, anon, authenticated;
+revoke execute on function public._classes_follow(uuid, uuid) from public, anon, authenticated;
 revoke execute on function public._org_mine_to_change() from public, anon, authenticated;
 revoke execute on function public._class_audience() from public, anon, authenticated;
 revoke execute on function public._class_sync() from public, anon, authenticated;

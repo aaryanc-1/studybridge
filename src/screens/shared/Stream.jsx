@@ -451,12 +451,13 @@ export function PostEditor({ classId, className = '', post = null, onClose }) {
     if (later && !at) return toast({ title: 'Choose when it goes up', tone: 'bad' });
     setBusy(true);
     try {
-      const goesUp = later ? fromLocalInput(at) : null;
+      // a scheduled post changed to "Now" goes up now (no time would leave it at the old one)
+      const goesUp = later ? fromLocalInput(at) : editing && post.scheduled ? new Date().toISOString() : null;
       if (editing) {
         await api.editClassPost(post.id, { body, files, replies, at: goesUp });
         const gone = (post.files || []).filter((f) => !files.some((g) => g.path === f.path));
         api.removeStreamFiles(gone.map((f) => f.path));
-        toast('Post changed');
+        toast(post.scheduled && !later ? 'Posted' : 'Post changed');
       } else {
         await api.postToClasses({ classes: picked, body, files, replies, pinned, at: goesUp, group });
         toast(later ? `Scheduled for ${when(goesUp)}` : picked.length > 1 ? `Posted to ${picked.length} classes` : `Posted to ${choices.find((c) => c.id === picked[0])?.name || className || 'the class'}`);

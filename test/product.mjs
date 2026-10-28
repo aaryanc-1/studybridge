@@ -226,7 +226,8 @@ try {
   await shot(ADM, 'admin-waiting');
   await ADM.getByRole('button', { name: 'Approve' }).click();
   await ADM.getByText('Maria Banda approved').waitFor();
-  await B.getByRole('button', { name: 'Check again' }).click();
+  // (the page also checks by itself every 15 seconds, so it may already have moved on)
+  await B.getByRole('button', { name: 'Check again' }).click({ timeout: 5000 }).catch(() => {});
   await nav(B, 'Learners').waitFor();
   assert.equal(await nav(B, 'Admin').count(), 0, 'only the admin has Admin');
 
@@ -991,7 +992,8 @@ try {
   await ADM.getByRole('heading', { name: 'Waiting for approval' }).waitFor();
   await ADM.getByRole('button', { name: 'Approve' }).click();
   await ADM.getByText('Tom Phiri approved').waitFor();
-  await T3.getByRole('button', { name: 'Check again' }).click();
+  // (the page also checks by itself every 15 seconds, so it may already have moved on)
+  await T3.getByRole('button', { name: 'Check again' }).click({ timeout: 5000 }).catch(() => {});
   await nav(T3, 'Learners').waitFor();
   assert.equal(await nav(T3, 'Centre').count(), 0, 'only a centre’s managers have Centre');
   await T3.goto(web.url + '#/settings?s=org');

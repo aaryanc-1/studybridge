@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { plainMaths } from '../src/lib/plain.js';
 import { mainScript } from '../src/lib/autoupdate.js';
+import { parseTable } from '../src/lib/roster.js';
 
 test('plain maths: no dollar signs, stars or LaTeX left', () => {
   const fb = 'Good start: taking out the common factor 3 to get $3(x^2-25)$ is right. Factorise **fully**: $a^2-b^2=(a+b)(a-b)$ gives $3(x+5)(x-5)$.';
@@ -20,4 +21,20 @@ test('updates: the main script of the web app', () => {
   assert.equal(mainScript(html), './assets/index-B1x2.js');
   assert.equal(mainScript('<script src="a.js"></script>'), null);
   assert.equal(mainScript(''), null);
+});
+
+test('class lists from a spreadsheet: which column is which, and years vs grades', () => {
+  const g = (rows) => parseTable(rows.join('\n')).map((r) => [r.email, r.grade, r.classes.join('|')]);
+  // a Year column: "Year 10" and a plain 10 are both Year 10 = Grade 9
+  assert.deepEqual(g(['Email\tName\tYear\tClasses', 'ama@s.test\tAma\tYear 10\tYear 10 maths; Year 10 science', 'kofi@s.test\tKofi\t10\tYear 10 maths']), [
+    ['ama@s.test', 9, 'Year 10 maths|Year 10 science'],
+    ['kofi@s.test', 9, 'Year 10 maths'],
+  ]);
+  // a Grade or Form column: plain numbers are grades; "Year 8" written out still counts as a year
+  assert.deepEqual(g(['email,name,grade', 'a@s.test,A,9', 'b@s.test,B,Year 8']), [['a@s.test', 9, ''], ['b@s.test', 7, '']]);
+  assert.deepEqual(g(['Email;Form;Class', 'c@s.test;10A;Form 2 maths']), [['c@s.test', 10, 'Form 2 maths']]);
+  // a singular Class column is the classes, not the year
+  assert.deepEqual(g(['Email\tYear\tClass', 'd@s.test\tYear 9\tYear 9 English']), [['d@s.test', 8, 'Year 9 English']]);
+  // no header: email, name, year, classes; rows without an email are skipped
+  assert.deepEqual(g(['e@s.test,Esi,Year 11,"Maths; Physics"', 'not an email,X,9']), [['e@s.test', 10, 'Maths|Physics']]);
 });

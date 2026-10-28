@@ -4,7 +4,7 @@ import Icon, { Wordmark } from '../ui/Icon.jsx';
 import { Field } from '../ui/kit.jsx';
 import { decodeInvite } from '../lib/config.js';
 import * as api from '../lib/api.js';
-import { GRADES } from '../lib/students.js';
+import { GRADES, SCHOOL_GRADES } from '../lib/students.js';
 
 // Signed in, but not yet a tutor or a learner (or the profile couldn't load)
 export default function FinishSetup() {
@@ -16,6 +16,7 @@ export default function FinishSetup() {
   const [adminInvite, setAdminInvite] = useState(false);
   const [studentsOpen, setStudentsOpen] = useState(false);
   const [student, setStudent] = useState({ grade: '', country: '', code: '' });
+  const [schoolGrade, setSchoolGrade] = useState('');
   useEffect(() => {
     if (!app.bootError) api.adminInvited().then((v) => setAdminInvite(!!v)).catch(() => {});
     api.publicSettings().then((s) => setStudentsOpen(!!s?.students_open));
@@ -142,6 +143,30 @@ export default function FinishSetup() {
                 </button>
               </form>
             )}
+            <form
+              className="card"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!schoolGrade) return setErr('Choose your year.');
+                act(() => api.startSchoolLearner(name, Number(schoolGrade)));
+              }}
+            >
+              <h2>I’m at a school</h2>
+              <p className="muted small">If you signed up with your school email, join your school here. Your teachers then add you to your classes.</p>
+              <Field label="Your year">
+                <select className="select" value={schoolGrade} onChange={(e) => setSchoolGrade(e.target.value)}>
+                  <option value="">Choose…</option>
+                  {SCHOOL_GRADES.map(([g, label]) => (
+                    <option key={g} value={g}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <button className="btn" disabled={busy}>
+                Join my school
+              </button>
+            </form>
             <div className="card">
               <h2>I’m a parent</h2>
               <p className="muted small">A free parent account: set up a child who studies on their own, or follow a child with a parent code (above).</p>

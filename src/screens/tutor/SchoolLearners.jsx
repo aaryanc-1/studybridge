@@ -7,6 +7,7 @@ import { Empty, Loading, Modal, Page, copyText, useConfirm, useToast } from '../
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
+import { parseTable } from '../../lib/roster.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { LearnerTabs } from './Learners.jsx';
 
@@ -232,51 +233,6 @@ function Roster() {
       {slips && <Slips r={slips} onClose={() => setSlips(null)} />}
     </div>
   );
-}
-
-// A spreadsheet's rows, pasted (straight from Excel or Google Sheets) or from a .csv file
-function parseTable(text) {
-  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').filter((l) => l.trim());
-  if (!lines.length) return [];
-  const sep = lines.some((l) => l.includes('\t')) ? '\t' : lines[0].split(';').length > lines[0].split(',').length ? ';' : ',';
-  const cells = (line) => {
-    if (sep === '\t') return line.split('\t').map((x) => x.trim());
-    const out = [];
-    let cur = '';
-    let quoted = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"' && quoted && line[i + 1] === '"') (cur += '"'), i++;
-      else if (ch === '"') quoted = !quoted;
-      else if (ch === sep && !quoted) out.push(cur.trim()), (cur = '');
-      else cur += ch;
-    }
-    out.push(cur.trim());
-    return out;
-  };
-  let table = lines.map(cells);
-  // a header row says which column is which; without one: email, name, year, classes
-  let col = { email: 0, name: 1, year: 2, classes: 3 };
-  const head = table[0].map((h) => h.toLowerCase());
-  if (head.some((h) => /e-?mail/.test(h))) {
-    const find = (re) => head.findIndex((h) => re.test(h));
-    col = { email: find(/e-?mail/), name: find(/name/), year: find(/year|grade|form|class(?!es)\b/), classes: find(/classes|subjects?|groups?|sets?/) };
-    table = table.slice(1);
-  }
-  const year = (v) => {
-    const m = String(v || '').match(/\d{1,2}/);
-    if (!m) return null;
-    const n = Number(m[0]);
-    return /year/i.test(v) ? n - 1 : n; // Year 10 = Grade 9
-  };
-  return table
-    .map((r) => ({
-      email: (r[col.email] || '').trim(),
-      name: col.name >= 0 ? (r[col.name] || '').trim() : '',
-      grade: col.year >= 0 ? year(r[col.year]) : null,
-      classes: col.classes >= 0 ? String(r[col.classes] || '').split(sep === '\t' ? /[;,|]/ : /[;|]/).map((x) => x.trim()).filter(Boolean) : [],
-    }))
-    .filter((r) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.email));
 }
 
 function RosterImport({ onClose }) {

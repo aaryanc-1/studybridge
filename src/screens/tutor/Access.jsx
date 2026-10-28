@@ -1,11 +1,17 @@
 // Access arrangements on a learner's page: extra time on timed work and extra days on deadlines, for everything your
 // school (or you) set. The learner and their parents see them; classmates never do; the note is for teachers only.
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
 import { Field, Modal, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { fromLocalInput, toLocalInput } from '../../lib/format.js';
+
+// When a piece of work is due for one learner: their extension or extra days, else everyone's due date (for "Late" and "Overdue")
+export function useDueFor() {
+  const dues = useQuery('due-changes', api.dueChanges).data;
+  return useCallback((a, learnerId) => (dues || []).find((d) => d.assignment_id === a?.id && d.learner_id === learnerId)?.due_at || a?.due_at || null, [dues]);
+}
 
 export const accessText = (r) =>
   [r?.extra_time_pct ? `${r.extra_time_pct}% extra time` : '', r?.extra_days ? `${r.extra_days} extra day${r.extra_days === 1 ? '' : 's'} on deadlines` : ''].filter(Boolean).join(' · ');
@@ -38,7 +44,7 @@ function AccessModal({ id, first, r, onClose }) {
     setBusy(true);
     try {
       await api.setAccess(id, Math.round(Number(time) || 0), Math.round(Number(days) || 0), note);
-      invalidate(`access:${id}`);
+      invalidate(`access:${id}`, 'due-changes');
       toast(Number(time) || Number(days) ? `${first}’s access arrangements are saved` : `${first} has no access arrangements now`);
       onClose();
     } catch (e) {
@@ -101,7 +107,7 @@ export function ExtendWork({ a, l, onClose }) {
     setBusy(true);
     try {
       await api.extendWork(a.id, l.id, due ? fromLocalInput(due) : null, Math.round(Number(mins) || 0));
-      invalidate('assignments', 'attempts');
+      invalidate('assignments', 'attempts', 'due-changes');
       toast(`${first} has more time on ${a.title}`);
       onClose();
     } catch (e) {

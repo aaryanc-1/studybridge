@@ -127,6 +127,8 @@ export const accessFor = (learnerId) => run(sb().rpc('access_for', { p_learner: 
 export const myAccess = (learnerId = null) => run(sb().rpc('my_access', { p_learner: learnerId }));
 export const extendWork = (assignmentId, learnerId, dueAt, extraMin = 0) =>
   run(sb().rpc('extend_work', { p_assignment: assignmentId, p_learner: learnerId, p_due_at: dueAt, p_extra_min: extraMin }));
+// For teachers: each learner's own due date where it's later than everyone's (an extension or extra days)
+export const dueChanges = () => run(sb().rpc('due_changes')).catch((e) => (e.offline ? Promise.reject(e) : []));
 export const examRoom = (assignmentId) => run(sb().rpc('exam_room', { p_assignment: assignmentId }));
 export const examAddTime = (assignmentId, minutes, learnerId = null) => run(sb().rpc('exam_add_time', { p_assignment: assignmentId, p_minutes: minutes, p_learner: learnerId }));
 export const examEnd = (assignmentId) => run(sb().rpc('exam_end', { p_assignment: assignmentId }));

@@ -544,6 +544,22 @@ studied in the last week, from attempts/comments/activity the tutor can already 
 (`study_summary().exam`), "Nothing to do right now" offers Flashcards, Practise (their weakest topic) and My progress, This week has
 four numbers (marks back, handed in, practice done, minutes today of their goal), and Marks back moves beside To do when that side
 is otherwise empty. `activity.day` is read as `String(day).slice(0, 10)` (the test server sends a full timestamp).
+Review fixes (27 Oct 2026; Aaryan: "go fix all", from a code review of the stream, school sign-up and exam room). A teacher leaving a
+centre or school (`org_leave`, `org_remove`, a school manager's `org_approve_teacher(…, false)`): `_classes_follow(user, old_org)` moves a
+class with them only when nobody else there teaches it and every learner in it is theirs (main tutor or a link); every other class stays,
+they're taken off it, and another of its teachers (or a manager) becomes its `tutor_id`; `org_join` brings their own classes into the centre.
+`extend_work` changes `extra_min` on a try already in progress by the difference. `_org_learner_ids` counts school sign-ups only once
+`school_ok`. School codes: 5 sends a day (`school_email_codes.sends/sends_day`), and wrong codes go in `invite_tries` too (10 an hour,
+20 a day, then even the right one waits). `_email_proven` needs an `auth.identities` row with provider google whose email is the
+account's (the test stubs have auth.identities). Editing a scheduled class post to "Now" sends now. "Almost there" has "I’m at a school"
+(FinishSetup → `startSchoolLearner`). The spreadsheet reader is `src/lib/roster.js` (`parseTable`, tested in text.test.mjs): a Year column
+(or no header) means UK years (10 = Grade 9), a Grade or Form column means grades, and a singular Class column is the classes. The exam
+page asks `exam_updates` once more before handing in at 0 (`askedAt`/`asking` in Attempt.jsx), and `reopen_attempt` counts extra time once.
+Teachers' "Late" and "Overdue" (Home, Marking) use each learner's own date: `due_changes()` (work they set or a class they teach) via
+`useDueFor()` in Access.jsx. The sweep now presses at most 3 of a long run (7+) of buttons that only differ in what they name ("Edit <subject>"):
+the content account's 87 subject pop-ups once pushed Library → Subjects past the 10-minute limit. When the sweep moves to
+the next screen it answers "Leave without saving?" with yes (`leaving` in sweep.mjs): answering no had kept it in the first editor it changed,
+so every later tutor screen was really that editor again (slow, and those screens were never swept).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

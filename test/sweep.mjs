@@ -33,12 +33,17 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
   let errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => m.type() === 'error' && !NOISE.test(m.text()) && errors.push(m.text()));
-  page.on('dialog', (d) => d.dismiss().catch(() => {})); // "Leave without saving?" and the like
+  // what a press asks ("Delete this?") is answered no; but when the sweep itself moves on, "Leave without saving?" is
+  // answered yes (answering no kept it in the first editor it changed, so every later screen was that editor again)
+  let leaving = false;
+  page.on('dialog', (d) => (leaving && d.type() === 'confirm' ? d.accept() : d.dismiss()).catch(() => {}));
   page.context().on('page', (p) => p.close().catch(() => {})); // links that open a new tab
 
   const go = async (hash) => {
+    leaving = true;
     await page.evaluate((h) => (location.hash = h), hash);
     await page.waitForTimeout(700);
+    leaving = false;
   };
   const crashed = async () => (await page.getByText('Something went wrong on this screen').count()) > 0;
   const closeDialogs = async () => {
@@ -109,7 +114,7 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
   queue.push('/settings');
   const seen = new Set();
   // A screen that never finishes (a page that hangs) fails with its name instead of stopping the whole run: each screen
-  // gets 3 minutes, and the progress line says where the sweep is
+  // gets 10 minutes, and the progress line says where the sweep is
   const STUCK_MS = 10 * 60 * 1000;
   let started = Date.now(); // when this screen began: after a minute, each press is logged, to show where a slow one spends its time
   const slow = (what) => Date.now() - started > 60000 && console.log(`      ${Math.round((Date.now() - started) / 1000)} s: ${what}`);
@@ -150,6 +155,12 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
         .filter((b) => (b.offsetWidth || b.offsetHeight) && !b.disabled && !b.closest('[role="dialog"]'))
         .map((b) => (b.getAttribute('aria-label') || b.innerText || b.title || '').trim().replace(/\s+/g, ' ').slice(0, 60)),
     );
+    // a long run of buttons that only differ in what they name ("Edit Cambridge IGCSE Physics (0625)", 87 of them on the
+    // content account's subjects, each opening the same pop-up): the first three are enough
+    const family = (n) => (n.split(' ').length > 2 ? n.split(' ')[0] : n);
+    const families = {};
+    for (const n of names) families[family(n)] = (families[family(n)] || 0) + 1;
+    const familyPressed = {};
     for (let i = 0; i < Math.min(names.length, maxButtons); i++) {
       const name = names[i];
       if (!name) continue;
@@ -160,6 +171,7 @@ export async function sweep(page, who, { maxRoutes = 45, maxButtons = 60 } = {})
       // find it again (the screen may have been redrawn): the same name, the same number of times along
       const nth = names.slice(0, i).filter((x) => x === name).length;
       if (nth >= 2) continue; // a long list of the same button: the first two are enough
+      if (families[family(name)] > 6 && (familyPressed[family(name)] = (familyPressed[family(name)] || 0) + 1) > 3) continue;
       const before = await state();
       errors = [];
       slow(`“${name}”`);

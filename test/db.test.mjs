@@ -3264,8 +3264,11 @@ test('the class stream: teachers and managers post to one class or several; repl
 });
 
 test('schools: sign up with the school email (a code, or Google), wait on "New from your school" until a teacher adds you to a class; spreadsheets; accounts made in advance; teachers approved by the manager', async () => {
-  const mk = async (k, email, name = k, app = {}) => {
+  const mk = async (k, email, name = k, app = {}, googleEmail = email) => {
     U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data, raw_app_meta_data) values ($1, $2, $3) returning id`, [email, { name }, app])).rows[0].id;
+    if (app.provider === 'google') {
+      await db.query(`insert into auth.identities (user_id, provider, identity_data) values ($1, 'google', $2)`, [U[k], { email: googleEmail, email_verified: true }]);
+    }
   };
   for (const [k, n] of [['JM', 'Mrs Mulenga'], ['JT', 'Mr Tembo']]) {
     await mk(k, k.toLowerCase() + '@staff.x', n);
@@ -3303,7 +3306,8 @@ test('schools: sign up with the school email (a code, or Google), wait on "New f
   assert.deepEqual(await waiting('JM'), [['Mwila Banda', 9, false]]);
   assert.deepEqual(await val('JS1', `select school_waiting()`), []);
   assert.deepEqual(await val('T', `select school_waiting()`), []);
-  assert.equal(Number((await db.query(`select public._org_learners($1) n`, [org])).rows[0].n), 1, 'the school counts them');
+  const schoolCount = async () => Number((await db.query(`select public._org_learners($1) n`, [org])).rows[0].n);
+  assert.equal(await schoolCount(), 0, 'not a place until their email is confirmed or a teacher lets them in');
   // Mr Tembo adds her to his class (vouching for her email); she gets him as her teacher and drops off the list
   await fails(as('JT', `select school_add_to_class($1, $2)`, [f3, [U.JS1]]), /Not your class/);
   await fails(as('JT', `select school_add_to_class($1, $2)`, [f2, [U.L]]), /Only learners from your school/);
@@ -3312,6 +3316,7 @@ test('schools: sign up with the school email (a code, or Google), wait on "New f
   assert.deepEqual([mwila.tutor_id, mwila.school_ok], [U.JT, true]);
   assert.deepEqual(await waiting('JT'), []);
   assert.equal((await val('JS1', `select my_school()`)).classes, 1);
+  assert.equal(await schoolCount(), 1, 'in a class: the school counts her');
 
   // with email on: a 6-digit code goes to the school email; wrong codes are counted
   await db.query(`update platform_secrets set resend_key = 're_test' where id = 1`);
@@ -3395,6 +3400,29 @@ test('schools: sign up with the school email (a code, or Google), wait on "New f
   await as('JM', `select school_remove($1)`, [U.JS7]);
   assert.equal((await db.query(`select role from profiles where id = $1`, [U.JS7])).rows[0].role, null);
 
+  // a Google login for some other address proves nothing about the school email: a code is still needed
+  await mk('JS8', 'mwape@kabwe.edu.zm', 'mwape', { provider: 'google', providers: ['google'] }, 'mwape.home@gmail.com');
+  assert.equal((await val('JS8', `select start_school_learner('Mwape', 10)`)).state, 'code');
+  // only confirmed sign-ups take the school's places
+  const counted = async (k) => (await db.query(`select $1::uuid in (select public._org_learner_ids($2)) c`, [U[k], org])).rows[0].c;
+  assert.deepEqual([await counted('JS8'), await counted('JS3')], [false, true]);
+  // guessing the code: 5 wrong per code and, however many codes they ask for, 10 wrong an hour; 5 codes a day
+  const latest = async () => (await db.query(`select subject from outgoing_emails where to_addr = 'mwape@kabwe.edu.zm' order by created_at desc limit 1`)).rows[0].subject.match(/\d{6}/)[0];
+  const notIt = (c) => String((Number(c) + 1) % 1000000).padStart(6, '0');
+  const resend = async () => {
+    await db.query(`update school_email_codes set sent_at = now() - interval '2 minutes' where user_id = $1`, [U.JS8]);
+    return val('JS8', `select send_school_code()`);
+  };
+  for (let i = 0; i < 5; i++) assert.equal((await val('JS8', `select confirm_school_email($1)`, [notIt(await latest())])).state, 'wrong');
+  await fails(as('JS8', `select confirm_school_email($1)`, [notIt(await latest())]), /Ask for a new one/);
+  await resend();
+  for (let i = 0; i < 5; i++) assert.equal((await val('JS8', `select confirm_school_email($1)`, [notIt(await latest())])).state, 'wrong');
+  await resend();
+  await fails(as('JS8', `select confirm_school_email($1)`, [await latest()]), /Wait a while/, '10 wrong in an hour: even the right code waits');
+  await resend();
+  await resend();
+  await fails(resend(), /5 codes today/);
+
   await db.query(`update platform_secrets set resend_key = null where id = 1`);
   await db.query(`update app_config set email_from = null where id = 1`);
 });
@@ -3475,7 +3503,73 @@ test('access arrangements and the exam room: extra time and extra days per learn
   const late = async (k) => (await val('EX1', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U[k]])).assignments.find((x) => x.title === 'Fractions homework').late;
   assert.equal(await late('EL1'), false);
   assert.equal(await late('EL2'), false);
+  // the teacher's screens know each learner's own due date (for "Late" and "Overdue")
+  const dues = await val('EX1', `select due_changes()`);
+  assert.deepEqual(dues.filter((d) => d.assignment_id === hw).map((d) => d.learner_id).sort(), [U.EL1, U.EL2].sort());
+  assert.deepEqual(await val('EX2', `select due_changes()`), [], 'only for work they set or a class they teach');
+  assert.deepEqual(await val('EL1', `select due_changes()`), [], 'teachers only');
+  // more time on a timed test he has already started reaches his clock at once (and can be changed again)
+  const quiz = await val('EX1', `insert into assignments (title, kind, time_limit_min, visibility, learner_ids) values ('Quick quiz', 'quiz', 30, 'visible', $1) returning id`, [[U.EL2]]);
+  await val('EX1', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '2 + 2?', 1) returning id`, [quiz]);
+  const q2 = await one('EL2', `select * from start_attempt($1)`, [quiz]);
+  const extraOf = async (id) => (await db.query(`select extra_min from attempts where id = $1`, [id])).rows[0].extra_min;
+  await as('EX1', `select extend_work($1, $2, null, 15)`, [quiz, U.EL2]);
+  assert.equal(await extraOf(q2.id), 15);
+  await as('EX1', `select extend_work($1, $2, null, 5)`, [quiz, U.EL2]);
+  assert.equal(await extraOf(q2.id), 5);
+  // "Let them try again" after he used all his time: 5 minutes, with his extra time counted once
+  await as('EL2', `select submit_attempt($1)`, [q2.id]);
+  await db.query(`update attempts set time_spent_sec = 35 * 60 where id = $1`, [q2.id]);
+  await as('EX1', `select reopen_attempt($1)`, [q2.id]);
+  const left = (await db.query(`select extract(epoch from started_at + make_interval(mins => 30 + extra_min) - now())::int s from attempts where id = $1`, [q2.id])).rows[0].s;
+  assert.ok(left > 290 && left <= 300, `5 minutes left, not ${left} seconds`);
   // clearing it: back to the class's due date
   await as('EX1', `select set_access($1, 0, 0)`, [U.EL1]);
   assert.deepEqual(await val('EL1', `select my_access()`), []);
+});
+
+test('a teacher leaving a centre: classes only they teach, with only their own learners, go with them; the rest stay and they stop teaching them', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['FM', 'FT', 'FU']) {
+    await mk(k, k.toLowerCase() + '@follow.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const join = async (tutor, k) => {
+    await mk(k, k.toLowerCase() + '@follow.x');
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  };
+  await join('FT', 'FL1');
+  await join('FU', 'FL2');
+  // FT's own class comes into the centre with FT
+  const own = await val('FT', `select save_class(null, 'FT’s group', null, $1)`, [[U.FL1]]);
+  const centre = await val('FM', `select org_make_centre('Follow Centre')`);
+  await val('FT', `select org_join($1)`, [centre.code]);
+  await val('FU', `select org_join($1)`, [centre.code]);
+  const org = (await db.query(`select org_id from org_members where user_id = $1`, [U.FM])).rows[0].org_id;
+  const orgOf = async (c) => (await db.query(`select org_id from classes where id = $1`, [c])).rows[0].org_id;
+  assert.equal(await orgOf(own), org, 'joining brings their classes into the centre');
+  // the manager makes a class for FT with someone else's learner, and one FT shares with FU
+  const mixed = await val('FM', `select save_class(null, 'Mixed', null, $1, $2)`, [[U.FL1, U.FL2], [U.FT]]);
+  const shared = await val('FM', `select save_class(null, 'Shared', null, $1, $2)`, [[U.FL1], [U.FT, U.FU]]);
+  // FT leaves
+  await val('FT', `select org_leave()`);
+  const teachers = async (c) => (await db.query(`select array_agg(teacher_id::text order by teacher_id) t from class_teachers where class_id = $1`, [c])).rows[0].t || [];
+  assert.notEqual(await orgOf(own), org, 'theirs alone: it goes with them');
+  assert.deepEqual(await teachers(own), [U.FT]);
+  assert.equal(await orgOf(mixed), org, 'someone else’s learner is in it: it stays');
+  assert.deepEqual(await teachers(mixed), []);
+  assert.equal(await orgOf(shared), org);
+  assert.deepEqual(await teachers(shared), [U.FU]);
+  // the manager no longer runs FT's class (no stream, no posts), and FT no longer sees the centre's
+  assert.ok(!(await val('FM', `select stream_classes()`)).some((c) => c.id === own));
+  assert.deepEqual((await val('FT', `select stream_classes()`)).map((c) => c.id), [own]);
+  // taken out by the manager: the same
+  await val('FT', `select org_join($1)`, [centre.code]);
+  assert.equal(await orgOf(own), org);
+  await val('FM', `select org_remove($1)`, [U.FT]);
+  assert.notEqual(await orgOf(own), org);
 });

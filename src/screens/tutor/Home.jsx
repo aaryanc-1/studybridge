@@ -7,6 +7,7 @@ import * as api from '../../lib/api.js';
 import { ago, dur, kindLabel, myTimezone, placeOf, time, timeIn, weekRange, when, ymd } from '../../lib/format.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
+import { useDueFor } from './Access.jsx';
 
 function greeting() {
   const h = new Date().getHours();
@@ -59,6 +60,7 @@ export default function Home() {
   const parents = useQuery('parent-counts', api.myParentCounts).data || {};
   const liveStatus = useQuery('live-status', api.liveStatus).data;
   const home = useQuery('tutor-home', api.tutorHome).data;
+  const dueFor = useDueFor();
   // a tuition centre's managers get a line about the whole centre
   const org = useQuery('org', api.myOrg).data;
   const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
@@ -120,7 +122,8 @@ export default function Home() {
     })),
     ...toMark.map((t) => {
       const a = aById[t.assignment_id];
-      const late = a?.due_at && t.submitted_at && new Date(t.submitted_at) > new Date(a.due_at);
+      const due = dueFor(a, t.learner_id);
+      const late = due && t.submitted_at && new Date(t.submitted_at) > new Date(due);
       const alerts = (t.lockdown_events || []).length;
       return {
         key: 'm' + t.id,
