@@ -14,12 +14,13 @@ import { SUPPORT_EMAIL } from '../../lib/config.js';
 import { studentAccess } from '../../lib/students.js';
 import { SetUpChild, AddWithCode } from './ChildCodes.jsx';
 import { PayOptions } from '../learner/SelfStudy.jsx';
-import { ago, day, dur, kindLabel, pct, timeIn, placeOf, myTimezone, when } from '../../lib/format.js';
+import { ago, day, dur, kindLabel, pct, timeIn, placeOf, myTimezone, when, ymd } from '../../lib/format.js';
 import Shell from '../shared/Shell.jsx';
 import Settings from '../shared/Settings.jsx';
 import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { gradeLine } from '../shared/MockHistory.jsx';
 import { StreamFiles } from '../shared/Stream.jsx';
+import { AttendanceCard, BehaviourCard } from '../shared/School.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -216,6 +217,9 @@ function Child({ id, kids, section }) {
               </div>
             )}
           </div>
+          <ChildToday id={id} name={v.learner.name} />
+          <AttendanceCard learnerId={id} name={v.learner.name} />
+          <BehaviourCard learnerId={id} name={v.learner.name} />
           <ClassPosts id={id} name={v.learner.name} />
           <ChildAccess id={id} name={v.learner.name} />
         </>
@@ -377,6 +381,33 @@ function ClassPosts({ id, name }) {
           <StreamFiles files={p.files} />
         </div>
       ))}
+    </div>
+  );
+}
+
+// Their child's lessons today, from their school's or centre's timetable
+function ChildToday({ id, name }) {
+  const today = ymd(new Date());
+  const list = (useQuery(`timetable:${id}:${today}`, () => api.myTimetable(today, today, id)).data || []).filter((x) => x.kind === 'lesson');
+  if (!list.length) return null;
+  return (
+    <div className="card">
+      <h2>{name.split(' ')[0]}’s lessons today</h2>
+      <div className="list">
+        {list.map((x) => (
+          <div key={x.id} className="item">
+            <span className="grow">
+              <span className="name">{x.class}</span>
+              <span className="meta">
+                <span>
+                  {x.starts}–{x.ends} · {x.period}
+                </span>
+                {x.teacher && <span>{x.teacher}</span>}
+              </span>
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

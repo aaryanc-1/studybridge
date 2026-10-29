@@ -3573,3 +3573,165 @@ test('a teacher leaving a centre: classes only they teach, with only their own l
   await val('FM', `select org_remove($1)`, [U.FT]);
   assert.notEqual(await orgOf(own), org);
 });
+
+test('running a school: the school day and timetable, a register every lesson (parents told the same day), live lessons fill in their own register, and behaviour', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['RM', 'RT', 'RU', 'RX']) {
+    await mk(k, k.toLowerCase() + '@run.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const join = async (tutor, k) => {
+    await mk(k, k.toLowerCase() + '@run.x');
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  };
+  await join('RT', 'RL1');
+  await join('RT', 'RL2');
+  const centre = await val('RM', `select org_make_centre('Riverside School')`);
+  await val('RT', `select org_join($1)`, [centre.code]);
+  await val('RU', `select org_join($1)`, [centre.code]);
+  const maths = await val('RM', `select save_class(null, 'Year 10 maths', null, $1, $2)`, [[U.RL1, U.RL2], [U.RT]]);
+  const physics = await val('RM', `select save_class(null, 'Year 10 physics', null, $1, $2)`, [[U.RL1], [U.RU]]);
+  // RL1's dad follows her
+  await mk('RP', 'rp@run.x');
+  const inv = await one('RT', `select * from create_parent_invite($1, 'Dad')`, [U.RL1]);
+  await one('RP', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [inv.code]);
+
+  // only the manager sets out the day; nobody outside a centre or school has a timetable
+  assert.equal(await val('RM', `select timetable_on()`), true);
+  assert.equal(await val('RT', `select timetable_on()`), false, 'nothing on it yet');
+  await fails(as('RX', `select school_setup()`), /centres and schools/);
+  await fails(as('RT', `select save_periods('[]')`), /Only a manager/);
+  await as('RM', `select set_school_timezone('UTC')`);
+  await fails(as('RM', `select save_periods($1)`, [JSON.stringify([{ name: 'P1', starts: '10:00', ends: '09:00' }])]), /ends before it starts/);
+  await as('RM', `select save_periods($1)`, [JSON.stringify([{ name: 'P1', starts: '00:00', ends: '00:30' }, { name: 'P2', starts: '23:00', ends: '23:50' }])]);
+  let setup = await val('RM', `select school_setup()`);
+  const [p1, p2] = setup.periods.map((p) => p.id);
+  const today = await val('RM', `select (now() at time zone 'UTC')::date::text`);
+  const dow = await val('RM', `select extract(isodow from (now() at time zone 'UTC'))::int`);
+  const other = (dow % 7) + 1;
+  // a maths lesson today (its teacher by itself), and physics on another day; nobody in two places at once
+  const slot = await val('RM', `select save_slot(null, $1, $2, $3, 'Room 12')`, [maths, dow, p1]);
+  await val('RM', `select save_slot(null, $1, $2, $3, 'Lab')`, [physics, other, p1]);
+  await fails(as('RM', `select save_slot(null, $1, $2, $3, 'Room 12', $4)`, [physics, dow, p1, U.RU]), /Room 12 is already in use/);
+  await fails(as('RM', `select save_slot(null, $1, $2, $3, null, $4)`, [physics, dow, p1, U.RT]), /already teaches another class/);
+  await fails(as('RU', `select save_slot(null, $1, $2, $3)`, [maths, dow, p2]), /class’s teachers or a manager/);
+  setup = await val('RT', `select school_setup()`);
+  assert.equal(setup.slots.find((x) => x.id === slot).teacher, 'RT');
+  for (const k of ['RT', 'RL1', 'RL2']) assert.equal(await val(k, `select timetable_on()`), true, k);
+
+  // everyone's week: the teacher's lessons with the register to take; the learner's and her dad's with who teaches
+  const week = (k, learner) => val(k, `select my_timetable($1::date, $1::date + 6, $2)`, [today, learner || null]);
+  const tl = (await week('RT')).find((x) => x.kind === 'lesson' && x.day === today);
+  assert.deepEqual([tl.class, tl.room, tl.marked, tl.size, tl.today], ['Year 10 maths', 'Room 12', 0, 2, true]);
+  assert.deepEqual((await week('RL1')).filter((x) => x.kind === 'lesson').map((x) => x.class).sort(), ['Year 10 maths', 'Year 10 physics']);
+  assert.equal((await week('RP', U.RL1)).find((x) => x.day === today).teacher, 'RT');
+  await fails(as('RX', `select my_timetable($1::date, $1::date + 6, $2)`, [today, U.RL1]), /can’t see/);
+  // no lessons on a holiday, or outside the terms once they're set
+  await as('RM', `select save_school_dates($1)`, [JSON.stringify([{ kind: 'holiday', name: 'Half term', starts: today, ends: today }])]);
+  assert.ok(!(await week('RL1')).some((x) => x.day === today));
+  await as('RM', `select save_school_dates($1)`, [JSON.stringify([{ kind: 'term', name: 'Autumn', starts: '2000-01-01', ends: '2000-03-01' }])]);
+  assert.ok(!(await week('RL1')).some((x) => x.day === today));
+  await as('RM', `select save_school_dates($1)`, [JSON.stringify([{ kind: 'term', name: 'This term', starts: today, ends: '2099-01-01' }])]);
+  assert.ok((await week('RL1')).some((x) => x.day === today));
+
+  // the register: RL1 absent, RL2 late. Her dad hears today (in the app and by email), once
+  await fails(as('RX', `select register('lesson', $1, $2::date)`, [slot, today]), /can’t take/);
+  let reg = await val('RT', `select register('lesson', $1, $2::date)`, [slot, today]);
+  assert.deepEqual(reg.learners.map((l) => [l.name, l.status]), [['RL1', null], ['RL2', null]]);
+  const mark = (marks) => val('RT', `select save_register('lesson', $1, $2::date, $3)`, [slot, today, JSON.stringify(marks)]);
+  await mark([{ learner: U.RL1, status: 'absent', note: 'No word from home' }, { learner: U.RL2, status: 'late', minutes_late: 7 }]);
+  const told = async () => (await as('RP', `select title, body from notifications where kind = 'absence' order by created_at`)).map((n) => n.title);
+  assert.deepEqual(await told(), ['RL1 was marked absent today']);
+  assert.equal((await db.query(`select count(*)::int n from outgoing_emails where to_addr = 'rp@run.x' and subject = 'RL1 was marked absent today'`)).rows[0].n, 1);
+  await mark([{ learner: U.RL1, status: 'absent' }]);
+  assert.equal((await told()).length, 1, 'once a day');
+  // put right: he hears that too
+  await mark([{ learner: U.RL1, status: 'present' }]);
+  assert.deepEqual(await told(), ['RL1 was marked absent today', 'RL1 is marked in today after all']);
+  reg = await val('RT', `select register('lesson', $1, $2::date)`, [slot, today]);
+  assert.deepEqual([reg.taken, reg.learners.map((l) => l.status)], [true, ['present', 'late']]);
+  await fails(as('RT', `select save_register('lesson', $1, $2::date + 7, '[]')`, [slot, today]), /on the day/);
+  assert.equal((await week('RT')).find((x) => x.kind === 'lesson' && x.day === today).marked, 2);
+
+  // attendance: the learner and her dad see it (never staff notes); her teacher sees the notes; others nothing
+  await mark([{ learner: U.RL2, status: 'late', minutes_late: 7, note: 'Bus' }]);
+  const a2 = await val('RL2', `select learner_attendance($1)`, [U.RL2]);
+  assert.deepEqual([a2.lessons, a2.late, a2.pct, a2.records[0].note], [1, 1, 100, null]);
+  assert.equal((await val('RT', `select learner_attendance($1)`, [U.RL2])).records[0].note, 'Bus');
+  assert.equal((await val('RP', `select learner_attendance($1)`, [U.RL1])).present, 1);
+  await fails(as('RX', `select learner_attendance($1)`, [U.RL1]), /can’t see/);
+  const ca = await val('RT', `select class_attendance($1)`, [maths]);
+  assert.deepEqual(ca.learners.map((l) => [l.name, l.pct]), [['RL1', 100], ['RL2', 100]]);
+  assert.equal(ca.registers.length, 1);
+  await fails(as('RT', `select attendance_overview()`), /Only a manager/);
+  const ov = await val('RM', `select attendance_overview()`);
+  assert.deepEqual([ov.lessons, ov.pct, ov.by_class.find((c) => c.id === maths).pct], [2, 100, 100]);
+
+  // live lessons fill in their own register: in on time, or late after 5 minutes
+  await as('RT', `select set_live_keys('wss://demo.livekit.cloud', 'APIkey123', 'supersecret')`);
+  const live = await val('RT', `insert into sessions (title, starts_at, learner_ids) values ('Revision', now() - interval '10 minutes', $1) returning id`, [[U.RL1, U.RL2]]);
+  await val('RL1', `select live_pass($1)`, [`session-${live}`]);
+  await val('RL1', `select live_pass($1)`, [`session-${live}`]);
+  reg = await val('RT', `select register('live', $1)`, [live]);
+  assert.deepEqual(reg.learners.map((l) => [l.name, l.status, l.minutes_late, l.by_joining]), [['RL1', 'late', 10, true], ['RL2', null, null, false]]);
+  // marked absent, then in she comes: her dad hears it's put right
+  const live2 = await val('RT', `insert into sessions (title, starts_at, learner_ids) values ('Quick check', now() - interval '2 minutes', $1) returning id`, [[U.RL1]]);
+  await val('RT', `select save_register('live', $1, null, $2)`, [live2, JSON.stringify([{ learner: U.RL1, status: 'absent' }])]);
+  assert.equal((await told()).length, 3);
+  await val('RL1', `select live_pass($1)`, [`session-${live2}`]);
+  assert.equal((await val('RT', `select register('live', $1)`, [live2])).learners[0].status, 'present');
+  assert.equal((await told()).at(-1), 'RL1 is marked in today after all');
+  await fails(as('RU', `select register('live', $1)`, [live]), /can’t take/);
+
+  // behaviour: the school's own list; a positive for two learners; they and the parent are told; staff notes stay with staff
+  await fails(as('RX', `select behaviour_list()`), /centres and schools/);
+  const types = await val('RT', `select behaviour_list()`);
+  assert.equal(types.length, 8);
+  const great = types.find((t) => t.name === 'Great work');
+  const homework = types.find((t) => t.name === 'Homework not done');
+  assert.equal(await val('RT', `select give_behaviour($1, $2, 'Lovely algebra', 'Quiet today', $3)`, [[U.RL1, U.RL2], great.id, maths]), 2);
+  await val('RT', `select give_behaviour($1, $2)`, [[U.RL2], homework.id]);
+  assert.equal((await as('RL1', `select title from notifications where kind = 'behaviour'`))[0].title, '+1 Great work');
+  assert.equal((await as('RP', `select title from notifications where kind = 'behaviour'`))[0].title, 'RL1: +1 Great work');
+  const b2 = await val('RL2', `select learner_behaviour($1)`, [U.RL2]);
+  assert.deepEqual([b2.positive, b2.concern, b2.records.length, b2.records.find((r) => r.kind === 'positive').comment, b2.records.some((r) => r.staff_note)], [1, 1, 2, 'Lovely algebra', false]);
+  assert.equal((await val('RT', `select learner_behaviour($1)`, [U.RL2])).records.find((r) => r.kind === 'positive').staff_note, 'Quiet today');
+  await fails(as('RX', `select give_behaviour($1, $2)`, [[U.RL1], great.id]), /centres and schools/);
+  // someone else's: only whoever gave it (or a manager) takes it back
+  const given = (await val('RT', `select learner_behaviour($1)`, [U.RL2])).records.find((r) => r.kind === 'concern').id;
+  await fails(as('RU', `select remove_behaviour($1)`, [given]), /isn’t one you can take back/);
+  await as('RT', `select remove_behaviour($1)`, [given]);
+  assert.equal((await val('RL2', `select learner_behaviour($1)`, [U.RL2])).concern, 0);
+  // the manager changes the list; what's left out is put away
+  await fails(as('RT', `select save_behaviour_types('[]')`), /Only a manager/);
+  await as('RM', `select save_behaviour_types($1)`, [JSON.stringify([{ id: great.id, kind: 'positive', name: 'Brilliant work', points: 2 }, { kind: 'concern', name: 'Late to class', points: 1 }])]);
+  const list = await val('RT', `select behaviour_list()`);
+  assert.deepEqual(list.filter((t) => !t.archived).map((t) => t.name), ['Brilliant work', 'Late to class']);
+  await fails(as('RT', `select give_behaviour($1, $2)`, [[U.RL1], homework.id]), /Pick one from your list/);
+  const bo = await val('RM', `select behaviour_overview()`);
+  assert.deepEqual([bo.positive, bo.concern, bo.by_class.find((c) => c.id === maths).positive], [2, 0, 2]);
+
+  // the wall: a private tutor RL1 also has sees none of the school's registers or behaviour
+  const code = await val('RX', `insert into invites (name) values ('RL1') returning code`);
+  await one('RL1', `select * from accept_invite($1, 'RL1')`, [code]);
+  assert.equal((await val('RX', `select learner_attendance($1)`, [U.RL1])).lessons, 0);
+  assert.equal((await val('RX', `select learner_behaviour($1)`, [U.RL1])).records.length, 0);
+
+  // a timetable from a spreadsheet; rows that don't fit come back with why
+  const pasted = await val('RM', `select timetable_paste($1)`, [JSON.stringify([
+    { class: 'year 10 MATHS', weekday: other, period: 'P2', room: '14' },
+    { class: 'Year 9 art', weekday: 1, period: 'P1' },
+    { class: 'Year 10 physics', weekday: 'Funday', period: 'P1' },
+  ])]);
+  assert.deepEqual([pasted.added, pasted.problems.map((p) => p.row)], [1, [2, 3]]);
+  await as('RT', `select delete_slot($1)`, [slot]);
+  assert.ok(!(await week('RT')).some((x) => x.kind === 'lesson' && x.day === today));
+  // her own data has her registers and behaviour (never staff notes)
+  const mine = await val('RL1', `select export_my_data()`);
+  assert.ok(mine.attendance.length >= 3);
+  assert.ok(mine.behaviour.length === 1 && !('staff_note' in mine.behaviour[0]));
+});

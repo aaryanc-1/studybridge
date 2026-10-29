@@ -573,6 +573,31 @@ window runs; Settings → About says "Version X didn’t start properly on this 
 passes `{ retry: true }`, which clears that mark. The app says it started as soon as App mounts, not after the sign-in check.
 test/updater.test.mjs runs updater.cjs with a pretend Electron; test/electron-update.mjs (CI, real Electron under xvfb)
 checks a second copy changes nothing, the second go, the fall-back to the last good version and Check now's retry.
+Running a school, part 1 (29 Oct 2026; Aaryan: "go": a register every lesson, parents told the same day about an absence,
+behaviour shown all round with staff notes kept for staff, attendance for live lessons too). Centres and schools: the school day
+(`school_periods`, `save_periods`, a "Start with a usual day" template), its clock (`organisations.timezone`, `set_school_timezone`;
+else the manager's), terms and holidays (`school_dates`, `save_school_dates`; `_school_open`: no lessons on holidays or outside terms
+once any are set) and each class's lessons (`timetable_slots` class × weekday × period, room, teacher; `save_slot` by managers or the
+class's teachers, refusing a teacher or room in two places; `delete_slot`; `timetable_paste` from a spreadsheet, read by `parseTimetable`
+in src/lib/roster.js). `my_timetable(from, to, learner?)`: a teacher's lessons (slot teacher, else the class's teachers) with how many are
+marked, a learner's (or a parent's/teacher's view of a learner) by class membership, plus live lessons (shown in the device's time).
+Registers (`attendance`, place_id = the school, centre or tutor; unique per slot+day+learner or session+learner): `register(kind,
+ref, day)` / `save_register` (present, late + minutes, absent, excused, a staff-only note; on the day or after, never before). Parents hear
+the same day about an absence, once a day per place (`attendance_told`, `_absence_check`: in-app + email with reply-to the teacher), and
+again if it's put right ("marked in today after all"); catching up on an older register tells nobody. Live lessons: `live_pass` calls
+`_live_joined` for a learner, which fills in their line (present, or late after 5 minutes; a teacher's "absent" becomes late/present when
+they come in); the tutor marks the rest (Live → Register). Behaviour (centres and schools): `behaviour_types` (eight to start with,
+`behaviour_list`, managers' `save_behaviour_types`; left-out ones are archived), `give_behaviour(learners, type, comment, staff_note,
+class)` tells the learner and their parents (in-app), `remove_behaviour` (giver or a manager). The wall: `learner_attendance` /
+`learner_behaviour` show the learner and parents every place's records without staff notes; staff see only their own place's, with
+notes. Managers: `attendance_overview` (by year and class, below 90% with 5+ marks, today's registers not taken) and
+`behaviour_overview`. UI: src/screens/shared/School.jsx (TimetablePage `/timetable`, TodayLessons on Home and Today, RegisterPage
+`/register/lesson/:slot/:day` and `/register/live/:session`, GiveBehaviour, AttendanceCard, BehaviourCard), src/screens/tutor/SchoolSetup.jsx
+(Centre tabs Overview/Timetable/Attendance/Behaviour at `/centre/:tab`, `/timetable/setup` for teachers, ClassAttendance on a class's new
+Attendance tab, Give points on People), a learner's page tab "Attendance & behaviour" (`/learners/:id/school`), Timetable in the tutor menu
+(`timetable_on()`) and the learner menu, Progress and the parent's This week show attendance and behaviour. The data export has them. The demo
+has a five-period day, two weeks of registers and a few points (and its learners have years). Website: schools.html three new cards;
+privacy.html "School life". Not yet: two-week (A/B) timetables, cover lessons, a register for a class without a timetable.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

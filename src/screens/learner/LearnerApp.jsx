@@ -21,6 +21,7 @@ import { ClassList, ClassView, useMyClasses } from './Classes.jsx';
 import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
+import { AttendanceCard, BehaviourCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -34,6 +35,7 @@ function notificationTarget(n) {
   if (n.kind === 'assignment' && r.assignment_id) return `/work/${r.assignment_id}`;
   if (n.kind === 'lesson' && r.lesson_id) return `/lesson/${r.lesson_id}`;
   if ((n.kind === 'class_post' || n.kind === 'stream_reply') && r.class_id) return `/classes/${r.class_id}`;
+  if (n.kind === 'behaviour') return '/progress';
   return '/';
 }
 
@@ -68,6 +70,13 @@ export default function LearnerApp() {
   const fresh = classes.reduce((n, c) => n + (c.new || 0), 0);
   const [a, b] = route.parts;
   useBackIntoLockedExam(a === 'attempt');
+  // A student on their own: no tutor to message or meet live; a setup first, and a free week before paying
+  const self = !!app.me.self_learner;
+  // joined a school with its email, not in a class yet: one page until a teacher adds them (or they type a class code)
+  const waiting = !self && !!app.me.school_id && !app.me.tutor_id;
+  // a school's or centre's timetable, once their classes have lessons on it (asked before the early return below:
+  // hooks must run the same way every time)
+  const timetable = useTimetableOn(!self && !waiting);
 
   // Doing work takes over the whole window (and may be locked down)
   if (a === 'attempt' && b)
@@ -81,10 +90,6 @@ export default function LearnerApp() {
       </LookupsProvider>
     );
 
-  // A student on their own: no tutor to message or meet live; a setup first, and a free week before paying
-  const self = !!app.me.self_learner;
-  // joined a school with its email, not in a class yet: one page until a teacher adds them (or they type a class code)
-  const waiting = !self && !!app.me.school_id && !app.me.tutor_id;
   const nav = waiting
     ? [{ to: '/', label: 'My school', icon: 'cap' }]
     : self
@@ -97,6 +102,7 @@ export default function LearnerApp() {
       ]
     : [
         { to: '/', label: 'Today', icon: 'home' },
+        ...(timetable ? [{ to: '/timetable', label: 'Timetable', icon: 'calendar' }] : []),
         { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
         ...(classes.length ? [{ to: '/classes', label: 'Classes', icon: 'users', count: fresh }] : []),
         { to: '/study', label: 'Study', icon: 'flame' },
@@ -121,6 +127,8 @@ export default function LearnerApp() {
     page = (
       <Page title="My progress" subtitle="Time you’ve spent, how your work went, and which topics are strong or need more practice.">
         <ProgressView learnerId={app.me.id} name={app.me.display_name} />
+        <AttendanceCard learnerId={app.me.id} name={app.me.display_name} />
+        <BehaviourCard learnerId={app.me.id} name={app.me.display_name} />
       </Page>
     );
   else if (a === 'messages') page = <Messages />;
@@ -128,6 +136,7 @@ export default function LearnerApp() {
   else if (a === 'settings') page = <Settings />;
   else if (a === 'classes' && b) page = <ClassView id={b} />;
   else if (a === 'classes') page = <ClassList />;
+  else if (a === 'timetable') page = <TimetablePage />;
   else page = <Today />;
   if (waiting && a !== 'settings') page = <SchoolWaiting />;
   if (self && a !== 'settings') {

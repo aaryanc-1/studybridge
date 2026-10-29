@@ -8,6 +8,7 @@ import { ago, dur, kindLabel, myTimezone, placeOf, time, timeIn, weekRange, when
 import { useLookups } from '../shared/lookups.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { useDueFor } from './Access.jsx';
+import { TodayLessons } from '../shared/School.jsx';
 
 function greeting() {
   const h = new Date().getHours();
@@ -412,6 +413,8 @@ export default function Home() {
           </Link>
         ))}
       </div>
+
+      <TodayLessons staff />
 
       {manager && (
         <div className="card home-centre">

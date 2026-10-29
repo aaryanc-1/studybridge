@@ -1,5 +1,5 @@
 import { useApp } from '../../App.jsx';
-import { useRoute } from '../../ui/kit.jsx';
+import { Page, useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import Shell from '../shared/Shell.jsx';
@@ -25,6 +25,8 @@ import { OfficialView } from './PastPapers.jsx';
 import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 import Centre from './Centre.jsx';
 import SeeAs from './SeeAs.jsx';
+import { TimetablePage, RegisterPage, useTimetableOn } from '../shared/School.jsx';
+import { TimetableSetup } from './SchoolSetup.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -59,9 +61,12 @@ export default function TutorApp() {
   // a tuition centre's managers get a Centre page: every tutor and learner in it
   const org = useQuery('org', api.myOrg).data;
   const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
+  // a centre's or school's teachers get Timetable once it has one (its managers straight away, to set it out)
+  const timetable = useTimetableOn();
 
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
+    ...(timetable ? [{ to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register'] }] : []),
     { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
     { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
@@ -72,7 +77,8 @@ export default function TutorApp() {
     ...(manager ? [{ to: '/centre', label: 'Centre', icon: 'chart' }] : []),
     ...(app.me.admin_to_move ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: 1 }] : []),
   ];
-  const tabs = [nav[0], nav[2], nav[3], nav[5], nav[1]];
+  const byTo = (to) => nav.find((x) => x.to === to);
+  const tabs = [byTo('/'), byTo('/assignments'), byTo('/marking'), byTo('/messages'), byTo('/learners')];
 
   const [a, b, c] = route.parts;
   let page;
@@ -102,7 +108,15 @@ export default function TutorApp() {
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;
   else if (a === 'settings') page = <Settings />;
-  else if (a === 'centre' && manager) page = <Centre />;
+  else if (a === 'centre' && manager) page = <Centre tab={b} />;
+  else if (a === 'timetable' && b === 'setup')
+    page = (
+      <Page title="Set out lessons" subtitle="The school day, its terms and holidays, and each class’s lessons in the week.">
+        <TimetableSetup />
+      </Page>
+    );
+  else if (a === 'timetable') page = <TimetablePage />;
+  else if (a === 'register' && b && c) page = <RegisterPage kind={b} id={c} day={route.parts[3]} />;
   else page = <Home />;
 
   return (

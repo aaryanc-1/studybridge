@@ -1,37 +1,48 @@
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Field, Loading, Page, Stat } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Loading, Page, Seg, Stat, go } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, day, dur, ymd } from '../../lib/format.js';
+import { AttendanceReport, BehaviourReport, TimetableSetup } from './SchoolSetup.jsx';
 
 const count = (n, one, many = one + 's') => `${n} ${Number(n) === 1 ? one : many}`;
 // 'YYYY-MM-DD' → "today", "yesterday" or "Tue 20 Oct"
 const lastDay = (d) => (!d ? 'not yet' : d === ymd(new Date()) ? 'today' : d === ymd(Date.now() - 86400000) ? 'yesterday' : day(d + 'T12:00'));
 
-// A tuition centre's manager sees every tutor and learner in the centre. Read-only: each tutor marks and approves
-// everything for their own learners.
-export default function Centre() {
-  const q = useQuery('org-overview', api.orgOverview);
+const TABS = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'timetable', label: 'Timetable' },
+  { value: 'attendance', label: 'Attendance' },
+  { value: 'behaviour', label: 'Behaviour' },
+];
+
+// A tuition centre's or school's managers: how everyone is getting on, the timetable they set out, and the whole
+// place's attendance and behaviour
+export default function Centre({ tab = 'overview' }) {
   const org = useQuery('org', api.myOrg).data;
+  const shown = TABS.some((t) => t.value === tab) ? tab : 'overview';
+  return (
+    <Page title="Centre" subtitle={org?.name}>
+      <Seg value={shown} onChange={(t) => go(`/centre/${t}`, { replace: true })} options={TABS} />
+      {shown === 'timetable' ? <TimetableSetup /> : shown === 'attendance' ? <AttendanceReport /> : shown === 'behaviour' ? <BehaviourReport /> : <Overview />}
+    </Page>
+  );
+}
+
+// Every tutor and learner in the centre. Read-only: each tutor marks and approves everything for their own learners.
+function Overview() {
+  const q = useQuery('org-overview', api.orgOverview);
   const [find, setFind] = useState('');
   const [tutor, setTutor] = useState('');
   const d = q.data;
-  const title = { title: 'Centre', subtitle: d?.name || org?.name };
   if (q.error && !d)
     return (
-      <Page {...title}>
-        <div className="card">
-          <div className="error">{q.error.message}</div>
-        </div>
-      </Page>
+      <div className="card">
+        <div className="error">{q.error.message}</div>
+      </div>
     );
-  if (!d)
-    return (
-      <Page {...title}>
-        <Loading />
-      </Page>
-    );
+  if (!d) return <Loading />;
 
   const tutors = d.tutors || [];
   const learners = d.learners || [];
@@ -42,7 +53,7 @@ export default function Centre() {
   const sum = (list, k) => list.reduce((n, x) => n + Number(x[k] || 0), 0);
 
   return (
-    <Page {...title}>
+    <>
       <div className="muted small">How everyone is getting on. Each tutor marks and approves everything for their own learners.</div>
       <div className="kpi">
         <Stat n={tutors.length} l="Tutors" />
@@ -137,6 +148,6 @@ export default function Centre() {
           </>
         )}
       </div>
-    </Page>
+    </>
   );
 }

@@ -133,6 +133,29 @@ export const examRoom = (assignmentId) => run(sb().rpc('exam_room', { p_assignme
 export const examAddTime = (assignmentId, minutes, learnerId = null) => run(sb().rpc('exam_add_time', { p_assignment: assignmentId, p_minutes: minutes, p_learner: learnerId }));
 export const examEnd = (assignmentId) => run(sb().rpc('exam_end', { p_assignment: assignmentId }));
 export const examMessage = (assignmentId, body) => run(sb().rpc('exam_message', { p_assignment: assignmentId, p_body: body }));
+// Running a school: the timetable, a register every lesson (live lessons fill theirs in as learners join) and behaviour
+export const timetableOn = () => run(sb().rpc('timetable_on')).catch((e) => (e.offline ? Promise.reject(e) : false));
+export const schoolSetup = () => run(sb().rpc('school_setup'));
+export const savePeriods = (periods) => run(sb().rpc('save_periods', { p_periods: periods }));
+export const saveSchoolDates = (dates) => run(sb().rpc('save_school_dates', { p_dates: dates }));
+export const setSchoolTimezone = (tz) => run(sb().rpc('set_school_timezone', { p_tz: tz }));
+export const saveSlot = (id, classId, weekday, periodId, room = null, teacherId = null) =>
+  run(sb().rpc('save_slot', { p_id: id, p_class: classId, p_weekday: weekday, p_period: periodId, p_room: room, p_teacher: teacherId }));
+export const deleteSlot = (id) => run(sb().rpc('delete_slot', { p_id: id }));
+export const timetablePaste = (rows) => run(sb().rpc('timetable_paste', { p_rows: rows }));
+export const myTimetable = (from, to, learnerId = null) => run(sb().rpc('my_timetable', { p_from: from, p_to: to, p_learner: learnerId }));
+export const register = (kind, id, day = null) => run(sb().rpc('register', { p_kind: kind, p_ref: id, p_day: day }));
+export const saveRegister = (kind, id, day, marks) => run(sb().rpc('save_register', { p_kind: kind, p_ref: id, p_day: day, p_marks: marks }));
+export const learnerAttendance = (learnerId, from = null, to = null) => run(sb().rpc('learner_attendance', { p_learner: learnerId, p_from: from, p_to: to }));
+export const classAttendance = (classId) => run(sb().rpc('class_attendance', { p_class: classId }));
+export const attendanceOverview = (from = null, to = null) => run(sb().rpc('attendance_overview', { p_from: from, p_to: to }));
+export const behaviourList = () => run(sb().rpc('behaviour_list'));
+export const saveBehaviourTypes = (types) => run(sb().rpc('save_behaviour_types', { p_types: types }));
+export const giveBehaviour = (learnerIds, typeId, comment = null, staffNote = null, classId = null) =>
+  run(sb().rpc('give_behaviour', { p_learners: learnerIds, p_type: typeId, p_comment: comment, p_staff_note: staffNote, p_class: classId }));
+export const removeBehaviour = (id) => run(sb().rpc('remove_behaviour', { p_id: id }));
+export const learnerBehaviour = (learnerId, from = null, to = null) => run(sb().rpc('learner_behaviour', { p_learner: learnerId, p_from: from, p_to: to }));
+export const behaviourOverview = (from = null, to = null) => run(sb().rpc('behaviour_overview', { p_from: from, p_to: to }));
 export const examUpdates = (attemptId) => run(sb().rpc('exam_updates', { p_attempt: attemptId }));
 export const orgWaitingTeachers = () => run(sb().rpc('org_waiting_teachers'));
 export const orgApproveTeacher = (userId, ok) => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok }));

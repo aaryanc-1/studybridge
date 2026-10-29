@@ -715,7 +715,7 @@ try {
   await A.getByRole('button', { name: 'Send', exact: true }).click();
   await A.getByText('Waiting for a reply').waitFor();
   await nav(ADM, 'Inbox').click();
-  await ADM.getByText('Could learners get flashcards?').waitFor();
+  await ADM.locator('#main-content').getByText('Could learners get flashcards?').waitFor(); // (a pop-up may say it too)
   await ADM.getByPlaceholder('Your reply (optional)').fill('Yes, they are coming in 1.4.');
   await ADM.getByRole('button', { name: 'Send reply' }).click();
   await ADM.getByText('Reply sent').waitFor();
@@ -1192,6 +1192,78 @@ try {
   assert.equal((await srv.db.query(`select status from public.profiles where email = 'kunda@brightminds.test'`)).rows[0].status, 'active');
   await srv.db.query(`update public.platform_secrets set resend_key = null where id = 1`);
   await srv.db.query(`update public.app_config set email_from = null where id = 1`);
+
+  step('Running a school: the manager sets out the day and a lesson today, takes the register (Anaya absent, so her dad hears today) and gives a point; Anaya sees her lesson and the point, her dad the absence');
+  await A.goto(web.url + '#/centre/timetable');
+  await A.getByRole('heading', { name: 'The school day' }).waitFor();
+  await A.getByRole('button', { name: 'Start with a usual day' }).click();
+  // the first period has already started, whatever time this runs (the school's clock is the manager's, New York)
+  await A.getByLabel('Period 1 starts').fill('00:00');
+  await A.getByLabel('Period 1 ends').fill('00:40');
+  await A.getByRole('button', { name: 'Save the school day' }).click();
+  await A.getByText('The school day is saved').waitFor();
+  await A.getByRole('heading', { name: 'The week’s lessons' }).waitFor();
+  await shot(A, 'school-day');
+  const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long', timeZone: 'America/New_York' });
+  await A.getByRole('button', { name: 'Add a lesson on Monday, Period 1' }).click();
+  const lessonForm = A.getByRole('dialog', { name: 'Add a lesson' });
+  await lessonForm.getByLabel('Class').selectOption({ label: 'Year 10 maths' });
+  await lessonForm.getByLabel('Day').selectOption({ label: todayName });
+  await lessonForm.getByLabel('Room').fill('12');
+  await lessonForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('The lesson is saved').waitFor();
+  await A.getByRole('button', { name: new RegExp(`^Year 10 maths, ${todayName} Period 1`) }).waitFor();
+  // My timetable: today's lesson, with its register to take
+  await nav(A, 'Timetable').click();
+  await A.getByRole('heading', { name: 'Timetable' }).waitFor();
+  await shot(A, 'timetable-week');
+  await A.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' }).getByRole('button', { name: 'Take the register' }).click();
+  await A.getByRole('heading', { name: 'Year 10 maths' }).waitFor();
+  await A.getByRole('group', { name: /^Anaya.*present, late, absent or excused/ }).getByRole('button', { name: 'Absent' }).click();
+  await A.getByRole('button', { name: 'Everyone else is here' }).click();
+  await shot(A, 'register');
+  await a11y(A, 'A register');
+  await A.getByRole('button', { name: 'Save the register' }).click();
+  await A.getByText('Register saved. Parents of anyone absent hear about it today.').waitFor();
+  const dadTold = await srv.db.query(`select n.title from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'dad@example.com' and n.kind = 'absence'`);
+  assert.deepEqual(dadTold.rows.map((r) => r.title), ["Anaya was marked absent today"]);
+  // a point for Anaya from the register: she and her dad are told
+  await A.getByRole('button', { name: /^Give Anaya a point/ }).click();
+  const giveForm = A.getByRole('dialog');
+  await giveForm.getByRole('button', { name: '+1 Great work' }).click();
+  await giveForm.getByLabel('A word for them').fill('Lovely working out');
+  await giveForm.getByRole('button', { name: 'Give it' }).click();
+  await A.getByText(/^Great work: given to Anaya/).waitFor();
+  await nav(A, 'Timetable').click();
+  await A.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' }).getByText('Register taken').waitFor();
+  // the whole school's attendance and behaviour, for the manager
+  await A.goto(web.url + '#/centre/attendance');
+  await A.getByRole('heading', { name: 'Below 90%' }).waitFor();
+  await shot(A, 'centre-attendance');
+  await A.goto(web.url + '#/centre/behaviour');
+  await A.getByRole('heading', { name: 'Your positives and concerns' }).waitFor();
+  await A.getByText('Lovely working out').waitFor();
+  // Anaya: today's lesson on Today, and her attendance and the point on Progress
+  const AN = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'America/New_York' })).newPage();
+  watch(AN, 'learner (timetable)');
+  await (await import('./sweep.mjs')).signIn(AN, web.url, 'anaya@example.com');
+  await AN.getByRole('heading', { name: 'Today’s lessons' }).waitFor();
+  await AN.getByText('Room 12').first().waitFor();
+  await shot(AN, 'learner-today-lessons');
+  await AN.goto(web.url + '#/progress');
+  await AN.getByRole('heading', { name: 'Attendance' }).waitFor();
+  await AN.getByText('+1 Great work').waitFor();
+  await AN.getByText('“Lovely working out”').waitFor();
+  await AN.close();
+  // her dad: the absence, and the point
+  const PA = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'America/New_York' })).newPage();
+  watch(PA, 'parent (attendance)');
+  await (await import('./sweep.mjs')).signIn(PA, web.url, 'dad@example.com');
+  await PA.getByRole('heading', { name: 'Attendance' }).waitFor();
+  await PA.locator('.card', { hasText: 'Attendance' }).getByText('Absent', { exact: true }).first().waitFor();
+  await PA.getByText('+1 Great work').waitFor();
+  await shot(PA, 'parent-attendance');
+  await PA.close();
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });

@@ -1,7 +1,8 @@
 // One class's page, for its teachers: its stream (posts to the class, and what's been set for it), its classwork by topic
 // (from every teacher of the class), a gradebook (each learner × each piece of work, with averages and a spreadsheet to
-// download), and its people, where a teacher adds a whole class list at once (an invite with its own code for each
-// learner). A centre's manager who doesn't teach the class sees its stream only (never marks).
+// download), its attendance (each learner's, and its registers), and its people, where a teacher adds a whole class
+// list at once (an invite with its own code for each learner) and gives points. A centre's manager who doesn't teach
+// the class sees its stream only (never marks).
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
@@ -11,6 +12,8 @@ import * as api from '../../lib/api.js';
 import { day, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import Stream from '../shared/Stream.jsx';
+import { GiveBehaviour, useInSchool } from '../shared/School.jsx';
+import { ClassAttendance, GiveButton } from './SchoolSetup.jsx';
 
 const prettyCode = (c) => (/^\d{8}$/.test(String(c)) ? `${String(c).slice(0, 4)} ${String(c).slice(4)}` : c);
 const STATE = { draft: 'Draft', hidden: 'Hidden', scheduled: 'Scheduled', posted: 'Posted' };
@@ -27,6 +30,7 @@ export default function ClassPage({ id, tab = 'stream' }) {
         { value: 'stream', label: 'Stream' },
         { value: 'classwork', label: 'Classwork' },
         { value: 'gradebook', label: 'Gradebook' },
+        { value: 'attendance', label: 'Attendance' },
         { value: 'people', label: 'People' },
       ]
     : [{ value: 'stream', label: 'Stream' }];
@@ -56,6 +60,8 @@ export default function ClassPage({ id, tab = 'stream' }) {
       {tabs.length > 1 && <Seg value={shown} onChange={(t) => go(`/learners/classes/${id}/${t}`, { replace: true })} options={tabs} />}
       {shown === 'gradebook' ? (
         <Gradebook id={id} name={c.name} />
+      ) : shown === 'attendance' ? (
+        <ClassAttendance id={id} />
       ) : shown === 'people' ? (
         <People c={c} />
       ) : shown === 'classwork' ? (
@@ -215,6 +221,8 @@ function Gradebook({ id, name }) {
 function People({ c }) {
   const lk = useLookups();
   const toast = useToast();
+  const inSchool = useInSchool();
+  const [giving, setGiving] = useState(false);
   const [open, setOpen] = useState(false);
   const [names, setNames] = useState('');
   const [made, setMade] = useState(null);
@@ -243,9 +251,12 @@ function People({ c }) {
       <div className="card">
         <div className="row between wrap" style={{ gap: 8 }}>
           <h2>Learners</h2>
-          <button className="btn" onClick={() => (setOpen(true), setMade(null))}>
-            <Icon name="users" size={16} /> Add a class list
-          </button>
+          <span className="row wrap" style={{ gap: 8 }}>
+            {inSchool && members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
+            <button className="btn" onClick={() => (setOpen(true), setMade(null))}>
+              <Icon name="users" size={16} /> Add a class list
+            </button>
+          </span>
         </div>
         {members.length === 0 ? (
           <div className="small muted">Nobody yet. Add a class list, give out the class code, or put your learners in from Edit.</div>
@@ -263,6 +274,13 @@ function People({ c }) {
           </div>
         )}
       </div>
+      {giving && (
+        <GiveBehaviour
+          learners={members.map((mid) => lk.learner(mid)).filter(Boolean).map((l) => ({ id: l.id, name: l.display_name }))}
+          classId={c.id}
+          onClose={() => setGiving(false)}
+        />
+      )}
       {open && (
         <Modal title={`Add a class list to ${c.name}`} onClose={() => setOpen(false)}>
           {made ? (

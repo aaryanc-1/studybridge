@@ -10,6 +10,7 @@ import { StudyForTutor } from '../learner/Study.jsx';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 import { AccessLine } from './Access.jsx';
+import { AttendanceCard, BehaviourCard, useInSchool } from '../shared/School.jsx';
 
 // When a learner is paused for me: by me as their main tutor (on their account), or on the link if they added me
 function pausedFor(l, me, links) {
@@ -786,6 +787,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const [editing, setEditing] = useState(false);
   const [account, setAccount] = useState(false);
   const [classing, setClassing] = useState(false);
+  const inSchool = useInSchool();
   if (!l) return <Page title="Learner">{lk.ready ? <Empty>This learner isn’t in your list any more.</Empty> : null}</Page>;
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
   const subs = lk.subjectsOfLearner(id);
@@ -905,11 +907,17 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'progress', label: 'Progress & summaries' },
           { value: 'work', label: `Work (${attempts.length})` },
           { value: 'study', label: 'Study' },
+          { value: 'school', label: inSchool ? 'Attendance & behaviour' : 'Attendance' },
           ...(main ? [{ value: 'parents', label: 'Parents' }] : []),
         ]}
       />
       {tab === 'parents' ? (
         <ParentsPanel learner={l} />
+      ) : tab === 'school' ? (
+        <>
+          <AttendanceCard learnerId={id} name={l.display_name} staff />
+          {inSchool && <BehaviourCard learnerId={id} name={l.display_name} staff canGive />}
+        </>
       ) : tab === 'study' ? (
         <StudyForTutor learnerId={id} />
       ) : tab === 'work' ? (

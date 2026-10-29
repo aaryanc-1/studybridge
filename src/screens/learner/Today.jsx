@@ -10,6 +10,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
 import { FromPlace, PausedPlaces } from '../shared/places.jsx';
 import { NewInClasses } from './Classes.jsx';
+import { TodayLessons } from '../shared/School.jsx';
 
 export default function Today() {
   const app = useApp();
@@ -100,6 +101,7 @@ export default function Today() {
 
       <TrialNote />
       <PausedPlaces />
+      <TodayLessons />
       <NewInClasses />
       <CheckNudge />
       <SelfPlan />

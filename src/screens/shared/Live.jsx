@@ -314,6 +314,11 @@ export default function Live({ sessionId }) {
                       </button>
                     </>
                   )}
+                  {isTutor && !s.cancelled && live && (
+                    <button className="btn sm" onClick={() => go(`/register/live/${s.id}`)}>
+                      Register
+                    </button>
+                  )}
                   {!s.cancelled && (
                     <button className={'btn sm ' + (live ? 'primary' : '')} disabled={!configured} onClick={() => go(`/live/${s.id}`)}>
                       {live ? 'Join now' : 'Open'}
@@ -672,9 +677,13 @@ function PastLesson({ session: s, notes, onClose }) {
             <Icon name="users" size={16} style={{ color: 'var(--muted)' }} />
             {who.length ? who.join(', ') : 'No learners'}
           </div>
+          <div className="small muted">Who came in is on its register already (present, or late after 5 minutes). Mark the rest there.</div>
           {s.notes_md && <div className="small muted pre-wrap">{s.notes_md}</div>}
         </div>
         <div className="sheet-actions">
+          <button className="btn" onClick={() => go(`/register/live/${s.id}`)}>
+            <Icon name="checkCircle" size={18} /> Register
+          </button>
           {notes ? (
             <button className="btn primary" onClick={() => go(`/lesson/${notes.id}`)}>
               <Icon name="book" size={18} /> Open lesson notes

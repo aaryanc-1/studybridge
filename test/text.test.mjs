@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { plainMaths } from '../src/lib/plain.js';
 import { mainScript } from '../src/lib/autoupdate.js';
-import { parseTable } from '../src/lib/roster.js';
+import { parseTable, parseTimetable, weekdayOf } from '../src/lib/roster.js';
 
 test('plain maths: no dollar signs, stars or LaTeX left', () => {
   const fb = 'Good start: taking out the common factor 3 to get $3(x^2-25)$ is right. Factorise **fully**: $a^2-b^2=(a+b)(a-b)$ gives $3(x+5)(x-5)$.';
@@ -37,4 +37,15 @@ test('class lists from a spreadsheet: which column is which, and years vs grades
   assert.deepEqual(g(['Email\tYear\tClass', 'd@s.test\tYear 9\tYear 9 English']), [['d@s.test', 8, 'Year 9 English']]);
   // no header: email, name, year, classes; rows without an email are skipped
   assert.deepEqual(g(['e@s.test,Esi,Year 11,"Maths; Physics"', 'not an email,X,9']), [['e@s.test', 10, 'Maths|Physics']]);
+});
+
+test('a timetable from a spreadsheet: class, day, period, room, teacher, with or without a header', () => {
+  assert.deepEqual(['Monday', 'tue', 'WE', '4', 'Friday ', 'Saturday', 'Sun', 'Funday', ''].map(weekdayOf), [1, 2, 3, 4, 5, 6, 7, null, null]);
+  const rows = ['Teacher\tRoom\tDay\tPeriod\tClass', 'Grace Mwansa\t12\tMonday\tPeriod 1\tYear 10 maths', '\tLab\tWed\t09:00\tYear 11 physics'];
+  assert.deepEqual(parseTimetable(rows.join('\n')).map((r) => [r.class, r.weekday, r.period, r.room, r.teacher]), [
+    ['Year 10 maths', 1, 'Period 1', '12', 'Grace Mwansa'],
+    ['Year 11 physics', 3, '09:00', 'Lab', ''],
+  ]);
+  // no header: in that order; rows with only a class are skipped
+  assert.deepEqual(parseTimetable('Year 9 art,Fri,P3\nJust a name').map((r) => [r.class, r.weekday, r.period]), [['Year 9 art', 5, 'P3']]);
 });
