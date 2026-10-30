@@ -250,12 +250,13 @@ function Child({ id, kids, section }) {
               {upcoming(v).map(({ lesson: s, due: a }, i) =>
                 s ? (
                 <div key={'l' + i} className="item">
-                  <Icon name="video" style={{ color: 'var(--accent)' }} />
+                  <Icon name={s.in_person ? 'pin' : 'video'} style={{ color: 'var(--accent)' }} />
                   <span className="grow">
                     <span className="name">{s.title}</span>
                     <span className="meta">
                       {when(s.starts_at)} your time
                       {v.learner.timezone && v.learner.timezone !== myTz ? ` · ${timeIn(s.starts_at, v.learner.timezone)} in ${placeOf(v.learner.timezone)}` : ''} · {s.duration_min} min
+                      {s.in_person ? ` · in person${s.location ? `, ${s.location}` : ''}` : ' · live video'}
                       {many && s.from ? ` · ${s.from}` : ''}
                     </span>
                   </span>

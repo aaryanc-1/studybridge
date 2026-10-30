@@ -598,6 +598,23 @@ Attendance tab, Give points on People), a learner's page tab "Attendance & behav
 (`timetable_on()`) and the learner menu, Progress and the parent's This week show attendance and behaviour. The data export has them. The demo
 has a five-period day, two weeks of registers and a few points (and its learners have years). Website: schools.html three new cards;
 privacy.html "School life". Not yet: two-week (A/B) timetables, cover lessons, a register for a class without a timetable.
+Every tutor's Timetable (30 Oct 2026, app 1.1.99; Aaryan: "as a tutor on my side i dont see attendance or timetables... it should have
+its own menu"; behaviour for centres, schools and tutors). Timetable is in every tutor's menu (`timetable_on()` is true for tutors; a
+learner's is on with school lessons or a lesson in person in the last 14 days): `TutorTimetable` (end of SchoolSetup.jsx) has tabs Week
+(`Week` in School.jsx; "Add a lesson" opens Live.jsx's exported `SessionForm`, in person to begin with; "Set out lessons" only in a centre or
+school (`useInSchool`); a live or in-person lesson's name opens `LessonOptions`: register, Join, Change, Skip/Cancel), Attendance
+(`my_attendance`: the learners they teach (`_learners_of`) at their place, each one's %, the latest absences and lates, and lessons from the
+last week with no register: sessions with no row a person marked (a video lesson anyone came into counts as taken) and their school slots)
+and Behaviour (`my_behaviour`: per learner, the latest, Give points, the list editor when `can_edit`). Lessons in person: `in_person` and
+`location` on `sessions` and `lesson_series` (added next to the other session columns, early in setup.sql, so later SQL functions can use
+them; `_fill_series` passes them on; `create/change_lesson_series(..., p_in_person, p_location)`). No video: `_live_joined` ignores them,
+nothing offers Join; the tutor takes the register by hand (`register` says where; the label is 'lesson “…”'); learners hear where
+(`on_session_created`, `_lesson_reminders`); the calendar link adds LOCATION (Prof); parents' Coming up and the class stream say in person.
+Behaviour for tutors on their own: `_behaviour_org()` = the tutor's organisation (`_org_of`: their own, or their centre or school), so
+`behaviour_list`, `save_behaviour_types` (a tutor is their own organisation's manager) and `give_behaviour` work for every tutor; records go
+on `_place_of(me)` (for a tutor on their own, themselves, shown with their name). Give points is on every register, class and learner page.
+Home's "Lessons in 7 days" opens Timetable and an in-person lesson there has "Take the register" instead of Join; the report card says "lessons".
+Website: tutors.html "Teach live or in person", features.html adds attendance and points to tutors' "Progress at a glance".
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

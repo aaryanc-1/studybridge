@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Field, Link, Loading, Modal, Page, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, go, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import Whiteboard from '../../ui/Whiteboard.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
@@ -167,7 +167,7 @@ export default function Live({ sessionId }) {
   return (
     <Page
       title="Live"
-      subtitle={isTutor ? 'Video lessons with a shared whiteboard, and live exam cameras.' : 'Your live lessons with a shared whiteboard.'}
+      subtitle={isTutor ? 'Video lessons with a shared whiteboard, lessons in person, and live exam cameras.' : 'Your lessons: by video with a shared whiteboard, or in person.'}
       actions={
         isTutor && (
           <>
@@ -232,6 +232,7 @@ export default function Live({ sessionId }) {
                     <span className="name">{x.title}</span>
                     <span className="meta">
                       {next ? `Every ${timeIn(next.starts_at, myTz)} your time · ${forWho(next)}` : skipped ? 'The lessons coming up are skipped' : 'No lessons coming up'}
+                      {x.in_person && ` · in person${x.location ? `, ${x.location}` : ''}`}
                       {x.ends_on && ` · last one ${day(x.ends_on + 'T12:00')}`}
                     </span>
                   </span>
@@ -262,16 +263,18 @@ export default function Live({ sessionId }) {
               const live = new Date(s.starts_at).getTime() - 15 * 60000 < now;
               return (
                 <div key={s.id} className="item" style={s.cancelled ? { opacity: 0.6 } : undefined}>
-                  <Icon name="video" style={{ color: s.cancelled ? 'var(--muted)' : 'var(--accent)' }} />
+                  <Icon name={s.in_person ? 'pin' : 'video'} style={{ color: s.cancelled ? 'var(--muted)' : 'var(--accent)' }} />
                   <span className="grow">
                     <span className="name row" style={{ gap: 6 }}>
                       {s.title}
                       {s.series_id && <span className="pill accent">Weekly</span>}
+                      {s.in_person && <span className="pill">In person</span>}
                       {s.cancelled && <span className="pill">Skipped</span>}
                     </span>
                     <span className="meta">
                       {when(s.starts_at)}
                       {isTutor && ' your time'} · {s.duration_min} min
+                      {s.in_person && s.location && ` · ${s.location}`}
                       {isTutor && ` · ${forWho(s)}`}
                     </span>
                   </span>
@@ -285,7 +288,7 @@ export default function Live({ sessionId }) {
                         } catch (x) {
                           toast({ title: 'Couldn’t put it back', body: x.message, tone: 'bad' });
                         }
-                        invalidate('sessions');
+                        invalidate('sessions', 'timetable');
                       }}
                     >
                       Put back
@@ -304,7 +307,7 @@ export default function Live({ sessionId }) {
                           if (!(await confirm({ title: 'Cancel this lesson?', body: 'Your learners get a message saying it’s cancelled.', ok: 'Cancel lesson', cancel: 'Keep', danger: true }))) return;
                           try {
                             await api.remove('sessions', s.id);
-                            invalidate('sessions');
+                            invalidate('sessions', 'timetable');
                           } catch (e) {
                             toast({ title: 'Couldn’t cancel it', body: e.message, tone: 'bad' });
                           }
@@ -319,7 +322,7 @@ export default function Live({ sessionId }) {
                       Register
                     </button>
                   )}
-                  {!s.cancelled && (
+                  {!s.cancelled && !s.in_person && (
                     <button className={'btn sm ' + (live ? 'primary' : '')} disabled={!configured} onClick={() => go(`/live/${s.id}`)}>
                       {live ? 'Join now' : 'Open'}
                     </button>
@@ -344,7 +347,7 @@ export default function Live({ sessionId }) {
             {past.map((s) => {
               const inner = (
                 <>
-                  <Icon name="video" style={{ color: 'var(--muted)' }} />
+                  <Icon name={s.in_person ? 'pin' : 'video'} style={{ color: 'var(--muted)' }} />
                   <span className="grow">
                     <span className="name">{s.title}</span>
                     <span className="meta">
@@ -395,7 +398,7 @@ export default function Live({ sessionId }) {
                   } catch (x) {
                     toast({ title: 'Couldn’t skip it', body: x.message, tone: 'bad' });
                   }
-                  invalidate('sessions');
+                  invalidate('sessions', 'timetable');
                   setStopping(null);
                 }}
               >
@@ -411,7 +414,7 @@ export default function Live({ sessionId }) {
                 } catch (x) {
                   toast({ title: 'Couldn’t stop it', body: x.message, tone: 'bad' });
                 }
-                invalidate('sessions');
+                invalidate('sessions', 'timetable');
                 setStopping(null);
               }}
             >
@@ -444,10 +447,11 @@ function afterLastLesson(x, sessions) {
   const d = mine.length ? new Date(mine[mine.length - 1].starts_at) : new Date(`${x.starts_on}T${x.start_time}`);
   if (mine.length) d.setDate(d.getDate() + 7);
   while (d.getTime() <= Date.now()) d.setDate(d.getDate() + 7);
-  return { title: x.title, starts_at: d.toISOString(), duration_min: x.duration_min, learner_ids: x.learner_ids || [], class_id: x.class_id || null, notes_md: x.notes_md, series_id: x.id };
+  return { title: x.title, starts_at: d.toISOString(), duration_min: x.duration_min, learner_ids: x.learner_ids || [], class_id: x.class_id || null, notes_md: x.notes_md, series_id: x.id, in_person: !!x.in_person, location: x.location || '' };
 }
 
-function SessionForm({ initial, series, onClose }) {
+// Schedule or change a lesson: by video (live) or in person (with where it is), once or every week. Also used from Timetable.
+export function SessionForm({ initial, series, onClose }) {
   const lk = useLookups();
   const toast = useToast();
   // a weekly lesson's class is on the weekly lesson itself
@@ -470,7 +474,17 @@ function SessionForm({ initial, series, onClose }) {
     if (!s.title.trim()) return setErr('Give the lesson a title.');
     if (klass && !ids.length) return setErr('Nobody is in this class yet. Add learners to it first.');
     if (!ids.length) return setErr('Choose at least one learner.');
-    const row = { title: s.title.trim(), starts_at: s.starts_at, duration_min: Number(s.duration_min) || 60, learner_ids: ids, class_id: klass?.id || null, notes_md: s.notes_md || null, until: allWeeks ? s.until || null : null };
+    const row = {
+      title: s.title.trim(),
+      starts_at: s.starts_at,
+      duration_min: Number(s.duration_min) || 60,
+      learner_ids: ids,
+      class_id: klass?.id || null,
+      notes_md: s.notes_md || null,
+      until: allWeeks ? s.until || null : null,
+      in_person: !!s.in_person,
+      location: (s.in_person && s.location?.trim()) || null,
+    };
     try {
       if (isNew && s.repeat) {
         await api.createSeries(row);
@@ -480,9 +494,19 @@ function SessionForm({ initial, series, onClose }) {
         toast('Changed from this lesson on. Your learners have been told.');
       } else {
         // one lesson of a weekly lesson keeps the weekly lesson's class
-        await api.save('sessions', { ...(s.id ? { id: s.id } : {}), title: row.title, starts_at: row.starts_at, duration_min: row.duration_min, learner_ids: row.learner_ids, notes_md: row.notes_md, ...(weekly ? {} : { class_id: row.class_id }) });
+        await api.save('sessions', {
+          ...(s.id ? { id: s.id } : {}),
+          title: row.title,
+          starts_at: row.starts_at,
+          duration_min: row.duration_min,
+          learner_ids: row.learner_ids,
+          notes_md: row.notes_md,
+          in_person: row.in_person,
+          location: row.location,
+          ...(weekly ? {} : { class_id: row.class_id }),
+        });
       }
-      invalidate('sessions');
+      invalidate('sessions', 'timetable');
       onClose();
     } catch (x) {
       setErr(x.message);
@@ -506,6 +530,20 @@ function SessionForm({ initial, series, onClose }) {
         <Field label="Title">
           <input className="input" autoFocus value={s.title} onChange={(e) => setS({ ...s, title: e.target.value })} placeholder="e.g. Simultaneous equations" />
         </Field>
+        <Seg
+          label="Live video or in person"
+          value={s.in_person ? 'person' : 'video'}
+          onChange={(v) => setS({ ...s, in_person: v === 'person' })}
+          options={[
+            { value: 'video', label: 'Live video', icon: 'video' },
+            { value: 'person', label: 'In person', icon: 'pin' },
+          ]}
+        />
+        {s.in_person && (
+          <Field label="Where (optional)" hint="Your learners see it with the time. You take the register yourself.">
+            <input className="input" maxLength={80} value={s.location || ''} onChange={(e) => setS({ ...s, location: e.target.value })} placeholder="e.g. At the learner’s home, or Room 4" />
+          </Field>
+        )}
         <div className="grid g2" style={{ gap: 10 }}>
           <Field label={allWeeks ? 'First lesson (your time)' : 'Starts (your time)'} hint={chosen.length ? chosen.map((l) => `${l.display_name}: ${timeIn(s.starts_at, l.timezone)} in ${placeOf(l.timezone)}`).join(' · ') : undefined}>
             <input className="input" type="datetime-local" value={toLocalInput(s.starts_at)} onChange={(e) => setS({ ...s, starts_at: fromLocalInput(e.target.value) })} />
@@ -604,7 +642,7 @@ function StartNow({ onClose }) {
     setBusy(true);
     try {
       const s = await api.save('sessions', { title: title.trim() || 'Live lesson', starts_at: new Date().toISOString(), duration_min: 60, learner_ids: ids });
-      invalidate('sessions');
+      invalidate('sessions', 'timetable');
       onClose();
       go(`/live/${s.id}`);
     } catch (e) {
@@ -677,7 +715,9 @@ function PastLesson({ session: s, notes, onClose }) {
             <Icon name="users" size={16} style={{ color: 'var(--muted)' }} />
             {who.length ? who.join(', ') : 'No learners'}
           </div>
-          <div className="small muted">Who came in is on its register already (present, or late after 5 minutes). Mark the rest there.</div>
+          <div className="small muted">
+            {s.in_person ? 'Take its register: who was there, who was late and who was away.' : 'Who came in is on its register already (present, or late after 5 minutes). Mark the rest there.'}
+          </div>
           {s.notes_md && <div className="small muted pre-wrap">{s.notes_md}</div>}
         </div>
         <div className="sheet-actions">

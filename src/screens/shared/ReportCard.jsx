@@ -54,9 +54,9 @@ export default function ReportCard({ report, tutorName, draft = false, compact =
 
       <div className="rc-stats">
         <div className="rc-stat">
-          <Icon name="video" size={18} />
+          <Icon name="calendar" size={18} />
           <div className="n">{d.lessons || 0}</div>
-          <div className="l">live lesson{d.lessons === 1 ? '' : 's'}</div>
+          <div className="l">lesson{d.lessons === 1 ? '' : 's'}</div>
         </div>
         <div className="rc-stat">
           <Icon name="clipboard" size={18} />

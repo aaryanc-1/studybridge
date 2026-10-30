@@ -84,10 +84,13 @@ function WorkCard({ w, learner }) {
   let extra = w.due_at ? `due ${day(w.due_at)}` : '';
   if (w.kind === 'lesson') [icon, text, to] = ['book', `${w.by} shared lesson notes`, learner || w.mine ? `/lesson/${w.id}` : null];
   if (w.kind === 'file') [icon, text, to] = ['file', `${w.by} shared a file`, learner ? `/file/${w.id}` : w.mine ? '/library' : null];
-  if (w.kind === 'session') [icon, text, to, extra] = ['video', 'Live lesson', '/live', when(w.starts_at)];
+  // a lesson in person says where (and opens the timetable, not the video page)
+  const where = w.in_person ? (w.location ? ` · ${w.location}` : '') : '';
+  if (w.kind === 'session') [icon, text, to, extra] = w.in_person ? ['pin', 'Lesson in person', '/timetable', when(w.starts_at) + where] : ['video', 'Live lesson', '/live', when(w.starts_at)];
   if (w.kind === 'series') {
     const [h, m] = String(w.start_time || '').split(':');
-    [icon, text, to, extra] = ['video', 'Weekly live lesson', '/live', `every ${WEEKDAYS[w.weekday] || 'week'}${h ? ` at ${h}:${m}` : ''}`];
+    const every = `every ${WEEKDAYS[w.weekday] || 'week'}${h ? ` at ${h}:${m}` : ''}`;
+    [icon, text, to, extra] = w.in_person ? ['pin', 'Weekly lesson in person', '/timetable', every + where] : ['video', 'Weekly live lesson', '/live', every];
   }
   return (
     <div className="card stream-work">

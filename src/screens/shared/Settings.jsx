@@ -654,7 +654,7 @@ function CalendarLink() {
   }, []);
   const webcal = link ? link.replace(/^https?:/, 'webcal:') : '';
   return (
-    <Section id="calendar" icon="calendar" title="Your calendar" sub="Live lessons and due dates in Google, Apple or Outlook calendar, in your own time zone. It updates by itself (calendar apps check every few hours).">
+    <Section id="calendar" icon="calendar" title="Your calendar" sub="Lessons and due dates in Google, Apple or Outlook calendar, in your own time zone. It updates by itself (calendar apps check every few hours).">
       {err && <div className="error">{err}</div>}
       {link && (
         <>

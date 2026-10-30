@@ -1,15 +1,17 @@
 // A centre's or school's timetable, set out by its managers (the school day's periods, terms and holidays, and each
 // class's lessons in the week; a whole timetable can be pasted from a spreadsheet), and the whole school's attendance
-// and behaviour. A class's teachers can set out their own class's lessons too.
+// and behaviour. A class's teachers can set out their own class's lessons too. Every tutor's own Timetable page (their
+// week, and their learners' attendance and behaviour) is at the end.
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Link, Loading, Modal, Stat, useConfirm, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Link, Loading, Modal, Page, Seg, Stat, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { day } from '../../lib/format.js';
+import { day, time } from '../../lib/format.js';
 import { parseTimetable } from '../../lib/roster.js';
 import { useLookups } from '../shared/lookups.jsx';
-import { GiveBehaviour, pctTone, useInSchool } from '../shared/School.jsx';
+import { GiveBehaviour, STATUS, Week, pctTone, useInSchool } from '../shared/School.jsx';
+import { SessionForm } from '../shared/Live.jsx';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const USUAL_DAY = [
@@ -650,7 +652,7 @@ function BehaviourTypes() {
   return (
     <div className="card">
       <h2>Your positives and concerns</h2>
-      <div className="small muted">What teachers pick from. Taking one off keeps the ones already given.</div>
+      <div className="small muted">The list to pick from when giving points. Taking one off keeps the ones already given.</div>
       <div className="list">
         {list.map((r, i) => (
           <div key={r.id || 'new' + i} className="item period-row">
@@ -693,7 +695,6 @@ function BehaviourTypes() {
 export function ClassAttendance({ id }) {
   const q = useQuery(`class-attendance:${id}`, () => api.classAttendance(id));
   const lk = useLookups();
-  const inSchool = useInSchool();
   const [giving, setGiving] = useState(false);
   const c = q.data;
   if (!c) return q.error ? <div className="error">{q.error.message}</div> : <Loading />;
@@ -703,7 +704,7 @@ export function ClassAttendance({ id }) {
       <div className="card">
         <div className="card-head">
           <h2>Each learner</h2>
-          {inSchool && members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
+          {members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
         </div>
         {c.learners.length === 0 ? (
           <Empty>Nobody is in this class yet.</Empty>
@@ -755,5 +756,252 @@ export function GiveButton({ onClick }) {
     <button className="btn sm" onClick={onClick}>
       <Icon name="star" size={15} /> Give points
     </button>
+  );
+}
+
+// ---------- every tutor's Timetable: their week, their learners' attendance and behaviour ----------
+const TT_TABS = [
+  { value: 'week', label: 'Week' },
+  { value: 'attendance', label: 'Attendance' },
+  { value: 'behaviour', label: 'Behaviour' },
+];
+
+export function TutorTimetable({ tab }) {
+  const lk = useLookups();
+  const inSchool = useInSchool();
+  const [adding, setAdding] = useState(null);
+  const shown = TT_TABS.some((t) => t.value === tab) ? tab : 'week';
+  // a new lesson from here starts in person (the Live page starts with video): the next quarter hour, everyone
+  const newLesson = () => ({
+    title: '',
+    starts_at: new Date(Math.ceil(Date.now() / 900000) * 900000).toISOString(),
+    duration_min: 60,
+    learner_ids: lk.learners.map((l) => l.id),
+    repeat: false,
+    in_person: true,
+    location: '',
+  });
+  return (
+    <Page title="Timetable" subtitle="Your lessons week by week, each with its register, and your learners’ attendance and behaviour.">
+      <Seg label="Timetable" value={shown} onChange={(t) => go(t === 'week' ? '/timetable' : `/timetable/${t}`, { replace: true })} options={TT_TABS} />
+      {shown === 'attendance' ? (
+        <TutorAttendance />
+      ) : shown === 'behaviour' ? (
+        <TutorBehaviour />
+      ) : (
+        <Week
+          actions={
+            <>
+              <button className="btn primary" onClick={() => setAdding(newLesson())}>
+                <Icon name="plus" size={16} /> Add a lesson
+              </button>
+              {inSchool && (
+                <button className="btn" onClick={() => go('/timetable/setup')}>
+                  <Icon name="settings" size={16} /> Set out lessons
+                </button>
+              )}
+            </>
+          }
+        />
+      )}
+      {adding && <SessionForm initial={adding} onClose={() => setAdding(null)} />}
+    </Page>
+  );
+}
+
+const registerOf = (kind, id, d) => (kind === 'live' ? `/register/live/${id}` : `/register/lesson/${id}/${d}`);
+
+// The learners a tutor teaches: each one's attendance, the latest absences and lates, and registers still to take
+function TutorAttendance() {
+  const [range, setRange] = useState('month');
+  const q = useQuery(`attendance:mine:${range}`, () => api.myAttendance(fromFor(range), null));
+  const o = q.data;
+  return (
+    <>
+      <div className="row between wrap" style={{ gap: 10 }}>
+        <span className="small muted">From the registers of your lessons, in person and live. Late still counts as there; excused lessons don’t count either way.</span>
+        <RangePick value={range} onChange={setRange} />
+      </div>
+      {!o ? (
+        q.error ? <div className="error">{q.error.message}</div> : <Loading />
+      ) : (
+        <>
+          <div className="kpi">
+            <Stat n={o.pct != null ? `${o.pct}%` : '—'} l="Attendance" />
+            <Stat n={o.lessons} l="Marks in registers" />
+            <Stat n={o.absent} l="Absences" />
+            <Stat n={o.late} l="Lates" />
+          </div>
+          {o.not_taken.length > 0 && (
+            <div className="card">
+              <h2>Registers to take</h2>
+              <div className="small muted">Lessons from the last week that don’t have a register yet.</div>
+              <div className="list">
+                {o.not_taken.map((x) => (
+                  <div key={x.kind + x.id + x.day} className="item">
+                    <Icon name={x.kind === 'lesson' ? 'clock' : x.in_person ? 'pin' : 'video'} style={{ color: 'var(--amber-ink)' }} />
+                    <span className="grow">
+                      <span className="name">{x.title}</span>
+                      <span className="meta">
+                        {day(x.day + 'T12:00')} · {x.kind === 'lesson' ? `${x.period} · ${x.starts}` : time(x.at)}
+                      </span>
+                    </span>
+                    <button className="btn sm primary" onClick={() => go(registerOf(x.kind, x.id, x.day))}>
+                      Take the register
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="split even">
+            <div className="card">
+              <h2>Each learner</h2>
+              {o.learners.length === 0 ? (
+                <div className="small muted">No learners yet.</div>
+              ) : (
+                <div className="list">
+                  {o.learners.map((l) => (
+                    <div key={l.id} className="item">
+                      <span className="grow">
+                        <span className="name">
+                          <LearnerName id={l.id} name={l.name} />
+                        </span>
+                        <span className="meta">
+                          {l.lessons ? `${l.present} present · ${l.late} late · ${l.absent} absent${l.excused ? ` · ${l.excused} excused` : ''}` : 'No registers yet'}
+                        </span>
+                      </span>
+                      {l.pct != null && <span className={'pill ' + pctTone(l.pct)}>{l.pct}%</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="card">
+              <h2>Latest absences and lates</h2>
+              {o.recent.length === 0 ? (
+                <div className="small muted">None. Everyone has been there and on time.</div>
+              ) : (
+                <div className="list">
+                  {o.recent.map((r) => {
+                    const inner = (
+                      <>
+                        <span className={'pill ' + (r.status === 'absent' ? 'bad' : 'warn')}>{STATUS[r.status]}</span>
+                        <span className="grow">
+                          <span className="name">{r.learner}</span>
+                          <span className="meta">
+                            <span>{day(r.day + 'T12:00')}</span>
+                            <span>{r.label}</span>
+                            {r.status === 'late' && r.minutes_late ? <span>{r.minutes_late} min late</span> : null}
+                          </span>
+                          {r.note && (
+                            <span className="small muted">
+                              <Icon name="lock" size={12} /> Staff note: {r.note}
+                            </span>
+                          )}
+                        </span>
+                      </>
+                    );
+                    // the register it's on, to put it right (unless that lesson has come off the timetable)
+                    return r.ref ? (
+                      <Link key={r.id} to={registerOf(r.kind, r.ref, r.day)} className="item" style={{ alignItems: 'flex-start' }}>
+                        {inner}
+                      </Link>
+                    ) : (
+                      <div key={r.id} className="item" style={{ alignItems: 'flex-start' }}>
+                        {inner}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+// Positives and concerns for a tutor's learners, with Give points; managers and tutors on their own change the list too
+function TutorBehaviour() {
+  const lk = useLookups();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [range, setRange] = useState('month');
+  const [giving, setGiving] = useState(false);
+  const q = useQuery(`behaviour:mine:${range}`, () => api.myBehaviour(fromFor(range), null));
+  const o = q.data;
+  const learners = lk.learners.map((l) => ({ id: l.id, name: l.display_name }));
+  async function remove(r) {
+    if (!(await confirm({ title: `Remove “${r.label}”?`, body: `${r.learner.split(' ')[0]} and their parents won’t see it any more.`, ok: 'Remove', danger: true }))) return;
+    try {
+      await api.removeBehaviour(r.id);
+      invalidate('behaviour');
+    } catch (e) {
+      toast({ title: 'Couldn’t remove it', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <>
+      <div className="row between wrap" style={{ gap: 10 }}>
+        <span className="small muted">Positives and concerns for your learners. They and their parents see them; staff notes stay with staff.</span>
+        <span className="row wrap" style={{ gap: 8 }}>
+          <RangePick value={range} onChange={setRange} />
+          {learners.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
+        </span>
+      </div>
+      {!o ? (
+        q.error ? <div className="error">{q.error.message}</div> : <Loading />
+      ) : (
+        <>
+          <div className="kpi">
+            <Stat n={`+${o.positive}`} l="Positive points" />
+            <Stat n={o.concern} l="Concern points" />
+            <Stat n={o.learners.length} l={o.learners.length === 1 ? 'Learner with points' : 'Learners with points'} />
+          </div>
+          <div className="split even">
+            <BehaviourTable title="Each learner" rows={o.learners.map((l) => ({ key: l.id, name: <LearnerName id={l.id} name={l.name} />, pos: l.positive, con: l.concern }))} />
+            <div className="card">
+              <h2>Latest</h2>
+              {o.latest.length === 0 ? (
+                <div className="small muted">Nothing yet. Give points from here, a register, a class or a learner’s page.</div>
+              ) : (
+                <div className="list">
+                  {o.latest.map((r) => (
+                    <div key={r.id} className="item" style={{ alignItems: 'flex-start' }}>
+                      <Icon name={r.kind === 'positive' ? 'star' : 'alert'} style={{ color: r.kind === 'positive' ? 'var(--good)' : 'var(--amber-ink)' }} />
+                      <span className="grow">
+                        <span className="name">
+                          <LearnerName id={r.learner_id} name={r.learner} />: {r.kind === 'positive' ? `+${r.points}` : `−${r.points}`} {r.label}
+                        </span>
+                        <span className="meta">
+                          <span>{day(r.at)}</span>
+                          {r.by && <span>{r.by}</span>}
+                          {r.class && <span>{r.class}</span>}
+                        </span>
+                        {r.comment && <span className="small">“{r.comment}”</span>}
+                        {r.staff_note && (
+                          <span className="small muted">
+                            <Icon name="lock" size={12} /> Staff note: {r.staff_note}
+                          </span>
+                        )}
+                      </span>
+                      {r.mine && (
+                        <button className="btn sm ghost" onClick={() => remove(r)} aria-label={`Remove ${r.label} for ${r.learner}`}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          {o.can_edit && <BehaviourTypes />}
+        </>
+      )}
+      {giving && <GiveBehaviour learners={learners} onClose={() => setGiving(false)} />}
+    </>
   );
 }

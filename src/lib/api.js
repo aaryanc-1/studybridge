@@ -149,6 +149,7 @@ export const saveRegister = (kind, id, day, marks) => run(sb().rpc('save_registe
 export const learnerAttendance = (learnerId, from = null, to = null) => run(sb().rpc('learner_attendance', { p_learner: learnerId, p_from: from, p_to: to }));
 export const classAttendance = (classId) => run(sb().rpc('class_attendance', { p_class: classId }));
 export const attendanceOverview = (from = null, to = null) => run(sb().rpc('attendance_overview', { p_from: from, p_to: to }));
+export const myAttendance = (from = null, to = null) => run(sb().rpc('my_attendance', { p_from: from, p_to: to }));
 export const behaviourList = () => run(sb().rpc('behaviour_list'));
 export const saveBehaviourTypes = (types) => run(sb().rpc('save_behaviour_types', { p_types: types }));
 export const giveBehaviour = (learnerIds, typeId, comment = null, staffNote = null, classId = null) =>
@@ -156,6 +157,7 @@ export const giveBehaviour = (learnerIds, typeId, comment = null, staffNote = nu
 export const removeBehaviour = (id) => run(sb().rpc('remove_behaviour', { p_id: id }));
 export const learnerBehaviour = (learnerId, from = null, to = null) => run(sb().rpc('learner_behaviour', { p_learner: learnerId, p_from: from, p_to: to }));
 export const behaviourOverview = (from = null, to = null) => run(sb().rpc('behaviour_overview', { p_from: from, p_to: to }));
+export const myBehaviour = (from = null, to = null) => run(sb().rpc('my_behaviour', { p_from: from, p_to: to }));
 export const examUpdates = (attemptId) => run(sb().rpc('exam_updates', { p_attempt: attemptId }));
 export const orgWaitingTeachers = () => run(sb().rpc('org_waiting_teachers'));
 export const orgApproveTeacher = (userId, ok) => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok }));
@@ -849,6 +851,8 @@ const seriesArgs = (s) => ({
   p_until: s.until || null,
   p_notes: s.notes_md || null,
   p_class: s.class_id || null,
+  p_in_person: !!s.in_person,
+  p_location: (s.in_person && s.location?.trim()) || null,
 });
 export const createSeries = (s) => run(sb().rpc('create_lesson_series', seriesArgs(s)));
 export const changeSeries = (id, s, from = null) => run(sb().rpc('change_lesson_series', { p_series: id, ...seriesArgs(s), p_from: from }));

@@ -1544,7 +1544,9 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
     const now = icsTime(new Date());
     const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//StudyBridge//Calendar//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${icsText(feed.name)}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H'];
     for (const e of feed.events || []) {
-      lines.push('BEGIN:VEVENT', `UID:${e.uid}@studybridge`, `DTSTAMP:${now}`, `DTSTART:${icsTime(e.start)}`, `DTEND:${icsTime(e.end)}`, `SUMMARY:${icsText(e.title)}`, `DESCRIPTION:${icsText(e.description)}`, 'END:VEVENT');
+      lines.push('BEGIN:VEVENT', `UID:${e.uid}@studybridge`, `DTSTAMP:${now}`, `DTSTART:${icsTime(e.start)}`, `DTEND:${icsTime(e.end)}`, `SUMMARY:${icsText(e.title)}`, `DESCRIPTION:${icsText(e.description)}`);
+      if (e.location) lines.push(`LOCATION:${icsText(e.location)}`); // a lesson in person
+      lines.push('END:VEVENT');
     }
     lines.push('END:VCALENDAR');
     return new Response(lines.map(fold).join('\r\n') + '\r\n', {

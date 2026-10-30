@@ -114,12 +114,16 @@ export default function Today() {
               <span className="dot live" />
               <div>
                 <div className="strong">{nextSession.title}</div>
-                <div className="small muted">Live lesson · {when(nextSession.starts_at)}</div>
+                <div className="small muted">
+                  {nextSession.in_person ? `In person${nextSession.location ? ` · ${nextSession.location}` : ''}` : 'Live lesson'} · {when(nextSession.starts_at)}
+                </div>
               </div>
             </div>
-            <button className="btn primary" onClick={() => go(`/live/${nextSession.id}`)}>
-              <Icon name="video" size={18} /> Join
-            </button>
+            {!nextSession.in_person && (
+              <button className="btn primary" onClick={() => go(`/live/${nextSession.id}`)}>
+                <Icon name="video" size={18} /> Join
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -304,9 +308,12 @@ export default function Today() {
           )}
           {nextSession && (
             <div className="card">
-              <h2>Next live lesson</h2>
+              <h2>{nextSession.in_person ? 'Next lesson' : 'Next live lesson'}</h2>
               <div className="strong">{nextSession.title}</div>
-              <div className="small muted">{when(nextSession.starts_at)} · {nextSession.duration_min} min</div>
+              <div className="small muted">
+                {when(nextSession.starts_at)} · {nextSession.duration_min} min
+                {nextSession.in_person && ` · in person${nextSession.location ? `, ${nextSession.location}` : ''}`}
+              </div>
             </div>
           )}
           {fresh.length > 0 && (

@@ -25,8 +25,8 @@ import { OfficialView } from './PastPapers.jsx';
 import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 import Centre from './Centre.jsx';
 import SeeAs from './SeeAs.jsx';
-import { TimetablePage, RegisterPage, useTimetableOn } from '../shared/School.jsx';
-import { TimetableSetup } from './SchoolSetup.jsx';
+import { RegisterPage } from '../shared/School.jsx';
+import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 
 function notificationTarget(n) {
   const r = n.ref || {};
@@ -61,12 +61,11 @@ export default function TutorApp() {
   // a tuition centre's managers get a Centre page: every tutor and learner in it
   const org = useQuery('org', api.myOrg).data;
   const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
-  // a centre's or school's teachers get Timetable once it has one (its managers straight away, to set it out)
-  const timetable = useTimetableOn();
 
+  // every tutor has Timetable: their week with each lesson's register, and their learners' attendance and behaviour
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
-    ...(timetable ? [{ to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register'] }] : []),
+    { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register'] },
     { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
     { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
@@ -115,7 +114,7 @@ export default function TutorApp() {
         <TimetableSetup />
       </Page>
     );
-  else if (a === 'timetable') page = <TimetablePage />;
+  else if (a === 'timetable') page = <TutorTimetable tab={b} />;
   else if (a === 'register' && b && c) page = <RegisterPage kind={b} id={c} day={route.parts[3]} />;
   else page = <Home />;
 

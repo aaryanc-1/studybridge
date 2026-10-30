@@ -8,6 +8,7 @@ import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Stat, go, useCon
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { colorFor, day, time, ymd } from '../../lib/format.js';
+import { SessionForm } from './Live.jsx';
 
 export const STATUS = { present: 'Present', late: 'Late', absent: 'Absent', excused: 'Excused' };
 const addDays = (d, n) => {
@@ -36,27 +37,38 @@ const local = (list) =>
       : x,
   );
 const myWeek = (from, to, learnerId) => api.myTimetable(from, to, learnerId).then(local);
-// a teacher in a tuition centre or school (behaviour is for them)
+// a teacher in a tuition centre or school (they set out lessons on its timetable)
 export function useInSchool() {
   const org = useQuery('org', api.myOrg).data;
   return !!org && (org.kind === 'centre' || org.kind === 'school');
 }
 
 // ---------- the week ----------
-export function TimetablePage({ learnerId = null }) {
+// A learner's timetable (tutors have their own page with tabs: TutorTimetable in tutor/SchoolSetup.jsx)
+export function TimetablePage() {
+  return (
+    <Page title="Timetable" subtitle="Your lessons, week by week.">
+      <Week />
+    </Page>
+  );
+}
+
+// One week of lessons, a day at a time. Staff take each lesson's register from it, and open a live or in-person
+// lesson for its options; `actions` sit beside the week's buttons.
+export function Week({ learnerId = null, actions = null }) {
   const app = useApp();
   const staff = app.me.role === 'tutor' && !learnerId;
   const today = ymd(new Date());
   const [start, setStart] = useState(() => monday(today));
+  const [open, setOpen] = useState(null);
   const q = useQuery(`timetable:${learnerId || 'me'}:${start}`, () => myWeek(start, addDays(start, 6), learnerId));
   const list = q.data;
   const days = [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(start, i)).filter((d, i) => i < 5 || (list || []).some((x) => x.day === d));
   const thisWeek = start === monday(today);
   return (
-    <Page
-      title="Timetable"
-      subtitle={staff ? 'Your lessons, week by week. Take each lesson’s register from here.' : 'Your lessons, week by week.'}
-      actions={
+    <>
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <span className="strong">{thisWeek ? 'This week' : `Week of ${dayName(start)}`}</span>
         <span className="row wrap" style={{ gap: 8 }}>
           <button className="btn" onClick={() => setStart(addDays(start, -7))} aria-label="The week before">
             <Icon name="left" size={16} /> Week before
@@ -69,21 +81,15 @@ export function TimetablePage({ learnerId = null }) {
           <button className="btn" onClick={() => setStart(addDays(start, 7))} aria-label="The week after">
             Week after <Icon name="right" size={16} />
           </button>
-          {staff && (
-            <button className="btn" onClick={() => go('/timetable/setup')}>
-              <Icon name="settings" size={16} /> Set out lessons
-            </button>
-          )}
+          {actions}
         </span>
-      }
-    >
-      <div className="small muted">
-        {thisWeek ? 'This week' : `Week of ${dayName(start)}`}
       </div>
       {!list ? (
         q.error ? <div className="error">{q.error.message}</div> : <Loading />
       ) : list.length === 0 ? (
-        <Empty title="No lessons this week">{staff ? 'Lessons you teach show here once your timetable is set out.' : 'Your lessons show here once your school sets out its timetable.'}</Empty>
+        <Empty title="No lessons this week">
+          {staff ? 'Add a lesson, by live video or in person, and it shows here with its register.' : 'Your lessons show here: your school’s timetable, and lessons in person.'}
+        </Empty>
       ) : (
         <div className="tt-week" style={{ '--days': days.length }}>
           {days.map((d) => {
@@ -94,29 +100,115 @@ export function TimetablePage({ learnerId = null }) {
                   {dayName(d)}
                   {d === today && <span className="pill accent">Today</span>}
                 </h3>
-                {lessons.length === 0 ? <div className="tiny muted">No lessons</div> : lessons.map((x) => <LessonCard key={x.kind + x.id + x.day} x={x} staff={staff} />)}
+                {lessons.length === 0 ? <div className="tiny muted">No lessons</div> : lessons.map((x) => <LessonCard key={x.kind + x.id + x.day} x={x} staff={staff} onOpen={() => setOpen(x)} />)}
               </section>
             );
           })}
         </div>
       )}
-    </Page>
+      {open && <LessonOptions x={open} onClose={() => setOpen(null)} />}
+    </>
   );
 }
 
-function LessonCard({ x, staff }) {
+function LessonCard({ x, staff, onOpen }) {
+  const session = x.kind === 'live';
   return (
     <div className="tt-lesson" style={{ '--c': colorFor(x.class_id || x.id) }}>
       <span className="tt-time">
         {x.starts}–{x.ends}
         {x.period ? ` · ${x.period}` : ''}
       </span>
-      <span className="name">
-        {x.kind === 'live' && <Icon name="video" size={14} />} {x.class}
+      {staff && session ? (
+        <button className="name linkbtn tt-open" onClick={onOpen} aria-haspopup="dialog">
+          <Icon name={x.in_person ? 'pin' : 'video'} size={14} /> {x.class}
+        </button>
+      ) : (
+        <span className="name">
+          {session && <Icon name={x.in_person ? 'pin' : 'video'} size={14} />} {x.class}
+        </span>
+      )}
+      <span className="meta">
+        {[roomText(x.room), !staff && x.teacher, session && (x.in_person ? x.location || 'In person' : 'Live lesson')].filter(Boolean).join(' · ')}
       </span>
-      <span className="meta">{[roomText(x.room), !staff && x.teacher, x.kind === 'live' && 'Live lesson'].filter(Boolean).join(' · ')}</span>
-      {staff ? <RegisterState x={x} /> : x.kind === 'live' && <Link to={`/live/${x.id}`} className="small">Open</Link>}
+      {staff ? <RegisterState x={x} /> : session && !x.in_person && <Link to={`/live/${x.id}`} className="small">Open</Link>}
     </div>
+  );
+}
+
+// A live or in-person lesson on a tutor's timetable: its register, joining it, changing it, skipping or cancelling it
+function LessonOptions({ x, onClose }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const all = useQuery('sessions:all', api.listAllSessions).data;
+  const series = useQuery('sessions:series', api.listSeries).data || [];
+  const [editing, setEditing] = useState(false);
+  const s = (all || []).find((y) => y.id === x.id);
+  const future = new Date(x.starts_at).getTime() > Date.now();
+  if (editing && s) return <SessionForm initial={s} series={series.find((y) => y.id === s.series_id)} onClose={onClose} />;
+  const done = () => {
+    invalidate('sessions', 'timetable');
+    onClose();
+  };
+  async function skipOrCancel() {
+    try {
+      if (x.series_id) {
+        if (!(await confirm({ title: 'Skip this lesson?', body: 'Just this one. Your learners are told; the weekly lesson carries on.', ok: 'Skip it', cancel: 'Keep' }))) return;
+        await api.skipLesson(x.id);
+        toast('Skipped. Your learners have been told.');
+      } else {
+        if (!(await confirm({ title: 'Cancel this lesson?', body: 'Your learners get a message saying it’s cancelled.', ok: 'Cancel lesson', cancel: 'Keep', danger: true }))) return;
+        await api.remove('sessions', x.id);
+        toast('Cancelled. Your learners have been told.');
+      }
+      done();
+    } catch (e) {
+      toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <Modal title={x.class} onClose={onClose}>
+      <div className="stack">
+        <div className="stack sm">
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="calendar" size={16} style={{ color: 'var(--muted)' }} />
+            {dayName(x.day)}, {x.starts}–{x.ends}
+            {x.series_id && <span className="pill accent">Weekly</span>}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name={x.in_person ? 'pin' : 'video'} size={16} style={{ color: 'var(--muted)' }} />
+            {x.in_person ? `In person${x.location ? ` · ${x.location}` : ''}` : 'Live video'}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="users" size={16} style={{ color: 'var(--muted)' }} />
+            {x.size} {x.size === 1 ? 'learner' : 'learners'}
+          </div>
+        </div>
+        <div className="sheet-actions">
+          {started(x) && (
+            <button className="btn primary" onClick={() => go(registerPath(x))}>
+              <Icon name="checkCircle" size={18} /> {x.marked ? 'Open the register' : 'Take the register'}
+            </button>
+          )}
+          {!x.in_person && (
+            <button className="btn" onClick={() => go(`/live/${x.id}`)}>
+              <Icon name="video" size={18} /> {started(x) ? 'Join' : 'Open'}
+            </button>
+          )}
+          {future && s && (
+            <button className="btn" onClick={() => setEditing(true)}>
+              <Icon name="pen" size={18} /> Change
+            </button>
+          )}
+          {future && s && (
+            <button className="btn danger" onClick={skipOrCancel}>
+              <Icon name="x" size={18} /> {x.series_id ? 'Skip just this one' : 'Cancel lesson'}
+            </button>
+          )}
+        </div>
+        {!started(x) && <div className="small muted">You can take its register once it starts.</div>}
+      </div>
+    </Modal>
   );
 }
 
@@ -177,7 +269,6 @@ export function TodayLessons({ staff }) {
 // ---------- a register ----------
 export function RegisterPage({ kind, id, day: onDay }) {
   const toast = useToast();
-  const inSchool = useInSchool();
   const q = useQuery(`register:${kind}:${id}:${onDay || ''}`, () => api.register(kind, id, onDay || null));
   const r = q.data;
   const [marks, setMarks] = useState(null);
@@ -238,7 +329,7 @@ export function RegisterPage({ kind, id, day: onDay }) {
       }
     >
       {future && <div className="note">This lesson hasn’t happened yet. Take the register on the day.</div>}
-      {kind === 'live' && <div className="small muted">Learners who came into the live lesson are filled in already: present, or late after 5 minutes.</div>}
+      {kind === 'live' && !r.in_person && <div className="small muted">Learners who came into the live lesson are filled in already: present, or late after 5 minutes.</div>}
       <div className="card">
         {r.learners.length === 0 ? (
           <Empty>Nobody is in this class yet.</Empty>
@@ -277,11 +368,9 @@ export function RegisterPage({ kind, id, day: onDay }) {
                   <button className="btn sm ghost" aria-label={`A note about ${first} (staff only)`} onClick={() => setNotes((n) => ({ ...n, [l.id]: !n[l.id] }))}>
                     <Icon name="pen" size={15} />
                   </button>
-                  {inSchool && (
-                    <button className="btn sm ghost" aria-label={`Give ${first} a point or note a concern`} onClick={() => setGiving([{ id: l.id, name: l.name }])}>
-                      <Icon name="star" size={15} />
-                    </button>
-                  )}
+                  <button className="btn sm ghost" aria-label={`Give ${first} a point or note a concern`} onClick={() => setGiving([{ id: l.id, name: l.name }])}>
+                    <Icon name="star" size={15} />
+                  </button>
                   {(notes[l.id] || m.note) && (
                     <input
                       className="input reg-note"
@@ -501,7 +590,7 @@ export function AttendanceCard({ learnerId, name, staff = false }) {
         {a.pct != null && <span className={'pill ' + pctTone(a.pct)}>{a.pct}% of lessons</span>}
       </div>
       {a.lessons === 0 ? (
-        <div className="small muted">No registers yet. Registers from {first}’s lessons and live lessons show here.</div>
+        <div className="small muted">No registers yet. Registers from {first}’s lessons show here, in person and live.</div>
       ) : (
         <>
           <div className="kpi">

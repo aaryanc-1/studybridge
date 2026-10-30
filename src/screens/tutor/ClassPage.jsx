@@ -12,7 +12,7 @@ import * as api from '../../lib/api.js';
 import { day, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import Stream from '../shared/Stream.jsx';
-import { GiveBehaviour, useInSchool } from '../shared/School.jsx';
+import { GiveBehaviour } from '../shared/School.jsx';
 import { ClassAttendance, GiveButton } from './SchoolSetup.jsx';
 
 const prettyCode = (c) => (/^\d{8}$/.test(String(c)) ? `${String(c).slice(0, 4)} ${String(c).slice(4)}` : c);
@@ -221,7 +221,6 @@ function Gradebook({ id, name }) {
 function People({ c }) {
   const lk = useLookups();
   const toast = useToast();
-  const inSchool = useInSchool();
   const [giving, setGiving] = useState(false);
   const [open, setOpen] = useState(false);
   const [names, setNames] = useState('');
@@ -252,7 +251,7 @@ function People({ c }) {
         <div className="row between wrap" style={{ gap: 8 }}>
           <h2>Learners</h2>
           <span className="row wrap" style={{ gap: 8 }}>
-            {inSchool && members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
+            {members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
             <button className="btn" onClick={() => (setOpen(true), setMade(null))}>
               <Icon name="users" size={16} /> Add a class list
             </button>

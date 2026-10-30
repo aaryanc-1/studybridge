@@ -350,7 +350,7 @@ export default function Home() {
   const stats = [
     { n: known(attemptsQ, toMark.length), l: 'To mark', icon: 'checkCircle', to: '/marking', warn: toMark.length > 0 },
     { n: known(assignmentsQ, soon.length), l: 'Due in 7 days', icon: 'clipboard', to: '/assignments' },
-    { n: known(sessionsQ, lessonsSoon.length), l: 'Live lessons in 7 days', icon: 'video', to: '/live' },
+    { n: known(sessionsQ, lessonsSoon.length), l: 'Lessons in 7 days', icon: 'calendar', to: '/timetable' },
     { n: known(activityQ, short(studied)), l: 'Studied this week', icon: 'clock', to: '/learners' },
     { n: known(attemptsQ, marksBack), l: 'Marks returned this week', icon: 'send', to: '/marking' },
   ];
@@ -470,7 +470,7 @@ export default function Home() {
           <h2>Today and this week</h2>
           {agenda.length === 0 ? (
             <Clear icon="calendar" title="Nothing in the next 7 days">
-              {later ? `Next: ${later.what}, ${when(later.at)}.` : 'Live lessons and due dates show up here. Book a lesson or set work below.'}
+              {later ? `Next: ${later.what}, ${when(later.at)}.` : 'Lessons and due dates show up here. Book a lesson or set work below.'}
             </Clear>
           ) : (
             <div className="list">
@@ -481,15 +481,22 @@ export default function Home() {
                     <span className="grow">
                       <span className="name">{s.title || 'Live lesson'}</span>
                       <span className="meta">
-                        {new Date(s.starts_at).getTime() <= now ? <span className="pill good">On now</span> : <span>Live lesson</span>}
+                        {new Date(s.starts_at).getTime() <= now ? <span className="pill good">On now</span> : <span>{s.in_person ? 'In person' : 'Live lesson'}</span>}
+                        {s.in_person && s.location && <span>{s.location}</span>}
                         <span>{lessonFor(s)}</span>
                       </span>
                     </span>
                     {new Date(s.starts_at).getTime() - 15 * 60000 < now && (
                       <span className="home-acts">
-                        <button className="btn sm primary" disabled={liveStatus && !liveStatus.configured} onClick={() => go(`/live/${s.id}`)}>
-                          Join
-                        </button>
+                        {s.in_person ? (
+                          <button className="btn sm primary" onClick={() => go(`/register/live/${s.id}`)}>
+                            Take the register
+                          </button>
+                        ) : (
+                          <button className="btn sm primary" disabled={liveStatus && !liveStatus.configured} onClick={() => go(`/live/${s.id}`)}>
+                            Join
+                          </button>
+                        )}
                       </span>
                     )}
                   </div>

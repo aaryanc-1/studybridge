@@ -777,6 +777,56 @@ try {
   await Z.getByRole('button', { name: 'Create account' }).click();
   await Z.getByText(/, Zara!/).waitFor();
 
+  step('Every tutor’s Timetable (she’s on her own): a lesson in person with its register, then Attendance and Behaviour');
+  await nav(A, 'Timetable').click();
+  await A.getByRole('heading', { name: 'Timetable' }).waitFor();
+  await A.getByRole('button', { name: 'Add a lesson', exact: true }).click();
+  const inPerson = A.getByRole('dialog', { name: 'Schedule a lesson' });
+  await inPerson.getByLabel('Title').fill('Algebra at home');
+  assert.equal(await inPerson.getByRole('button', { name: 'In person' }).getAttribute('aria-pressed'), 'true', 'from Timetable a lesson starts in person');
+  await inPerson.getByLabel('Where (optional)').fill('At Anaya’s');
+  await shot(A, 'lesson-in-person');
+  await inPerson.getByRole('button', { name: 'Save' }).click();
+  await inPerson.waitFor({ state: 'detached' });
+  const ip = await srv.db.query(`select in_person, location from public.sessions where title = 'Algebra at home'`);
+  assert.deepEqual(ip.rows, [{ in_person: true, location: 'At Anaya’s' }]);
+  // it starts in a minute (a register can be taken from 15 minutes before)
+  await srv.db.query(`update public.sessions set starts_at = now() + interval '1 minute' where title = 'Algebra at home'`);
+  await A.reload();
+  const ipCard = A.locator('.tt-day.today .tt-lesson', { hasText: 'Algebra at home' });
+  await ipCard.getByText('At Anaya’s').waitFor();
+  await shot(A, 'timetable-tutor-week');
+  await ipCard.getByRole('button', { name: 'Take the register' }).click();
+  await A.getByRole('heading', { name: 'Algebra at home' }).waitFor();
+  const anayaRow = A.locator('.reg-row', { has: A.getByRole('group', { name: /^Anaya.*present, late, absent or excused/ }) });
+  await anayaRow.getByRole('button', { name: 'Late' }).click();
+  await anayaRow.getByLabel(/minutes late/).fill('10');
+  // (greyed out when Anaya is the only one on it)
+  const everyoneElse = A.getByRole('button', { name: 'Everyone else is here' });
+  if (await everyoneElse.isEnabled()) await everyoneElse.click();
+  await A.getByRole('button', { name: 'Save the register' }).click();
+  await A.getByText(/^Register saved/).waitFor();
+  // Timetable → Attendance: each learner, and the latest lates
+  await nav(A, 'Timetable').click();
+  await A.getByRole('button', { name: 'Attendance', exact: true }).click();
+  const lates = A.locator('.card', { has: A.getByRole('heading', { name: 'Latest absences and lates' }) });
+  await lates.getByText('10 min late').waitFor();
+  await shot(A, 'timetable-tutor-attendance');
+  await a11y(A, 'Timetable → Attendance');
+  // Timetable → Behaviour: her own list of positives and concerns, and a point for Anaya
+  await A.getByRole('button', { name: 'Behaviour', exact: true }).click();
+  await A.getByRole('heading', { name: 'Your positives and concerns' }).waitFor();
+  await A.getByRole('button', { name: 'Give points' }).click();
+  const giveIp = A.getByRole('dialog');
+  await giveIp.getByRole('button', { name: '+1 Effort' }).click();
+  if (await giveIp.getByRole('group', { name: 'Learners' }).count()) await giveIp.getByRole('group', { name: 'Learners' }).getByRole('button', { name: /^Anaya/ }).click();
+  await giveIp.getByLabel('A word for them').fill('Great focus today');
+  await giveIp.getByRole('button', { name: 'Give it' }).click();
+  await A.getByText(/^Effort: given to Anaya/).waitFor();
+  await A.getByText('“Great focus today”').waitFor();
+  await shot(A, 'timetable-tutor-behaviour');
+  await a11y(A, 'Timetable → Behaviour');
+
   step('Classes and a tuition centre: work for a class reaches whoever is in it, joining later too; the tutor makes hers a centre and another tutor joins with its code');
   await nav(A, 'Learners').click();
   await A.getByRole('button', { name: 'Classes', exact: true }).click();

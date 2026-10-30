@@ -3600,9 +3600,10 @@ test('running a school: the school day and timetable, a register every lesson (p
   const inv = await one('RT', `select * from create_parent_invite($1, 'Dad')`, [U.RL1]);
   await one('RP', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [inv.code]);
 
-  // only the manager sets out the day; nobody outside a centre or school has a timetable
+  // only the manager sets out the day; every tutor has a timetable, but only centres and schools set out a school day
   assert.equal(await val('RM', `select timetable_on()`), true);
-  assert.equal(await val('RT', `select timetable_on()`), false, 'nothing on it yet');
+  assert.equal(await val('RX', `select timetable_on()`), true, 'a tutor on their own too');
+  assert.equal(await val('RL1', `select timetable_on()`), false, 'nothing on it yet');
   await fails(as('RX', `select school_setup()`), /centres and schools/);
   await fails(as('RT', `select save_periods('[]')`), /Only a manager/);
   await as('RM', `select set_school_timezone('UTC')`);
@@ -3688,7 +3689,6 @@ test('running a school: the school day and timetable, a register every lesson (p
   await fails(as('RU', `select register('live', $1)`, [live]), /can’t take/);
 
   // behaviour: the school's own list; a positive for two learners; they and the parent are told; staff notes stay with staff
-  await fails(as('RX', `select behaviour_list()`), /centres and schools/);
   const types = await val('RT', `select behaviour_list()`);
   assert.equal(types.length, 8);
   const great = types.find((t) => t.name === 'Great work');
@@ -3700,7 +3700,7 @@ test('running a school: the school day and timetable, a register every lesson (p
   const b2 = await val('RL2', `select learner_behaviour($1)`, [U.RL2]);
   assert.deepEqual([b2.positive, b2.concern, b2.records.length, b2.records.find((r) => r.kind === 'positive').comment, b2.records.some((r) => r.staff_note)], [1, 1, 2, 'Lovely algebra', false]);
   assert.equal((await val('RT', `select learner_behaviour($1)`, [U.RL2])).records.find((r) => r.kind === 'positive').staff_note, 'Quiet today');
-  await fails(as('RX', `select give_behaviour($1, $2)`, [[U.RL1], great.id]), /centres and schools/);
+  await fails(as('RX', `select give_behaviour($1, $2)`, [[U.RL1], great.id]), /Pick one from your list/);
   // someone else's: only whoever gave it (or a manager) takes it back
   const given = (await val('RT', `select learner_behaviour($1)`, [U.RL2])).records.find((r) => r.kind === 'concern').id;
   await fails(as('RU', `select remove_behaviour($1)`, [given]), /isn’t one you can take back/);
@@ -3734,4 +3734,87 @@ test('running a school: the school day and timetable, a register every lesson (p
   const mine = await val('RL1', `select export_my_data()`);
   assert.ok(mine.attendance.length >= 3);
   assert.ok(mine.behaviour.length === 1 && !('staff_note' in mine.behaviour[0]));
+});
+
+test('every tutor’s timetable: lessons in person (one-off and weekly) with a register taken by hand, their own attendance page, and behaviour for a tutor on their own', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['IT', 'IT2']) {
+    await mk(k, k.toLowerCase() + '@own.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const k of ['IL1', 'IL2']) {
+    await mk(k, k.toLowerCase() + '@own.x');
+    const code = await val('IT', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  await mk('IP', 'ip@own.x');
+  const inv = await one('IT', `select * from create_parent_invite($1, 'Mum')`, [U.IL2]);
+  await one('IP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  assert.equal(await val('IT', `select timetable_on()`), true);
+  assert.equal(await val('IL1', `select timetable_on()`), false);
+
+  // a lesson in person: the learners hear where it is, and it's on their timetable
+  const s1 = await val('IT', `insert into sessions (title, starts_at, learner_ids, in_person, location) values ('Algebra', now() - interval '20 minutes', $1, true, 'At home') returning id`, [[U.IL1, U.IL2]]);
+  const heard = await one('IL1', `select title, body from notifications where kind = 'session' order by created_at desc limit 1`);
+  assert.equal(heard.title, 'Lesson: Algebra');
+  assert.match(heard.body, / · At home$/);
+  assert.equal(await val('IL1', `select timetable_on()`), true);
+  const today = await val('IT', `select (now() at time zone 'UTC')::date::text`);
+  const mine = (await val('IT', `select my_timetable($1::date - 1, $1::date + 1)`, [today])).find((x) => x.id === s1);
+  assert.deepEqual([mine.in_person, mine.location, mine.marked, mine.size], [true, 'At home', 0, 2]);
+  // opening its video fills nothing in: a lesson in person's register is taken by hand
+  await as('IT', `select set_live_keys('wss://demo.livekit.cloud', 'APIkey123', 'supersecret')`);
+  await val('IL1', `select live_pass($1)`, [`session-${s1}`]);
+  let reg = await val('IT', `select register('live', $1)`, [s1]);
+  assert.deepEqual([reg.in_person, reg.when.startsWith('At home · '), reg.learners.map((l) => l.status)], [true, true, [null, null]]);
+  let ma = await val('IT', `select my_attendance()`);
+  assert.deepEqual(ma.not_taken.map((x) => [x.id, x.in_person]), [[s1, true]]);
+  await val('IT', `select save_register('live', $1, null, $2)`, [s1, JSON.stringify([{ learner: U.IL1, status: 'present' }, { learner: U.IL2, status: 'absent', note: 'Ill' }])]);
+  const told = await one('IP', `select title, body from notifications where kind = 'absence'`);
+  assert.equal(told.title, 'IL2 was marked absent today');
+  assert.match(told.body, /^IT: lesson “Algebra”/);
+  // the tutor's own attendance page: lowest first, the latest absences, nothing left to take
+  ma = await val('IT', `select my_attendance()`);
+  assert.deepEqual([ma.lessons, ma.pct, ma.absent], [2, 50, 1]);
+  assert.deepEqual(ma.learners.map((l) => [l.name, l.pct]), [['IL2', 0], ['IL1', 100]]);
+  assert.deepEqual(ma.recent.map((r) => [r.learner, r.status, r.note]), [['IL2', 'absent', 'Ill']]);
+  assert.equal(ma.not_taken.length, 0);
+  assert.equal((await val('IT2', `select my_attendance()`)).lessons, 0, 'another tutor sees none of it');
+  await fails(as('IL1', `select my_attendance()`), /Tutors only/);
+  // a live lesson nobody came into is waiting for its register too
+  const s2 = await val('IT', `insert into sessions (title, starts_at, learner_ids) values ('Video', now() - interval '1 hour', $1) returning id`, [[U.IL1]]);
+  assert.deepEqual((await val('IT', `select my_attendance()`)).not_taken.map((x) => [x.id, x.in_person]), [[s2, false]]);
+
+  // weekly lessons in person: each lesson says where; changing it to video changes the lessons still to come
+  const sid = await val('IT', `select create_lesson_series('Piano', now() + interval '2 days', 45, $1, 'UTC', null, null, null, true, 'Studio 3')`, [[U.IL1]]);
+  let made = await as('IT', `select in_person, location from sessions where series_id = $1`, [sid]);
+  assert.ok(made.length >= 7 && made.every((x) => x.in_person && x.location === 'Studio 3'));
+  await as('IT', `select change_lesson_series($1, 'Piano', now() + interval '3 days', 45, $2, 'UTC')`, [sid, [U.IL1]]);
+  made = await as('IT', `select in_person, location from sessions where series_id = $1 and starts_at > now()`, [sid]);
+  assert.ok(made.length >= 7 && made.every((x) => !x.in_person && x.location === null));
+  // reminders say where, not "open Live"
+  await db.query(`insert into sessions (tutor_id, title, starts_at, learner_ids, in_person, location, created_at)
+                  values ($1, 'Chess', now() + interval '10 minutes', $2, true, 'The library', now() - interval '1 day')`, [U.IT, [U.IL1]]);
+  await db.query(`select _lesson_reminders()`);
+  assert.match((await one('IL1', `select body from notifications where title = 'Lesson in 15 minutes: Chess'`)).body, /At The library\.$/);
+
+  // behaviour for a tutor on their own: their own list (they change it), given to their learner, seen with the tutor's name
+  const types = await val('IT', `select behaviour_list()`);
+  assert.equal(types.length, 8);
+  const great = types.find((t) => t.name === 'Great work');
+  assert.equal(await val('IT', `select give_behaviour($1, $2, 'Well played')`, [[U.IL1], great.id]), 1);
+  assert.equal((await as('IL1', `select title from notifications where kind = 'behaviour'`))[0].title, '+1 Great work');
+  const lb = await val('IL1', `select learner_behaviour($1)`, [U.IL1]);
+  assert.deepEqual([lb.positive, lb.records[0].place, lb.records[0].comment], [1, 'IT', 'Well played']);
+  const mb = await val('IT', `select my_behaviour()`);
+  assert.deepEqual([mb.positive, mb.can_edit, mb.learners.map((l) => [l.name, l.positive]), mb.latest[0].mine], [1, true, [['IL1', 1]], true]);
+  await as('IT', `select save_behaviour_types($1)`, [JSON.stringify([{ id: great.id, kind: 'positive', name: 'Super effort', points: 2 }])]);
+  assert.deepEqual((await val('IT', `select behaviour_list()`)).filter((t) => !t.archived).map((t) => t.name), ['Super effort']);
+  // another tutor: their own list, never someone else's learner
+  const other = (await val('IT2', `select behaviour_list()`)).find((t) => t.name === 'Great work');
+  await fails(as('IT2', `select give_behaviour($1, $2)`, [[U.IL1], other.id]), /don’t teach/);
+  assert.equal((await val('IT2', `select my_behaviour()`)).positive, 0);
 });

@@ -1191,6 +1191,8 @@ button.rubric-level:hover { border-color: var(--accent); }
 .tt-lesson .name { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow-wrap: anywhere; }
 .tt-lesson .meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .tt-lesson .btn, .tt-lesson .pill { align-self: flex-start; margin-top: 4px; }
+.tt-lesson .tt-open { color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.tt-lesson .tt-open:hover { text-decoration-color: currentColor; }
 .tt-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 @media (max-width: 900px) { .tt-week { grid-template-columns: 1fr; } }
 .reg-row { flex-wrap: wrap; }
