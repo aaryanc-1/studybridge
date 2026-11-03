@@ -197,7 +197,8 @@ jobs:
         if: env.SUPABASE_ACCESS_TOKEN != '' && env.SB_URL != ''
         run: |
           REF=$(echo "$SB_URL" | sed -E 's#https?://([a-z0-9]+)\.supabase\.co.*#\1#')
-          npx -y supabase@latest functions deploy prof --project-ref "$REF" --no-verify-jwt --use-api
+          # pinned: "latest" became the Supabase CLI 3.0 on 2 Nov 2026 and the deploy stopped working (run 101)
+          npx -y supabase@2.122.1 functions deploy prof --project-ref "$REF" --no-verify-jwt --use-api
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
