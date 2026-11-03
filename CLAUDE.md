@@ -615,7 +615,8 @@ Behaviour for tutors on their own: `_behaviour_org()` = the tutor's organisation
 on `_place_of(me)` (for a tutor on their own, themselves, shown with their name). Give points is on every register, class and learner page.
 Home's "Lessons in 7 days" opens Timetable and an in-person lesson there has "Take the register" instead of Join; the report card says "lessons".
 Website: tutors.html "Teach live or in person", features.html adds attendance and points to tutors' "Progress at a glance".
-Running a school, part 2 (3 Nov 2026; Aaryan: "go for part 2"). Two-week timetables: `organisations.ab_weeks/ab_monday/ab_first`,
+Running a school, part 2 (3 Nov 2026, app 1.1.102; Aaryan: "go for part 2"; run 101's Prof deploy failed because `supabase@latest`
+became CLI 3.0 on 2 Nov, so build.yml pins `supabase@2.122.1`). Two-week timetables: `organisations.ab_weeks/ab_monday/ab_first`,
 `timetable_slots.week` (0 every week, 1 Week A, 2 Week B; unique index `timetable_slots_one` on class+day+period+week, clashes count an
 every-week lesson in both weeks); `_school_week(org, day)` counts school weeks from `ab_monday` (a week with no open day, a holiday, doesn't
 count); `_slot_on(slot, day)` = weekday, week and open; `set_ab_weeks(on, this_week)` (off again: Week A becomes every week, Week B comes
