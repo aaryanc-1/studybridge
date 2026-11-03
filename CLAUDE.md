@@ -615,6 +615,40 @@ Behaviour for tutors on their own: `_behaviour_org()` = the tutor's organisation
 on `_place_of(me)` (for a tutor on their own, themselves, shown with their name). Give points is on every register, class and learner page.
 Home's "Lessons in 7 days" opens Timetable and an in-person lesson there has "Take the register" instead of Join; the report card says "lessons".
 Website: tutors.html "Teach live or in person", features.html adds attendance and points to tutors' "Progress at a glance".
+Running a school, part 2 (3 Nov 2026; Aaryan: "go for part 2"). Two-week timetables: `organisations.ab_weeks/ab_monday/ab_first`,
+`timetable_slots.week` (0 every week, 1 Week A, 2 Week B; unique index `timetable_slots_one` on class+day+period+week, clashes count an
+every-week lesson in both weeks); `_school_week(org, day)` counts school weeks from `ab_monday` (a week with no open day, a holiday, doesn't
+count); `_slot_on(slot, day)` = weekday, week and open; `set_ab_weeks(on, this_week)` (off again: Week A becomes every week, Week B comes
+off); `save_slot(..., p_week)`; the spreadsheet can have a Week column (A/B). Cover and changes for a day: `staff_away` (`set_staff_away`,
+`remove_staff_away`), `timetable_changes` (slot + day: `cover_id`, `cancelled`, `room`, `note`; `save_cover(slot, day, cover, cancelled, room,
+note)` by managers: the cover teacher must be free then (`_slot_teacher`), not away; the cover teacher and the usual teacher are told
+('cover'), the class when it's cancelled or moves room ('timetable_change'); nothing left changed deletes the row), `cover_day(day)` for
+Centre → Cover (`CoverPage` in SchoolSetup.jsx). `my_timetable` (a materialized `days` CTE so `_school_week` runs once a day) gives `week`
+('A'/'B'), `cancelled`, `cover` (I'm covering), `covered_by`, `covered`, `room_changed`, `cover_note` (staff), `planned`, `for_learners`;
+the cover teacher takes the register (`_slot_staff_on`), a cancelled lesson has none; my_attendance/attendance_overview's "not taken" follow
+covers and cancellations. Planners: `units` (per class; title, dates, IB fields: inquiry, key_concept, related_concepts, global_context; summary,
+objectives, skills, assessment, resources, reflection (staff only), topic_ids, shared), `class_units`, `save_unit`, `delete_unit` (staff =
+`_plan_staff`: the class's teachers or its managers; learners in the class and their parents read shared units); `lesson_plans` (a slot + day,
+or a session; unit, objectives, activities, homework, resources, `for_learners` shown on their timetable, notes): `lesson_plan`,
+`save_lesson_plan` (all empty deletes it). UI: src/screens/shared/Planner.jsx (Planner tab on the class page, also for managers who don't
+teach it; `ClassUnits` "What we’re learning" on the learner's class page; `LessonPlanPage` at `/plan/:kind/:id/:day`); every lesson on a
+tutor's Week opens options (school lessons: register, plan, the cover note). The demo has three units for Year 10 maths. IB MYP criteria:
+`subjects.myp_group` (eight subject groups, `set_myp_group`), `assignments.criteria` (text[] ⊂ A–D), `attempts.criteria` ({A: 0–8}, by
+`set_attempt_criteria`); `_myp_criteria(group)` = the names (the same in src/lib/myp.js; db.test checks), `_myp_grade(total)` the 1–7 grade.
+The assignment editor's "IB MYP criteria" (MypCriteria), Marking's CriteriaCard, the learner's results (after release, `attempt_detail`'s
+`attempt.criteria` and `myp`), the gradebook ("A6 · C5"). Term reports: `report_rounds` (org, title, starts/ends, due, scale letters|gcse|ib|
+percent|none, effort, class_ids or every class, status writing|published), `report_entries` (round, learner, class: grade, criteria, effort
+1–4, comment, done), `report_overall`. Managers (a tutor on their own is one) `save_report_round`, `delete_report_round`,
+`publish_report_round(round, on)` (learners and parents told; parents emailed); class teachers `report_class` (hints: average on work given
+back, median criteria levels, attendance, points, over the report's dates at `_org_place(org)`) and `save_report_entry` (an MYP class's grade
+comes from all four criteria); the overall comment by a manager or the learner's main teacher (`report_round`, `save_report_overall`);
+`my_reports(learner)`, `report_card(round, learner)` (learner/parents once out; staff any time), `report_cards(round)` to print them all;
+export_my_data has `term_reports`. UI: Learners → Term reports (`/learners/terms`, TermReports.jsx: list, RoundEditor, ClassReports
+`/learners/terms/:round/:class`, RoundOverview `/learners/terms/:round`, PrintAll `/learners/terms/:round/print`); the Reports tab is now
+"Weekly reports"; src/screens/shared/TermReport.jsx (`TermCard`, `TermReportPage` at `/report/:round/:learner` for every role,
+`MyReports` on the learner's Progress and the parent's Marks, `printTerms` with `body.print-terms`, a page each); Home's Needs you lists
+parts still to write. Website: schools.html "Term reports", "Planners, and IB criteria", "Cover and two-week timetables"; features.html
+"Plan and set work", "Progress and reports"; privacy.html School life mentions term reports and plans.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

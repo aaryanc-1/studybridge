@@ -4,7 +4,7 @@ import { Avatar, Empty, Field, Loading, Page, Seg, Stat, go } from '../../ui/kit
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, day, dur, ymd } from '../../lib/format.js';
-import { AttendanceReport, BehaviourReport, TimetableSetup } from './SchoolSetup.jsx';
+import { AttendanceReport, BehaviourReport, CoverPage, TimetableSetup } from './SchoolSetup.jsx';
 
 const count = (n, one, many = one + 's') => `${n} ${Number(n) === 1 ? one : many}`;
 // 'YYYY-MM-DD' → "today", "yesterday" or "Tue 20 Oct"
@@ -13,19 +13,20 @@ const lastDay = (d) => (!d ? 'not yet' : d === ymd(new Date()) ? 'today' : d ===
 const TABS = [
   { value: 'overview', label: 'Overview' },
   { value: 'timetable', label: 'Timetable' },
+  { value: 'cover', label: 'Cover' },
   { value: 'attendance', label: 'Attendance' },
   { value: 'behaviour', label: 'Behaviour' },
 ];
 
-// A tuition centre's or school's managers: how everyone is getting on, the timetable they set out, and the whole
-// place's attendance and behaviour
+// A tuition centre's or school's managers: how everyone is getting on, the timetable they set out, cover for teachers
+// who are away, and the whole place's attendance and behaviour
 export default function Centre({ tab = 'overview' }) {
   const org = useQuery('org', api.myOrg).data;
   const shown = TABS.some((t) => t.value === tab) ? tab : 'overview';
   return (
     <Page title="Centre" subtitle={org?.name}>
       <Seg value={shown} onChange={(t) => go(`/centre/${t}`, { replace: true })} options={TABS} />
-      {shown === 'timetable' ? <TimetableSetup /> : shown === 'attendance' ? <AttendanceReport /> : shown === 'behaviour' ? <BehaviourReport /> : <Overview />}
+      {shown === 'timetable' ? <TimetableSetup /> : shown === 'cover' ? <CoverPage /> : shown === 'attendance' ? <AttendanceReport /> : shown === 'behaviour' ? <BehaviourReport /> : <Overview />}
     </Page>
   );
 }

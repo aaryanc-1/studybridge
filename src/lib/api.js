@@ -139,8 +139,36 @@ export const schoolSetup = () => run(sb().rpc('school_setup'));
 export const savePeriods = (periods) => run(sb().rpc('save_periods', { p_periods: periods }));
 export const saveSchoolDates = (dates) => run(sb().rpc('save_school_dates', { p_dates: dates }));
 export const setSchoolTimezone = (tz) => run(sb().rpc('set_school_timezone', { p_tz: tz }));
-export const saveSlot = (id, classId, weekday, periodId, room = null, teacherId = null) =>
-  run(sb().rpc('save_slot', { p_id: id, p_class: classId, p_weekday: weekday, p_period: periodId, p_room: room, p_teacher: teacherId }));
+export const saveSlot = (id, classId, weekday, periodId, room = null, teacherId = null, week = 0) =>
+  run(sb().rpc('save_slot', { p_id: id, p_class: classId, p_weekday: weekday, p_period: periodId, p_room: room, p_teacher: teacherId, p_week: week }));
+// Running a school, part 2: two-week timetables, cover and changes for a day, planners
+export const setAbWeeks = (on, thisWeek = 1) => run(sb().rpc('set_ab_weeks', { p_on: on, p_this_week: thisWeek }));
+export const coverDay = (d = null) => run(sb().rpc('cover_day', { p_day: d }));
+export const setStaffAway = (teacherId, starts, ends = null, note = null) =>
+  run(sb().rpc('set_staff_away', { p_teacher: teacherId, p_starts: starts, p_ends: ends, p_note: note }));
+export const removeStaffAway = (id) => run(sb().rpc('remove_staff_away', { p_id: id }));
+export const saveCover = (slotId, d, { cover = null, cancelled = false, room = null, note = null } = {}) =>
+  run(sb().rpc('save_cover', { p_slot: slotId, p_day: d, p_cover: cover, p_cancelled: cancelled, p_room: room, p_note: note }));
+export const classUnits = (classId) => run(sb().rpc('class_units', { p_class: classId }));
+export const saveUnit = (id, classId, unit) => run(sb().rpc('save_unit', { p_id: id, p_class: classId, p_unit: unit }));
+export const deleteUnit = (id) => run(sb().rpc('delete_unit', { p_id: id }));
+export const lessonPlan = (kind, id, d = null) => run(sb().rpc('lesson_plan', { p_kind: kind, p_ref: id, p_day: d }));
+export const saveLessonPlan = (kind, id, d, plan) => run(sb().rpc('save_lesson_plan', { p_kind: kind, p_ref: id, p_day: d, p_plan: plan }));
+// IB MYP criteria, and term reports
+export const setMypGroup = (subjectId, group) => run(sb().rpc('set_myp_group', { p_subject: subjectId, p_group: group }));
+export const setAttemptCriteria = (attemptId, levels) => run(sb().rpc('set_attempt_criteria', { p_attempt: attemptId, p_levels: levels }));
+export const reportRounds = () => run(sb().rpc('report_rounds'));
+export const saveReportRound = (id, round) => run(sb().rpc('save_report_round', { p_id: id, p_round: round }));
+export const deleteReportRound = (id) => run(sb().rpc('delete_report_round', { p_id: id }));
+export const reportClass = (roundId, classId) => run(sb().rpc('report_class', { p_round: roundId, p_class: classId }));
+export const saveReportEntry = (roundId, classId, learnerId, entry) =>
+  run(sb().rpc('save_report_entry', { p_round: roundId, p_class: classId, p_learner: learnerId, p_entry: entry }));
+export const reportRound = (roundId) => run(sb().rpc('report_round', { p_round: roundId }));
+export const saveReportOverall = (roundId, learnerId, comment) => run(sb().rpc('save_report_overall', { p_round: roundId, p_learner: learnerId, p_comment: comment }));
+export const publishReportRound = (roundId, on) => run(sb().rpc('publish_report_round', { p_round: roundId, p_on: on }));
+export const myReports = (learnerId = null) => run(sb().rpc('my_reports', { p_learner: learnerId }));
+export const reportCard = (roundId, learnerId) => run(sb().rpc('report_card', { p_round: roundId, p_learner: learnerId }));
+export const reportCards = (roundId) => run(sb().rpc('report_cards', { p_round: roundId }));
 export const deleteSlot = (id) => run(sb().rpc('delete_slot', { p_id: id }));
 export const timetablePaste = (rows) => run(sb().rpc('timetable_paste', { p_rows: rows }));
 export const myTimetable = (from, to, learnerId = null) => run(sb().rpc('my_timetable', { p_from: from, p_to: to, p_learner: learnerId }));

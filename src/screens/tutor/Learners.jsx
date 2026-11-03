@@ -1237,7 +1237,8 @@ export function LearnerTabs({ tab }) {
         { value: 'learners', label: 'Learners', icon: 'user' },
         { value: 'classes', label: 'Classes', icon: 'users' },
         ...(school ? [{ value: 'school', label: waiting ? `New from your school (${waiting})` : 'New from your school', icon: 'cap' }] : []),
-        { value: 'reports', label: 'Reports', icon: 'send' },
+        { value: 'reports', label: 'Weekly reports', icon: 'send' },
+        { value: 'terms', label: 'Term reports', icon: 'file' },
       ]}
     />
   );

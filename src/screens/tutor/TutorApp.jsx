@@ -1,5 +1,6 @@
 import { useApp } from '../../App.jsx';
-import { Page, useRoute } from '../../ui/kit.jsx';
+import Icon from '../../ui/Icon.jsx';
+import { Link, Page, useRoute } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import Shell from '../shared/Shell.jsx';
@@ -26,6 +27,9 @@ import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 import Centre from './Centre.jsx';
 import SeeAs from './SeeAs.jsx';
 import { RegisterPage } from '../shared/School.jsx';
+import { LessonPlanPage } from '../shared/Planner.jsx';
+import TermReports from './TermReports.jsx';
+import { TermReportPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 
 function notificationTarget(n) {
@@ -44,6 +48,7 @@ function notificationTarget(n) {
   if (n.kind === 'org') return '/settings?s=org';
   if ((n.kind === 'class_post' || n.kind === 'stream_reply') && r.class_id) return `/learners/classes/${r.class_id}/stream`;
   if (n.kind === 'class') return '/learners/classes';
+  if (n.kind === 'cover') return '/timetable';
   if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/learners/reports';
   return '/';
 }
@@ -65,7 +70,7 @@ export default function TutorApp() {
   // every tutor has Timetable: their week with each lesson's register, and their learners' attendance and behaviour
   const nav = [
     { to: '/', label: 'Home', icon: 'home' },
-    { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register'] },
+    { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register', '/plan'] },
     { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
     { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
@@ -87,6 +92,8 @@ export default function TutorApp() {
   else if (a === 'learners' && b === 'school') page = <SchoolLearners />;
   else if (a === 'exam' && b) page = <ExamRoom id={b} />;
   else if ((a === 'learners' && b === 'reports') || a === 'reports') page = <ParentReports />;
+  else if (a === 'learners' && b === 'terms') page = <TermReports round={c} part={route.parts[3]} />;
+  else if (a === 'report' && b && c) page = <TermReportPage round={b} learner={c} />;
   else if (a === 'see' && b) page = <SeeAs learnerId={b} tab={c} id={route.parts[3]} />;
   else if (a === 'learners' && b) page = <LearnerDetail id={b} tab={c} />;
   else if (a === 'learners') page = <Learners />;
@@ -116,6 +123,19 @@ export default function TutorApp() {
     );
   else if (a === 'timetable') page = <TutorTimetable tab={b} />;
   else if (a === 'register' && b && c) page = <RegisterPage kind={b} id={c} day={route.parts[3]} />;
+  else if (a === 'plan' && b && c)
+    page = (
+      <Page
+        eyebrow={
+          <Link to="/timetable">
+            <Icon name="left" size={14} /> Timetable
+          </Link>
+        }
+        title="Lesson plan"
+      >
+        <LessonPlanPage kind={b} id={c} day={route.parts[3]} />
+      </Page>
+    );
   else page = <Home />;
 
   return (

@@ -58,6 +58,7 @@ export default function Home() {
   const profJobs = useQuery('prof-jobs', api.profJobs).data || [];
   const reportSettings = useQuery('learner-reports', api.listLearnerReports).data || [];
   const reports = useQuery('parent-reports', api.listParentReports).data || [];
+  const termRounds = useQuery('term-rounds', api.reportRounds).data?.rounds || [];
   const parents = useQuery('parent-counts', api.myParentCounts).data || {};
   const liveStatus = useQuery('live-status', api.liveStatus).data;
   const home = useQuery('tutor-home', api.tutorHome).data;
@@ -90,6 +91,11 @@ export default function Home() {
   const monday = ymd(weekRange(0).from);
   const reportsOn = new Set([...reportSettings.filter((x) => x.enabled).map((x) => x.learner_id), ...Object.keys(parents).filter((k) => parents[k] > 0)]);
   const reportsReady = reports.filter((r) => r.status === 'draft' && String(r.week_start).slice(0, 10) < monday && reportsOn.has(r.learner_id));
+  // term reports being written, with parts still to write for classes they teach
+  const termsToWrite = termRounds
+    .filter((r) => r.status === 'writing')
+    .map((r) => ({ r, left: r.classes.filter((c) => c.mine).reduce((s, c) => s + Math.max(0, c.learners - c.done), 0) }))
+    .filter((x) => x.left > 0);
 
   async function discardSuggestion(d) {
     if (d.kind !== 'note' && !(await confirm({ title: 'Discard this?', body: d.kind === 'message' ? 'It’s never sent.' : 'Nothing changes for your learner.', ok: 'Discard', danger: true }))) return;
@@ -147,6 +153,17 @@ export default function Home() {
         ),
       };
     }),
+    ...termsToWrite.map(({ r, left }) => ({
+      key: 't' + r.id,
+      lead: <Icon name="file" style={{ color: 'var(--accent)' }} />,
+      name: `${r.title}: ${plural(left, 'part')} to write`,
+      meta: r.due ? <span>Due {new Date(r.due + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}</span> : null,
+      acts: (
+        <button className="btn sm" onClick={() => go('/learners/terms')}>
+          Write
+        </button>
+      ),
+    })),
     ...noteRows.map(({ learner_id, c, n }) => {
       const on = c.assignment_id && aById[c.assignment_id];
       return {

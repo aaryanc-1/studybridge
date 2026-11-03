@@ -13,6 +13,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { KIND_DEFAULTS } from './Assignments.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { items, multi } from '../../lib/questions.js';
+import { LETTERS, MYP_GROUPS } from '../../lib/myp.js';
 
 let seq = 0;
 const k = () => 'q' + ++seq;
@@ -154,6 +155,7 @@ export default function AssignmentEditor({ id }) {
           release_at: a.release_mode === 'at' ? a.release_at : null,
           show_answers: !!a.show_answers,
           self_mark: !!a.self_mark,
+          criteria: a.criteria || [], // IB MYP criteria it's assessed on
           draft: publish || post ? false : a.draft,
           updated_at: new Date().toISOString(),
         };
@@ -528,6 +530,7 @@ export default function AssignmentEditor({ id }) {
               title="They mark it themselves first"
               sub="After handing in (one attempt), they see the mark scheme and give themselves marks. You then check their marks (and your own) before returning it. Good for past papers."
             />
+            <MypCriteria a={a} setField={setField} />
           </div>
           <div className="card">
             <h3>Attached from the library</h3>
@@ -845,5 +848,58 @@ function ChangePart({ q, n, onClose, onDone }) {
         </div>
       </form>
     </Modal>
+  );
+}
+
+// IB MYP criteria (running a school, part 2): work in an MYP subject can be assessed on some of the subject group's
+// criteria A to D; marking it gives a level from 0 to 8 for each
+function MypCriteria({ a, setField }) {
+  const lk = useLookups();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const s = a.subject_id ? lk.subject(a.subject_id) : null;
+  if (!s) return null;
+  const group = MYP_GROUPS[s.myp_group];
+  const on = a.criteria || [];
+  async function setGroup(g) {
+    try {
+      await api.setMypGroup(s.id, g || null);
+      invalidate('subjects');
+      if (!g) setField({ criteria: [] });
+    } catch (e) {
+      toast({ title: 'Couldn’t change the subject', body: e.message, tone: 'bad' });
+    }
+  }
+  if (!group && !open)
+    return (
+      <button className="btn sm ghost" style={{ alignSelf: 'flex-start' }} onClick={() => setOpen(true)}>
+        An IB MYP subject? Assess it on its criteria
+      </button>
+    );
+  return (
+    <Field label="IB MYP criteria" hint={group ? 'Pick the criteria this work is assessed on. When you mark it, you give a level from 0 to 8 for each.' : 'Which subject group is it in? Its criteria A to D come from that.'}>
+      <div className="stack sm">
+        <select className="select" aria-label="MYP subject group" value={s.myp_group || ''} onChange={(e) => setGroup(e.target.value)}>
+          <option value="">Not an MYP subject</option>
+          {Object.entries(MYP_GROUPS).map(([k, g]) => (
+            <option key={k} value={k}>
+              {g.name}
+            </option>
+          ))}
+        </select>
+        {group && (
+          <div className="row wrap" style={{ gap: 6 }}>
+            {LETTERS.map((k) => {
+              const picked = on.includes(k);
+              return (
+                <button key={k} className="chip" aria-pressed={picked} onClick={() => setField({ criteria: picked ? on.filter((x) => x !== k) : [...on, k].sort() })}>
+                  {k}: {group.criteria[k]}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Field>
   );
 }

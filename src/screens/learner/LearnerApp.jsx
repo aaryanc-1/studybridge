@@ -22,6 +22,7 @@ import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { AttendanceCard, BehaviourCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
+import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -36,6 +37,8 @@ function notificationTarget(n) {
   if (n.kind === 'lesson' && r.lesson_id) return `/lesson/${r.lesson_id}`;
   if ((n.kind === 'class_post' || n.kind === 'stream_reply') && r.class_id) return `/classes/${r.class_id}`;
   if (n.kind === 'behaviour') return '/progress';
+  if (n.kind === 'timetable_change') return '/timetable';
+  if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
   return '/';
 }
 
@@ -126,6 +129,7 @@ export default function LearnerApp() {
   else if (a === 'progress')
     page = (
       <Page title="My progress" subtitle="Time you’ve spent, how your work went, and which topics are strong or need more practice.">
+        <MyReports />
         <ProgressView learnerId={app.me.id} name={app.me.display_name} />
         <AttendanceCard learnerId={app.me.id} name={app.me.display_name} />
         <BehaviourCard learnerId={app.me.id} name={app.me.display_name} />
@@ -137,6 +141,7 @@ export default function LearnerApp() {
   else if (a === 'classes' && b) page = <ClassView id={b} />;
   else if (a === 'classes') page = <ClassList />;
   else if (a === 'timetable') page = <TimetablePage />;
+  else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
   else page = <Today />;
   if (waiting && a !== 'settings') page = <SchoolWaiting />;
   if (self && a !== 'settings') {

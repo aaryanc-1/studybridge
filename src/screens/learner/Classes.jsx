@@ -1,5 +1,5 @@
-// A learner's classes: each class's stream (posts from their teachers, and what's been set for the class). Only shown to
-// learners who are in a class.
+// A learner's classes: each class's stream (posts from their teachers, and what's been set for the class), and what the
+// class is learning (the units its teachers share). Only shown to learners who are in a class.
 import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Page } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
@@ -8,6 +8,7 @@ import { ago } from '../../lib/format.js';
 import { SubjectTag } from '../shared/lookups.jsx';
 import { FromPlace } from '../shared/places.jsx';
 import Stream from '../shared/Stream.jsx';
+import { ClassUnits } from '../shared/Planner.jsx';
 
 export const useMyClasses = (on = true) => useQuery(on ? 'my-classes' : null, api.myClasses);
 
@@ -64,6 +65,7 @@ export function ClassView({ id }) {
       title={c?.name || 'Class'}
       subtitle={c ? (c.teachers || []).join(', ') : ''}
     >
+      <ClassUnits classId={id} />
       <Stream classId={id} learner />
     </Page>
   );

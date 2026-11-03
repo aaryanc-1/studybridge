@@ -11,6 +11,7 @@ import { Thread } from '../shared/Messages.jsx';
 import { MockResultCard } from '../shared/MockHistory.jsx';
 import { ReportProblem } from './SelfStudy.jsx';
 import { RubricGrid } from '../shared/Rubric.jsx';
+import { band } from '../../lib/myp.js';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -116,6 +117,21 @@ export default function Results({ id }) {
               <div className="tiny strong" style={{ marginBottom: 4 }}>From your tutor</div>
               <Markdown src={t.feedback_md} />
             </div>
+          )}
+          {d.myp && t.criteria && (
+            <table className="rc-table term-crit" aria-label="IB MYP criteria">
+              <tbody>
+                {d.myp.on.map((k) => (
+                  <tr key={k}>
+                    <td>
+                      Criterion {k}
+                      {d.myp.names?.[k] ? `: ${d.myp.names[k]}` : ''}
+                    </td>
+                    <td className="rc-score">{t.criteria[k] != null ? `${t.criteria[k]} / 8 · ${band(t.criteria[k])}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

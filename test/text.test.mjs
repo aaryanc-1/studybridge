@@ -48,4 +48,6 @@ test('a timetable from a spreadsheet: class, day, period, room, teacher, with or
   ]);
   // no header: in that order; rows with only a class are skipped
   assert.deepEqual(parseTimetable('Year 9 art,Fri,P3\nJust a name').map((r) => [r.class, r.weekday, r.period]), [['Year 9 art', 5, 'P3']]);
+  // a two-week timetable: a Week column (A or B; empty for every week)
+  assert.deepEqual(parseTimetable('Class\tDay\tPeriod\tWeek\nYear 7 art\tMon\tP1\tWeek B\nYear 7 art\tTue\tP2\t').map((r) => [r.weekday, r.week]), [[1, 'Week B'], [2, '']]);
 });

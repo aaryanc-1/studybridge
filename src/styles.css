@@ -781,6 +781,28 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 .report-review { align-items: start; }
 .parent-exam { gap: 14px; }
 
+/* Term reports (running a school, part 2): the same report look; print one, or a page each */
+.term-subject { padding: 12px 0; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 6px; }
+.term-subject:first-of-type { border-top: 0; padding-top: 0; }
+.term-subject-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.term-grade { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; padding: 0 8px; border-radius: 10px; background: var(--accent-tint); color: var(--accent-ink); font-size: 20px; font-weight: 800; }
+.term-crit td { font-size: 14px; }
+.term-entry.done { border-color: var(--good-line, var(--line)); }
+.term-fields { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.term-crit-edit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 10px 12px; align-items: end; }
+.term-crit-edit .field:nth-child(3) { grid-column: 1; }
+.term-myp-grade { grid-row: 1 / span 2; grid-column: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+@media (max-width: 600px) { .term-crit-edit { grid-template-columns: 1fr; } .term-crit-edit .field:nth-child(3) { grid-column: auto; } .term-myp-grade { grid-row: auto; grid-column: auto; flex-direction: row; } }
+.term-learner { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.gb-crit { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+@media print {
+  body.print-terms * { visibility: hidden; }
+  body.print-terms .term-print, body.print-terms .term-print * { visibility: visible; }
+  body.print-terms .term-print { position: absolute; left: 0; top: 0; width: 100%; gap: 0; }
+  body.print-terms .term-print .report-card { max-width: none; border: 0; break-after: page; }
+  body.print-terms .rc-head, body.print-terms .rc-comment, body.print-terms .rc-stat, body.print-terms .term-grade { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
 /* a locked-down exam's warning after a try to leave: covers everything until acknowledged */
 .lock-warning { position: fixed; inset: 0; z-index: 80; background: rgba(20, 22, 25, 0.72); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .lock-warning .card { gap: 14px; }
@@ -1195,6 +1217,23 @@ button.rubric-level:hover { border-color: var(--accent); }
 .tt-lesson .tt-open:hover { text-decoration-color: currentColor; }
 .tt-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 @media (max-width: 900px) { .tt-week { grid-template-columns: 1fr; } }
+/* part 2: cancelled lessons, a note for the learners, cover */
+.tt-lesson.cancelled { background: var(--sunk); border-left-style: dashed; }
+.tt-lesson.cancelled .name, .tt-lesson.cancelled .tt-time { text-decoration: line-through; color: var(--muted); }
+.tt-lesson .row .pill { margin-top: 2px; }
+.tt-note { display: inline-flex; align-items: flex-start; gap: 5px; font-size: 12.5px; color: var(--ink-2); background: var(--sunk); border-radius: 8px; padding: 4px 8px; margin-top: 2px; }
+.strike { text-decoration: line-through; }
+/* planners */
+.unit-card.now { border-color: var(--accent-line, var(--accent)); }
+.unit-dl { display: grid; gap: 8px; margin: 0; }
+.unit-dl > div { display: grid; grid-template-columns: minmax(120px, 190px) 1fr; gap: 12px; }
+.unit-dl dt { font-size: 13px; color: var(--muted); font-weight: 600; }
+.unit-dl dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .unit-dl > div { grid-template-columns: 1fr; gap: 2px; } }
+.unit-more { border-top: 1px solid var(--line); padding: 10px 0; }
+.unit-more:first-of-type { border-top: 0; }
+.unit-more summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.unit-more .unit-dl { margin-top: 10px; }
 .reg-row { flex-wrap: wrap; }
 .reg-pick { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .reg-pick button { min-height: 36px; padding: 6px 12px; border: 0; background: transparent; color: var(--ink); font: 500 13.5px var(--sans, inherit); cursor: pointer; }

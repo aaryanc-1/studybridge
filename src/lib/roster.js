@@ -64,19 +64,19 @@ export function weekdayOf(v) {
   return i >= 0 ? i + 1 : null;
 }
 
-// A school's timetable, one lesson per row: class, day, period, room, teacher. A header row says which column is
-// which; without one they're in that order. The period is its name ("Period 1", "P1") or its start time ("09:00").
+// A school's timetable, one lesson per row: class, day, period, room, teacher, and the week (A or B) for a two-week
+// timetable. A header row says which column is which; without one they're in that order. The period is its name ("Period 1", "P1") or its start time ("09:00").
 export function parseTimetable(text) {
   let { table } = splitTable(text);
-  let col = { class: 0, day: 1, period: 2, room: 3, teacher: 4 };
+  let col = { class: 0, day: 1, period: 2, room: 3, teacher: 4, week: 5 };
   const head = (table[0] || []).map((h) => h.toLowerCase());
   if (head.some((h) => /\b(class|day|period)\b/.test(h))) {
     const find = (re) => head.findIndex((h) => re.test(h));
-    col = { class: find(/\b(class|group|set)\b/), day: find(/\bday\b/), period: find(/\b(period|lesson|time|slot)\b/), room: find(/\broom\b/), teacher: find(/\b(teacher|staff)\b/) };
+    col = { class: find(/\b(class|group|set)\b/), day: find(/\bday\b/), period: find(/\b(period|lesson|time|slot)\b/), room: find(/\broom\b/), teacher: find(/\b(teacher|staff)\b/), week: find(/\bweek\b/) };
     table = table.slice(1);
   }
   const at = (r, i) => (i >= 0 ? String(r[i] || '').trim() : '');
   return table
-    .map((r) => ({ class: at(r, col.class), weekday: weekdayOf(at(r, col.day)), day: at(r, col.day), period: at(r, col.period), room: at(r, col.room), teacher: at(r, col.teacher) }))
+    .map((r) => ({ class: at(r, col.class), weekday: weekdayOf(at(r, col.day)), day: at(r, col.day), period: at(r, col.period), room: at(r, col.room), teacher: at(r, col.teacher), week: at(r, col.week) }))
     .filter((r) => r.class && (r.day || r.period));
 }

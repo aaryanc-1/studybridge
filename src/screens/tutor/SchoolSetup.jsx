@@ -1,5 +1,6 @@
-// A centre's or school's timetable, set out by its managers (the school day's periods, terms and holidays, and each
-// class's lessons in the week; a whole timetable can be pasted from a spreadsheet), and the whole school's attendance
+// A centre's or school's timetable, set out by its managers (the school day's periods, terms and holidays, one week or
+// two (Week A and Week B), and each class's lessons in the week; a whole timetable can be pasted from a spreadsheet),
+// cover for teachers who are away (and rooms changed or lessons cancelled for a day), and the whole school's attendance
 // and behaviour. A class's teachers can set out their own class's lessons too. Every tutor's own Timetable page (their
 // week, and their learners' attendance and behaviour) is at the end.
 import { useState } from 'react';
@@ -7,7 +8,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Empty, Field, Link, Loading, Modal, Page, Seg, Stat, go, useConfirm, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
-import { day, time } from '../../lib/format.js';
+import { day, time, ymd } from '../../lib/format.js';
 import { parseTimetable } from '../../lib/roster.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { GiveBehaviour, STATUS, Week, pctTone, useInSchool } from '../shared/School.jsx';
@@ -32,6 +33,7 @@ export function TimetableSetup() {
     <>
       {s.manager && <SchoolDay s={s} />}
       {s.manager && <TermDates s={s} />}
+      {s.manager && <TwoWeeks s={s} />}
       {s.periods.length > 0 ? <WeekGrid s={s} /> : !s.manager && <Empty title="No school day yet">Your centre’s or school’s manager sets out the periods first.</Empty>}
       {s.manager && s.periods.length > 0 && <PasteTimetable />}
     </>
@@ -169,10 +171,69 @@ function TermDates({ s }) {
   );
 }
 
-// The week: periods down the side, days across; each lesson opens to change it
+// One week or two: Week A, then Week B, and which one this week is
+function TwoWeeks({ s }) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  async function set(on, week) {
+    if (!on && s.slots.some((x) => x.week === 2)) {
+      const ok = await confirm({
+        title: 'Back to one week?',
+        body: 'Week A’s lessons become every week’s, and Week B’s come off the timetable. Registers already taken stay.',
+        ok: 'Back to one week',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setBusy(true);
+    try {
+      await api.setAbWeeks(on, week);
+      changed();
+      toast(on ? `This week is Week ${week === 2 ? 'B' : 'A'}` : 'The same lessons every week');
+    } catch (e) {
+      toast({ title: 'Couldn’t change that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const other = s.week_now === 2 ? 1 : 2;
+  return (
+    <div className="card">
+      <h2>One week or two</h2>
+      <div className="small muted">Some schools run a two-week timetable: Week A, then Week B. Weeks with no school in them (holidays) don’t count, so the order carries on after a break.</div>
+      <Seg
+        label="Timetable weeks"
+        value={s.ab_weeks ? 'two' : 'one'}
+        onChange={(v) => !busy && set(v === 'two', 1)}
+        options={[
+          { value: 'one', label: 'The same every week' },
+          { value: 'two', label: 'Week A and Week B' },
+        ]}
+      />
+      {s.ab_weeks && (
+        <div className="row wrap" style={{ gap: 10 }}>
+          <span>
+            This week is <span className="strong">Week {s.week_now === 2 ? 'B' : 'A'}</span>.
+          </span>
+          <button className="btn sm" disabled={busy} onClick={() => set(true, other)}>
+            Make this week Week {other === 2 ? 'B' : 'A'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const WEEKS = { 0: 'Every week', 1: 'Week A', 2: 'Week B' };
+
+// The week: periods down the side, days across; each lesson opens to change it. A two-week timetable shows Week A or
+// Week B (every-week lessons are in both).
 function WeekGrid({ s }) {
   const [editing, setEditing] = useState(null);
-  const days = [1, 2, 3, 4, 5, ...[6, 7].filter((d) => s.slots.some((x) => x.weekday === d))];
+  const [wk, setWk] = useState(s.week_now || 1);
+  const slots = s.ab_weeks ? s.slots.filter((x) => x.week === 0 || x.week === wk) : s.slots;
+  const days = [1, 2, 3, 4, 5, ...[6, 7].filter((d) => slots.some((x) => x.weekday === d))];
   const mineOnly = !s.manager;
   const canAdd = s.manager || s.classes.some((c) => c.mine);
   return (
@@ -181,6 +242,19 @@ function WeekGrid({ s }) {
         <h2>The week’s lessons</h2>
         <span className="small muted">{s.manager ? 'Press + to add a lesson, or a lesson to change it.' : 'You can set out your own classes’ lessons.'}</span>
       </div>
+      {s.ab_weeks && (
+        <div style={{ padding: '0 16px 12px' }}>
+          <Seg
+            label="Which week"
+            value={String(wk)}
+            onChange={(v) => setWk(Number(v))}
+            options={[
+              { value: '1', label: 'Week A' },
+              { value: '2', label: 'Week B' },
+            ]}
+          />
+        </div>
+      )}
       <div className="gradebook-wrap">
         <table className="table tt-grid">
           <thead>
@@ -201,18 +275,18 @@ function WeekGrid({ s }) {
                   </span>
                 </th>
                 {days.map((d) => {
-                  const here = s.slots.filter((x) => x.weekday === d && x.period_id === p.id);
+                  const here = slots.filter((x) => x.weekday === d && x.period_id === p.id);
                   return (
                     <td key={d}>
                       <div className="tt-cell">
                         {here.map((x) => (
                           <button key={x.id} className="tt-slot" disabled={mineOnly && !x.mine} onClick={() => setEditing(x)} aria-label={`${x.class}, ${DAYS[d - 1]} ${p.name}: change`}>
                             <span className="strong">{x.class}</span>
-                            <span className="tiny muted">{[x.room, x.teacher].filter(Boolean).join(' · ')}</span>
+                            <span className="tiny muted">{[x.room, x.teacher, s.ab_weeks && x.week === 0 && 'every week'].filter(Boolean).join(' · ')}</span>
                           </button>
                         ))}
                         {canAdd && (
-                          <button className="btn sm ghost tt-add" aria-label={`Add a lesson on ${DAYS[d - 1]}, ${p.name}`} onClick={() => setEditing({ weekday: d, period_id: p.id })}>
+                          <button className="btn sm ghost tt-add" aria-label={`Add a lesson on ${DAYS[d - 1]}, ${p.name}`} onClick={() => setEditing({ weekday: d, period_id: p.id, week: s.ab_weeks ? wk : 0 })}>
                             <Icon name="plus" size={14} />
                           </button>
                         )}
@@ -239,11 +313,12 @@ function SlotEditor({ s, slot, onClose }) {
   const [period, setPeriod] = useState(slot.period_id);
   const [room, setRoom] = useState(slot.room || '');
   const [teacher, setTeacher] = useState(slot.teacher_id || '');
+  const [week, setWeek] = useState(slot.week || 0);
   const [busy, setBusy] = useState(false);
   async function save() {
     setBusy(true);
     try {
-      await api.saveSlot(slot.id || null, classId, Number(weekday), period, room, teacher || null);
+      await api.saveSlot(slot.id || null, classId, Number(weekday), period, room, teacher || null, s.ab_weeks ? Number(week) : 0);
       changed();
       toast('The lesson is saved');
       onClose();
@@ -314,6 +389,17 @@ function SlotEditor({ s, slot, onClose }) {
               ))}
             </select>
           </Field>
+          {s.ab_weeks && (
+            <Field label="Which weeks">
+              <select className="select" value={week} onChange={(e) => setWeek(e.target.value)}>
+                {[0, 1, 2].map((w) => (
+                  <option key={w} value={w}>
+                    {w ? `${WEEKS[w]} only` : WEEKS[w]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
           <Field label="Room" hint="If you like">
             <input className="input" maxLength={40} value={room} onChange={(e) => setRoom(e.target.value)} />
           </Field>
@@ -345,7 +431,7 @@ function PasteTimetable() {
   async function add() {
     setBusy(true);
     try {
-      const r = await api.timetablePaste(rows.map((x) => ({ class: x.class, weekday: x.weekday, period: x.period, room: x.room, teacher: x.teacher })));
+      const r = await api.timetablePaste(rows.map((x) => ({ class: x.class, weekday: x.weekday, period: x.period, room: x.room, teacher: x.teacher, week: x.week })));
       setResult(r);
       if (r.added) setText('');
       changed();
@@ -360,7 +446,7 @@ function PasteTimetable() {
     <div className="card">
       <h2>Add a whole timetable from a spreadsheet</h2>
       <div className="small muted">
-        Copy the rows from Excel or Google Sheets and paste them here: class, day, period, room, teacher (a header row can say which is which). Periods by name (“Period 1”) or start time (“09:00”). Classes and teachers by the names they have here.
+        Copy the rows from Excel or Google Sheets and paste them here: class, day, period, room, teacher, and for a two-week timetable the week (A or B; leave it empty for every week). A header row can say which is which. Periods by name (“Period 1”) or start time (“09:00”). Classes and teachers by the names they have here.
       </div>
       <textarea
         className="textarea"
@@ -386,6 +472,278 @@ function PasteTimetable() {
         </button>
       </div>
     </div>
+  );
+}
+
+// ---------- cover (managers): who's away on a day, and who covers their lessons ----------
+const addDay = (d, n) => {
+  const x = new Date(d + 'T12:00');
+  x.setDate(x.getDate() + n);
+  return ymd(x);
+};
+const longDay = (d) => new Date(d + 'T12:00').toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+const roomName = (r) => (r ? (/^\d/.test(r) ? `Room ${r}` : r) : '');
+
+export function CoverPage() {
+  const toast = useToast();
+  const [d, setD] = useState(() => ymd(new Date()));
+  const q = useQuery(`cover:${d}`, () => api.coverDay(d));
+  const [awayForm, setAwayForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const c = q.data;
+  const needs = (c?.lessons || []).filter((l) => l.needs).length;
+  async function back(a) {
+    try {
+      await api.removeStaffAway(a.id);
+      invalidate('cover');
+    } catch (e) {
+      toast({ title: 'Couldn’t change that', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <>
+      <div className="card">
+        <div className="row between wrap" style={{ gap: 8 }}>
+          <span className="strong">
+            {longDay(d)} {c?.week && <span className="pill accent">Week {c.week}</span>}
+          </span>
+          <span className="row wrap" style={{ gap: 8 }}>
+            <button className="btn" onClick={() => setD(addDay(d, -1))} aria-label="The day before">
+              <Icon name="left" size={16} />
+            </button>
+            <input className="input" type="date" aria-label="Day" style={{ width: 'auto' }} value={d} onChange={(e) => e.target.value && setD(e.target.value)} />
+            <button className="btn" onClick={() => setD(addDay(d, 1))} aria-label="The day after">
+              <Icon name="right" size={16} />
+            </button>
+          </span>
+        </div>
+        <div className="small muted">Say who’s away, then pick who covers each of their lessons (only teachers who are free then are offered). You can also move a lesson to another room or cancel it for the day; the class is told.</div>
+      </div>
+      {!c ? (
+        q.error ? <div className="error">{q.error.message}</div> : <Loading />
+      ) : (
+        <>
+          <div className="card">
+            <div className="card-head">
+              <h2>Who’s away</h2>
+              <button className="btn sm" onClick={() => setAwayForm(true)}>
+                <Icon name="plus" size={15} /> Someone’s away
+              </button>
+            </div>
+            {c.away.length === 0 ? (
+              <div className="small muted">Nobody is away that day.</div>
+            ) : (
+              <div className="list">
+                {c.away.map((a) => (
+                  <div key={a.id} className="item">
+                    <span className="grow">
+                      <span className="name">{a.name}</span>
+                      <span className="meta">
+                        <span>{a.starts === a.ends ? day(a.starts + 'T12:00') : `${day(a.starts + 'T12:00')} to ${day(a.ends + 'T12:00')}`}</span>
+                        {a.note && <span>{a.note}</span>}
+                      </span>
+                    </span>
+                    <button className="btn sm ghost" onClick={() => back(a)}>
+                      They’re in after all
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="card">
+            <div className="card-head">
+              <h2>Lessons that day</h2>
+              {needs > 0 && <span className="pill bad">{needs} need cover</span>}
+            </div>
+            {!c.open ? (
+              <div className="small muted">There’s no school that day.</div>
+            ) : c.lessons.length === 0 ? (
+              <div className="small muted">No lessons on the timetable that day.</div>
+            ) : (
+              <div className="list">
+                {[...c.lessons].sort((a, b) => b.needs - a.needs).map((l) => (
+                  <div key={l.slot_id} className="item">
+                    <span className="grow">
+                      <span className="name">
+                        {l.class} <span className="small muted">· {l.period}, {l.starts}</span>
+                      </span>
+                      <span className="meta">
+                        <span className={l.away ? 'strike' : ''}>{l.teacher || 'No teacher'}</span>
+                        {(l.new_room || l.room) && <span>{roomName(l.new_room || l.room)}</span>}
+                        {l.note && <span className="ellipsis">{l.note}</span>}
+                      </span>
+                    </span>
+                    {l.cancelled ? (
+                      <span className="pill bad">Cancelled</span>
+                    ) : l.cover ? (
+                      <span className="pill good">{l.cover} covers</span>
+                    ) : l.needs ? (
+                      <span className="pill bad">Needs cover</span>
+                    ) : l.new_room ? (
+                      <span className="pill warn">Room change</span>
+                    ) : null}
+                    {d >= c.today && (
+                      <button className="btn sm" onClick={() => setEditing(l)} aria-label={`Change ${l.class}, ${l.period}`}>
+                        {l.needs ? 'Arrange cover' : 'Change'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {awayForm && <AwayForm c={c} d={d} onClose={() => setAwayForm(false)} />}
+          {editing && <CoverEditor c={c} d={d} l={editing} onClose={() => setEditing(null)} />}
+        </>
+      )}
+    </>
+  );
+}
+
+function AwayForm({ c, d, onClose }) {
+  const toast = useToast();
+  const [teacher, setTeacher] = useState('');
+  const [from, setFrom] = useState(d);
+  const [to, setTo] = useState(d);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true);
+    try {
+      await api.setStaffAway(teacher, from, to || from, note);
+      invalidate('cover');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t save that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title="Someone’s away"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy || !teacher || !from} onClick={save}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Who">
+          <select className="select" value={teacher} onChange={(e) => setTeacher(e.target.value)}>
+            <option value="">Pick a teacher</option>
+            {c.teachers
+              .filter((t) => !t.away)
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+        <div className="grid g2" style={{ gap: 12 }}>
+          <Field label="From">
+            <input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </Field>
+          <Field label="Until">
+            <input className="input" type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Note" hint="For staff only: “On a course”">
+          <input className="input" maxLength={200} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function CoverEditor({ c, d, l, onClose }) {
+  const toast = useToast();
+  const [what, setWhat] = useState(l.cancelled ? 'cancel' : 'cover');
+  const [cover, setCover] = useState(l.cover_id || '');
+  const [room, setRoom] = useState(l.new_room || '');
+  const [note, setNote] = useState(l.note || '');
+  const [busy, setBusy] = useState(false);
+  // who's free then: not away, and not teaching (or covering) another lesson in that period
+  const free = c.teachers.filter((t) => t.id !== l.teacher_id && !t.away && (t.id === l.cover_id || !t.busy.includes(l.period_id)));
+  async function save(clear = false) {
+    setBusy(true);
+    try {
+      await api.saveCover(l.slot_id, d, clear ? {} : what === 'cancel' ? { cancelled: true, note } : { cover: cover || null, room: room || null, note });
+      invalidate('cover', 'timetable');
+      toast(clear ? 'Back to normal' : what === 'cancel' ? 'Cancelled. The class has been told.' : 'Saved');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t save that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  const changed = l.cover_id || l.cancelled || l.new_room || l.note;
+  return (
+    <Modal
+      title={`${l.class} · ${l.period}`}
+      onClose={onClose}
+      foot={
+        <>
+          {changed && (
+            <button className="btn" onClick={() => save(true)} disabled={busy} style={{ marginRight: 'auto' }}>
+              Back to normal
+            </button>
+          )}
+          <button className="btn" onClick={onClose}>
+            Close
+          </button>
+          <button className={'btn ' + (what === 'cancel' ? 'danger' : 'primary')} disabled={busy} onClick={() => save()}>
+            {what === 'cancel' ? 'Cancel the lesson' : 'Save'}
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="small muted">
+          {longDay(d)}, {l.starts} · {l.teacher || 'No teacher'}
+          {l.away ? ' (away)' : ''}
+          {l.room ? ` · ${roomName(l.room)}` : ''}
+        </div>
+        <Seg
+          label="What happens"
+          value={what}
+          onChange={setWhat}
+          options={[
+            { value: 'cover', label: 'It goes ahead' },
+            { value: 'cancel', label: 'Cancel it' },
+          ]}
+        />
+        {what === 'cover' && (
+          <>
+            <Field label="Who covers" hint={free.length ? 'Teachers free then' : 'Nobody else is free then'}>
+              <select className="select" value={cover} onChange={(e) => setCover(e.target.value)}>
+                <option value="">{l.away ? 'Nobody yet' : 'Its usual teacher'}</option>
+                {free.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Another room" hint={l.room ? `Leave it empty for ${roomName(l.room)}` : 'If it moves'}>
+              <input className="input" maxLength={40} value={room} onChange={(e) => setRoom(e.target.value)} />
+            </Field>
+          </>
+        )}
+        <Field label="Note" hint={what === 'cancel' ? 'For staff' : 'For whoever covers: what to do, where the work is'}>
+          <textarea className="textarea" rows={3} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+      </div>
+    </Modal>
   );
 }
 

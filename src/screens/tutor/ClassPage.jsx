@@ -1,8 +1,8 @@
 // One class's page, for its teachers: its stream (posts to the class, and what's been set for it), its classwork by topic
 // (from every teacher of the class), a gradebook (each learner × each piece of work, with averages and a spreadsheet to
 // download), its attendance (each learner's, and its registers), and its people, where a teacher adds a whole class
-// list at once (an invite with its own code for each learner) and gives points. A centre's manager who doesn't teach
-// the class sees its stream only (never marks).
+// list at once (an invite with its own code for each learner) and gives points; and its planner (units of work, and
+// each lesson's plan). A centre's manager who doesn't teach the class sees its stream and planner only (never marks).
 import { useState } from 'react';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
@@ -12,8 +12,10 @@ import * as api from '../../lib/api.js';
 import { day, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import Stream from '../shared/Stream.jsx';
+import { Planner } from '../shared/Planner.jsx';
 import { GiveBehaviour } from '../shared/School.jsx';
 import { ClassAttendance, GiveButton } from './SchoolSetup.jsx';
+import { levelsText } from '../../lib/myp.js';
 
 const prettyCode = (c) => (/^\d{8}$/.test(String(c)) ? `${String(c).slice(0, 4)} ${String(c).slice(4)}` : c);
 const STATE = { draft: 'Draft', hidden: 'Hidden', scheduled: 'Scheduled', posted: 'Posted' };
@@ -29,11 +31,15 @@ export default function ClassPage({ id, tab = 'stream' }) {
     ? [
         { value: 'stream', label: 'Stream' },
         { value: 'classwork', label: 'Classwork' },
+        { value: 'planner', label: 'Planner' },
         { value: 'gradebook', label: 'Gradebook' },
         { value: 'attendance', label: 'Attendance' },
         { value: 'people', label: 'People' },
       ]
-    : [{ value: 'stream', label: 'Stream' }];
+    : [
+        { value: 'stream', label: 'Stream' },
+        { value: 'planner', label: 'Planner' },
+      ];
   const shown = tabs.some((t) => t.value === tab) ? tab : 'stream';
   return (
     <Page
@@ -66,6 +72,8 @@ export default function ClassPage({ id, tab = 'stream' }) {
         <People c={c} />
       ) : shown === 'classwork' ? (
         <Classwork id={id} />
+      ) : shown === 'planner' ? (
+        <Planner classId={id} subjectId={c.subject_id} />
       ) : (
         <Stream classId={id} />
       )}
@@ -188,10 +196,13 @@ function Gradebook({ id, name }) {
                   return (
                     <td key={w.id}>
                       {x ? (
-                        <Link to={`/marking/${x.attempt_id}`} className={'pill ' + s.tone} style={{ textDecoration: 'none' }}>
-                          {s.text}
-                          {x.late ? ' · late' : ''}
-                        </Link>
+                        <>
+                          <Link to={`/marking/${x.attempt_id}`} className={'pill ' + s.tone} style={{ textDecoration: 'none' }}>
+                            {s.text}
+                            {x.late ? ' · late' : ''}
+                          </Link>
+                          {x.criteria && <span className="gb-crit" title="IB MYP criteria levels">{levelsText(x.criteria)}</span>}
+                        </>
                       ) : (
                         <span className="muted">—</span>
                       )}

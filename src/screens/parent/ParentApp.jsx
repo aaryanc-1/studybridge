@@ -21,6 +21,7 @@ import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { gradeLine } from '../shared/MockHistory.jsx';
 import { StreamFiles } from '../shared/Stream.jsx';
 import { AttendanceCard, BehaviourCard } from '../shared/School.jsx';
+import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -31,6 +32,7 @@ const upcoming = (v) =>
 
 function notificationTarget(n) {
   const r = n.ref || {};
+  if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
   if (r.learner_id) return `/child/${r.learner_id}${r.report_id ? `?report=${r.report_id}` : ''}`;
   return '/';
 }
@@ -64,6 +66,7 @@ export default function ParentApp() {
   ];
   let page;
   if (a === 'settings') page = <Settings />;
+  else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
   else if (!kids.data) page = <Loading />;
   else if (!current) page = <NoChildren />;
   else page = <Child key={current.id} id={current.id} kids={list} section={a === 'coming' ? 'coming' : a === 'marks' ? 'marks' : 'week'} />;
@@ -283,6 +286,7 @@ function Child({ id, kids, section }) {
 
       {section === 'marks' && (
         <>
+          <MyReports learnerId={id} />
           <div className="card">
             <h2>Marks</h2>
             {v.marks.length === 0 ? (

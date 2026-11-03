@@ -614,7 +614,7 @@ try {
 
   step('Weekly parent report: StudyBridge fills it in; the learner switches WhatsApp on; Prof only suggests a comment; the tutor approves');
   await nav(A, 'Learners').click();
-  await A.getByRole('button', { name: 'Reports', exact: true }).click();
+  await A.getByRole('button', { name: 'Weekly reports', exact: true }).click();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'View report' }).click();
   const early = A.getByRole('dialog', { name: 'Anaya’s report' });
   await early.getByText('This week so far, as of now').waitFor();
@@ -632,7 +632,7 @@ try {
   await C.getByText('Weekly reports are on').waitFor();
   await A.reload();
   await nav(A, 'Learners').click();
-  await A.getByRole('button', { name: 'Reports', exact: true }).click();
+  await A.getByRole('button', { name: 'Weekly reports', exact: true }).click();
   await A.getByText(/Mum by WhatsApp/).waitFor();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByRole('button', { name: 'View report' }).click();
   const rep = A.getByRole('dialog', { name: 'Anaya’s report' });
@@ -685,7 +685,7 @@ try {
   await C.locator('#set-parents').getByText('Dad').waitFor();
   await A.reload();
   await nav(A, 'Learners').click();
-  await A.getByRole('button', { name: 'Reports', exact: true }).click();
+  await A.getByRole('button', { name: 'Weekly reports', exact: true }).click();
   await A.locator('.report-row', { hasText: 'Anaya' }).getByText(/1 parent account/).waitFor();
   await P.close();
   await C.close();
@@ -1314,6 +1314,180 @@ try {
   await PA.getByText('+1 Great work').waitFor();
   await shot(PA, 'parent-attendance');
   await PA.close();
+
+  step('Running a school, part 2: a two-week timetable, cover while the teacher is away (Tom takes the register), and a planner; Anaya sees what her class is learning and a note on her lesson');
+  // one week or two (back to one: nothing was set for Week B)
+  await A.goto(web.url + '#/centre/timetable');
+  await A.getByRole('heading', { name: 'One week or two' }).waitFor();
+  await A.getByRole('button', { name: 'Week A and Week B' }).click();
+  await A.getByText('This week is Week A').first().waitFor();
+  await A.getByRole('group', { name: 'Which week' }).getByRole('button', { name: 'Week B' }).waitFor();
+  await shot(A, 'timetable-two-weeks');
+  await A.getByRole('button', { name: 'The same every week' }).click();
+  await A.getByText('The same lessons every week').waitFor();
+  // she's away today: Tom covers her lesson, in another room, with a note
+  await A.goto(web.url + '#/centre/cover');
+  await A.getByRole('heading', { name: 'Who’s away' }).waitFor();
+  await A.getByRole('button', { name: 'Someone’s away' }).click();
+  const awayForm = A.getByRole('dialog', { name: 'Someone’s away' });
+  await awayForm.getByLabel('Who').selectOption({ label: 'Aaryan Chouhan' });
+  await awayForm.getByLabel('Note').fill('On a course');
+  await awayForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('1 need cover').waitFor();
+  await A.getByRole('button', { name: 'Change Year 10 maths, Period 1' }).click();
+  const coverForm = A.getByRole('dialog', { name: 'Year 10 maths · Period 1' });
+  await coverForm.getByLabel('Who covers').selectOption({ label: 'Tom Phiri' });
+  await coverForm.getByLabel('Another room').fill('14');
+  await coverForm.getByLabel('Note').fill('Worksheet 3 is on the desk');
+  await coverForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Tom Phiri covers').waitFor();
+  await shot(A, 'centre-cover');
+  await a11y(A, 'Centre → Cover');
+  const moved = await srv.db.query(`select n.title from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'anaya@example.com' and n.kind = 'timetable_change'`);
+  assert.deepEqual(moved.rows.map((r) => r.title), ['Year 10 maths is in Room 14'], 'the class hears it moved');
+  await nav(A, 'Timetable').click();
+  await A.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' }).getByText('Covered by Tom Phiri').waitFor();
+  // Tom: the lesson's on his timetable with the note, and he takes its register
+  const TC = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/New_York' })).newPage();
+  watch(TC, 'tutor (covers a lesson)');
+  await (await import('./sweep.mjs')).signIn(TC, web.url, 'tom@example.com');
+  await TC.goto(web.url + '#/timetable');
+  const tomLesson = TC.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' });
+  await tomLesson.getByText('You’re covering').waitFor();
+  await tomLesson.getByRole('button', { name: 'Year 10 maths' }).click();
+  await TC.getByRole('dialog').getByText('Worksheet 3 is on the desk').waitFor();
+  await shot(TC, 'cover-lesson');
+  await TC.getByRole('dialog').getByRole('button', { name: /(Open|Take) the register/ }).click();
+  await TC.getByRole('heading', { name: 'Year 10 maths' }).waitFor();
+  // (she took it before going: he adds a note for staff)
+  await TC.getByRole('button', { name: 'A note about Anaya (staff only)' }).click();
+  await TC.getByLabel('A note about Anaya, only staff see it').fill('Taken by Tom (cover)');
+  await TC.getByRole('button', { name: 'Save changes' }).click();
+  await TC.getByText(/^Register saved/).waitFor();
+  await TC.close();
+  // back to normal
+  await A.goto(web.url + '#/centre/cover');
+  await A.getByRole('button', { name: 'Change Year 10 maths, Period 1' }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Back to normal' }).click();
+  await A.getByRole('dialog').waitFor({ state: 'detached' });
+  await A.getByRole('button', { name: 'They’re in after all' }).click();
+  await A.getByText('Nobody is away that day.').waitFor();
+  // the class's planner: an IB unit that's on now, shared with the class (never the reflection)
+  const nyDay = (n) => new Date(Date.parse(new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) + 'T12:00Z') + n * 86400000).toISOString().slice(0, 10);
+  const k10 = (await tc.from('classes').select('id').eq('name', 'Year 10 maths').single()).data;
+  await A.goto(web.url + '#/learners/classes/' + k10.id + '/planner');
+  await A.getByRole('button', { name: 'New unit' }).click();
+  const unitForm = A.getByRole('dialog', { name: 'New unit' });
+  await unitForm.getByLabel('Title').fill('Linear equations');
+  await unitForm.getByLabel('Starts').fill(nyDay(-3));
+  await unitForm.getByLabel('Ends').fill(nyDay(20));
+  await unitForm.getByRole('switch', { name: 'An IB MYP unit' }).click();
+  await unitForm.getByLabel('Statement of inquiry').fill('Balancing both sides helps us find what we don’t know.');
+  await unitForm.getByLabel('Key concept').selectOption('Relationships');
+  await unitForm.getByLabel('What it’s about').fill('Solving equations with one unknown.');
+  await unitForm.getByLabel('Reflection').fill('Only for teachers to read');
+  await unitForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Unit added').waitFor();
+  await A.locator('.unit-card', { hasText: 'Linear equations' }).getByText('Now', { exact: true }).waitFor();
+  await shot(A, 'class-planner');
+  await a11y(A, 'A class’s planner');
+  // today's lesson's plan, from the timetable: it falls in that unit; a note for the learners
+  await nav(A, 'Timetable').click();
+  await A.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' }).getByRole('button', { name: 'Year 10 maths' }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Plan this lesson' }).click();
+  await A.getByRole('heading', { name: 'Lesson plan' }).waitFor();
+  assert.match(await A.getByLabel('Unit').locator('option:checked').innerText(), /^Linear equations/, 'filed under the unit it falls in');
+  await A.getByLabel('What they’ll learn').fill('Solve equations with brackets');
+  await A.getByLabel('For the learners').fill('Bring a calculator');
+  await A.getByRole('button', { name: 'Save the plan' }).click();
+  await A.getByText('The plan is saved').waitFor();
+  await shot(A, 'lesson-plan');
+  await a11y(A, 'A lesson plan');
+  await nav(A, 'Timetable').click();
+  await A.locator('.tt-day.today .tt-lesson', { hasText: 'Period 1' }).getByText('Planned').waitFor();
+  // Anaya: the note on her lesson, and what her class is learning
+  const AU = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'America/New_York' })).newPage();
+  watch(AU, 'learner (planner)');
+  await (await import('./sweep.mjs')).signIn(AU, web.url, 'anaya@example.com');
+  await AU.goto(web.url + '#/timetable');
+  await AU.getByText('Bring a calculator').first().waitFor();
+  await AU.goto(web.url + '#/classes/' + k10.id);
+  await AU.getByRole('heading', { name: 'What we’re learning' }).waitFor();
+  await AU.getByText('Balancing both sides helps us find what we don’t know.').waitFor();
+  assert.equal(await AU.getByText('Only for teachers to read').count(), 0, 'never the teacher’s reflection');
+  await shot(AU, 'learner-class-units');
+  await AU.close();
+
+  step('IB MYP criteria and a term report: maths is an MYP subject, a piece of work is assessed on criteria A and C, the teacher writes Anaya’s term report and sends it out; her dad reads it');
+  // an MYP subject, and work assessed on two of its criteria
+  const inv2 = (await tc.from('assignments').insert({ title: 'Patterns investigation', kind: 'homework', subject_id: maths.id, class_id: k10.id, visibility: 'visible', criteria: ['A', 'C'] }).select().single()).data;
+  const iq = (await tc.from('questions').insert({ assignment_id: inv2.id, type: 'short', prompt_md: 'Describe the pattern and explain it.', marks: 10 }).select().single()).data;
+  await A.goto(web.url + '#/assignments/' + inv2.id);
+  // the teacher says which MYP subject group maths is in, right in the editor
+  await A.getByRole('button', { name: 'An IB MYP subject? Assess it on its criteria' }).click();
+  await A.getByLabel('MYP subject group').selectOption('mathematics');
+  await A.getByRole('button', { name: 'A: Knowing and understanding' }).waitFor();
+  await shot(A, 'editor-myp-criteria');
+  assert.equal(await A.getByRole('button', { name: 'A: Knowing and understanding' }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await A.getByRole('button', { name: 'B: Investigating patterns' }).getAttribute('aria-pressed'), 'false');
+  const it = (await lc.rpc('start_attempt', { p_assignment: inv2.id, p_client: 'browser' })).data;
+  await lc.rpc('save_response', { p_attempt: it.id, p_question: iq.id, p_answer: { text: 'It goes up by 3 each time, so 3n + 1.' } });
+  await lc.rpc('submit_attempt', { p_attempt: it.id });
+  // marking: a level for each criterion, as well as marks
+  await A.goto(web.url + '#/marking/' + it.id);
+  await A.getByRole('heading', { name: 'IB MYP criteria' }).waitFor();
+  await A.getByLabel('A: Knowing and understanding').selectOption('6');
+  await A.getByLabel('C: Communicating').selectOption('5');
+  await A.getByLabel('Mark for question 1').fill('8');
+  await shot(A, 'marking-myp-criteria');
+  await A.getByRole('button', { name: 'Return marks' }).click();
+  await A.getByText('Marks returned').waitFor();
+  const back = (await lc.rpc('attempt_detail', { p_attempt: it.id })).data;
+  assert.deepEqual(back.attempt.criteria, { A: 6, C: 5 }, 'she sees the levels with her marks');
+  // a term report: set up, Anaya's maths part written (the levels given are a hint), an overall comment, sent out
+  await nav(A, 'Learners').click();
+  await A.getByRole('button', { name: 'Term reports', exact: true }).click();
+  await A.getByRole('button', { name: 'New term report' }).click();
+  const rf = A.getByRole('dialog', { name: 'New term report' });
+  await rf.getByLabel('Name').fill('Term 1 report');
+  await rf.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Term report set up. Each class’s teachers can write their part now.').waitFor();
+  await A.locator('.card', { hasText: 'Term 1 report' }).locator('.item', { hasText: 'Year 10 maths' }).getByRole('button', { name: 'Write' }).click();
+  // (everyone in the class has a card; Anaya's is the one with the levels she was given)
+  const anayaCard = A.locator('.term-entry').filter({ has: A.getByRole('heading', { name: 'Anaya' }) });
+  await anayaCard.getByText(/Levels given: A6 · C5/).waitFor();
+  for (const [k, n] of [['A: Knowing and understanding', '6'], ['B: Investigating patterns', '5'], ['C: Communicating', '5'], ['D: Applying mathematics in real-life contexts', '4']]) {
+    await anayaCard.getByLabel(k).selectOption(n);
+  }
+  await anayaCard.locator('.term-myp-grade').getByText('5').waitFor();
+  await anayaCard.getByLabel('Effort').selectOption({ label: 'Excellent' });
+  await anayaCard.getByLabel('Comment').fill('Anaya explains her thinking clearly and checks her work.');
+  await shot(A, 'term-report-write');
+  await a11y(A, 'Writing a term report');
+  await anayaCard.getByRole('button', { name: 'Save and finish' }).click();
+  await A.getByText('Anaya’s part is finished').waitFor();
+  await A.getByRole('link', { name: 'Term reports' }).click();
+  await A.getByRole('button', { name: 'Overall comments and sending' }).click();
+  await A.getByLabel('Overall comment for Anaya').fill('A strong first term. Keep asking questions.');
+  await A.getByRole('button', { name: 'Save the comment' }).click();
+  await A.getByText('Saved').first().waitFor();
+  await A.getByRole('button', { name: 'Send it out' }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Send it out' }).click();
+  await A.getByText(/^Sent out to \d+ learners? and their parents/).waitFor();
+  await shot(A, 'term-report-sent');
+  // her dad: a note on Marks, and the report itself, ready to print
+  const PT = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'America/New_York' })).newPage();
+  watch(PT, 'parent (term report)');
+  await (await import('./sweep.mjs')).signIn(PT, web.url, 'dad@example.com');
+  await PT.goto(web.url + '#/marks');
+  await PT.getByRole('heading', { name: 'Term reports' }).waitFor();
+  await PT.getByRole('link', { name: /Term 1 report/ }).click();
+  await PT.getByText('A strong first term. Keep asking questions.').waitFor();
+  await PT.getByText('Criterion A: Knowing and understanding').waitFor();
+  await PT.getByRole('button', { name: 'Print or save as PDF' }).waitFor();
+  await shot(PT, 'parent-term-report');
+  await a11y(PT, 'A term report');
+  await PT.close();
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });

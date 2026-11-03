@@ -15,6 +15,7 @@ import { doneOn, onPage } from '../shared/Live.jsx';
 import { ExtendWork, useDueFor } from './Access.jsx';
 import { StatusPill } from './Learners.jsx';
 import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
+import { band } from '../../lib/myp.js';
 
 export default function Marking() {
   const lk = useLookups();
@@ -403,6 +404,7 @@ export function MarkAttempt({ id }) {
             </button>
             {others.length > 0 && <div className="muted small">{others.length} more submission{others.length > 1 ? 's' : ''} of this to mark.</div>}
           </div>
+          <CriteriaCard id={id} d={d} />
           <ProfMarkCard
             attemptId={id}
             onApplied={async () => {
@@ -597,5 +599,41 @@ function Annotate({ path, strokes, onClose, onSave }) {
       <div className="muted small">Draw ticks, crosses and corrections. The learner sees this copy when you return their marks.</div>
       {url ? <DrawingPad ref={pad} background={url} defaultColor="#D93025" label="Their work" /> : <Loading />}
     </Modal>
+  );
+}
+
+// IB MYP criteria (running a school, part 2): a level from 0 to 8 for each criterion the work is assessed on, saved as
+// you pick; the learner sees them with their marks
+function CriteriaCard({ id, d }) {
+  const toast = useToast();
+  const [levels, setLevels] = useState(() => d.attempt.criteria || {});
+  if (!d.myp) return null;
+  async function set(k, v) {
+    const next = { ...levels, [k]: v === '' ? undefined : Number(v) };
+    setLevels(next);
+    try {
+      await api.setAttemptCriteria(id, next);
+      invalidate('gradebook');
+    } catch (e) {
+      toast({ title: 'Couldn’t save the level', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <div className="card">
+      <h3>IB MYP criteria</h3>
+      <div className="small muted">A level from 0 to 8 for each. They see the levels with their marks.</div>
+      {d.myp.on.map((k) => (
+        <Field key={k} label={`${k}: ${d.myp.names?.[k] || 'Criterion ' + k}`}>
+          <select className="select" value={levels[k] ?? ''} onChange={(e) => set(k, e.target.value)}>
+            <option value="">Not given yet</option>
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+              <option key={n} value={n}>
+                {n} · {band(n)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ))}
+    </div>
   );
 }

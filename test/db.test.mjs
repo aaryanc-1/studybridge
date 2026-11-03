@@ -1225,7 +1225,7 @@ test('mock exams: papers add up, the grade comes from the tutor’s own boundari
   assert.equal(mine[0].grade, null, 'no grade until every paper is given back');
   assert.equal(mine[0].total, null);
   assert.ok(mine[0].papers.every((p) => p.score === null));
-  assert.doesNotMatch(JSON.stringify(mine), /grades|160|boundar/i, 'no boundaries in what the learner gets');
+  assert.doesNotMatch(JSON.stringify(mine), /grades|\b160\b|boundar/i, 'no boundaries in what the learner gets');
   await as('TW', `select finish_marking($1, true)`, [t1]);
   mine = await val('LW', `select my_mocks()`);
   assert.equal(Number(mine[0].papers[0].score), 60);
@@ -3817,4 +3817,237 @@ test('every tutor’s timetable: lessons in person (one-off and weekly) with a r
   const other = (await val('IT2', `select behaviour_list()`)).find((t) => t.name === 'Great work');
   await fails(as('IT2', `select give_behaviour($1, $2)`, [[U.IL1], other.id]), /don’t teach/);
   assert.equal((await val('IT2', `select my_behaviour()`)).positive, 0);
+});
+
+test('running a school, part 2: two-week timetables, cover for a teacher who is away, rooms changed and lessons cancelled for a day, and planners', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['SM', 'ST', 'SC', 'SX']) {
+    await mk(k, k.toLowerCase() + '@two.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const k of ['SL1', 'SL2']) {
+    await mk(k, k.toLowerCase() + '@two.x');
+    const code = await val('ST', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  await mk('SP', 'sp@two.x');
+  const inv = await one('ST', `select * from create_parent_invite($1, 'Mum')`, [U.SL1]);
+  await one('SP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const centre = await val('SM', `select org_make_centre('Hillside School')`);
+  for (const k of ['ST', 'SC']) await val(k, `select org_join($1)`, [centre.code]);
+  const maths = await val('SM', `select save_class(null, 'Year 9 maths', null, $1, $2)`, [[U.SL1, U.SL2], [U.ST]]);
+  const physics = await val('SM', `select save_class(null, 'Year 9 physics', null, $1, $2)`, [[U.SL2], [U.SC]]);
+  await as('SM', `select set_school_timezone('UTC')`);
+  await as('SM', `select save_periods($1)`, [JSON.stringify([{ name: 'P1', starts: '00:00', ends: '00:30' }, { name: 'P2', starts: '23:00', ends: '23:50' }])]);
+  const [p1, p2] = (await val('SM', `select school_setup()`)).periods.map((p) => p.id);
+  const today = await val('SM', `select (now() at time zone 'UTC')::date::text`);
+  const plus = (n) => val('SM', `select ($1::date + $2::int)::text`, [today, n]);
+  const dow = await val('SM', `select extract(isodow from (now() at time zone 'UTC'))::int`);
+  const week = (k, from, to, learner) => val(k, `select my_timetable($1::date, $2::date, $3)`, [from, to || from, learner || null]);
+
+  // a one-week timetable ignores Week A and B
+  let slotA = await val('SM', `select save_slot(null, $1, $2, $3, '5', null, 1)`, [maths, dow, p1]);
+  assert.equal((await val('SM', `select school_setup()`)).slots.find((x) => x.id === slotA).week, 0);
+  // two weeks: this week is Week A
+  await fails(as('ST', `select set_ab_weeks(true, 1)`), /Only a manager/);
+  assert.deepEqual(await val('SM', `select set_ab_weeks(true, 1)`), { ab_weeks: true, week_now: 1 });
+  slotA = await val('SM', `select save_slot($1, $2, $3, $4, '5', null, 1)`, [slotA, maths, dow, p1]);
+  const slotB = await val('SM', `select save_slot(null, $1, $2, $3, '6', null, 2)`, [maths, dow, p2]);
+  const tl = (await week('ST', today)).filter((x) => x.kind === 'lesson');
+  assert.deepEqual(tl.map((x) => [x.id, x.week]), [[slotA, 'A']]);
+  const next = await plus(7);
+  assert.deepEqual((await week('ST', next)).filter((x) => x.kind === 'lesson').map((x) => [x.id, x.week]), [[slotB, 'B']]);
+  await fails(as('ST', `select register('lesson', $1, $2::date)`, [slotB, today]), /isn’t on that day/);
+  // the same room in Week B is fine; every week clashes with Week A
+  await val('SM', `select save_slot(null, $1, $2, $3, '5', $4, 2)`, [physics, dow, p1, U.SC]);
+  await fails(as('SM', `select save_slot(null, $1, $2, $3, '5', $4, 0)`, [physics, dow, p1, U.SC]), /Room 5 is already in use/);
+  // a week with no school in it doesn't count: with next week a holiday, the week after is Week B
+  const mon = await val('SM', `select ($1::date + 7 - (extract(isodow from $1::date)::int - 1))::text`, [today]);
+  const sun = await val('SM', `select ($1::date + 6)::text`, [mon]);
+  await as('SM', `select save_school_dates($1)`, [JSON.stringify([{ kind: 'holiday', name: 'Half term', starts: mon, ends: sun }])]);
+  assert.equal((await week('ST', next)).filter((x) => x.kind === 'lesson').length, 0);
+  assert.deepEqual((await week('ST', await plus(14))).filter((x) => x.kind === 'lesson').map((x) => x.week), ['B']);
+  await as('SM', `select save_school_dates('[]')`);
+  assert.deepEqual((await week('ST', await plus(14))).filter((x) => x.kind === 'lesson').map((x) => x.week), ['A']);
+
+  // ST is away today: their lesson needs cover; SC is free in P1 this week (their physics is in Week B)
+  await fails(as('ST', `select set_staff_away($1, $2::date)`, [U.ST, today]), /Only a manager/);
+  const away = await val('SM', `select set_staff_away($1, $2::date, null, 'A course')`, [U.ST, today]);
+  const cd = await val('SM', `select cover_day($1::date)`, [today]);
+  assert.deepEqual([cd.week, cd.away.map((a) => a.name), cd.lessons.find((l) => l.slot_id === slotA).needs], ['A', ['ST'], true]);
+  assert.deepEqual(cd.teachers.find((t) => t.id === U.SC).busy, []);
+  await fails(as('SM', `select save_cover($1, $2::date, $3)`, [slotA, today, U.ST]), /already their lesson/);
+  await fails(as('ST', `select save_cover($1, $2::date, $3)`, [slotA, today, U.SC]), /Only a manager/);
+  await val('SM', `select save_cover($1, $2::date, $3, false, '7', 'Worksheet on page 12')`, [slotA, today, U.SC]);
+  assert.match((await as('SC', `select title from notifications where kind = 'cover'`))[0].title, /^You’re covering Year 9 maths · P1/);
+  assert.match((await as('ST', `select title from notifications where kind = 'cover'`))[0].title, /^SC covers Year 9 maths/);
+  assert.deepEqual((await as('SL1', `select title from notifications where kind = 'timetable_change'`)).map((n) => n.title), ['Year 9 maths is in Room 7']);
+  const covering = (await week('SC', today)).find((x) => x.id === slotA);
+  assert.deepEqual([covering.cover, covering.room, covering.cover_note], [true, '7', 'Worksheet on page 12']);
+  assert.equal((await week('ST', today)).find((x) => x.id === slotA).covered_by, 'SC');
+  const hers = (await week('SL1', today)).find((x) => x.id === slotA);
+  assert.deepEqual([hers.teacher, hers.room, hers.covered, hers.cover_note], ['SC', '7', true, null]);
+  assert.equal((await week('SP', today, today, U.SL1)).find((x) => x.id === slotA).teacher, 'SC');
+  // the cover teacher takes the register; someone else can't
+  await val('SC', `select save_register('lesson', $1, $2::date, $3)`, [slotA, today, JSON.stringify([{ learner: U.SL1, status: 'present' }])]);
+  await fails(as('SX', `select register('lesson', $1, $2::date)`, [slotA, today]), /can’t take/);
+  await fails(as('SM', `select save_cover($1, $2::date, $3)`, [slotA, await plus(-14), U.SC]), /day has gone/);
+
+  // planners: a unit with the IB parts, shared with the class (never the reflection)
+  const unit = await val('ST', `select save_unit(null, $1, $2)`, [maths, JSON.stringify({ title: 'Algebra', starts: today, ends: await plus(30), ib: true,
+    inquiry: 'Patterns help us predict', key_concept: 'Relationships', summary: 'Expressions and equations', reflection: 'Went well', shared: true })]);
+  await val('ST', `select save_unit(null, $1, $2)`, [maths, JSON.stringify({ title: 'Just for us', shared: false })]);
+  await fails(as('SX', `select save_unit(null, $1, '{"title":"Mine"}')`, [maths]), /Only the class’s teachers/);
+  await fails(as('ST', `select save_unit(null, $1, '{"title":" "}')`, [maths]), /title/);
+  const seen = await val('SL1', `select class_units($1)`, [maths]);
+  assert.deepEqual(seen.units.map((u) => [u.title, u.inquiry, u.reflection]), [['Algebra', 'Patterns help us predict', null]]);
+  assert.equal((await val('SP', `select class_units($1)`, [maths])).units.length, 1);
+  await fails(as('SL1', `select class_units($1)`, [physics]), /can’t see/);
+  assert.equal((await val('SM', `select class_units($1)`, [maths])).units.length, 2, 'the manager sees the whole planner');
+  // a lesson's plan, filed under the unit it falls in; learners see what's for them; the cover teacher reads it
+  const lp = await val('ST', `select lesson_plan('lesson', $1, $2::date)`, [slotA, today]);
+  assert.deepEqual([lp.unit_now, lp.plan, lp.units.length], [unit, null, 2]);
+  await val('ST', `select save_lesson_plan('lesson', $1, $2::date, $3)`, [slotA, today, JSON.stringify({ unit_id: unit, objectives: 'Solve linear equations', for_learners: 'Bring a calculator' })]);
+  assert.equal((await val('SC', `select lesson_plan('lesson', $1, $2::date)`, [slotA, today])).plan.objectives, 'Solve linear equations');
+  await fails(as('SX', `select lesson_plan('lesson', $1, $2::date)`, [slotA, today]), /can’t plan/);
+  assert.equal((await week('SL1', today)).find((x) => x.id === slotA).for_learners, 'Bring a calculator');
+  assert.equal((await week('ST', today)).find((x) => x.id === slotA).planned, true);
+  assert.equal((await val('ST', `select class_units($1)`, [maths])).units.find((u) => u.id === unit).lessons.length, 1);
+  await as('ST', `select delete_unit($1)`, [unit]);
+  assert.equal((await val('ST', `select lesson_plan('lesson', $1, $2::date)`, [slotA, today])).plan.unit_id, null, 'the plan stays');
+  await val('ST', `select save_lesson_plan('lesson', $1, $2::date, '{}')`, [slotA, today]);
+  assert.equal((await val('ST', `select lesson_plan('lesson', $1, $2::date)`, [slotA, today])).plan, null);
+
+  // cancelled: the class hears, the cover teacher's off it, and there's no register
+  await val('SM', `select save_cover($1, $2::date, null, true)`, [slotA, today]);
+  assert.deepEqual((await as('SL1', `select title from notifications where kind = 'timetable_change' order by created_at`)).map((n) => n.title), ['Year 9 maths is in Room 7', 'Year 9 maths is cancelled']);
+  assert.match((await as('SC', `select title from notifications where kind = 'cover' order by created_at`)).at(-1).title, /not covering/);
+  assert.equal((await week('SL1', today)).find((x) => x.id === slotA).cancelled, true);
+  await fails(as('ST', `select register('lesson', $1, $2::date)`, [slotA, today]), /cancelled/);
+  // nothing changed: back to normal
+  await val('SM', `select save_cover($1, $2::date)`, [slotA, today]);
+  assert.equal((await week('ST', today)).find((x) => x.id === slotA).cancelled, false);
+  await as('SM', `select remove_staff_away($1)`, [away]);
+  assert.equal((await val('SM', `select cover_day($1::date)`, [today])).away.length, 0);
+
+  // back to one week: Week A's lessons are every week's, Week B's come off
+  await val('SM', `select set_ab_weeks(false)`);
+  const slots = (await val('SM', `select school_setup()`)).slots;
+  assert.deepEqual([slots.some((x) => x.id === slotB), slots.find((x) => x.id === slotA).week], [false, 0]);
+});
+
+test('running a school, part 2: IB MYP criteria levels in marking and the gradebook, and term reports written by each class’s teachers and sent to learners and parents', async () => {
+  const { MYP_GROUPS } = await import('../src/lib/myp.js');
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  // the app's MYP criteria are the server's
+  for (const [g, x] of Object.entries(MYP_GROUPS)) {
+    assert.deepEqual((await db.query(`select public._myp_criteria($1) c`, [g])).rows[0].c, x.criteria, g);
+  }
+  for (const k of ['QM', 'QT', 'QX']) {
+    await mk(k, k.toLowerCase() + '@term.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const k of ['QA', 'QB']) {
+    await mk(k, k.toLowerCase() + '@term.x');
+    const code = await val('QT', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  await mk('QP', 'qp@term.x');
+  const inv = await one('QT', `select * from create_parent_invite($1, 'Dad')`, [U.QA]);
+  await one('QP', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [inv.code]);
+  const centre = await val('QM', `select org_make_centre('Lakeside School')`);
+  await val('QT', `select org_join($1)`, [centre.code]);
+  const sci = await val('QT', `insert into subjects (name) values ('MYP Sciences') returning id`);
+  const eng = await val('QT', `insert into subjects (name) values ('English') returning id`);
+  const sciClass = await val('QM', `select save_class(null, 'Year 9 sciences', $1, $2, $3)`, [sci, [U.QA, U.QB], [U.QT]]);
+  const engClass = await val('QM', `select save_class(null, 'Year 9 English', $1, $2, $3)`, [eng, [U.QA], [U.QT]]);
+
+  // an MYP subject: its group gives criteria A to D
+  await fails(as('QX', `select set_myp_group($1, 'sciences')`, [sci]), /can’t change/);
+  await fails(as('QT', `select set_myp_group($1, 'cooking')`, [sci]), /MYP subject groups/);
+  await val('QT', `select set_myp_group($1, 'sciences')`, [sci]);
+  await fails(as('QT', `insert into assignments (title, subject_id, class_id, criteria) values ('Bad', $1, $2, '{E}')`, [sci, sciClass]), /criteria_check/);
+  const lab = await val('QT', `insert into assignments (title, kind, subject_id, class_id, visibility, criteria) values ('Lab report', 'homework', $1, $2, 'visible', '{A,C}') returning id`, [sci, sciClass]);
+  const q = await val('QT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Write it up.', 10) returning id`, [lab]);
+  const t = await one('QA', `select * from start_attempt($1, 'browser')`, [lab]);
+  await as('QA', `select save_response($1, $2, '{"text": "My lab report"}'::jsonb)`, [t.id, q]);
+  await as('QA', `select submit_attempt($1)`, [t.id]);
+  await fails(as('QT', `select set_attempt_criteria($1, '{"B": 5}')`, [t.id]), /isn’t assessed on criterion B/);
+  await fails(as('QT', `select set_attempt_criteria($1, '{"A": 9}')`, [t.id]), /0 to 8/);
+  await fails(as('QX', `select set_attempt_criteria($1, '{"A": 5}')`, [t.id]), /not found/);
+  await val('QT', `select set_attempt_criteria($1, '{"A": 6, "C": 5}')`, [t.id]);
+  await as('QT', `update responses set marks = 8 where attempt_id = $1`, [t.id]);
+  let seen = await val('QA', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual([seen.attempt.criteria, seen.myp.on, seen.myp.names.C], [null, ['A', 'C'], 'Processing and evaluating'], 'levels once marks are back');
+  await one('QT', `select * from finish_marking($1, true, 'Good write-up', false)`, [t.id]);
+  seen = await val('QA', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual(seen.attempt.criteria, { A: 6, C: 5 });
+  const gb = await val('QT', `select class_gradebook($1)`, [sciClass]);
+  assert.deepEqual([gb.myp.A, gb.work[0].criteria, gb.cells[0].criteria], ['Knowing and understanding', ['A', 'C'], { A: 6, C: 5 }]);
+
+  // a term report: set up by the manager, written by each class's teachers
+  await fails(as('QT', `select save_report_round(null, '{"title": "Term 1"}')`), /Only a manager/);
+  await fails(as('QM', `select save_report_round(null, '{"title": " "}')`), /Give the report a name/);
+  const today = await val('QM', `select current_date::text`);
+  const round = await val('QM', `select save_report_round(null, $1)`, [JSON.stringify({ title: 'Term 1 report', starts: '2000-01-01', ends: '2099-01-01', due: today, scale: 'letters', effort: true })]);
+  const list = await val('QT', `select report_rounds()`);
+  assert.deepEqual([list.manager, list.rounds[0].title, list.rounds[0].classes.map((c) => [c.name, c.learners, c.done])],
+    [false, 'Term 1 report', [['Year 9 English', 1, 0], ['Year 9 sciences', 2, 0]]]);
+  assert.equal((await val('QX', `select report_rounds()`)).rounds.length, 0, 'another place sees nothing');
+  // the sciences class is MYP: criteria, with hints from the marked work
+  const rc = await val('QT', `select report_class($1, $2)`, [round, sciClass]);
+  const qa = rc.learners.find((l) => l.id === U.QA);
+  assert.deepEqual([rc.myp.D, qa.hints.work, Number(qa.hints.pct), qa.hints.criteria, qa.entry], ['Reflecting on the impacts of science', 1, 80, { A: 6, C: 5 }, null]);
+  await fails(as('QX', `select report_class($1, $2)`, [round, sciClass]), /don’t teach/);
+  await val('QT', `select save_report_entry($1, $2, $3, $4)`, [round, sciClass, U.QA, JSON.stringify({ criteria: { A: 6, B: 5, C: 5 }, effort: 1, comment: 'A careful scientist.' })]);
+  assert.equal((await val('QT', `select report_class($1, $2)`, [round, sciClass])).learners.find((l) => l.id === U.QA).entry.grade, null, 'no grade until all four');
+  const saved = await val('QT', `select save_report_entry($1, $2, $3, $4)`, [round, sciClass, U.QA, JSON.stringify({ criteria: { A: 6, B: 5, C: 5, D: 4 }, effort: 1, comment: 'A careful scientist.', done: true })]);
+  assert.equal(saved.grade, '5', '20 out of 32 is a 5');
+  await fails(as('QT', `select save_report_entry($1, $2, $3, $4)`, [round, sciClass, U.QA, JSON.stringify({ criteria: { E: 3 } })]), /A, B, C and D/);
+  await fails(as('QT', `select save_report_entry($1, $2, $3, $4)`, [round, engClass, U.QA, JSON.stringify({ grade: 'B+' })]), /isn’t one of this report’s grades/);
+  await fails(as('QT', `select save_report_entry($1, $2, $3, $4)`, [round, engClass, U.QB, JSON.stringify({ grade: 'B' })]), /aren’t in this class/);
+  await val('QT', `select save_report_entry($1, $2, $3, $4)`, [round, engClass, U.QA, JSON.stringify({ grade: 'A*', effort: 2, comment: 'Lovely essays.', done: true })]);
+  await fails(as('QX', `select save_report_entry($1, $2, $3, '{}')`, [round, engClass, U.QA]), /don’t teach/);
+  // the overall comment: her main teacher (or a manager)
+  await fails(as('QX', `select save_report_overall($1, $2, 'Hi')`, [round, U.QA]), /isn’t here/);
+  await as('QT', `select save_report_overall($1, $2, 'A great first term.')`, [round, U.QA]);
+  const ov = await val('QM', `select report_round($1)`, [round]);
+  assert.deepEqual(ov.learners.map((l) => [l.name, l.classes, l.done, l.overall]), [['QA', 2, 2, 'A great first term.'], ['QB', 1, 0, null]]);
+  // not out yet: she and her dad see nothing; staff can preview it
+  assert.deepEqual(await val('QA', `select my_reports()`), []);
+  await fails(as('QP', `select report_card($1, $2)`, [round, U.QA]), /isn’t here/);
+  const preview = await val('QT', `select report_card($1, $2)`, [round, U.QA]);
+  assert.deepEqual(preview.subjects.map((s) => [s.class, s.grade]), [['Year 9 English', 'A*'], ['Year 9 sciences', '5']]);
+  // sent out: they're told (her dad by email too), and it can't change until it's taken back
+  await fails(as('QT', `select publish_report_round($1, true)`, [round]), /Only a manager/);
+  assert.equal((await val('QM', `select publish_report_round($1, true)`, [round])).told, 2);
+  assert.deepEqual((await as('QA', `select title from notifications where kind = 'term_report'`)).map((n) => n.title), ['Your Term 1 report is ready']);
+  assert.deepEqual((await as('QP', `select title from notifications where kind = 'term_report'`)).map((n) => n.title), ['QA’s Term 1 report is ready']);
+  assert.equal((await db.query(`select count(*)::int n from outgoing_emails where to_addr = 'qp@term.x' and subject = 'QA’s Term 1 report is ready'`)).rows[0].n, 1);
+  await fails(as('QT', `select save_report_entry($1, $2, $3, '{}')`, [round, engClass, U.QA]), /gone out/);
+  await fails(as('QM', `select delete_report_round($1)`, [round]), /Take it back first/);
+  assert.deepEqual((await val('QP', `select my_reports($1)`, [U.QA])).map((r) => [r.title, r.place]), [['Term 1 report', 'Lakeside School']]);
+  const card = await val('QP', `select report_card($1, $2)`, [round, U.QA]);
+  const s = card.subjects.find((x) => x.class === 'Year 9 sciences');
+  assert.deepEqual([card.place, s.teachers, s.grade, s.myp_total, s.criteria.map((c) => [c.letter, c.level]), card.overall.comment],
+    ['Lakeside School', 'QT', '5', 20, [['A', 6], ['B', 5], ['C', 5], ['D', 4]], 'A great first term.']);
+  assert.equal(card.staff, false);
+  assert.equal((await val('QA', `select export_my_data()`)).term_reports[0].round.title, 'Term 1 report', 'in her own data');
+  // QB's sciences part was never written: her card shows nothing for it
+  assert.deepEqual((await val('QB', `select report_card($1, $2)`, [round, U.QB])).subjects, []);
+  await fails(as('QB', `select report_card($1, $2)`, [round, U.QA]), /isn’t here/);
+  // every card at once, to print (managers)
+  await fails(as('QT', `select report_cards($1)`, [round]), /Only a manager/);
+  assert.equal((await val('QM', `select report_cards($1)`, [round])).length, 2);
+  // taken back: it's gone from them until it goes out again
+  await val('QM', `select publish_report_round($1, false)`, [round]);
+  assert.deepEqual(await val('QA', `select my_reports()`), []);
+  await as('QM', `select delete_report_round($1)`, [round]);
+  assert.equal((await val('QM', `select report_rounds()`)).rounds.length, 0);
 });
