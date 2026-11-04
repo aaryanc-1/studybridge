@@ -1,14 +1,16 @@
 // Planners (running a school, part 2): a class's units of work, with the IB MYP parts for IB classes (statement of
-// inquiry, key and related concepts, global context, approaches to learning), and a plan for each lesson filed under
-// its unit. The class's teachers and its centre's or school's managers plan; learners in the class (and their parents)
+// inquiry, key and related concepts, global context, approaches to learning) or the PYP's (a unit of inquiry: theme,
+// central idea, lines of inquiry, key concepts, learner profile), and a plan for each lesson filed under its unit. The
+// PYP's programme of inquiry shows every unit of inquiry in the centre or school by year group and theme. The class's teachers and its centre's or school's managers plan; learners in the class (and their parents)
 // read the units shared with them, never the teachers' reflections or notes.
 import { useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Empty, Field, Loading, Modal, Toggle, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
+import { Empty, Field, Link, Loading, Modal, Page, Seg, Toggle, go, useConfirm, useLeaveGuard, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ymd } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
+import { KEY_CONCEPTS as PYP_CONCEPTS, LEARNER_PROFILE, THEMES } from '../../lib/core.js';
 
 // The IB MYP's key concepts and global contexts, to pick from
 const KEY_CONCEPTS = ['Aesthetics', 'Change', 'Communication', 'Communities', 'Connections', 'Creativity', 'Culture', 'Development', 'Form',
@@ -31,9 +33,16 @@ export function Planner({ classId, subjectId }) {
     <>
       <div className="row between wrap" style={{ gap: 8 }}>
         <span className="small muted">Units of work in order. Learners see the units you share (never your reflections), and each lesson’s plan can sit under its unit.</span>
-        <button className="btn primary" onClick={() => setEditing({ title: '', shared: true, topic_ids: [] })}>
-          <Icon name="plus" size={16} /> New unit
-        </button>
+        <span className="row wrap" style={{ gap: 8 }}>
+          {d.units.some((u) => u.pyp) && (
+            <button className="btn" onClick={() => go('/programme')}>
+              Programme of inquiry
+            </button>
+          )}
+          <button className="btn primary" onClick={() => setEditing({ title: '', shared: true, topic_ids: [] })}>
+            <Icon name="plus" size={16} /> New unit
+          </button>
+        </span>
       </div>
       {d.units.length === 0 ? (
         <Empty title="No units yet">Plan the class’s year as units of work: what it’s about, what they’ll learn, how it’s assessed. Then plan each lesson from your timetable.</Empty>
@@ -42,7 +51,7 @@ export function Planner({ classId, subjectId }) {
           <div key={u.id} className={'card unit-card' + (isNow(u, today) ? ' now' : '')}>
             <div className="card-head">
               <h2>
-                {u.title} {isNow(u, today) && <span className="pill accent">Now</span>} {u.ib && <span className="pill">IB</span>}{' '}
+                {u.title} {isNow(u, today) && <span className="pill accent">Now</span>} {u.ib && <span className="pill">MYP</span>} {u.pyp && <span className="pill">PYP</span>}{' '}
                 {!u.shared && <span className="pill">Not shared</span>}
               </h2>
               <button className="btn sm" onClick={() => setEditing(u)} aria-label={`Change ${u.title}`}>
@@ -75,13 +84,19 @@ export function Planner({ classId, subjectId }) {
 function UnitBody({ u, staff = true }) {
   const rows = [
     ['Dates', staff && dates(u)], // (learners see the dates beside the unit's name)
+    ['Theme', u.pyp && THEMES[u.theme]],
+    ['Central idea', u.pyp && u.central_idea],
+    ['Lines of inquiry', u.pyp && u.lines_of_inquiry],
+    ['Key concepts', u.pyp && (u.key_concepts || []).join(', ')],
+    ['Related concepts', u.pyp && u.related_concepts],
+    ['Learner profile', u.pyp && (u.learner_profile || []).join(', ')],
     ['Statement of inquiry', u.ib && u.inquiry],
     ['Key concept', u.ib && u.key_concept],
     ['Related concepts', u.ib && u.related_concepts],
     ['Global context', u.ib && u.global_context],
     ['What it’s about', u.summary],
     ['What they’ll learn', u.objectives],
-    [u.ib ? 'Approaches to learning' : 'Skills', u.skills],
+    [u.ib || u.pyp ? 'Approaches to learning' : 'Skills', u.skills],
     ['How it’s assessed', u.assessment],
     ['Resources', u.resources],
     ['Topics', (u.topics || []).join(', ')],
@@ -105,9 +120,11 @@ function UnitEditor({ classId, subjectId, unit, onClose }) {
   const confirm = useConfirm();
   const lk = useLookups();
   const topics = subjectId ? lk.topicsOf(subjectId) : [];
-  const [u, setU] = useState(() => ({ ...unit, topic_ids: unit.topic_ids || [] }));
+  const first = { ...unit, topic_ids: unit.topic_ids || [], key_concepts: unit.key_concepts || [], learner_profile: unit.learner_profile || [] };
+  const [u, setU] = useState(first);
   const [busy, setBusy] = useState(false);
-  const dirty = JSON.stringify(u) !== JSON.stringify({ ...unit, topic_ids: unit.topic_ids || [] });
+  const dirty = JSON.stringify(u) !== JSON.stringify(first);
+  const pick = (key, v) => setU({ ...u, [key]: u[key].includes(v) ? u[key].filter((x) => x !== v) : [...u[key], v] });
   useLeaveGuard(dirty);
   const set = (patch) => setU({ ...u, ...patch });
   const text = (k, label, hint, rows = 3) => (
@@ -122,6 +139,8 @@ function UnitEditor({ classId, subjectId, unit, onClose }) {
         title: u.title, starts: u.starts || null, ends: u.ends || null, ib: !!u.ib, summary: u.summary, objectives: u.objectives,
         inquiry: u.inquiry, key_concept: u.key_concept, related_concepts: u.related_concepts, global_context: u.global_context,
         skills: u.skills, assessment: u.assessment, resources: u.resources, reflection: u.reflection, topic_ids: u.topic_ids, shared: u.shared !== false,
+        pyp: !!u.pyp, theme: u.theme || null, central_idea: u.central_idea, lines_of_inquiry: u.lines_of_inquiry, key_concepts: u.key_concepts,
+        learner_profile: u.learner_profile,
       });
       invalidate('planner', 'class-units', 'lesson-plan');
       toast(unit.id ? 'The unit is saved' : 'Unit added');
@@ -157,7 +176,7 @@ function UnitEditor({ classId, subjectId, unit, onClose }) {
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" disabled={busy || !u.title?.trim()} onClick={save}>
+          <button className="btn primary" disabled={busy || !u.title?.trim() || (u.pyp && !u.theme)} onClick={save}>
             Save
           </button>
         </>
@@ -175,7 +194,53 @@ function UnitEditor({ classId, subjectId, unit, onClose }) {
             <input className="input" type="date" value={u.ends || ''} onChange={(e) => set({ ends: e.target.value })} />
           </Field>
         </div>
-        <Toggle checked={!!u.ib} onChange={(v) => set({ ib: v })} title="An IB MYP unit" sub="Adds the statement of inquiry, concepts and global context." />
+        <Seg
+          label="Kind of unit"
+          value={u.pyp ? 'pyp' : u.ib ? 'myp' : 'plain'}
+          onChange={(v) => set({ ib: v === 'myp', pyp: v === 'pyp' })}
+          options={[
+            { value: 'plain', label: 'A unit' },
+            { value: 'myp', label: 'IB MYP unit' },
+            { value: 'pyp', label: 'PYP unit of inquiry' },
+          ]}
+        />
+        {u.pyp && (
+          <>
+            <Field label="Transdisciplinary theme">
+              <select className="select" value={u.theme || ''} onChange={(e) => set({ theme: e.target.value })}>
+                <option value="">Pick one</option>
+                {Object.entries(THEMES).map(([key, name]) => (
+                  <option key={key} value={key}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {text('central_idea', 'Central idea', 'One sentence the unit is built around', 2)}
+            {text('lines_of_inquiry', 'Lines of inquiry', 'One a line', 3)}
+            <Field label="Key concepts">
+              <div className="row wrap" style={{ gap: 6 }}>
+                {PYP_CONCEPTS.map((c) => (
+                  <button key={c} className="chip" aria-pressed={u.key_concepts.includes(c)} onClick={() => pick('key_concepts', c)}>
+                    {c}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Related concepts" hint="Separated by commas">
+              <input className="input" maxLength={500} value={u.related_concepts || ''} onChange={(e) => set({ related_concepts: e.target.value })} />
+            </Field>
+            <Field label="Learner profile attributes">
+              <div className="row wrap" style={{ gap: 6 }}>
+                {LEARNER_PROFILE.map((a) => (
+                  <button key={a} className="chip" aria-pressed={u.learner_profile.includes(a)} onClick={() => pick('learner_profile', a)}>
+                    {a}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          </>
+        )}
         {u.ib && (
           <>
             {text('inquiry', 'Statement of inquiry', 'One sentence that ties the concepts and context together', 2)}
@@ -204,7 +269,7 @@ function UnitEditor({ classId, subjectId, unit, onClose }) {
         )}
         {text('summary', 'What it’s about')}
         {text('objectives', 'What they’ll learn', 'One a line', 4)}
-        {text('skills', u.ib ? 'Approaches to learning' : 'Skills')}
+        {text('skills', u.ib || u.pyp ? 'Approaches to learning' : 'Skills')}
         {text('assessment', 'How it’s assessed')}
         {text('resources', 'Resources')}
         {topics.length > 0 && (
@@ -323,5 +388,68 @@ function LessonPlanForm({ d }) {
         </button>
       </div>
     </div>
+  );
+}
+
+// The PYP's programme of inquiry: every unit of inquiry in the centre or school, by year group (rows) and theme
+// (columns); a year missing a theme shows as a gap
+export function ProgrammeOfInquiry() {
+  const q = useQuery('programme', api.programmeOfInquiry);
+  const list = q.data;
+  const years = [...new Set((list || []).map((u) => u.grade ?? null))].sort((a, b) => (a == null) - (b == null) || a - b);
+  return (
+    <Page title="Programme of inquiry" subtitle="Every PYP unit of inquiry, by year and theme. Each year should cover all six themes.">
+      {!list ? (
+        q.error ? <div className="error">{q.error.message}</div> : <Loading />
+      ) : list.length === 0 ? (
+        <Empty title="No units of inquiry yet">Add one from a class’s Planner tab: pick “PYP unit of inquiry” and its theme.</Empty>
+      ) : (
+        <div className="card pad0">
+          <div className="gradebook-wrap">
+            <table className="table poi-grid">
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  {Object.values(THEMES).map((t) => (
+                    <th key={t}>{t}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {years.map((g) => (
+                  <tr key={g ?? 'none'}>
+                    <th scope="row">{g == null ? 'No year' : `Grade ${g}`}</th>
+                    {Object.keys(THEMES).map((t) => {
+                      const here = list.filter((u) => (u.grade ?? null) === g && u.theme === t);
+                      return (
+                        <td key={t} className={here.length ? '' : 'poi-gap'}>
+                          {here.map((u) => (
+                            <div key={u.id} className="poi-unit">
+                              {u.mine ? (
+                                <Link to={`/learners/classes/${u.class_id}/planner`} className="strong">
+                                  {u.title}
+                                </Link>
+                              ) : (
+                                <span className="strong">{u.title}</span>
+                              )}
+                              {u.central_idea && <div className="tiny muted">{u.central_idea}</div>}
+                              <div className="tiny muted">
+                                {u.class}
+                                {dates(u) ? ` · ${dates(u)}` : ''}
+                              </div>
+                            </div>
+                          ))}
+                          {!here.length && <span className="tiny muted">Not yet</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </Page>
   );
 }

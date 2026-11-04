@@ -5026,7 +5026,13 @@ begin
                       from public.behaviour x where x.learner_id = me.id and x.removed_at is null),
       -- term reports that have gone out
       'term_reports', (select coalesce(jsonb_agg(public.report_card((x ->> 'id')::uuid, me.id)), '[]')
-                         from jsonb_array_elements(public.my_reports(me.id)) x));
+                         from jsonb_array_elements(public.my_reports(me.id)) x),
+      -- IB projects: CAS, the Extended Essay, TOK, MYP projects, the PYP Exhibition (what they and their supervisors wrote)
+      'projects', (select coalesce(jsonb_agg(jsonb_build_object('kind', c.kind, 'cohort', c.title, 'title', p.title, 'status', p.status, 'grade', p.grade,
+                     'entries', (select coalesce(jsonb_agg(jsonb_build_object('kind', e.kind, 'title', e.title, 'body', e.body, 'day', e.day,
+                                   'outcomes', e.outcomes, 'strands', e.strands, 'hours', e.hours, 'status', e.status, 'feedback', e.feedback,
+                                   'at', e.created_at) order by e.created_at), '[]') from public.core_entries e where e.project_id = p.id))), '[]')
+                    from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id where p.learner_id = me.id));
   elsif me.role = 'parent' then
     v := v || jsonb_build_object('children', public.parent_children());
   end if;
@@ -8017,6 +8023,32 @@ begin
             'Homework each week, and a short quiz at the end', null, true, m, m),
            (y10, 'Vectors', current_date + 15, current_date + 40, 'Adding, scaling and using vectors in geometry.', null, null, null, true, m, m);
   end if;
+  -- IB core: a CAS cohort for the Year 11s with Daniel as their adviser; Amara's football coaching is approved and
+  -- Kofi's beach clean-up is waiting for him
+  if to_regclass('public.core_cohorts') is not null then
+    declare
+      cas uuid;
+      pa uuid;
+      pb uuid;
+    begin
+      insert into public.core_cohorts (org_id, kind, title, session, deadlines, created_by)
+      values (org, 'cas', 'CAS, class of 2027', 'May 2027',
+              jsonb_build_array(jsonb_build_object('key', 'i1', 'label', 'First interview', 'due', current_date - 10),
+                                jsonb_build_object('key', 'plan', 'label', 'CAS project plan', 'due', current_date + 12),
+                                jsonb_build_object('key', 'i2', 'label', 'Second interview', 'due', current_date + 60)), g)
+      returning id into cas;
+      insert into public.core_projects (cohort_id, learner_id, supervisor_id) values (cas, l3, t) returning id into pa;
+      insert into public.core_projects (cohort_id, learner_id, supervisor_id) values (cas, l4, t) returning id into pb;
+      insert into public.core_entries (project_id, kind, author_id, title, body, day, strands, outcomes, hours, status, feedback, feedback_by, feedback_at, created_at)
+      values (pa, 'experience', l3, 'Coaching the under-10s football team', 'Every Saturday morning. I plan the drills and keep the little ones on task.',
+              current_date - 40, '{A,S}', '{2,4,5}', 18, 'approved', 'A real commitment. Write a reflection on what changed for you.', t, now() - interval '20 days',
+              now() - interval '30 days'),
+             (pb, 'experience', l4, 'Beach clean-up with the eco club', 'We collected 40 bags of rubbish and sorted what could be recycled.',
+              current_date - 6, '{S}', '{5,6}', 4, 'waiting', null, null, null, now() - interval '5 days');
+      insert into public.core_entries (project_id, kind, author_id, body, milestone, minutes, created_at)
+      values (pa, 'interview', t, 'Talked about balancing CAS with exams. Amara wants to start a coding club as the CAS project.', 'i1', 20, now() - interval '9 days');
+    end;
+  end if;
 
   perform public._admin_log('demo_made', null, jsonb_build_object('accounts', p_accounts));
   return public.admin_demo();
@@ -8235,8 +8267,8 @@ create policy sb_library_learner on storage.objects for select to authenticated
                and public.can_learner_see(f.tutor_id, f.learner_ids, f.subject_id, f.visibility, f.visible_from))));
 drop policy if exists sb_work_tutor on storage.objects;
 create policy sb_work_tutor on storage.objects for all to authenticated
-  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid))
-  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid));
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core')
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core');
 
 -- Work for a class may be set by any of its teachers
 create or replace function public._class_audience() returns trigger
@@ -13018,6 +13050,8 @@ begin
                  'id', u.id, 'title', u.title, 'starts', u.starts, 'ends', u.ends, 'ib', u.ib, 'summary', u.summary, 'objectives', u.objectives,
                  'inquiry', u.inquiry, 'key_concept', u.key_concept, 'related_concepts', u.related_concepts, 'global_context', u.global_context,
                  'skills', u.skills, 'assessment', u.assessment, 'resources', u.resources, 'shared', u.shared, 'topic_ids', u.topic_ids,
+                 'pyp', u.pyp, 'theme', u.theme, 'central_idea', u.central_idea, 'lines_of_inquiry', u.lines_of_inquiry,
+                 'key_concepts', u.key_concepts, 'learner_profile', u.learner_profile,
                  'topics', (select coalesce(jsonb_agg(t.name order by t.position), '[]') from public.topics t where t.id = any (u.topic_ids)),
                  'reflection', case when v_staff then u.reflection end,
                  'by', case when v_staff then (select display_name from public.profiles where id = coalesce(u.updated_by, u.created_by)) end,
@@ -13071,6 +13105,23 @@ begin
            resources = public._txt(p_unit, 'resources', 2000), reflection = public._txt(p_unit, 'reflection', 4000), topic_ids = v_topics,
            shared = coalesce((p_unit ->> 'shared')::boolean, true), updated_by = auth.uid(), updated_at = now()
      where id = p_id returning id into v_id;
+  end if;
+  -- a PYP unit of inquiry (part of IB core and the PYP, 4 Nov 2026): a theme, its central idea, lines of inquiry, key
+  -- concepts and learner profile attributes (an MYP unit and a PYP unit are never both)
+  if coalesce((p_unit ->> 'pyp')::boolean, false) then
+    if coalesce(p_unit ->> 'theme', '') not in ('who_we_are', 'place_time', 'express', 'world_works', 'organize', 'planet') then
+      raise exception 'Pick one of the six themes.';
+    end if;
+    update public.units set pyp = true, ib = false, theme = nullif(p_unit ->> 'theme', ''), central_idea = public._txt(p_unit, 'central_idea', 500),
+           lines_of_inquiry = public._txt(p_unit, 'lines_of_inquiry', 2000),
+           key_concepts = (select coalesce(array_agg(k order by k), '{}') from jsonb_array_elements_text(coalesce(p_unit -> 'key_concepts', '[]')) k
+                            where k in ('Form', 'Function', 'Causation', 'Change', 'Connection', 'Perspective', 'Responsibility')),
+           learner_profile = (select coalesce(array_agg(a order by a), '{}') from jsonb_array_elements_text(coalesce(p_unit -> 'learner_profile', '[]')) a
+                               where a = any (public._learner_profile()))
+     where id = v_id;
+  else
+    update public.units set pyp = false, theme = null, central_idea = null, lines_of_inquiry = null, key_concepts = '{}', learner_profile = '{}'
+     where id = v_id and pyp;
   end if;
   return v_id;
 end $$;
@@ -13305,8 +13356,7 @@ language sql immutable as $$
 $$;
 create or replace function public._round_json(r public.report_rounds) returns jsonb
 language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('id', r.id, 'title', r.title, 'starts', r.starts, 'ends', r.ends, 'due', r.due, 'scale', r.scale, 'effort', r.effort,
-                            'class_ids', r.class_ids, 'status', r.status, 'published_at', r.published_at, 'created_at', r.created_at)
+  select to_jsonb(r) - 'org_id' - 'created_by' -- (every column but those, so later ones come along by themselves)
 $$;
 
 -- The reports at my place: managers see every one; teachers the ones with a class they teach, or a learner of their own
@@ -13342,6 +13392,7 @@ declare
   v_org uuid := public._org_of(auth.uid());
   v_scale text := coalesce(nullif(p_round ->> 'scale', ''), 'letters');
   v_classes uuid[];
+  v_words text[];
   v_id uuid;
 begin
   if v_org is null or not public._org_manager(v_org) or public.my_role() is distinct from 'tutor' then raise exception 'Only a manager sets up term reports.'; end if;
@@ -13350,7 +13401,16 @@ begin
     raise exception 'This report has gone out. Take it back first to change it.';
   end if;
   if public._txt(p_round, 'title', 80) is null then raise exception 'Give the report a name, like “Term 1 report”.'; end if;
-  if v_scale not in ('letters', 'gcse', 'ib', 'percent', 'none') then raise exception 'Pick the grades it uses.'; end if;
+  if v_scale not in ('letters', 'gcse', 'ib', 'percent', 'words', 'none') then raise exception 'Pick the grades it uses.'; end if;
+  -- (PYP and the like: grades in words, 2 to 8 of them, best last; ATL ratings use the same words)
+  select array_agg(trim(left(trim(w), 30)) order by i) into v_words
+    from jsonb_array_elements_text(coalesce(p_round -> 'descriptors', '[]')) with ordinality as t (w, i) where trim(w) <> '';
+  if v_words is not null and cardinality(v_words) not between 2 and 8 then raise exception 'Use 2 to 8 words for the grades.'; end if;
+  if p_id is not null and v_words is not null and v_words is distinct from (select descriptors from public.report_rounds where id = p_id)
+     and exists (select 1 from public.report_entries e join public.report_rounds r on r.id = e.round_id
+                  where e.round_id = p_id and (e.atl is not null or (r.scale = 'words' and e.grade is not null))) then
+    raise exception 'Teachers have already used these words, so they stay as they are.';
+  end if;
   if nullif(p_round ->> 'starts', '') is not null and nullif(p_round ->> 'ends', '') is not null
      and (p_round ->> 'ends')::date < (p_round ->> 'starts')::date then
     raise exception 'The report’s dates end before they start.';
@@ -13371,6 +13431,9 @@ begin
            effort = coalesce((p_round ->> 'effort')::boolean, true), class_ids = v_classes
      where id = p_id returning id into v_id;
   end if;
+  update public.report_rounds set descriptors = coalesce(v_words, descriptors), atl = coalesce((p_round ->> 'atl')::boolean, false),
+         profile = coalesce((p_round ->> 'profile')::boolean, false)
+   where id = v_id;
   return v_id;
 end $$;
 
@@ -13408,7 +13471,7 @@ begin
   return jsonb_build_object('round', public._round_json(r), 'can_edit', r.status = 'writing', 'myp', v_myp,
     'class', jsonb_build_object('id', c.id, 'name', c.name, 'subject', (select name from public.subjects where id = c.subject_id)),
     'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name,
-        'entry', (select jsonb_build_object('grade', e.grade, 'criteria', e.criteria, 'effort', e.effort, 'comment', e.comment, 'done', e.done,
+        'entry', (select jsonb_build_object('grade', e.grade, 'criteria', e.criteria, 'effort', e.effort, 'comment', e.comment, 'done', e.done, 'atl', e.atl,
                                             'by', (select display_name from public.profiles where id = e.by_id), 'updated_at', e.updated_at)
                     from public.report_entries e where e.round_id = r.id and e.class_id = c.id and e.learner_id = l.id),
         'hints', (with w as (select distinct on (t.assignment_id) t.score, t.max_score, t.criteria, public._is_released(t) as rel
@@ -13444,6 +13507,7 @@ declare
   v_grade text := nullif(trim(coalesce(p_entry ->> 'grade', '')), '');
   v_crit jsonb := '{}';
   v_effort int := nullif(p_entry ->> 'effort', '')::int;
+  v_atl jsonb := '{}';
   k text;
 begin
   select * into r from public.report_rounds where id = p_round;
@@ -13462,16 +13526,29 @@ begin
     end loop;
     v_grade := case when (select count(*) from jsonb_object_keys(v_crit)) = 4
                     then public._myp_grade((select sum(value::int) from jsonb_each_text(v_crit))::int)::text end;
+  elsif r.scale = 'words' then
+    if v_grade is not null and not v_grade = any (r.descriptors) then raise exception '“%” isn’t one of this report’s grades.', v_grade; end if;
   elsif not public._scale_ok(r.scale, v_grade) then
     raise exception '“%” isn’t one of this report’s grades.', v_grade;
   end if;
   if v_effort is not null and (not r.effort or v_effort not between 1 and 4) then raise exception 'Effort is from 1 to 4.'; end if;
-  insert into public.report_entries (round_id, learner_id, class_id, grade, criteria, effort, comment, done, by_id, updated_at)
+  -- ATL skills, each in the report's words (1 = the first word)
+  if r.atl then
+    for k in select jsonb_object_keys(coalesce(p_entry -> 'atl', '{}')) loop
+      if not k = any (public._atl_skills()) then raise exception 'The ATL skills are thinking, research, communication, social and self-management.'; end if;
+      continue when nullif(p_entry -> 'atl' ->> k, '') is null;
+      if (p_entry -> 'atl' ->> k) !~ '^\d$' or (p_entry -> 'atl' ->> k)::int not between 1 and cardinality(r.descriptors) then
+        raise exception 'Pick one of the report’s words for %.', lower(k);
+      end if;
+      v_atl := v_atl || jsonb_build_object(k, (p_entry -> 'atl' ->> k)::int);
+    end loop;
+  end if;
+  insert into public.report_entries (round_id, learner_id, class_id, grade, criteria, effort, comment, done, atl, by_id, updated_at)
   values (r.id, p_learner, c.id, v_grade, nullif(v_crit, '{}'), v_effort, public._txt(p_entry, 'comment', 2000),
-          coalesce((p_entry ->> 'done')::boolean, false), auth.uid(), now())
+          coalesce((p_entry ->> 'done')::boolean, false), nullif(v_atl, '{}'), auth.uid(), now())
   on conflict (round_id, learner_id, class_id) do update set grade = excluded.grade, criteria = excluded.criteria, effort = excluded.effort,
-    comment = excluded.comment, done = excluded.done, by_id = auth.uid(), updated_at = now();
-  return jsonb_build_object('grade', v_grade, 'criteria', nullif(v_crit, '{}'), 'effort', v_effort,
+    comment = excluded.comment, done = excluded.done, atl = excluded.atl, by_id = auth.uid(), updated_at = now();
+  return jsonb_build_object('grade', v_grade, 'criteria', nullif(v_crit, '{}'), 'effort', v_effort, 'atl', nullif(v_atl, '{}'),
                             'comment', public._txt(p_entry, 'comment', 2000), 'done', coalesce((p_entry ->> 'done')::boolean, false));
 end $$;
 
@@ -13615,13 +13692,16 @@ begin
                     'criteria', case when public._myp_criteria(s.myp_group) is not null and e.criteria is not null then
                                   (select jsonb_agg(jsonb_build_object('letter', k.key, 'name', k.value, 'level', (e.criteria ->> k.key)::int) order by k.key)
                                      from jsonb_each_text(public._myp_criteria(s.myp_group)) k) end,
-                    'myp_total', (select sum(value::int) from jsonb_each_text(coalesce(e.criteria, '{}'))))
+                    'myp_total', (select sum(value::int) from jsonb_each_text(coalesce(e.criteria, '{}'))),
+                    'atl', case when r.atl and e.atl is not null then
+                             (select jsonb_agg(jsonb_build_object('skill', a.skill, 'rating', r.descriptors[(e.atl ->> a.skill)::int]) order by a.n)
+                                from unnest(public._atl_skills()) with ordinality as a (skill, n) where e.atl ? a.skill) end)
                   order by coalesce(s.name, c.name), c.name), '[]')
                   from public.class_members cm join public.classes c on c.id = cm.class_id
                   left join public.subjects s on s.id = c.subject_id
                   left join public.report_entries e on e.round_id = r.id and e.class_id = c.id and e.learner_id = p_learner
                  where cm.learner_id = p_learner and cm.class_id in (select public._round_classes(r.id))
-                   and (v_staff or e.grade is not null or e.comment is not null or e.criteria is not null)),
+                   and (v_staff or e.grade is not null or e.comment is not null or e.criteria is not null or e.atl is not null)),
     'overall', (select jsonb_build_object('comment', o.comment, 'by', p.display_name) from public.report_overall o
                   left join public.profiles p on p.id = o.by_id where o.round_id = r.id and o.learner_id = p_learner),
     'attendance', (select jsonb_build_object('lessons', count(*), 'absent', count(*) filter (where status = 'absent'), 'late', count(*) filter (where status = 'late'),
@@ -13631,7 +13711,13 @@ begin
     'behaviour', (select jsonb_build_object('positive', coalesce(sum(points) filter (where kind = 'positive'), 0),
                                             'concern', coalesce(sum(points) filter (where kind = 'concern'), 0))
                     from public.behaviour where place_id = v_place and learner_id = p_learner and removed_at is null
-                     and created_at::date between v_from and v_to));
+                     and created_at::date between v_from and v_to),
+    -- the Learner Profile: each attribute noticed in the report's dates, how often, and the latest note
+    'profile', case when r.profile then (select coalesce(jsonb_agg(jsonb_build_object('attribute', g.attribute, 'times', g.times, 'note', g.note)
+                                                                   order by g.times desc, g.attribute), '[]')
+                  from (select n.attribute, count(*) as times, (array_agg(n.note order by n.created_at desc) filter (where n.note is not null))[1] as note
+                          from public.profile_notes n where n.learner_id = p_learner and n.place_id = v_place
+                           and n.created_at::date between v_from and v_to group by n.attribute) g) end);
 end $$;
 
 -- Every learner's report at once, to print them all (its managers)
@@ -13644,6 +13730,716 @@ begin
   return (select coalesce(jsonb_agg(public.report_card(r.id, l.id) order by l.display_name), '[]')
             from public.profiles l where l.id in (select cm.learner_id from public.class_members cm where cm.class_id in (select public._round_classes(r.id))));
 end $$;
+
+-- ---------------------------------------------------------------------
+-- IB core and the PYP (4 Nov 2026; Aaryan: "go"). Projects that run beside a learner's classes: the DP's CAS, Extended
+-- Essay and TOK; the MYP's Personal Project, Community Project and Service as Action; the PYP Exhibition. A coordinator
+-- (a manager of the centre or school) sets up a cohort: one kind of project, its deadlines, its learners and each one's
+-- supervisor. Learners keep a journal (experiences, reflections, journal entries, drafts and the final piece), supervisors
+-- approve, give feedback and log meetings, and parents see progress and deadlines, never what's written. The wording is
+-- our own: no IB forms, prescribed titles or prompts (a coordinator types in a session's titles themselves).
+-- ---------------------------------------------------------------------
+create table if not exists public.core_cohorts (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  kind text not null check (kind in ('cas', 'ee', 'tok', 'pp', 'cp', 'sa', 'exhibition')),
+  title text not null check (length(trim(title)) between 1 and 80),
+  session text check (session is null or length(session) <= 40),
+  deadlines jsonb not null default '[]', -- [{key, label, due}]
+  titles text check (titles is null or length(titles) <= 4000), -- TOK and the like: this session's titles, typed in by the coordinator
+  archived boolean not null default false,
+  created_by uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists core_cohorts_org on public.core_cohorts (org_id);
+create table if not exists public.core_projects (
+  id uuid primary key default gen_random_uuid(),
+  cohort_id uuid not null references public.core_cohorts (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  supervisor_id uuid references public.profiles (id) on delete set null,
+  team text check (team is null or length(team) <= 60), -- group projects: the same team name works together
+  title text check (title is null or length(title) <= 300), -- the research question, project or essay title
+  subject text check (subject is null or length(subject) <= 80),
+  status text not null default 'active' check (status in ('active', 'completed', 'withdrawn')),
+  criteria jsonb, -- MYP projects: {"A": 0..8, "B": 0..8, "C": 0..8}
+  grade text check (grade is null or length(grade) <= 10),
+  staff_note text check (staff_note is null or length(staff_note) <= 2000), -- staff only
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (cohort_id, learner_id)
+);
+create index if not exists core_projects_learner on public.core_projects (learner_id);
+create index if not exists core_projects_supervisor on public.core_projects (supervisor_id);
+create table if not exists public.core_entries (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.core_projects (id) on delete cascade,
+  kind text not null check (kind in ('experience', 'reflection', 'journal', 'draft', 'final', 'meeting', 'interview')),
+  author_id uuid references public.profiles (id) on delete set null,
+  title text check (title is null or length(title) <= 200),
+  body text check (body is null or length(body) <= 20000),
+  day date,
+  ends date,
+  strands text[] not null default '{}', -- CAS: C, A and S
+  outcomes int[] not null default '{}', -- CAS and Service as Action: learning outcomes 1 to 7
+  hours numeric check (hours is null or hours between 0 and 1000),
+  minutes int check (minutes is null or minutes between 0 and 600), -- how long a meeting was
+  milestone text check (milestone is null or length(milestone) <= 40), -- the deadline it's for
+  is_project boolean not null default false, -- CAS: this experience is the CAS project
+  experience_id uuid references public.core_entries (id) on delete set null, -- a reflection on an experience
+  files jsonb not null default '[]',
+  status text not null default 'done' check (status in ('done', 'waiting', 'approved', 'returned')),
+  feedback text check (feedback is null or length(feedback) <= 4000),
+  feedback_by uuid references public.profiles (id) on delete set null,
+  feedback_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists core_entries_project on public.core_entries (project_id, created_at);
+alter table public.core_entries drop constraint if exists core_entries_experience_id_fkey;
+alter table public.core_entries add constraint core_entries_experience_id_fkey foreign key (experience_id) references public.core_entries (id) on delete set null;
+create table if not exists public.core_reminded (
+  project_id uuid not null references public.core_projects (id) on delete cascade,
+  key text not null,
+  primary key (project_id, key)
+);
+alter table public.core_cohorts enable row level security;
+alter table public.core_projects enable row level security;
+alter table public.core_entries enable row level security;
+alter table public.core_reminded enable row level security;
+revoke all on public.core_cohorts, public.core_projects, public.core_entries, public.core_reminded from public, anon, authenticated;
+
+-- What each kind of project is (the same in src/lib/core.js): what learners add, whether it's marked on criteria, and
+-- whether learners work in teams
+create or replace function public._core_kind(p_kind text) returns jsonb
+language sql immutable as $$
+  select (case p_kind
+    when 'cas' then '{"name": "CAS", "adds": ["experience", "reflection"], "staff": ["interview", "meeting"], "outcomes": true}'
+    when 'sa' then '{"name": "Service as Action", "adds": ["experience", "reflection"], "staff": ["meeting"], "outcomes": true}'
+    when 'ee' then '{"name": "Extended Essay", "adds": ["reflection", "journal", "draft", "final"], "staff": ["meeting"]}'
+    when 'tok' then '{"name": "Theory of Knowledge", "adds": ["journal", "draft", "final"], "staff": ["meeting"]}'
+    when 'pp' then '{"name": "Personal Project", "adds": ["journal", "reflection", "draft", "final"], "staff": ["meeting"], "criteria": true}'
+    when 'cp' then '{"name": "Community Project", "adds": ["journal", "reflection", "draft", "final"], "staff": ["meeting"], "criteria": true, "teams": true}'
+    when 'exhibition' then '{"name": "PYP Exhibition", "adds": ["journal", "reflection", "final"], "staff": ["meeting"], "teams": true}'
+  end)::jsonb
+$$;
+
+-- Who looks after a project: its supervisor, or a coordinator (a manager of its centre or school)
+create or replace function public._core_staff(p_project uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id
+                  where p.id = p_project
+                    and ((p.supervisor_id = auth.uid() and exists (select 1 from public.org_members m where m.org_id = c.org_id and m.user_id = auth.uid()))
+                         or public._org_manager(c.org_id)))
+$$;
+-- The learner whose project it is, or someone in their team
+create or replace function public._core_mine(p_project uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.core_projects p where p.id = p_project and p.learner_id = auth.uid())
+      or exists (select 1 from public.core_projects p join public.core_projects q on q.cohort_id = p.cohort_id and q.team = p.team
+                  where p.id = p_project and p.team is not null and q.learner_id = auth.uid() and q.status <> 'withdrawn')
+$$;
+-- (for the storage rules: a path's folder names the project)
+create or replace function public._core_files_ok(p_project text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  return public._core_staff(p_project::uuid) or public._core_mine(p_project::uuid);
+exception when others then
+  return false;
+end $$;
+
+-- How a project is going: what's written, the learning outcomes and strands covered (approved experiences), interviews and
+-- meetings, what's waiting for the supervisor, and each deadline (done, late or still to come)
+create or replace function public._core_progress(p_project uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  with p as (select * from public.core_projects where id = p_project),
+       c as (select cc.* from public.core_cohorts cc join p on p.cohort_id = cc.id),
+       team as (select q.id from public.core_projects q, p where q.id = p.id or (p.team is not null and q.cohort_id = p.cohort_id and q.team = p.team)),
+       e as (select * from public.core_entries where project_id in (select id from team))
+  select jsonb_build_object(
+    'entries', (select count(*) from e where kind not in ('meeting', 'interview')),
+    'experiences', (select count(*) from e where kind = 'experience' and project_id = p_project),
+    'approved', (select count(*) from e where kind = 'experience' and status = 'approved' and project_id = p_project),
+    'outcomes', (select coalesce(jsonb_agg(distinct o order by o), '[]') from e cross join unnest(e.outcomes) o
+                  where e.kind = 'experience' and e.status = 'approved' and e.project_id = p_project),
+    'strands', (select coalesce(jsonb_agg(distinct s order by s), '[]') from e cross join unnest(e.strands) s
+                 where e.kind = 'experience' and e.status = 'approved' and e.project_id = p_project),
+    'hours', (select sum(hours) from e where kind = 'experience' and status = 'approved' and project_id = p_project),
+    'cas_project', exists (select 1 from e where kind = 'experience' and is_project and status = 'approved' and project_id = p_project),
+    'interviews', (select count(*) from e where kind = 'interview' and project_id = p_project),
+    'meetings', (select count(*) from e where kind = 'meeting'),
+    'meeting_minutes', (select coalesce(sum(minutes), 0) from e where kind in ('meeting', 'interview')),
+    'waiting', (select count(*) from e where status = 'waiting'),
+    'last_at', (select max(updated_at) from e),
+    'deadlines', (select coalesce(jsonb_agg(jsonb_build_object('key', d ->> 'key', 'label', d ->> 'label', 'due', d ->> 'due',
+                    'state', case when exists (select 1 from e where e.milestone = d ->> 'key' and e.status <> 'returned') then 'done'
+                                  when nullif(d ->> 'due', '')::date < current_date then 'late' else 'open' end) order by d ->> 'due' nulls last), '[]')
+                  from c cross join jsonb_array_elements(c.deadlines) d))
+$$;
+
+create or replace function public._core_project_json(p public.core_projects) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', p.id, 'cohort_id', p.cohort_id, 'kind', c.kind, 'cohort', c.title, 'session', c.session,
+           'learner_id', p.learner_id, 'learner', l.display_name, 'grade_year', l.grade,
+           'supervisor_id', p.supervisor_id, 'supervisor', s.display_name, 'team', p.team, 'title', p.title, 'subject', p.subject,
+           'status', p.status, 'progress', public._core_progress(p.id), 'updated_at', p.updated_at)
+         || case when public._core_staff(p.id) or (p.learner_id = auth.uid() and p.status = 'completed')
+                 then jsonb_build_object('criteria', p.criteria, 'grade', p.grade) else '{}' end
+    from public.core_cohorts c, public.profiles l left join public.profiles s on s.id = p.supervisor_id
+   where c.id = p.cohort_id and l.id = p.learner_id
+$$;
+
+-- Is there anything here (the menus ask): a coordinator in a centre or school, a supervisor, or a learner with a project
+create or replace function public.core_on() returns boolean
+language sql stable security definer set search_path = public as $$
+  select case when public.my_role() = 'tutor'
+    then public._my_school() is not null and public._org_manager(public._my_school())
+         or exists (select 1 from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id join public.org_members m on m.org_id = c.org_id
+                     where p.supervisor_id = auth.uid() and m.user_id = auth.uid())
+    else exists (select 1 from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id
+                  where p.learner_id = auth.uid() and p.status <> 'withdrawn' and not c.archived)
+  end
+$$;
+
+-- ---------------- coordinators ----------------
+create or replace function public.core_cohorts() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._my_school();
+begin
+  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a centre’s or school’s managers set up IB projects.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'kind', c.kind, 'title', c.title, 'session', c.session, 'archived', c.archived,
+             'deadlines', c.deadlines, 'learners', (select count(*) from public.core_projects p where p.cohort_id = c.id and p.status <> 'withdrawn'),
+             'no_supervisor', (select count(*) from public.core_projects p where p.cohort_id = c.id and p.status = 'active' and p.supervisor_id is null),
+             'waiting', (select count(*) from public.core_entries e join public.core_projects p on p.id = e.project_id where p.cohort_id = c.id and e.status = 'waiting'))
+             order by c.archived, c.created_at desc), '[]')
+            from public.core_cohorts c where c.org_id = v_org);
+end $$;
+
+-- Set up a cohort (a coordinator): {kind (new ones only), title, session, deadlines [{key, label, due}], titles}
+create or replace function public.save_core_cohort(p_id uuid, p_cohort jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._my_school();
+  v_kind text := coalesce((select kind from public.core_cohorts where id = p_id), p_cohort ->> 'kind');
+  v_deadlines jsonb := '[]';
+  d jsonb;
+  i int := 0;
+  v_used text[];
+  v_key text;
+  v_id uuid;
+begin
+  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a centre’s or school’s managers set up IB projects.'; end if;
+  if p_id is not null and not exists (select 1 from public.core_cohorts where id = p_id and org_id = v_org) then raise exception 'That isn’t one of yours.'; end if;
+  if public._core_kind(v_kind) is null then raise exception 'Pick the kind of project.'; end if;
+  if public._txt(p_cohort, 'title', 80) is null then raise exception 'Give it a name, like “Extended Essay, class of 2027”.'; end if;
+  if jsonb_array_length(coalesce(p_cohort -> 'deadlines', '[]')) > 15 then raise exception 'Up to 15 deadlines.'; end if;
+  select coalesce(array_agg(x ->> 'key'), '{}') into v_used from jsonb_array_elements(coalesce(p_cohort -> 'deadlines', '[]')) x
+   where public._txt(x, 'key', 40) is not null;
+  if cardinality(v_used) <> (select count(distinct k) from unnest(v_used) k) then raise exception 'Two deadlines have the same key.'; end if;
+  for d in select * from jsonb_array_elements(coalesce(p_cohort -> 'deadlines', '[]')) loop
+    if public._txt(d, 'label', 80) is null then raise exception 'Each deadline needs a name.'; end if;
+    v_key := public._txt(d, 'key', 40);
+    if v_key is null then
+      i := 1;
+      while ('d' || i) = any (v_used) loop i := i + 1; end loop;
+      v_key := 'd' || i;
+      v_used := v_used || v_key;
+    end if;
+    v_deadlines := v_deadlines || jsonb_build_object('key', v_key, 'label', public._txt(d, 'label', 80), 'due', nullif(d ->> 'due', '')::date);
+  end loop;
+  if p_id is null then
+    insert into public.core_cohorts (org_id, kind, title, session, deadlines, titles, created_by)
+    values (v_org, v_kind, public._txt(p_cohort, 'title', 80), public._txt(p_cohort, 'session', 40), v_deadlines,
+            public._txt(p_cohort, 'titles', 4000), auth.uid())
+    returning id into v_id;
+  else
+    update public.core_cohorts set title = public._txt(p_cohort, 'title', 80), session = public._txt(p_cohort, 'session', 40),
+           deadlines = v_deadlines, titles = public._txt(p_cohort, 'titles', 4000)
+     where id = p_id returning id into v_id;
+  end if;
+  return v_id;
+end $$;
+
+-- Put a cohort away when it's over (or bring it back): learners and supervisors stop seeing it, nothing is lost
+create or replace function public.archive_core_cohort(p_id uuid, p_on boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.core_cohorts set archived = coalesce(p_on, true) where id = p_id and org_id = public._my_school() and public._org_manager(org_id);
+  if not found then raise exception 'That isn’t one of yours.'; end if;
+end $$;
+
+create or replace function public.delete_core_cohort(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.core_cohorts where id = p_id and org_id = public._my_school() and public._org_manager(org_id)) then
+    raise exception 'That isn’t one of yours.';
+  end if;
+  if exists (select 1 from public.core_entries e join public.core_projects p on p.id = e.project_id where p.cohort_id = p_id) then
+    raise exception 'Learners have written in it. Put it away instead, so nothing is lost.';
+  end if;
+  delete from public.core_cohorts where id = p_id;
+end $$;
+
+-- A cohort's page: every learner's project and how it's going, the teachers who can supervise, and the learners who can join
+create or replace function public.core_cohort(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c public.core_cohorts;
+begin
+  select * into c from public.core_cohorts where id = p_id;
+  if c.id is null or not public._org_manager(c.org_id) then raise exception 'Only its coordinators see this.'; end if;
+  return jsonb_build_object('id', c.id, 'kind', c.kind, 'title', c.title, 'session', c.session, 'deadlines', c.deadlines, 'titles', c.titles,
+    'archived', c.archived,
+    'projects', (select coalesce(jsonb_agg(public._core_project_json(p) order by l.display_name), '[]')
+                   from public.core_projects p join public.profiles l on l.id = p.learner_id where p.cohort_id = c.id),
+    'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.display_name) order by t.display_name), '[]')
+                   from public.org_members m join public.profiles t on t.id = m.user_id where m.org_id = c.org_id and t.role = 'tutor'),
+    'pool', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade) order by l.grade nulls last, l.display_name), '[]')
+               from public.profiles l where l.id in (select public._org_learner_ids(c.org_id))
+                and not exists (select 1 from public.core_projects p where p.cohort_id = c.id and p.learner_id = l.id)));
+end $$;
+
+-- Put learners in a cohort, with a supervisor if you like (a team too, for group projects); each is told
+create or replace function public.core_add(p_cohort uuid, p_learners uuid[], p_supervisor uuid default null, p_team text default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  c public.core_cohorts;
+  v_learner uuid;
+  n int := 0;
+begin
+  select * into c from public.core_cohorts where id = p_cohort;
+  if c.id is null or not public._org_manager(c.org_id) then raise exception 'Only its coordinators add learners.'; end if;
+  if coalesce(cardinality(p_learners), 0) = 0 then raise exception 'Pick a learner.'; end if;
+  if cardinality(p_learners) > 300 then raise exception 'Up to 300 at a time.'; end if;
+  if p_supervisor is not null and not exists (select 1 from public.org_members where org_id = c.org_id and user_id = p_supervisor) then
+    raise exception 'That teacher isn’t in your centre or school.';
+  end if;
+  foreach v_learner in array p_learners loop
+    if not v_learner in (select public._org_learner_ids(c.org_id)) then raise exception 'One of them isn’t in your centre or school.'; end if;
+    insert into public.core_projects (cohort_id, learner_id, supervisor_id, team)
+    values (c.id, v_learner, p_supervisor, nullif(left(trim(coalesce(p_team, '')), 60), ''))
+    on conflict (cohort_id, learner_id) do nothing;
+    if found then
+      n := n + 1;
+      perform public.notify_user(v_learner, 'core', 'You’re starting ' || (public._core_kind(c.kind) ->> 'name'),
+        c.title || '. Find it under Projects.', jsonb_build_object('cohort_id', c.id));
+    end if;
+  end loop;
+  if p_supervisor is not null and n > 0 then
+    perform public.notify_user(p_supervisor, 'core', 'You supervise ' || n || ' in ' || c.title, 'Find them under Projects.',
+      jsonb_build_object('cohort_id', c.id));
+  end if;
+  return n;
+end $$;
+
+-- Change a project: coordinators its supervisor, team and status; staff its title, subject and note; the learner its title
+-- and subject (while it's going)
+create or replace function public.core_set(p_project uuid, p jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.core_projects;
+  c public.core_cohorts;
+  v_mgr boolean;
+  v_staff boolean;
+begin
+  select * into x from public.core_projects where id = p_project;
+  select * into c from public.core_cohorts where id = x.cohort_id;
+  if x.id is null then raise exception 'That project has gone.'; end if;
+  v_mgr := public._org_manager(c.org_id);
+  v_staff := public._core_staff(x.id);
+  if not v_staff and x.learner_id <> auth.uid() then raise exception 'That isn’t yours to change.'; end if;
+  if not v_staff and x.status <> 'active' then raise exception 'It’s finished, so it can’t change.'; end if;
+  if (p ? 'supervisor_id' or p ? 'team' or p ? 'status') and not v_mgr then raise exception 'Only a coordinator changes that.'; end if;
+  if p ? 'supervisor_id' and nullif(p ->> 'supervisor_id', '') is not null
+     and not exists (select 1 from public.org_members where org_id = c.org_id and user_id = (p ->> 'supervisor_id')::uuid) then
+    raise exception 'That teacher isn’t in your centre or school.';
+  end if;
+  if p ? 'status' and coalesce(p ->> 'status', '') not in ('active', 'completed', 'withdrawn') then raise exception 'Unknown status.'; end if;
+  update public.core_projects set
+    supervisor_id = case when p ? 'supervisor_id' then nullif(p ->> 'supervisor_id', '')::uuid else supervisor_id end,
+    team = case when p ? 'team' then nullif(left(trim(coalesce(p ->> 'team', '')), 60), '') else team end,
+    status = case when p ? 'status' then p ->> 'status' else status end,
+    title = case when p ? 'title' then public._txt(p, 'title', 300) else title end,
+    subject = case when p ? 'subject' then public._txt(p, 'subject', 80) else subject end,
+    staff_note = case when p ? 'staff_note' and v_staff then public._txt(p, 'staff_note', 2000) else staff_note end,
+    updated_at = now()
+   where id = x.id;
+  if p ? 'supervisor_id' and nullif(p ->> 'supervisor_id', '') is not null and (p ->> 'supervisor_id')::uuid is distinct from x.supervisor_id then
+    perform public.notify_user((p ->> 'supervisor_id')::uuid, 'core', 'You supervise ' || (select display_name from public.profiles where id = x.learner_id),
+      c.title || '. Find it under Projects.', jsonb_build_object('project_id', x.id));
+  end if;
+end $$;
+
+-- ---------------- one project ----------------
+-- Everything about one project for whoever's looking: the learner and their team, their supervisor, the coordinators
+create or replace function public.core_project(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  x public.core_projects;
+  c public.core_cohorts;
+  v_staff boolean := public._core_staff(p_id);
+begin
+  select * into x from public.core_projects where id = p_id;
+  if x.id is null or not (v_staff or public._core_mine(p_id)) then raise exception 'You can’t see this project.'; end if;
+  select * into c from public.core_cohorts where id = x.cohort_id;
+  return public._core_project_json(x) || jsonb_build_object('staff', v_staff, 'mine', x.learner_id = auth.uid(),
+    'coordinator', public._org_manager(c.org_id), 'titles', c.titles, 'staff_note', case when v_staff then x.staff_note end,
+    'kind_info', public._core_kind(c.kind),
+    'team_members', case when x.team is not null then (select coalesce(jsonb_agg(l.display_name order by l.display_name), '[]')
+                      from public.core_projects q join public.profiles l on l.id = q.learner_id
+                     where q.cohort_id = x.cohort_id and q.team = x.team) end,
+    'entries', (select coalesce(jsonb_agg(jsonb_build_object('id', e.id, 'project_id', e.project_id, 'kind', e.kind, 'title', e.title, 'body', e.body,
+                    'day', e.day, 'ends', e.ends, 'strands', e.strands, 'outcomes', e.outcomes, 'hours', e.hours, 'minutes', e.minutes,
+                    'milestone', e.milestone, 'is_project', e.is_project, 'experience_id', e.experience_id, 'files', e.files, 'status', e.status,
+                    'feedback', e.feedback, 'feedback_by', (select display_name from public.profiles where id = e.feedback_by), 'feedback_at', e.feedback_at,
+                    'author_id', e.author_id, 'author', (select display_name from public.profiles where id = e.author_id),
+                    'mine', e.author_id = auth.uid(), 'can_review', public._core_staff(e.project_id),
+                    'created_at', e.created_at, 'updated_at', e.updated_at)
+                  order by coalesce(e.day, e.created_at::date) desc, e.created_at desc), '[]')
+                  from public.core_entries e
+                 where e.project_id = x.id
+                    or (x.team is not null and e.project_id in (select q.id from public.core_projects q where q.cohort_id = x.cohort_id and q.team = x.team))));
+end $$;
+
+-- A learner's own projects (and for a teacher, the ones they supervise)
+create or replace function public.my_core() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  return (select coalesce(jsonb_agg(public._core_project_json(p) order by c.archived, p.status, c.created_at desc), '[]')
+            from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id
+           where (p.learner_id = auth.uid() and p.status <> 'withdrawn' and not c.archived)
+              or (public.my_role() = 'tutor' and p.supervisor_id = auth.uid() and p.status <> 'withdrawn' and not c.archived
+                  and exists (select 1 from public.org_members m where m.org_id = c.org_id and m.user_id = auth.uid())));
+end $$;
+
+-- Write in a project: {id?, kind, title, body, day, ends, strands, outcomes, hours, minutes, milestone, is_project,
+-- experience_id, files}. Learners add what their kind of project takes (experiences, drafts and the final go to their
+-- supervisor to look at); staff log meetings (and CAS interviews).
+create or replace function public.save_core_entry(p_project uuid, p_entry jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.core_projects;
+  c public.core_cohorts;
+  k jsonb;
+  v_kind text := p_entry ->> 'kind';
+  v_staff boolean := public._core_staff(p_project);
+  v_id uuid := nullif(p_entry ->> 'id', '')::uuid;
+  old public.core_entries;
+  v_status text;
+  v_outcomes int[];
+  v_strands text[];
+  v_milestone text := public._txt(p_entry, 'milestone', 40);
+begin
+  select * into x from public.core_projects where id = p_project;
+  if x.id is null then raise exception 'That project has gone.'; end if;
+  select * into c from public.core_cohorts where id = x.cohort_id;
+  k := public._core_kind(c.kind);
+  if v_id is not null then
+    select * into old from public.core_entries where id = v_id;
+    if old.id is null then raise exception 'That entry has gone.'; end if;
+    if old.project_id <> x.id then -- (on a team's page: it's on a teammate's project)
+      select * into x from public.core_projects where id = old.project_id
+         and cohort_id = x.cohort_id and team is not distinct from x.team and x.team is not null;
+      if x.id is null then raise exception 'That entry has gone.'; end if;
+      v_staff := public._core_staff(x.id);
+    end if;
+    if old.author_id is distinct from auth.uid() then raise exception 'Only whoever wrote it can change it.'; end if;
+    if old.status = 'approved' then raise exception 'It’s been approved, so it stays as it is.'; end if;
+    v_kind := old.kind;
+  end if;
+  if x.learner_id = auth.uid() then
+    if x.status <> 'active' or c.archived then raise exception 'This project is finished.'; end if;
+    if not (k -> 'adds') ? coalesce(v_kind, '') then raise exception 'You can’t add that here.'; end if;
+  elsif v_staff then
+    if not (k -> 'staff') ? coalesce(v_kind, '') then raise exception 'Supervisors log meetings here.'; end if;
+  else
+    raise exception 'That isn’t your project.';
+  end if;
+  if v_milestone is not null and not exists (select 1 from jsonb_array_elements(c.deadlines) d where d ->> 'key' = v_milestone) then
+    v_milestone := null;
+  end if;
+  select coalesce(array_agg(distinct o::int order by o::int), '{}') into v_outcomes
+    from jsonb_array_elements_text(case when (k ->> 'outcomes')::boolean and v_kind = 'experience' then coalesce(p_entry -> 'outcomes', '[]') else '[]' end) o
+   where o ~ '^[1-7]$';
+  select coalesce(array_agg(distinct s order by s), '{}') into v_strands
+    from jsonb_array_elements_text(case when c.kind = 'cas' and v_kind = 'experience' then coalesce(p_entry -> 'strands', '[]') else '[]' end) s
+   where s in ('C', 'A', 'S');
+  if v_kind = 'experience' and public._txt(p_entry, 'title', 200) is null then raise exception 'Give the experience a name.'; end if;
+  if v_kind in ('reflection', 'journal', 'meeting', 'interview') and public._txt(p_entry, 'body', 20000) is null then raise exception 'Write something first.'; end if;
+  if v_kind in ('draft', 'final') and public._txt(p_entry, 'body', 20000) is null and jsonb_array_length(coalesce(p_entry -> 'files', '[]')) = 0 then
+    raise exception 'Add your work: write it here or add a file.';
+  end if;
+  if jsonb_array_length(coalesce(p_entry -> 'files', '[]')) > 10 then raise exception 'Up to 10 files.'; end if;
+  if exists (select 1 from jsonb_array_elements(coalesce(p_entry -> 'files', '[]')) f
+              where coalesce(f ->> 'path', '') not like x.learner_id::text || '/core/' || x.id::text || '/%') then
+    raise exception 'Those files aren’t this project’s.';
+  end if;
+  v_status := case when v_kind in ('experience', 'draft', 'final') then 'waiting' else 'done' end;
+  if v_id is null then
+    insert into public.core_entries (project_id, kind, author_id, title, body, day, ends, strands, outcomes, hours, minutes, milestone,
+                                     is_project, experience_id, files, status)
+    values (x.id, v_kind, auth.uid(), public._txt(p_entry, 'title', 200), public._txt(p_entry, 'body', 20000),
+            nullif(p_entry ->> 'day', '')::date, nullif(p_entry ->> 'ends', '')::date, v_strands, v_outcomes,
+            case when v_kind = 'experience' then nullif(p_entry ->> 'hours', '')::numeric end,
+            case when v_kind in ('meeting', 'interview') then nullif(p_entry ->> 'minutes', '')::int end, v_milestone,
+            v_kind = 'experience' and coalesce((p_entry ->> 'is_project')::boolean, false),
+            case when v_kind = 'reflection' then (select id from public.core_entries where id = nullif(p_entry ->> 'experience_id', '')::uuid and project_id = x.id) end,
+            coalesce(p_entry -> 'files', '[]'), v_status)
+    returning id into v_id;
+  else
+    update public.core_entries set title = public._txt(p_entry, 'title', 200), body = public._txt(p_entry, 'body', 20000),
+           day = nullif(p_entry ->> 'day', '')::date, ends = nullif(p_entry ->> 'ends', '')::date, strands = v_strands, outcomes = v_outcomes,
+           hours = case when v_kind = 'experience' then nullif(p_entry ->> 'hours', '')::numeric end,
+           minutes = case when v_kind in ('meeting', 'interview') then nullif(p_entry ->> 'minutes', '')::int end,
+           milestone = v_milestone, is_project = v_kind = 'experience' and coalesce((p_entry ->> 'is_project')::boolean, false),
+           experience_id = case when v_kind = 'reflection' then (select id from public.core_entries
+                                                                  where id = nullif(p_entry ->> 'experience_id', '')::uuid and project_id = x.id) end,
+           files = coalesce(p_entry -> 'files', '[]'), status = v_status, updated_at = now()
+     where id = v_id;
+  end if;
+  update public.core_projects set updated_at = now() where id = x.id;
+  -- the supervisor hears when there's something to look at
+  if v_status = 'waiting' and x.supervisor_id is not null then
+    perform public.notify_user(x.supervisor_id, 'core',
+      (select split_part(display_name, ' ', 1) from public.profiles where id = x.learner_id) || ' added ' ||
+        case v_kind when 'experience' then 'an experience' when 'draft' then 'a draft' else 'their final piece' end,
+      coalesce(public._txt(p_entry, 'title', 200), c.title), jsonb_build_object('project_id', x.id));
+  end if;
+  if x.learner_id <> auth.uid() then
+    perform public.notify_user(x.learner_id, 'core', case v_kind when 'interview' then 'Your CAS interview is written up' else 'A meeting is written up' end,
+      c.title, jsonb_build_object('project_id', x.id));
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.delete_core_entry(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  e public.core_entries;
+  x public.core_projects;
+begin
+  select * into e from public.core_entries where id = p_id;
+  if e.id is null or e.author_id is distinct from auth.uid() then raise exception 'Only whoever wrote it can delete it.'; end if;
+  if e.status = 'approved' then raise exception 'It’s been approved, so it stays.'; end if;
+  select * into x from public.core_projects where id = e.project_id;
+  if x.learner_id = auth.uid() then
+    if x.status <> 'active' or (select archived from public.core_cohorts where id = x.cohort_id) then raise exception 'This project is finished, so nothing is deleted.'; end if;
+  elsif not public._core_staff(x.id) then
+    raise exception 'You don’t look after this project any more.';
+  end if;
+  delete from public.core_entries where id = p_id;
+end $$;
+
+-- A supervisor (or coordinator) looks at an entry: approve it, send it back, or just comment
+create or replace function public.review_core_entry(p_id uuid, p_status text, p_feedback text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  e public.core_entries;
+  x public.core_projects;
+begin
+  select * into e from public.core_entries where id = p_id;
+  if e.id is null or not public._core_staff(e.project_id) then raise exception 'Only its supervisor or a coordinator can do that.'; end if;
+  if coalesce(p_status, '') not in ('approved', 'returned', 'comment') then raise exception 'Approve it, send it back, or comment.'; end if;
+  if p_status = 'returned' and nullif(trim(coalesce(p_feedback, '')), '') is null then raise exception 'Say what to change.'; end if;
+  if p_status <> 'comment' and e.kind not in ('experience', 'draft', 'final') then raise exception 'Only experiences, drafts and final pieces are approved.'; end if;
+  select * into x from public.core_projects where id = e.project_id;
+  update public.core_entries set status = case when p_status = 'comment' then status else p_status end,
+         feedback = nullif(left(trim(coalesce(p_feedback, '')), 4000), ''),
+         feedback_by = case when nullif(trim(coalesce(p_feedback, '')), '') is not null then auth.uid() end,
+         feedback_at = case when nullif(trim(coalesce(p_feedback, '')), '') is not null then now() end
+   where id = e.id;
+  perform public.notify_user(x.learner_id, 'core',
+    case p_status when 'approved' then 'Approved: ' when 'returned' then 'Have another go: ' else 'A comment on ' end
+      || coalesce(e.title, case e.kind when 'draft' then 'your draft' when 'final' then 'your final piece' else 'your ' || e.kind end),
+    coalesce(left(trim(p_feedback), 200), ''), jsonb_build_object('project_id', x.id));
+end $$;
+
+-- Finish a project (a supervisor or coordinator): MYP projects' criteria levels, a grade, completed or still going
+create or replace function public.core_mark(p_project uuid, p_criteria jsonb, p_grade text, p_status text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  x public.core_projects;
+  k text;
+  v jsonb := '{}';
+begin
+  select * into x from public.core_projects where id = p_project;
+  if x.id is null or not public._core_staff(x.id) then raise exception 'Only its supervisor or a coordinator can mark it.'; end if;
+  if x.status = 'withdrawn' then raise exception 'They’ve been withdrawn. A coordinator can put them back first.'; end if;
+  for k in select jsonb_object_keys(coalesce(p_criteria, '{}')) loop
+    if k not in ('A', 'B', 'C') then raise exception 'MYP projects are marked on criteria A, B and C.'; end if;
+    continue when nullif(p_criteria ->> k, '') is null;
+    if (p_criteria ->> k) !~ '^[0-8]$' then raise exception 'Each level is from 0 to 8.'; end if;
+    v := v || jsonb_build_object(k, (p_criteria ->> k)::int);
+  end loop;
+  if p_status is not null and p_status not in ('active', 'completed') then raise exception 'Unknown status.'; end if;
+  update public.core_projects set criteria = nullif(v, '{}'), grade = nullif(left(trim(coalesce(p_grade, '')), 10), ''),
+         status = coalesce(p_status, status), updated_at = now()
+   where id = x.id;
+  if p_status = 'completed' and x.status <> 'completed' then
+    perform public.notify_user(x.learner_id, 'core', 'Finished: ' || (select title from public.core_cohorts where id = x.cohort_id), 'Well done.',
+      jsonb_build_object('project_id', x.id));
+  end if;
+end $$;
+
+-- A parent: their child's projects, how far along and the deadlines (never what's written)
+create or replace function public.parent_core(p_child uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._parent_of(p_child) then raise exception 'You can’t see this.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'kind', c.kind, 'cohort', c.title, 'supervisor', s.display_name, 'title', p.title,
+             'status', p.status, 'grade', case when p.status = 'completed' then p.grade end,
+             'progress', public._core_progress(p.id) - 'last_at') order by c.created_at desc), '[]')
+            from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id left join public.profiles s on s.id = p.supervisor_id
+           where p.learner_id = p_child and p.status <> 'withdrawn' and not c.archived);
+end $$;
+
+-- Two days before a deadline, a learner who hasn't handed anything in for it gets a reminder (once)
+create or replace function public._core_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in select p.id, p.learner_id, c.title, d ->> 'key' as key, d ->> 'label' as label, (d ->> 'due')::date as due
+             from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id cross join jsonb_array_elements(c.deadlines) d
+            where p.status = 'active' and not c.archived and nullif(d ->> 'due', '') is not null
+              and (d ->> 'due')::date between current_date and current_date + 2
+              and not exists (select 1 from public.core_entries e where e.milestone = d ->> 'key' and e.status <> 'returned'
+                               and e.project_id in (select q.id from public.core_projects q
+                                                     where q.id = p.id or (p.team is not null and q.cohort_id = p.cohort_id and q.team = p.team)))
+              and not exists (select 1 from public.core_reminded m where m.project_id = p.id and m.key = d ->> 'key') loop
+    insert into public.core_reminded (project_id, key) values (r.id, r.key) on conflict do nothing;
+    perform public.notify_user(r.learner_id, 'core', r.label || ' is due ' || case when r.due = current_date then 'today' else to_char(r.due, 'FMDay') end,
+      r.title, jsonb_build_object('project_id', r.id));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- ---------------- the PYP ----------------
+-- PYP units of inquiry (a theme, the central idea, lines of inquiry, key concepts and learner profile attributes) in a
+-- class's planner; the whole school's programme of inquiry (year groups across the six themes); Learner Profile notes
+-- through the term; and term reports in words (Beginning … Extending), with ATL skills and the Learner Profile.
+alter table public.units add column if not exists pyp boolean not null default false;
+alter table public.units add column if not exists theme text;
+alter table public.units add column if not exists central_idea text;
+alter table public.units add column if not exists lines_of_inquiry text;
+alter table public.units add column if not exists key_concepts text[] not null default '{}';
+alter table public.units add column if not exists learner_profile text[] not null default '{}';
+do $$ begin
+  alter table public.units add constraint units_theme_check check (theme is null or theme in ('who_we_are', 'place_time', 'express', 'world_works', 'organize', 'planet'));
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.units add constraint units_pyp_text_check check (coalesce(length(central_idea), 0) <= 500 and coalesce(length(lines_of_inquiry), 0) <= 2000);
+exception when duplicate_object then null; end $$;
+
+-- The Learner Profile's ten attributes and the five ATL skill areas (the same in src/lib/core.js)
+create or replace function public._learner_profile() returns text[]
+language sql immutable as $$
+  select array['Inquirers', 'Knowledgeable', 'Thinkers', 'Communicators', 'Principled', 'Open-minded', 'Caring', 'Risk-takers', 'Balanced', 'Reflective']
+$$;
+create or replace function public._atl_skills() returns text[]
+language sql immutable as $$
+  select array['Thinking', 'Research', 'Communication', 'Social', 'Self-management']
+$$;
+
+-- A class's year: the year most of its learners are in
+create or replace function public._class_grade(p_class uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select mode() within group (order by l.grade) from public.class_members cm join public.profiles l on l.id = cm.learner_id
+   where cm.class_id = p_class and l.grade is not null
+$$;
+
+-- The programme of inquiry: every PYP unit in the centre or school (or a tutor's own), by year group and theme. Any
+-- teacher there sees it; it's how a school checks each year covers all six themes.
+create or replace function public.programme_of_inquiry() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if public.my_role() is distinct from 'tutor' or v_org is null or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', u.id, 'class_id', c.id, 'class', c.name, 'grade', public._class_grade(c.id),
+             'theme', u.theme, 'title', u.title, 'central_idea', u.central_idea, 'starts', u.starts, 'ends', u.ends,
+             'mine', public._plan_staff(c.id)) order by u.starts nulls last, c.name), '[]')
+            from public.units u join public.classes c on c.id = u.class_id
+           where c.org_id = v_org and not c.archived and u.pyp);
+end $$;
+
+-- Learner Profile notes: a teacher notices a learner being a risk-taker, caring, reflective… The learner and their parents
+-- see every place's; staff see their own place's.
+create table if not exists public.profile_notes (
+  id uuid primary key default gen_random_uuid(),
+  place_id uuid not null,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  class_id uuid references public.classes (id) on delete set null,
+  attribute text not null,
+  note text check (note is null or length(note) <= 300),
+  by_id uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists profile_notes_learner on public.profile_notes (learner_id, created_at);
+alter table public.profile_notes enable row level security;
+revoke all on public.profile_notes from public, anon, authenticated;
+
+create or replace function public.give_profile_note(p_learners uuid[], p_attribute text, p_note text default null, p_class uuid default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_learner uuid;
+  v_note text := nullif(left(trim(coalesce(p_note, '')), 300), '');
+  v_me text := (select display_name from public.profiles where id = auth.uid());
+  v_first text;
+  p record;
+  n int := 0;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Tutors only.'; end if;
+  if not p_attribute = any (public._learner_profile()) then raise exception 'Pick one of the Learner Profile attributes.'; end if;
+  if coalesce(cardinality(p_learners), 0) = 0 then raise exception 'Pick a learner.'; end if;
+  if cardinality(p_learners) > 60 then raise exception 'Up to 60 learners at a time.'; end if;
+  foreach v_learner in array p_learners loop
+    if not public._can_arrange(v_learner) then raise exception 'You don’t teach one of these learners.'; end if;
+    insert into public.profile_notes (place_id, learner_id, class_id, attribute, note, by_id)
+    values (public._place_of(auth.uid()), v_learner, (select id from public.classes where id = p_class and public._plan_staff(id)), p_attribute, v_note, auth.uid());
+    perform public.notify_user(v_learner, 'profile', 'Learner Profile: ' || p_attribute,
+      concat_ws(' · ', 'From ' || v_me, v_note), jsonb_build_object('learner_id', v_learner));
+    select split_part(display_name, ' ', 1) into v_first from public.profiles where id = v_learner;
+    for p in select parent_id from public.parent_links where learner_id = v_learner loop
+      perform public.notify_user(p.parent_id, 'profile', v_first || ' · Learner Profile: ' || p_attribute, concat_ws(' · ', 'From ' || v_me, v_note),
+        jsonb_build_object('learner_id', v_learner));
+    end loop;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+create or replace function public.remove_profile_note(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.profile_notes where id = p_id and (by_id = auth.uid() or public._org_manager(place_id));
+  if not found then raise exception 'That isn’t one you can take back.'; end if;
+end $$;
+
+create or replace function public.learner_profile_notes(p_learner uuid, p_from date default null, p_to date default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_all boolean := p_learner = auth.uid() or public._parent_of(p_learner);
+  v_place uuid := public._place_of(auth.uid());
+begin
+  if not v_all and not public._can_arrange(p_learner) then raise exception 'You can’t see this learner’s notes.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', n.id, 'attribute', n.attribute, 'note', n.note, 'at', n.created_at,
+             'by', t.display_name, 'class', c.name, 'place', public._place_name(n.place_id),
+             'mine', n.by_id = auth.uid() or public._org_manager(n.place_id)) order by n.created_at desc), '[]')
+            from public.profile_notes n left join public.profiles t on t.id = n.by_id left join public.classes c on c.id = n.class_id
+           where n.learner_id = p_learner and (v_all or n.place_id = v_place)
+             and n.created_at::date between coalesce(p_from, current_date - 365) and coalesce(p_to, current_date + 1));
+end $$;
+
+-- Term reports in words, with ATL skills and the Learner Profile: the report's words (2 to 8, Beginning … Extending to
+-- start), each class's ATL ratings in those words, and the Learner Profile notes from its dates
+alter table public.report_rounds add column if not exists descriptors text[] not null default array['Beginning', 'Developing', 'Consolidating', 'Extending'];
+alter table public.report_rounds add column if not exists atl boolean not null default false;
+alter table public.report_rounds add column if not exists profile boolean not null default false;
+alter table public.report_rounds drop constraint if exists report_rounds_scale_check;
+alter table public.report_rounds add constraint report_rounds_scale_check check (scale in ('letters', 'gcse', 'ib', 'percent', 'words', 'none'));
+alter table public.report_entries add column if not exists atl jsonb; -- {"Thinking": 1..n, …} (n = how many words the report uses)
+alter table public.report_entries drop constraint if exists report_entries_grade_check; -- (room for "Consolidating")
+alter table public.report_entries add constraint report_entries_grade_check check (grade is null or length(grade) <= 30);
 
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
@@ -13775,6 +14571,15 @@ revoke execute on function public._org_place(uuid) from public, anon, authentica
 revoke execute on function public._round_classes(uuid) from public, anon, authenticated;
 revoke execute on function public._scale_ok(text, text) from public, anon, authenticated;
 revoke execute on function public._round_json(public.report_rounds) from public, anon, authenticated;
+revoke execute on function public._core_kind(text) from public, anon, authenticated;
+revoke execute on function public._core_staff(uuid) from public, anon, authenticated;
+revoke execute on function public._core_mine(uuid) from public, anon, authenticated;
+revoke execute on function public._core_progress(uuid) from public, anon, authenticated;
+revoke execute on function public._core_project_json(public.core_projects) from public, anon, authenticated;
+revoke execute on function public._core_tick() from public, anon, authenticated;
+revoke execute on function public._class_grade(uuid) from public, anon, authenticated;
+revoke execute on function public._learner_profile() from public, anon, authenticated;
+revoke execute on function public._atl_skills() from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;
@@ -13822,18 +14627,28 @@ create policy sb_library_learner on storage.objects for select to authenticated
 
 -- Learner: their own work under work/<learner id>/...
 create policy sb_work_learner on storage.objects for all to authenticated
-  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text)
-  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text);
+  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and (storage.foldername(name))[2] is distinct from 'core')
+  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and (storage.foldername(name))[2] is distinct from 'core');
+-- (IB project files: a learner adds them but never changes or deletes one, so an approved final piece stays what was approved)
+drop policy if exists sb_work_core_add on storage.objects;
+create policy sb_work_core_add on storage.objects for insert to authenticated
+  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and (storage.foldername(name))[2] = 'core'
+              and public._core_files_ok((storage.foldername(name))[3]));
 
 -- Tutor: read the work of learners they teach, and write marking annotations
 create policy sb_work_tutor on storage.objects for all to authenticated
-  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid))
-  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid));
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core')
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core');
 
 -- Pictures and files in a class's stream (library/<author>/stream/<post group>/…): whoever can see the post
 drop policy if exists sb_library_stream on storage.objects;
 create policy sb_library_stream on storage.objects for select to authenticated
   using (bucket_id = 'library' and (storage.foldername(name))[2] = 'stream' and public._can_see_post_files((storage.foldername(name))[3]));
+
+-- A learner's IB project files (work/<learner>/core/<project>/…): their supervisor, the coordinators and their team read them
+drop policy if exists sb_work_core on storage.objects;
+create policy sb_work_core on storage.objects for select to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'core' and public._core_files_ok((storage.foldername(name))[3]));
 
 -- ---------------------------------------------------------------------
 -- Live updates in the app
@@ -13862,6 +14677,7 @@ begin
   perform cron.schedule('studybridge-students', '17 * * * *', 'select public._student_emails_tick()');
   perform cron.schedule('studybridge-bills', '23 * * * *', 'select public._bill_tick()');
   perform cron.schedule('studybridge-stream', '*/5 * * * *', 'select public._stream_tick()');
+  perform cron.schedule('studybridge-core', '41 * * * *', 'select public._core_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

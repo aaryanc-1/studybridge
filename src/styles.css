@@ -795,6 +795,24 @@ table.papers-plan tr.quiet td { color: var(--muted); }
 @media (max-width: 600px) { .term-crit-edit { grid-template-columns: 1fr; } .term-crit-edit .field:nth-child(3) { grid-column: auto; } .term-myp-grade { grid-row: auto; grid-column: auto; flex-direction: row; } }
 .term-learner { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line-soft); }
 .gb-crit { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
+.term-atl { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px; }
+
+/* IB core and the PYP: a project's journal beside how it's going; the programme of inquiry */
+.project-grid { grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .project-grid { grid-template-columns: 1fr; } }
+.core-entry { gap: 8px; }
+.core-entry.kind-meeting, .core-entry.kind-interview { background: var(--sunk); }
+.core-body { white-space: pre-line; overflow-wrap: anywhere; line-height: 1.55; }
+.outcome-row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.outcome-row.done { color: var(--ink); }
+.outcome-row.done svg { color: var(--good); }
+.project-cards .card { gap: 6px; text-decoration: none; color: inherit; }
+.pick-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; max-height: 280px; overflow-y: auto; padding: 4px 0; }
+.muted-card { opacity: 0.7; }
+.poi-grid th, .poi-grid td { vertical-align: top; min-width: 150px; }
+.poi-grid td.poi-gap { background: var(--amber-tint); }
+.poi-unit { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.poi-unit + .poi-unit { border-top: 1px solid var(--line-soft); }
 @media print {
   body.print-terms * { visibility: hidden; }
   body.print-terms .term-print, body.print-terms .term-print * { visibility: visible; }

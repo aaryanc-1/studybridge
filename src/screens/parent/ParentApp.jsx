@@ -20,7 +20,8 @@ import Settings from '../shared/Settings.jsx';
 import ReportCard, { printReport } from '../shared/ReportCard.jsx';
 import { gradeLine } from '../shared/MockHistory.jsx';
 import { StreamFiles } from '../shared/Stream.jsx';
-import { AttendanceCard, BehaviourCard } from '../shared/School.jsx';
+import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
+import { ParentProjects } from '../shared/Projects.jsx';
 import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
@@ -223,6 +224,8 @@ function Child({ id, kids, section }) {
           <ChildToday id={id} name={v.learner.name} />
           <AttendanceCard learnerId={id} name={v.learner.name} />
           <BehaviourCard learnerId={id} name={v.learner.name} />
+          <ProfileCard learnerId={id} name={v.learner.name} />
+          <ParentProjects childId={id} name={v.learner.name.split(' ')[0]} />
           <ClassPosts id={id} name={v.learner.name} />
           <ChildAccess id={id} name={v.learner.name} />
         </>

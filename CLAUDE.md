@@ -650,6 +650,50 @@ export_my_data has `term_reports`. UI: Learners → Term reports (`/learners/ter
 `MyReports` on the learner's Progress and the parent's Marks, `printTerms` with `body.print-terms`, a page each); Home's Needs you lists
 parts still to write. Website: schools.html "Term reports", "Planners, and IB criteria", "Cover and two-week timetables"; features.html
 "Plan and set work", "Progress and reports"; privacy.html School life mentions term reports and plans.
+Decided 4 Nov 2026 (Aaryan, after a feature-by-feature comparison with ManageBac and Google Classroom): the order for schools is
+1 IB core + the PYP → 2 gradebook depth (categories/weighting, formative/summative, predicted grades, an assessment calendar with
+clashes) → 3 report polish (branding/templates, ATL and Learner Profile sections, proofreading, transcripts) → 4 school office basics
+(student records, homeroom registers, parents reporting absences, more roles) → 5 parents (messaging teachers, conference booking,
+a portfolio) → 6 classroom gaps (Drive/OneDrive and a copy per student, recordings, more question types, peer review, a plagiarism
+check) → 7 activities, trips and consent forms → 8 reach (languages, Microsoft sign-in, school-system sync). Admissions and university
+guidance are only a future idea. IBIS (sending registrations and predicted grades to the IB) needs an IB partnership.
+IB core and the PYP (4 Nov 2026; Aaryan: "go"). Projects beside classes, for centres and schools: kinds cas, ee, tok, pp, cp, sa,
+exhibition (`_core_kind(kind)` = name, what learners add, staff kinds, outcomes/criteria/teams; the same in src/lib/core.js `KINDS`).
+`core_cohorts` (org, kind, title, session, deadlines [{key, label, due}], `titles` typed by the coordinator, archived), `core_projects`
+(cohort, learner, supervisor, team for cp/exhibition, title, subject, status active|completed|withdrawn, MYP `criteria` A–C 0–8,
+`grade`, staff_note), `core_entries` (experience, reflection, journal, draft, final by learners; meeting, interview by staff; strands
+C/A/S, outcomes 1–7, hours, minutes, milestone = a deadline key, is_project, experience_id, files, status done|waiting|approved|
+returned, feedback). Coordinators = the centre's or school's managers (`_my_school()`): `core_cohorts`, `save_core_cohort`,
+`archive_core_cohort`, `delete_core_cohort` (refused once anyone wrote), `core_cohort` (projects, teachers, pool = `_org_learner_ids`),
+`core_add(cohort, learners, supervisor, team)`, `core_set` (coordinator: supervisor/team/status; staff: title/subject/staff_note;
+learner: title/subject). `_core_staff` = supervisor or coordinator, `_core_mine` = the learner or their team (teams see each
+other's entries). `core_project(id)`, `my_core()` (a learner's; a teacher's supervised), `save_core_entry` (experiences, drafts and
+finals go to the supervisor as 'waiting'; files must be under `<learner>/core/<project>/` in the work bucket, read through storage policy
+`sb_work_core` → `_core_files_ok`), `delete_core_entry`, `review_core_entry(id, approved|returned|comment, feedback)`, `core_mark`
+(MYP projects; the grade is typed, from the IB's boundaries for the session), `_core_progress` (outcomes and strands from approved
+experiences, interviews, meetings, waiting, each deadline done/late/open), `parent_core(child)` (progress and deadlines, never what's
+written), `_core_tick` (pg_cron `studybridge-core` hourly: a reminder 2 days before a deadline, once, `core_reminded`), `core_on()` for
+the menus. Our own wording: CAS/SA outcomes paraphrased (`OUTCOMES`), no IB forms, prescribed titles or prompts. UI: Projects in the tutor
+menu (coordinators and supervisors) and the learner menu (`/projects`, src/screens/tutor/ProjectsAdmin.jsx: "Your students" and
+"Cohorts (coordinators)", CohortPage `/projects/cohorts/:id`; src/screens/shared/Projects.jsx: ProjectPage `/projects/p/:id`,
+EntryEditor, ProgressCard, DeadlinesCard, MarkCard, MyProjects, ParentProjects on the parent's This week); export_my_data has
+`projects`. The PYP: `units.pyp/theme/central_idea/lines_of_inquiry/key_concepts/learner_profile` (the planner's "Kind of unit": a unit,
+IB MYP unit, PYP unit of inquiry), `programme_of_inquiry()` (every PYP unit in the org by `_class_grade` and theme; `/programme`,
+`ProgrammeOfInquiry` in Planner.jsx, from a planner with PYP units), Learner Profile notes (`profile_notes`, `give_profile_note`,
+`remove_profile_note`, `learner_profile_notes`; GiveProfile and ProfileCard in School.jsx: class People tab, the learner's page, Progress,
+the parent's This week; 'profile' notifications), term reports in words (`report_rounds.descriptors`, scale 'words', `atl`, `profile`;
+`report_entries.atl` {skill: index}; `_round_json` is now every column; `report_card` gives each subject's `atl` and a `profile` section).
+The demo has a CAS cohort (Daniel advises Amara and Kofi). Website: schools.html "IB core and the PYP" (the cover card folded into "A
+timetable for everyone"), privacy.html School life mentions IB projects and Learner Profile notes.
+From a review before shipping (same day): a supervisor counts only while still in the cohort's centre or school (`_core_staff`, `core_on`,
+`my_core`); a withdrawn team member stops seeing the team; marks and the grade go to staff, and to the learner only once completed
+(`_core_project_json`); project files are add-only for learners (`sb_work_learner` and `sb_work_tutor` skip `<learner>/core/`, insert via
+`sb_work_core_add`), so an approved final can't be swapped, and other teachers of the learner never touch them; a new deadline gets the
+first free `dN` (duplicate keys refused); an edit on a team page goes to the entry's own project and review buttons follow each entry's
+`can_review`; reflections survive their experience being deleted (`on delete set null`); approving or sending back writes only the new
+note; `core_mark` can't revive a withdrawn learner; deleting needs the same rights as changing; reminders count the team's hand-ins;
+`programme_of_inquiry` needs an approved teacher and a PYP unit needs its theme; report words are trimmed after cutting, can't change
+once teachers used them, and a subject with only ATL ratings shows on the card.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

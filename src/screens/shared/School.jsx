@@ -10,6 +10,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { colorFor, day, time, ymd } from '../../lib/format.js';
 import { SessionForm } from './Live.jsx';
+import { LEARNER_PROFILE } from '../../lib/core.js';
 
 export const STATUS = { present: 'Present', late: 'Late', absent: 'Absent', excused: 'Excused' };
 const addDays = (d, n) => {
@@ -720,6 +721,143 @@ export function AttendanceCard({ learnerId, name, staff = false }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- the Learner Profile (IB core and the PYP) ----------
+// A teacher notices a learner being a risk-taker, caring, reflective…: the learner and their parents are told, and
+// term reports can show the attributes noticed in their dates
+export function GiveProfile({ learners, classId = null, onClose }) {
+  const toast = useToast();
+  const [who, setWho] = useState(learners.length === 1 ? [learners[0].id] : []);
+  const [attr, setAttr] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function give() {
+    setBusy(true);
+    try {
+      await api.giveProfileNote(who, attr, note || null, classId);
+      invalidate('profile-notes');
+      const names = learners.filter((l) => who.includes(l.id)).map((l) => l.name.split(' ')[0]);
+      toast(`${attr}: noted for ${names.join(', ')}`);
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t note that', body: e.message, tone: 'bad' });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title="Learner Profile"
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={busy || !attr || !who.length} onClick={give}>
+            Note it
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        {learners.length > 1 && (
+          <Field label="Who">
+            <div className="row wrap" style={{ gap: 6 }}>
+              {learners.map((l) => (
+                <button key={l.id} className="chip" aria-pressed={who.includes(l.id)} onClick={() => setWho(who.includes(l.id) ? who.filter((x) => x !== l.id) : [...who, l.id])}>
+                  {l.name}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
+        <Field label="What you noticed">
+          <div className="row wrap" style={{ gap: 6 }}>
+            {LEARNER_PROFILE.map((a) => (
+              <button key={a} className="chip" aria-pressed={attr === a} onClick={() => setAttr(a)}>
+                {a}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="A word for them" hint="They and their parents see it">
+          <input className="input" maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Tried the harder puzzle without being asked" />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+export function ProfileCard({ learnerId, name, staff = false, canGive = false }) {
+  const q = useQuery(`profile-notes:${learnerId}`, () => api.learnerProfileNotes(learnerId));
+  const toast = useToast();
+  const [giving, setGiving] = useState(false);
+  const list = q.data || [];
+  if (!q.data) return staff && q.error ? <div className="card"><div className="error">{q.error.message}</div></div> : null;
+  if (!list.length && !canGive) return null;
+  const first = (name || '').split(' ')[0];
+  const counts = {};
+  for (const n of list) counts[n.attribute] = (counts[n.attribute] || 0) + 1;
+  async function remove(n) {
+    try {
+      await api.removeProfileNote(n.id);
+      invalidate('profile-notes');
+    } catch (e) {
+      toast({ title: 'Couldn’t take it back', body: e.message, tone: 'bad' });
+    }
+  }
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>Learner Profile</h2>
+        {canGive && (
+          <button className="btn sm" onClick={() => setGiving(true)}>
+            <Icon name="spark" size={15} /> Note an attribute
+          </button>
+        )}
+      </div>
+      {list.length === 0 ? (
+        <div className="small muted">Nothing noted yet. When a teacher notices {first} being a risk-taker, caring or reflective, it shows here.</div>
+      ) : (
+        <>
+          <div className="row wrap" style={{ gap: 6 }}>
+            {Object.entries(counts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([a, n]) => (
+                <span key={a} className="pill accent">
+                  {a}
+                  {n > 1 ? ` ×${n}` : ''}
+                </span>
+              ))}
+          </div>
+          <div className="list">
+            {list.slice(0, 6).map((n) => (
+              <div key={n.id} className="item" style={{ alignItems: 'flex-start' }}>
+                <Icon name="spark" style={{ color: 'var(--accent)' }} />
+                <span className="grow">
+                  <span className="name">{n.attribute}</span>
+                  <span className="meta">
+                    <span>{day(n.at)}</span>
+                    {n.by && <span>{n.by}</span>}
+                    {n.class && <span>{n.class}</span>}
+                  </span>
+                  {n.note && <span className="small">“{n.note}”</span>}
+                </span>
+                {staff && n.mine && (
+                  <button className="btn sm ghost" onClick={() => remove(n)} aria-label={`Take back ${n.attribute} from ${day(n.at)}`}>
+                    Take back
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {giving && <GiveProfile learners={[{ id: learnerId, name }]} onClose={() => setGiving(false)} />}
     </div>
   );
 }

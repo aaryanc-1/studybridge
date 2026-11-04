@@ -9,6 +9,7 @@ import { Empty, Field, Link, Loading, Modal, Page, Toggle, go, useConfirm, useLe
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { LETTERS, band, levelsText, mypGrade } from '../../lib/myp.js';
+import { ATL_SKILLS, PYP_WORDS } from '../../lib/core.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { EFFORT, SCALES, TermCard, printTerms, termDates } from '../shared/TermReport.jsx';
 import { LearnerTabs } from './Learners.jsx';
@@ -107,6 +108,8 @@ function RoundEditor({ r, onClose }) {
   const lk = useLookups();
   const classes = lk.activeClasses || [];
   const [x, setX] = useState(() => ({ ...r, class_ids: r.class_ids || null }));
+  const [wordText, setWordText] = useState(() => (r.descriptors || PYP_WORDS).join(', '));
+  const words = wordText.split(',').map((w) => w.trim()).filter(Boolean);
   const [busy, setBusy] = useState(false);
   const set = (patch) => setX({ ...x, ...patch });
   const picked = x.class_ids || [];
@@ -115,6 +118,7 @@ function RoundEditor({ r, onClose }) {
     try {
       await api.saveReportRound(r.id || null, {
         title: x.title, starts: x.starts || null, ends: x.ends || null, due: x.due || null, scale: x.scale, effort: !!x.effort, class_ids: x.class_ids,
+        descriptors: words, atl: !!x.atl, profile: !!x.profile,
       });
       changed();
       toast(r.id ? 'Saved' : 'Term report set up. Each class’s teachers can write their part now.');
@@ -150,7 +154,7 @@ function RoundEditor({ r, onClose }) {
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" disabled={busy || !x.title?.trim() || (x.class_ids && !x.class_ids.length)} onClick={save}>
+          <button className="btn primary" disabled={busy || !x.title?.trim() || (x.class_ids && !x.class_ids.length) || words.length < 2} onClick={save}>
             Save
           </button>
         </>
@@ -180,7 +184,14 @@ function RoundEditor({ r, onClose }) {
             ))}
           </select>
         </Field>
+        {(x.scale === 'words' || x.atl) && (
+          <Field label="The words" hint="2 to 8, from the first step to the best, separated by commas">
+            <input className="input" value={wordText} onChange={(e) => setWordText(e.target.value)} />
+          </Field>
+        )}
         <Toggle checked={!!x.effort} onChange={(v) => set({ effort: v })} title="An effort grade too" sub="Excellent, Good, Needs work or A concern" />
+        <Toggle checked={!!x.atl} onChange={(v) => set({ atl: v })} title="Approaches to learning (ATL)" sub="Each class rates thinking, research, communication, social and self-management skills in the words above" />
+        <Toggle checked={!!x.profile} onChange={(v) => set({ profile: v })} title="The Learner Profile" sub="The attributes teachers noted for each learner in the report’s dates" />
         <Field label="Classes">
           <div className="stack sm">
             <label className="row" style={{ gap: 8 }}>
@@ -219,7 +230,8 @@ function ClassReports({ roundId, classId }) {
   if (!d) return <Page title="Term report">{q.error ? <div className="error">{q.error.message}</div> : <Loading />}</Page>;
   const r = d.round;
   const grades = SCALES[r.scale]?.grades || [];
-  const entryOf = (l) => edits[l.id] || { grade: '', criteria: {}, effort: '', comment: '', done: false, ...(l.entry || {}), criteria: l.entry?.criteria || {} };
+  const entryOf = (l) => edits[l.id] || { grade: '', criteria: {}, effort: '', comment: '', done: false, ...(l.entry || {}), criteria: l.entry?.criteria || {}, atl: l.entry?.atl || {} };
+  const words = r.descriptors || [];
   const edit = (l, patch) => setEdits({ ...edits, [l.id]: { ...entryOf(l), ...patch } });
   const left = d.learners.filter((l) => !entryOf(l).done).length;
   async function save(l, done) {
@@ -227,7 +239,7 @@ function ClassReports({ roundId, classId }) {
     setBusy(l.id);
     try {
       await api.saveReportEntry(roundId, classId, l.id, {
-        grade: e.grade || null, criteria: e.criteria, effort: e.effort || null, comment: e.comment || null, done: !!e.done,
+        grade: e.grade || null, criteria: e.criteria, effort: e.effort || null, comment: e.comment || null, done: !!e.done, atl: e.atl,
       });
       const rest = { ...edits };
       delete rest[l.id];
@@ -300,9 +312,9 @@ function ClassReports({ roundId, classId }) {
                     {r.scale === 'percent' ? (
                       <input className="input" type="number" min="0" max="100" style={{ maxWidth: 140 }} value={e.grade || ''} onChange={(ev) => edit(l, { grade: ev.target.value })} />
                     ) : (
-                      <select className="select" style={{ maxWidth: 200 }} value={e.grade || ''} onChange={(ev) => edit(l, { grade: ev.target.value })}>
+                      <select className="select" style={{ maxWidth: 220 }} value={e.grade || ''} onChange={(ev) => edit(l, { grade: ev.target.value })}>
                         <option value="">Not given</option>
-                        {grades.map((g) => (
+                        {(r.scale === 'words' ? words : grades).map((g) => (
                           <option key={g}>{g}</option>
                         ))}
                       </select>
@@ -321,6 +333,22 @@ function ClassReports({ roundId, classId }) {
                     ))}
                   </select>
                 </Field>
+              )}
+              {r.atl && (
+                <div className="term-atl">
+                  {ATL_SKILLS.map((skill) => (
+                    <Field key={skill} label={`${skill} skills`}>
+                      <select className="select" value={e.atl?.[skill] ?? ''} onChange={(ev) => edit(l, { atl: { ...e.atl, [skill]: ev.target.value === '' ? undefined : Number(ev.target.value) } })}>
+                        <option value="">Not given</option>
+                        {words.map((w, i) => (
+                          <option key={w} value={i + 1}>
+                            {w}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  ))}
+                </div>
               )}
               <Field label="Comment">
                 <textarea className="textarea" rows={3} maxLength={2000} value={e.comment || ''} onChange={(ev) => edit(l, { comment: ev.target.value })} />

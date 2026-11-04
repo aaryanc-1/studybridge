@@ -169,6 +169,37 @@ export const publishReportRound = (roundId, on) => run(sb().rpc('publish_report_
 export const myReports = (learnerId = null) => run(sb().rpc('my_reports', { p_learner: learnerId }));
 export const reportCard = (roundId, learnerId) => run(sb().rpc('report_card', { p_round: roundId, p_learner: learnerId }));
 export const reportCards = (roundId) => run(sb().rpc('report_cards', { p_round: roundId }));
+// IB core (CAS, the Extended Essay, TOK, MYP projects, the PYP Exhibition) and the PYP
+export const coreOn = () => run(sb().rpc('core_on')).catch((e) => (e.offline ? Promise.reject(e) : false));
+export const coreCohorts = () => run(sb().rpc('core_cohorts'));
+export const saveCoreCohort = (id, cohort) => run(sb().rpc('save_core_cohort', { p_id: id, p_cohort: cohort }));
+export const archiveCoreCohort = (id, on) => run(sb().rpc('archive_core_cohort', { p_id: id, p_on: on }));
+export const deleteCoreCohort = (id) => run(sb().rpc('delete_core_cohort', { p_id: id }));
+export const coreCohort = (id) => run(sb().rpc('core_cohort', { p_id: id }));
+export const coreAdd = (cohortId, learnerIds, supervisorId = null, team = null) =>
+  run(sb().rpc('core_add', { p_cohort: cohortId, p_learners: learnerIds, p_supervisor: supervisorId, p_team: team }));
+export const coreSet = (projectId, patch) => run(sb().rpc('core_set', { p_project: projectId, p: patch }));
+export const coreProject = (id) => run(sb().rpc('core_project', { p_id: id }));
+export const myCore = () => run(sb().rpc('my_core'));
+export const saveCoreEntry = (projectId, entry) => run(sb().rpc('save_core_entry', { p_project: projectId, p_entry: entry }));
+export const deleteCoreEntry = (id) => run(sb().rpc('delete_core_entry', { p_id: id }));
+export const reviewCoreEntry = (id, status, feedback = null) => run(sb().rpc('review_core_entry', { p_id: id, p_status: status, p_feedback: feedback }));
+export const coreMark = (projectId, criteria, grade, status = null) => run(sb().rpc('core_mark', { p_project: projectId, p_criteria: criteria, p_grade: grade, p_status: status }));
+export const parentCore = (childId) => run(sb().rpc('parent_core', { p_child: childId }));
+// a learner's project files go in their own work folder: work/<learner>/core/<project>/…
+export async function uploadCoreFile(projectId, file) {
+  const safe = (file.name || 'file').replace(/[^\w.() -]+/g, '_').slice(-80) || 'file';
+  const path = `${uid()}/core/${projectId}/${uuid().slice(0, 8)}-${safe}`;
+  const bytes = await file.arrayBuffer();
+  await run(sb().storage.from('work').upload(path, bytes, { contentType: file.type || 'application/octet-stream' }));
+  await store.blobs.set(`work/${path}`, new Blob([bytes], { type: file.type || 'application/octet-stream' }));
+  return { path, name: file.name || safe, type: file.type || '', size: file.size || bytes.byteLength };
+}
+export const programmeOfInquiry = () => run(sb().rpc('programme_of_inquiry'));
+export const giveProfileNote = (learnerIds, attribute, note = null, classId = null) =>
+  run(sb().rpc('give_profile_note', { p_learners: learnerIds, p_attribute: attribute, p_note: note, p_class: classId }));
+export const removeProfileNote = (id) => run(sb().rpc('remove_profile_note', { p_id: id }));
+export const learnerProfileNotes = (learnerId) => run(sb().rpc('learner_profile_notes', { p_learner: learnerId }));
 export const deleteSlot = (id) => run(sb().rpc('delete_slot', { p_id: id }));
 export const timetablePaste = (rows) => run(sb().rpc('timetable_paste', { p_rows: rows }));
 export const myTimetable = (from, to, learnerId = null) => run(sb().rpc('my_timetable', { p_from: from, p_to: to, p_learner: learnerId }));

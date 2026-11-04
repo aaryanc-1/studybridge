@@ -27,7 +27,9 @@ import ParentReports, { useWeeklyReports } from './ParentReports.jsx';
 import Centre from './Centre.jsx';
 import SeeAs from './SeeAs.jsx';
 import { RegisterPage } from '../shared/School.jsx';
-import { LessonPlanPage } from '../shared/Planner.jsx';
+import { LessonPlanPage, ProgrammeOfInquiry } from '../shared/Planner.jsx';
+import { ProjectPage } from '../shared/Projects.jsx';
+import TutorProjects from './ProjectsAdmin.jsx';
 import TermReports from './TermReports.jsx';
 import { TermReportPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
@@ -49,6 +51,7 @@ function notificationTarget(n) {
   if ((n.kind === 'class_post' || n.kind === 'stream_reply') && r.class_id) return `/learners/classes/${r.class_id}/stream`;
   if (n.kind === 'class') return '/learners/classes';
   if (n.kind === 'cover') return '/timetable';
+  if (n.kind === 'core') return r.project_id ? `/projects/p/${r.project_id}` : '/projects';
   if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/learners/reports';
   return '/';
 }
@@ -66,6 +69,8 @@ export default function TutorApp() {
   // a tuition centre's managers get a Centre page: every tutor and learner in it
   const org = useQuery('org', api.myOrg).data;
   const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
+  // IB core and the PYP: coordinators (a centre's or school's managers) and anyone supervising a project
+  const coreOn = useQuery('core-on', api.coreOn).data;
 
   // every tutor has Timetable: their week with each lesson's register, and their learners' attendance and behaviour
   const nav = [
@@ -77,6 +82,7 @@ export default function TutorApp() {
     { to: '/library', label: 'Library', icon: 'book', also: ['/file', '/lesson', '/structure'] },
     { to: '/messages', label: 'Messages', icon: 'message', count: unreadNotes },
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
+    ...(coreOn ? [{ to: '/projects', label: 'Projects', icon: 'flag' }] : []),
     { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
     ...(manager ? [{ to: '/centre', label: 'Centre', icon: 'chart' }] : []),
     ...(app.me.admin_to_move ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: 1 }] : []),
@@ -123,6 +129,9 @@ export default function TutorApp() {
     );
   else if (a === 'timetable') page = <TutorTimetable tab={b} />;
   else if (a === 'register' && b && c) page = <RegisterPage kind={b} id={c} day={route.parts[3]} />;
+  else if (a === 'projects' && b === 'p' && c) page = <ProjectPage id={c} />;
+  else if (a === 'projects') page = <TutorProjects tab={b} id={c} />;
+  else if (a === 'programme') page = <ProgrammeOfInquiry />;
   else if (a === 'plan' && b && c)
     page = (
       <Page

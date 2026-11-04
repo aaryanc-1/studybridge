@@ -1381,7 +1381,7 @@ try {
   await unitForm.getByLabel('Title').fill('Linear equations');
   await unitForm.getByLabel('Starts').fill(nyDay(-3));
   await unitForm.getByLabel('Ends').fill(nyDay(20));
-  await unitForm.getByRole('switch', { name: 'An IB MYP unit' }).click();
+  await unitForm.getByRole('button', { name: 'IB MYP unit' }).click();
   await unitForm.getByLabel('Statement of inquiry').fill('Balancing both sides helps us find what we don’t know.');
   await unitForm.getByLabel('Key concept').selectOption('Relationships');
   await unitForm.getByLabel('What it’s about').fill('Solving equations with one unknown.');
@@ -1488,6 +1488,101 @@ try {
   await shot(PT, 'parent-term-report');
   await a11y(PT, 'A term report');
   await PT.close();
+
+  step('IB core and the PYP: the coordinator starts CAS with Tom as Anaya’s adviser; she adds an experience on her phone, Tom approves it and writes up an interview, her dad sees progress (never what she wrote); a PYP unit shows on the programme of inquiry; a Learner Profile note reaches Anaya');
+  // the coordinator (the centre's manager) starts a CAS cohort and adds Anaya, with Tom as her adviser
+  await A.goto(web.url + '#/projects/cohorts');
+  await A.reload();
+  await nav(A, 'Projects').waitFor();
+  await A.getByRole('button', { name: 'Start a cohort' }).click();
+  const cohortForm = A.getByRole('dialog', { name: 'Start a cohort' });
+  await cohortForm.getByLabel('Name', { exact: true }).fill('CAS, class of 2027');
+  await cohortForm.getByLabel('First interview: date').fill(nyDay(20));
+  await cohortForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Cohort started. Add its learners next.').waitFor();
+  await A.getByRole('checkbox', { name: /^Anaya/ }).check();
+  await A.getByLabel('CAS adviser').selectOption({ label: 'Tom Phiri' });
+  await A.getByRole('button', { name: /^Add 1 learner/ }).click();
+  await A.getByText('1 added. They’ve been told.').waitFor();
+  await shot(A, 'cas-cohort');
+  await a11y(A, 'A CAS cohort');
+  // Anaya, on her phone: an experience, with its strand and a learning outcome
+  const AC = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'America/New_York' })).newPage();
+  watch(AC, 'learner (CAS)');
+  await (await import('./sweep.mjs')).signIn(AC, web.url, 'anaya@example.com');
+  await AC.goto(web.url + '#/projects');
+  await AC.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
+  const casLink = AC.getByRole('link', { name: /Creativity, activity, service/ });
+  if (!(await casLink.waitFor({ timeout: 10000 }).then(() => true, () => false))) {
+    await shot(AC, 'learner-projects-missing');
+    console.log('  (Anaya’s Projects page says:', (await AC.locator('main').innerText()).replace(/\s+/g, ' ').slice(0, 400) + ')');
+  }
+  await casLink.click();
+  await AC.getByRole('button', { name: 'Add an experience' }).click();
+  const expForm = AC.getByRole('dialog', { name: 'Add an experience' });
+  await expForm.getByLabel('What it is').fill('Tutoring younger pupils in maths');
+  await expForm.getByRole('button', { name: 'Service', exact: true }).click();
+  await expForm.getByRole('button', { name: /^5\. Working with others/ }).click();
+  await expForm.getByLabel('What you did and what it meant').fill('Every Wednesday I help two Year 7s with fractions.');
+  await expForm.getByRole('button', { name: 'Save and send' }).click();
+  await AC.getByText('Saved. Your CAS adviser can look at it now.').waitFor();
+  await shot(AC, 'learner-cas');
+  await AC.close();
+  // Tom approves it and writes up her first interview
+  const TP = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/New_York' })).newPage();
+  watch(TP, 'tutor (CAS adviser)');
+  await (await import('./sweep.mjs')).signIn(TP, web.url, 'tom@example.com');
+  await TP.goto(web.url + '#/projects');
+  await TP.getByRole('link', { name: /^Anaya/ }).click();
+  await TP.getByRole('button', { name: 'Approve' }).click();
+  await TP.getByText('Approved', { exact: true }).first().waitFor();
+  await TP.getByRole('button', { name: 'Write up an interview' }).click();
+  const interview = TP.getByRole('dialog', { name: 'Write up an interview' });
+  await interview.getByLabel('How long (minutes)').fill('15');
+  await interview.getByLabel('It’s for').selectOption('d1');
+  await interview.getByLabel('What you talked about').fill('Talked about her tutoring and an idea for her CAS project.');
+  await interview.getByRole('button', { name: 'Save' }).click();
+  await TP.getByText('1 of 3 interviews').first().waitFor();
+  await TP.locator('.outcome-row.done', { hasText: 'Working with others' }).waitFor();
+  await shot(TP, 'cas-adviser');
+  await a11y(TP, 'A CAS project');
+  await TP.close();
+  // her dad: how it's going, never what she wrote
+  const PJ = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'America/New_York' })).newPage();
+  watch(PJ, 'parent (projects)');
+  await (await import('./sweep.mjs')).signIn(PJ, web.url, 'dad@example.com');
+  await PJ.getByRole('heading', { name: 'Anaya’s projects' }).waitFor();
+  await PJ.getByText(/1 of 7 outcomes/).waitFor();
+  assert.equal(await PJ.getByText(/fractions|Tutoring younger/).count(), 0, 'never what she wrote');
+  await PJ.close();
+  // a PYP unit of inquiry, and the programme of inquiry it shows on
+  await A.goto(web.url + '#/learners/classes/' + k10.id + '/planner');
+  await A.getByRole('button', { name: 'New unit' }).click();
+  const pypForm = A.getByRole('dialog', { name: 'New unit' });
+  await pypForm.getByLabel('Title').fill('How we share water');
+  await pypForm.getByRole('button', { name: 'PYP unit of inquiry' }).click();
+  await pypForm.getByLabel('Transdisciplinary theme').selectOption('planet');
+  await pypForm.getByLabel('Central idea').fill('Our choices affect the water we share.');
+  await pypForm.getByRole('button', { name: 'Responsibility' }).click();
+  await pypForm.getByRole('button', { name: 'Caring', exact: true }).click();
+  await pypForm.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Unit added').waitFor();
+  await A.getByRole('button', { name: 'Programme of inquiry' }).click();
+  await A.getByRole('heading', { name: 'Programme of inquiry' }).waitFor();
+  await A.getByRole('link', { name: 'How we share water' }).waitFor();
+  await shot(A, 'programme-of-inquiry');
+  await a11y(A, 'The programme of inquiry');
+  // a Learner Profile note from the class's People tab reaches Anaya
+  await A.goto(web.url + '#/learners/classes/' + k10.id + '/people');
+  await A.getByRole('button', { name: 'Learner Profile' }).click();
+  const lpForm = A.getByRole('dialog', { name: 'Learner Profile' });
+  await lpForm.getByRole('button', { name: /^Anaya/ }).click();
+  await lpForm.getByRole('button', { name: 'Risk-takers' }).click();
+  await lpForm.getByLabel('A word for them').fill('Tried the hardest question first');
+  await lpForm.getByRole('button', { name: 'Note it' }).click();
+  await A.getByText(/^Risk-takers: noted for Anaya/).waitFor();
+  const lpTold = await srv.db.query(`select n.title from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'anaya@example.com' and n.kind = 'profile'`);
+  assert.deepEqual(lpTold.rows.map((r) => r.title), ['Learner Profile: Risk-takers']);
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });

@@ -13,7 +13,7 @@ import { day, kindLabel, pct } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import Stream from '../shared/Stream.jsx';
 import { Planner } from '../shared/Planner.jsx';
-import { GiveBehaviour } from '../shared/School.jsx';
+import { GiveBehaviour, GiveProfile } from '../shared/School.jsx';
 import { ClassAttendance, GiveButton } from './SchoolSetup.jsx';
 import { levelsText } from '../../lib/myp.js';
 
@@ -233,6 +233,7 @@ function People({ c }) {
   const lk = useLookups();
   const toast = useToast();
   const [giving, setGiving] = useState(false);
+  const [noting, setNoting] = useState(false);
   const [open, setOpen] = useState(false);
   const [names, setNames] = useState('');
   const [made, setMade] = useState(null);
@@ -263,6 +264,11 @@ function People({ c }) {
           <h2>Learners</h2>
           <span className="row wrap" style={{ gap: 8 }}>
             {members.length > 0 && <GiveButton onClick={() => setGiving(true)} />}
+            {members.length > 0 && (
+              <button className="btn" onClick={() => setNoting(true)}>
+                <Icon name="spark" size={16} /> Learner Profile
+              </button>
+            )}
             <button className="btn" onClick={() => (setOpen(true), setMade(null))}>
               <Icon name="users" size={16} /> Add a class list
             </button>
@@ -284,6 +290,13 @@ function People({ c }) {
           </div>
         )}
       </div>
+      {noting && (
+        <GiveProfile
+          learners={members.map((mid) => lk.learner(mid)).filter(Boolean).map((l) => ({ id: l.id, name: l.display_name }))}
+          classId={c.id}
+          onClose={() => setNoting(false)}
+        />
+      )}
       {giving && (
         <GiveBehaviour
           learners={members.map((mid) => lk.learner(mid)).filter(Boolean).map((l) => ({ id: l.id, name: l.display_name }))}

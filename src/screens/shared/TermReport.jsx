@@ -14,6 +14,7 @@ export const SCALES = {
   gcse: { label: 'Numbers (9 to 1)', grades: ['9', '8', '7', '6', '5', '4', '3', '2', '1', 'U'] },
   ib: { label: 'IB (7 to 1)', grades: ['7', '6', '5', '4', '3', '2', '1'] },
   percent: { label: 'Percentages', grades: [] },
+  words: { label: 'Words, like the PYP (Beginning to Extending)', grades: [] },
   none: { label: 'Comments only', grades: [] },
 };
 const fmt = (d) => (d ? new Date(String(d).length === 10 ? d + 'T12:00:00' : d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '');
@@ -111,12 +112,40 @@ export function TermCard({ c }) {
                   </tbody>
                 </table>
               )}
+              {s.atl?.length > 0 && (
+                <table className="rc-table term-crit" aria-label="Approaches to learning">
+                  <tbody>
+                    {s.atl.map((a) => (
+                      <tr key={a.skill}>
+                        <td>{a.skill} skills</td>
+                        <td className="rc-score">{a.rating}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
               {s.comment && <p className="rc-text">{s.comment}</p>}
               {c.staff && !s.done && <div className="rc-muted">Not finished yet</div>}
             </div>
           ))
         )}
       </section>
+      {c.profile?.length > 0 && (
+        <section>
+          <h3 className="rc-h">Learner Profile</h3>
+          <table className="rc-table">
+            <tbody>
+              {c.profile.map((p) => (
+                <tr key={p.attribute}>
+                  <td className="rc-strong">{p.attribute}</td>
+                  <td className="rc-muted">{p.note ? `“${p.note}”` : ''}</td>
+                  <td className="rc-score">{p.times > 1 ? `${p.times} times` : 'Once'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
       {c.overall?.comment && (
         <section className="rc-comment">
           <div className="rc-label">Overall{c.overall.by ? `, from ${c.overall.by}` : ''}</div>

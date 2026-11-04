@@ -4051,3 +4051,215 @@ test('running a school, part 2: IB MYP criteria levels in marking and the gradeb
   await as('QM', `select delete_report_round($1)`, [round]);
   assert.equal((await val('QM', `select report_rounds()`)).rounds.length, 0);
 });
+
+test('IB core: a coordinator sets up CAS, the Extended Essay and an MYP project; learners write, supervisors approve, give feedback, log meetings and mark; parents see progress and deadlines only', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  // the app's kinds of project are the server's (what learners add, what staff log)
+  const { KINDS, KEY_CONCEPTS, LEARNER_PROFILE, ATL_SKILLS } = await import('../src/lib/core.js');
+  for (const [kind, k] of Object.entries(KINDS)) {
+    const sql = (await db.query(`select public._core_kind($1) k`, [kind])).rows[0].k;
+    assert.deepEqual([sql.adds, sql.staff, !!sql.outcomes, !!sql.criteria, !!sql.teams], [k.adds, k.staff, !!k.outcomes, !!k.criteria, !!k.teams], kind);
+  }
+  assert.deepEqual((await db.query(`select public._learner_profile() a`)).rows[0].a, LEARNER_PROFILE);
+  assert.deepEqual((await db.query(`select public._atl_skills() a`)).rows[0].a, ATL_SKILLS);
+  assert.deepEqual(KEY_CONCEPTS.length, 7);
+  for (const k of ['KM', 'KS', 'KX']) {
+    await mk(k, k.toLowerCase() + '@core.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const k of ['KA', 'KB', 'KC']) {
+    await mk(k, k.toLowerCase() + '@core.x');
+    const code = await val('KS', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  await mk('KP', 'kp@core.x');
+  const inv = await one('KS', `select * from create_parent_invite($1, 'Mum')`, [U.KA]);
+  await one('KP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const centre = await val('KM', `select org_make_centre('Lakeview IB School')`);
+  await val('KS', `select org_join($1)`, [centre.code]);
+  const today = await val('KM', `select current_date::text`);
+  const plus = (n) => val('KM', `select (current_date + $1::int)::text`, [n]);
+
+  // only a coordinator (a manager of a centre or school) sets up projects; the menus know who has them
+  assert.equal(await val('KM', `select core_on()`), true);
+  assert.equal(await val('KS', `select core_on()`), false, 'not until they supervise someone');
+  assert.equal(await val('KA', `select core_on()`), false);
+  await fails(as('KS', `select save_core_cohort(null, '{"kind": "cas", "title": "CAS"}')`), /managers set up/);
+  await fails(as('KM', `select save_core_cohort(null, '{"kind": "art", "title": "Art"}')`), /kind of project/);
+  const cas = await val('KM', `select save_core_cohort(null, $1)`, [JSON.stringify({ kind: 'cas', title: 'CAS, class of 2027', session: 'May 2027',
+    deadlines: [{ key: 'i1', label: 'First interview', due: await plus(30) }, { label: 'CAS project plan', due: await plus(1) }] })]);
+  const ee = await val('KM', `select save_core_cohort(null, $1)`, [JSON.stringify({ kind: 'ee', title: 'Extended Essay, class of 2027',
+    deadlines: [{ key: 'rq', label: 'Research question', due: await plus(-3) }, { key: 'draft', label: 'First draft', due: await plus(40) }] })]);
+  const pp = await val('KM', `select save_core_cohort(null, '{"kind": "pp", "title": "Personal Project 2027"}')`);
+  let co = await val('KM', `select core_cohort($1)`, [cas]);
+  assert.deepEqual([co.deadlines.map((d) => d.key), co.pool.map((l) => l.name).sort()], [['i1', 'd1'], ['KA', 'KB', 'KC']]);
+  // editing: keys stay, a new deadline gets the first free one (never a repeat), the same key twice is refused
+  await val('KM', `select save_core_cohort($1, $2)`, [cas, JSON.stringify({ title: 'CAS, class of 2027', session: 'May 2027',
+    deadlines: [{ key: 'i1', label: 'First interview', due: await plus(30) }, { label: 'Extra check' }, { key: 'd1', label: 'CAS project plan', due: await plus(1) }] })]);
+  assert.deepEqual((await val('KM', `select core_cohort($1)`, [cas])).deadlines.map((d) => d.key), ['i1', 'd2', 'd1']);
+  await fails(as('KM', `select save_core_cohort($1, $2)`, [cas, JSON.stringify({ title: 'CAS', deadlines: [{ key: 'x', label: 'A' }, { key: 'x', label: 'B' }] })]), /same key/);
+  await val('KM', `select save_core_cohort($1, $2)`, [cas, JSON.stringify({ title: 'CAS, class of 2027', session: 'May 2027',
+    deadlines: [{ key: 'i1', label: 'First interview', due: await plus(30) }, { key: 'd1', label: 'CAS project plan', due: await plus(1) }] })]);
+  await fails(as('KX', `select core_add($1, $2)`, [cas, [U.KA]]), /coordinators add/);
+  assert.equal(await val('KM', `select core_add($1, $2, $3)`, [cas, [U.KA, U.KB], U.KS]), 2);
+  assert.equal(await val('KM', `select core_add($1, $2, $3)`, [cas, [U.KA], U.KS]), 0, 'already in it');
+  await val('KM', `select core_add($1, $2, $3)`, [ee, [U.KA], U.KS]);
+  await val('KM', `select core_add($1, $2)`, [pp, [U.KC]]);
+  assert.match((await as('KA', `select title from notifications where kind = 'core' order by created_at`))[0].title, /^You’re starting CAS/);
+  assert.equal(await val('KS', `select core_on()`), true);
+  assert.equal(await val('KA', `select core_on()`), true);
+  const mine = await val('KA', `select my_core()`);
+  assert.deepEqual(mine.map((x) => x.kind).sort(), ['cas', 'ee']);
+  const casP = mine.find((x) => x.kind === 'cas').id;
+  const eeP = mine.find((x) => x.kind === 'ee').id;
+  assert.equal((await val('KS', `select my_core()`)).length, 3, 'the projects they supervise');
+
+  // CAS: an experience (strands and learning outcomes) goes to the adviser, who approves it; a reflection on it
+  await fails(as('KA', `select save_core_entry($1, '{"kind": "experience", "title": " "}')`, [casP]), /name/);
+  await fails(as('KA', `select save_core_entry($1, '{"kind": "draft", "body": "x"}')`, [casP]), /can’t add that/);
+  await fails(as('KB', `select save_core_entry($1, '{"kind": "journal", "body": "x"}')`, [casP]), /isn’t your project/);
+  const exp = await val('KA', `select save_core_entry($1, $2)`, [casP, JSON.stringify({ kind: 'experience', title: 'Coaching under-10s football',
+    day: today, strands: ['A', 'S', 'X'], outcomes: [1, 5, 9], hours: 6, milestone: 'd1', is_project: true })]);
+  await val('KA', `select save_core_entry($1, $2)`, [casP, JSON.stringify({ kind: 'reflection', body: 'I learned to explain things simply.', experience_id: exp })]);
+  assert.match((await as('KS', `select title from notifications where kind = 'core' order by created_at`)).at(-1).title, /^KA added an experience/);
+  let pr = await val('KS', `select core_project($1)`, [casP]);
+  const e1 = pr.entries.find((e) => e.id === exp);
+  assert.deepEqual([e1.status, e1.strands, e1.outcomes, pr.progress.waiting, pr.progress.outcomes], ['waiting', ['A', 'S'], [1, 5], 1, []]);
+  await fails(as('KS', `select review_core_entry($1, 'returned', '')`, [exp]), /what to change/);
+  await fails(as('KX', `select review_core_entry($1, 'approved')`, [exp]), /supervisor or a coordinator/);
+  await val('KS', `select review_core_entry($1, 'approved', 'Lovely work')`, [exp]);
+  pr = await val('KA', `select core_project($1)`, [casP]);
+  assert.deepEqual([pr.progress.outcomes, pr.progress.strands, pr.progress.cas_project, Number(pr.progress.hours), pr.progress.deadlines.find((d) => d.key === 'd1').state],
+    [[1, 5], ['A', 'S'], true, 6, 'done']);
+  await fails(as('KA', `select delete_core_entry($1)`, [exp]), /approved/);
+  // the adviser writes up an interview; the learner hears
+  await val('KS', `select save_core_entry($1, $2)`, [casP, JSON.stringify({ kind: 'interview', body: 'Talked about her CAS project.', minutes: 20, milestone: 'i1' })]);
+  await fails(as('KS', `select save_core_entry($1, '{"kind": "experience", "title": "x"}')`, [casP]), /meetings/);
+  pr = await val('KA', `select core_project($1)`, [casP]);
+  assert.deepEqual([pr.progress.interviews, pr.progress.meeting_minutes, pr.progress.deadlines.find((d) => d.key === 'i1').state], [1, 20, 'done']);
+
+  // the Extended Essay: a research question is late, a draft goes back with feedback; files only in the project's own folder
+  pr = await val('KA', `select core_project($1)`, [eeP]);
+  assert.equal(pr.progress.deadlines.find((d) => d.key === 'rq').state, 'late');
+  await as('KA', `select core_set($1, '{"title": "How did trams change Lusaka?", "subject": "History"}')`, [eeP]);
+  await fails(as('KA', `select core_set($1, '{"supervisor_id": null}')`, [eeP]), /coordinator/);
+  await fails(as('KA', `select save_core_entry($1, $2)`, [eeP, JSON.stringify({ kind: 'draft', files: [{ path: `${U.KB}/core/x/a.pdf`, name: 'a.pdf' }] })]), /aren’t this project’s/);
+  const dr = await val('KA', `select save_core_entry($1, $2)`, [eeP, JSON.stringify({ kind: 'draft', milestone: 'draft', files: [{ path: `${U.KA}/core/${eeP}/draft.pdf`, name: 'draft.pdf' }] })]);
+  await val('KS', `select review_core_entry($1, 'returned', 'Narrow the question to one decade.')`, [dr]);
+  pr = await val('KA', `select core_project($1)`, [eeP]);
+  assert.deepEqual([pr.title, pr.entries[0].status, pr.entries[0].feedback, pr.progress.deadlines.find((d) => d.key === 'draft').state],
+    ['How did trams change Lusaka?', 'returned', 'Narrow the question to one decade.', 'open']);
+  assert.match((await as('KA', `select title from notifications where kind = 'core' order by created_at`)).at(-1).title, /^Have another go/);
+  await val('KS', `select save_core_entry($1, $2)`, [eeP, JSON.stringify({ kind: 'meeting', body: 'Planned the archive visit.', minutes: 30 })]);
+  assert.equal((await val('KA', `select core_project($1)`, [eeP])).progress.meetings, 1);
+  // someone else can't see it; the coordinator can
+  await fails(as('KB', `select core_project($1)`, [eeP]), /can’t see/);
+  await fails(as('KX', `select core_project($1)`, [eeP]), /can’t see/);
+  assert.equal((await val('KM', `select core_project($1)`, [eeP])).coordinator, true);
+
+  // an MYP project: no supervisor yet, then one; marked on criteria A to C and finished
+  co = await val('KM', `select core_cohort($1)`, [pp]);
+  const ppP = co.projects[0].id;
+  assert.equal(co.projects[0].supervisor, null);
+  assert.equal((await val('KM', `select core_cohorts()`)).find((c) => c.id === pp).no_supervisor, 1);
+  await as('KM', `select core_set($1, $2)`, [ppP, JSON.stringify({ supervisor_id: U.KS })]);
+  await fails(as('KS', `select core_mark($1, '{"D": 5}', null)`, [ppP]), /A, B and C/);
+  await as('KS', `select core_mark($1, '{"A": 6, "B": 5, "C": 7}', '5')`, [ppP]);
+  const provisional = await val('KC', `select core_project($1)`, [ppP]);
+  assert.deepEqual([provisional.criteria, provisional.grade], [undefined, undefined], 'not until it’s finished');
+  assert.equal((await val('KS', `select core_project($1)`, [ppP])).grade, '5');
+  await as('KS', `select core_mark($1, '{"A": 6, "B": 5, "C": 7}', '5', 'completed')`, [ppP]);
+  assert.equal((await val('KC', `select core_project($1)`, [ppP])).grade, '5');
+  assert.match((await as('KC', `select title from notifications where kind = 'core' order by created_at`)).at(-1).title, /^Finished/);
+  await fails(as('KC', `select save_core_entry($1, '{"kind": "journal", "body": "more"}')`, [ppP]), /finished/);
+
+  // a parent: progress and deadlines, never what's written
+  const pc = await val('KP', `select parent_core($1)`, [U.KA]);
+  assert.deepEqual(pc.map((x) => x.kind).sort(), ['cas', 'ee']);
+  assert.doesNotMatch(JSON.stringify(pc), /under-10s|explain things|Narrow the question|archive visit/i);
+  assert.ok(pc.find((x) => x.kind === 'ee').progress.deadlines.length === 2);
+  await fails(as('KP', `select parent_core($1)`, [U.KB]), /can’t see/);
+  // reminders two days before a deadline, once
+  const before = (await as('KB', `select id from notifications where kind = 'core'`)).length;
+  assert.ok((await db.query(`select public._core_tick() n`)).rows[0].n >= 1);
+  await db.query(`select public._core_tick()`);
+  const after = await as('KB', `select title from notifications where kind = 'core' order by created_at`);
+  assert.deepEqual([after.length - before, after.at(-1).title], [1, 'CAS project plan is due ' + (await val('A', `select trim(to_char(current_date + 1, 'FMDay'))`))]);
+  // her own data has her projects
+  assert.equal((await val('KA', `select export_my_data()`)).projects.length, 2);
+  // a supervisor who leaves the centre no longer sees their old students' projects
+  await val('KS', `select org_leave()`);
+  await fails(as('KS', `select core_project($1)`, [eeP]), /can’t see/);
+  assert.deepEqual(await val('KS', `select my_core()`), []);
+  assert.equal(await val('KS', `select core_on()`), false);
+  // a cohort learners wrote in can't be deleted (put it away instead)
+  await fails(as('KM', `select delete_core_cohort($1)`, [cas]), /Put it away/);
+  await as('KM', `select archive_core_cohort($1, true)`, [cas]);
+  assert.equal((await val('KM', `select core_cohort($1)`, [cas])).deadlines.length, 2, 'putting it away keeps its deadlines');
+  assert.deepEqual((await val('KA', `select my_core()`)).map((x) => x.kind), ['ee']);
+});
+
+test('the PYP: units of inquiry, the programme of inquiry, Learner Profile notes, and term reports in words with ATL skills and the Learner Profile', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['YM', 'YT']) {
+    await mk(k, k.toLowerCase() + '@pyp.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  await mk('YL', 'yl@pyp.x');
+  const code = await val('YT', `insert into invites (name) values ('YL') returning code`);
+  await one('YL', `select * from accept_invite($1, 'YL')`, [code]);
+  await db.query(`update profiles set grade = 4 where id = $1`, [U.YL]);
+  await mk('YP', 'yp@pyp.x');
+  const inv = await one('YT', `select * from create_parent_invite($1, 'Dad')`, [U.YL]);
+  await one('YP', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [inv.code]);
+  const centre = await val('YM', `select org_make_centre('Sunrise Primary')`);
+  await val('YT', `select org_join($1)`, [centre.code]);
+  const homeroom = await val('YM', `select save_class(null, 'Grade 4 Blue', null, $1, $2)`, [[U.YL], [U.YT]]);
+
+  // a unit of inquiry: a theme, central idea, key concepts and attributes (only real ones are kept)
+  const unit = await val('YT', `select save_unit(null, $1, $2)`, [homeroom, JSON.stringify({ title: 'Water for everyone', pyp: true, ib: true, theme: 'planet',
+    central_idea: 'People’s choices affect the water we share.', lines_of_inquiry: 'Where water comes from\nWho gets it',
+    key_concepts: ['Responsibility', 'Causation', 'Flavour'], learner_profile: ['Caring', 'Thinkers', 'Wizards'] })]);
+  await fails(as('YT', `select save_unit(null, $1, '{"title": "x", "pyp": true, "theme": "space"}')`, [homeroom]), /six themes/);
+  await fails(as('YT', `select save_unit(null, $1, '{"title": "No theme", "pyp": true}')`, [homeroom]), /six themes/);
+  const u = (await val('YL', `select class_units($1)`, [homeroom])).units[0];
+  assert.deepEqual([u.pyp, u.ib, u.theme, u.key_concepts, u.learner_profile], [true, false, 'planet', ['Causation', 'Responsibility'], ['Caring', 'Thinkers']]);
+  // the programme of inquiry: every PYP unit, with its class's year
+  const poi = await val('YM', `select programme_of_inquiry()`);
+  assert.deepEqual(poi.map((x) => [x.title, x.theme, x.grade, x.class]), [['Water for everyone', 'planet', 4, 'Grade 4 Blue']]);
+  assert.equal((await val('YT', `select programme_of_inquiry()`)).length, 1, 'every teacher sees it');
+  await fails(as('YL', `select programme_of_inquiry()`), /Tutors only/);
+
+  // Learner Profile notes: the learner and her dad hear; staff see their own place's
+  await fails(as('YT', `select give_profile_note($1, 'Wizards')`, [[U.YL]]), /Learner Profile attributes/);
+  await val('YT', `select give_profile_note($1, 'Risk-takers', 'Tried the harder puzzle', $2)`, [[U.YL], homeroom]);
+  await val('YT', `select give_profile_note($1, 'Risk-takers')`, [[U.YL]]);
+  await val('YT', `select give_profile_note($1, 'Caring', 'Helped a new classmate')`, [[U.YL]]);
+  assert.equal((await as('YL', `select title from notifications where kind = 'profile' order by created_at`))[0].title, 'Learner Profile: Risk-takers');
+  assert.equal((await as('YP', `select title from notifications where kind = 'profile' order by created_at`))[0].title, 'YL · Learner Profile: Risk-takers');
+  assert.equal((await val('YP', `select learner_profile_notes($1)`, [U.YL])).length, 3);
+  await fails(as('YM', `select learner_profile_notes($1)`, [U.YP]), /can’t see/);
+
+  // a term report in words, with ATL skills and the Learner Profile
+  await fails(as('YM', `select save_report_round(null, '{"title": "Term 1", "scale": "words", "descriptors": ["Only one"]}')`), /2 to 8 words/);
+  const round = await val('YM', `select save_report_round(null, $1)`, [JSON.stringify({ title: 'Term 1', scale: 'words', atl: true, profile: true, effort: false,
+    starts: '2000-01-01', ends: '2099-01-01' })]);
+  const rc = await val('YT', `select report_class($1, $2)`, [round, homeroom]);
+  assert.deepEqual([rc.round.descriptors, rc.round.atl, rc.round.profile], [['Beginning', 'Developing', 'Consolidating', 'Extending'], true, true]);
+  await fails(as('YT', `select save_report_entry($1, $2, $3, '{"grade": "B"}')`, [round, homeroom, U.YL]), /isn’t one of this report’s grades/);
+  await fails(as('YT', `select save_report_entry($1, $2, $3, '{"atl": {"Dancing": 2}}')`, [round, homeroom, U.YL]), /ATL skills are/);
+  await fails(as('YT', `select save_report_entry($1, $2, $3, '{"atl": {"Thinking": 5}}')`, [round, homeroom, U.YL]), /report’s words/);
+  await val('YT', `select save_report_entry($1, $2, $3, $4)`, [round, homeroom, U.YL, JSON.stringify({ grade: 'Consolidating', atl: { Thinking: 4, Social: 3 }, comment: 'A thoughtful term.', done: true })]);
+  // the words can't change once teachers have used them
+  await fails(as('YM', `select save_report_round($1, $2)`, [round, JSON.stringify({ title: 'Term 1', scale: 'words', descriptors: ['Emerging', 'Secure'], atl: true, profile: true, effort: false })]), /already used these words/);
+  await val('YM', `select publish_report_round($1, true)`, [round]);
+  const card = await val('YP', `select report_card($1, $2)`, [round, U.YL]);
+  assert.deepEqual([card.subjects[0].grade, card.subjects[0].atl], ['Consolidating', [{ skill: 'Thinking', rating: 'Extending' }, { skill: 'Social', rating: 'Consolidating' }]]);
+  assert.deepEqual(card.profile, [{ attribute: 'Risk-takers', times: 2, note: 'Tried the harder puzzle' }, { attribute: 'Caring', times: 1, note: 'Helped a new classmate' }]);
+});

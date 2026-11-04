@@ -21,8 +21,9 @@ import { ClassList, ClassView, useMyClasses } from './Classes.jsx';
 import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
-import { AttendanceCard, BehaviourCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
+import { AttendanceCard, BehaviourCard, ProfileCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
 import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
+import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -39,6 +40,8 @@ function notificationTarget(n) {
   if (n.kind === 'behaviour') return '/progress';
   if (n.kind === 'timetable_change') return '/timetable';
   if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
+  if (n.kind === 'core') return r.project_id ? `/projects/p/${r.project_id}` : '/projects';
+  if (n.kind === 'profile') return '/progress';
   return '/';
 }
 
@@ -80,6 +83,8 @@ export default function LearnerApp() {
   // a school's or centre's timetable, once their classes have lessons on it (asked before the early return below:
   // hooks must run the same way every time)
   const timetable = useTimetableOn(!self && !waiting);
+  // IB core and the PYP: CAS, the Extended Essay, TOK, MYP projects, the Exhibition
+  const projects = useQuery(!self && !waiting ? 'core-on' : null, api.coreOn).data;
 
   // Doing work takes over the whole window (and may be locked down)
   if (a === 'attempt' && b)
@@ -108,6 +113,7 @@ export default function LearnerApp() {
         ...(timetable ? [{ to: '/timetable', label: 'Timetable', icon: 'calendar' }] : []),
         { to: '/work', label: 'My work', icon: 'clipboard', also: ['/results'] },
         ...(classes.length ? [{ to: '/classes', label: 'Classes', icon: 'users', count: fresh }] : []),
+        ...(projects ? [{ to: '/projects', label: 'Projects', icon: 'flag' }] : []),
         { to: '/study', label: 'Study', icon: 'flame' },
         { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
         { to: '/progress', label: 'Progress', icon: 'chart' },
@@ -133,6 +139,7 @@ export default function LearnerApp() {
         <ProgressView learnerId={app.me.id} name={app.me.display_name} />
         <AttendanceCard learnerId={app.me.id} name={app.me.display_name} />
         <BehaviourCard learnerId={app.me.id} name={app.me.display_name} />
+        <ProfileCard learnerId={app.me.id} name={app.me.display_name} />
       </Page>
     );
   else if (a === 'messages') page = <Messages />;
@@ -141,6 +148,8 @@ export default function LearnerApp() {
   else if (a === 'classes' && b) page = <ClassView id={b} />;
   else if (a === 'classes') page = <ClassList />;
   else if (a === 'timetable') page = <TimetablePage />;
+  else if (a === 'projects' && b === 'p' && route.parts[2]) page = <ProjectPage id={route.parts[2]} />;
+  else if (a === 'projects') page = <MyProjects />;
   else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
   else page = <Today />;
   if (waiting && a !== 'settings') page = <SchoolWaiting />;
