@@ -657,7 +657,7 @@ clashes) → 3 report polish (branding/templates, ATL and Learner Profile sectio
 a portfolio) → 6 classroom gaps (Drive/OneDrive and a copy per student, recordings, more question types, peer review, a plagiarism
 check) → 7 activities, trips and consent forms → 8 reach (languages, Microsoft sign-in, school-system sync). Admissions and university
 guidance are only a future idea. IBIS (sending registrations and predicted grades to the IB) needs an IB partnership.
-IB core and the PYP (4 Nov 2026; Aaryan: "go"). Projects beside classes, for centres and schools: kinds cas, ee, tok, pp, cp, sa,
+IB core and the PYP (4 Nov 2026, app 1.1.104; Aaryan: "go"). Projects beside classes, for centres and schools: kinds cas, ee, tok, pp, cp, sa,
 exhibition (`_core_kind(kind)` = name, what learners add, staff kinds, outcomes/criteria/teams; the same in src/lib/core.js `KINDS`).
 `core_cohorts` (org, kind, title, session, deadlines [{key, label, due}], `titles` typed by the coordinator, archived), `core_projects`
 (cohort, learner, supervisor, team for cp/exhibition, title, subject, status active|completed|withdrawn, MYP `criteria` A–C 0–8,
