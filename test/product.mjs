@@ -1693,7 +1693,7 @@ try {
   await a2.getByText('No full stop at the end').waitFor();
   await shot(A, 'term-writing-checks');
   await a2.getByRole('button', { name: 'Save and finish' }).click();
-  await A.getByText('Anaya’s part is finished').waitFor();
+  await a2.getByText('Finished', { exact: true }).waitFor(); // (not the pop-up: an earlier one can still be showing)
   // the proofreader (the manager here) sends it back with a note
   await A.goto(web.url + '#/learners/terms');
   await A.locator('.card', { hasText: 'Term 2 report' }).getByRole('button', { name: /^Proofread/ }).click();
@@ -1714,7 +1714,7 @@ try {
   await a2.getByRole('button', { name: 'Fix the small things' }).click();
   assert.equal(await a2.getByLabel('Comment').inputValue(), 'Anaya explains her thinking clearly and checks her answers.');
   await a2.getByRole('button', { name: 'Save and finish' }).click();
-  await A.getByText('Anaya’s part is finished').waitFor();
+  await a2.getByText('Finished', { exact: true }).waitFor(); // (not the pop-up: an earlier one can still be showing)
   // checked, then sent out
   await A.goto(web.url + '#/learners/terms');
   await A.locator('.card', { hasText: 'Term 2 report' }).getByRole('button', { name: /^Proofread/ }).click();

@@ -725,7 +725,7 @@ Chipo's predicted A (shared) and two pieces due the same day next week. Website:
 assessment calendar", features.html's "Progress and reports", privacy.html (predicted grades).
 Run 106 failed (nothing released): the walkthrough waited for a "Saved" pop-up that an earlier one already satisfied and left the editor
 before the save; it now waits for "All changes saved". CI's sweep job posts its last 40 lines as an error annotation too (it had none).
-Report polish (5 Nov 2026, app 1.1.108; Aaryan: "go", step 3 of the order for schools). A place's look: `report_brands` (org_id; logo as a
+Report polish (5 Nov 2026, app 1.1.109; Aaryan: "go", step 3 of the order for schools). A place's look: `report_brands` (org_id; logo as a
 small data: URL the app shrinks to 320 px (`shrinkImage` in TermReports.jsx; under 300 KB, PNG or JPEG), colour, address, contact, head_name,
 head_title, footer; `save_report_brand` managers only, `report_brand()` for anyone teaching there, `_brand_json(org)` = it plus the place's name);
 colours are picked from `BRAND_COLOURS` in src/lib/proof.js (each ≥ 4.5:1 with white writing; text.test.mjs checks); "How reports look" on
@@ -749,6 +749,9 @@ ones); staff = the place's managers or a teacher of the learner; learners and pa
 (TermReport.jsx, `/transcript/:learner` for tutors and parents, `/transcript` for learners), the learner page's Transcript button, and a link under
 the learner's/parent's Term reports. The demo: Riverside's look and a proofread, sent-out Term 1 report for Year 10 maths (Chipo's transcript).
 Website: schools.html "Term reports", features.html "Progress and reports", privacy.html (transcripts, proofreaders).
+Run 108 failed (nothing released) the same way as 106: the walkthrough waited for an "Anaya’s part is finished" pop-up that an
+earlier one already satisfied; it now waits for the part's own "Finished" mark. In walkthrough steps, wait for something on the page
+that only the new save can make, never a pop-up's words.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
