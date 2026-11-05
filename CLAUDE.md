@@ -694,7 +694,7 @@ first free `dN` (duplicate keys refused); an edit on a team page goes to the ent
 note; `core_mark` can't revive a withdrawn learner; deleting needs the same rights as changing; reminders count the team's hand-ins;
 `programme_of_inquiry` needs an approved teacher and a PYP unit needs its theme; report words are trimmed after cutting, can't change
 once teachers used them, and a subject with only ATL ratings shows on the card.
-Gradebook depth (4 Nov 2026, app 1.1.106; Aaryan: "go", step 2 of the order for schools). Per class (its teachers only, via
+Gradebook depth (4 Nov 2026, app 1.1.107; Aaryan: "go", step 2 of the order for schools). Per class (its teachers only, via
 `_class_teacher`; tables `grade_categories`, `class_grading`, `predicted_grades`, RLS on with no policies): categories with weights
 (`save_grading(class, {categories [{id?, name, weight 0–100}], counts all|summative, scale [{grade, min %}], scale_name})`, up to 12, names
 unique, at least one weight above 0; a category left out goes and its work keeps none; `class_categories(class)` for the editor).
@@ -723,6 +723,8 @@ Assessments (`AssessmentCalendar` in src/screens/tutor/Assessments.jsx: four wee
 `PredictedGrades` (TermReport.jsx) on the learner's Progress and the parent's Marks. Demo: Year 10 maths has Tests 60% / Homework 40%,
 Chipo's predicted A (shared) and two pieces due the same day next week. Website: schools.html "A gradebook that adds it up" and "An
 assessment calendar", features.html's "Progress and reports", privacy.html (predicted grades).
+Run 106 failed (nothing released): the walkthrough waited for a "Saved" pop-up that an earlier one already satisfied and left the editor
+before the save; it now waits for "All changes saved". CI's sweep job posts its last 40 lines as an error annotation too (it had none).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

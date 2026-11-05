@@ -106,7 +106,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: Every screen and every button, for each kind of account
-        run: node test/product.mjs
+        run: |
+          set +e
+          node test/product.mjs 2>&1 | tee sweep.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            msg=$(tail -40 sweep.txt | tr -d '\r' | awk '{ gsub(/%/, "%25"); printf "%s%%0A", $0 }')
+            echo "::error title=Button sweep failed::$msg"
+          fi
+          exit $status
         env:
           SWEEP: '1'
           SHOTS: sweep

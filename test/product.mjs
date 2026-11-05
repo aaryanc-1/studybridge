@@ -1603,7 +1603,7 @@ try {
   await wg.getByRole('button', { name: 'Summative', exact: true }).click();
   await wg.getByLabel('Category').selectOption({ label: 'Homework (40%)' });
   await wg.getByRole('button', { name: 'Save' }).click();
-  await A.getByText('Saved', { exact: true }).first().waitFor();
+  await wg.waitFor({ state: 'detached' });
   const gbAnaya = gbook.locator('tr', { has: A.getByRole('rowheader', { name: 'Anaya' }) });
   await gbAnaya.locator('td.gb-sum', { hasText: '80%' }).first().waitFor(); // 8 out of 10, the only work that counts
   // her predicted grade, shared with her and her parents (the note stays with teachers)
@@ -1637,7 +1637,7 @@ try {
   await A.getByText(/Unit test: sequences/).first().waitFor();
   await shot(A, 'editor-clash');
   await A.getByRole('button', { name: 'Save draft' }).click();
-  await A.getByText('Saved', { exact: true }).first().waitFor();
+  await A.getByText('All changes saved').waitFor(); // (not a "Saved" pop-up: an earlier one can still be showing)
   // the centre's managers see every class's tests and exams
   await A.goto(web.url + '#/centre/assessments');
   await A.locator('.ac-item', { hasText: 'Quiz on circles' }).waitFor();
