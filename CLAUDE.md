@@ -694,6 +694,35 @@ first free `dN` (duplicate keys refused); an edit on a team page goes to the ent
 note; `core_mark` can't revive a withdrawn learner; deleting needs the same rights as changing; reminders count the team's hand-ins;
 `programme_of_inquiry` needs an approved teacher and a PYP unit needs its theme; report words are trimmed after cutting, can't change
 once teachers used them, and a subject with only ATL ratings shows on the card.
+Gradebook depth (4 Nov 2026, app 1.1.106; Aaryan: "go", step 2 of the order for schools). Per class (its teachers only, via
+`_class_teacher`; tables `grade_categories`, `class_grading`, `predicted_grades`, RLS on with no policies): categories with weights
+(`save_grading(class, {categories [{id?, name, weight 0–100}], counts all|summative, scale [{grade, min %}], scale_name})`, up to 12, names
+unique, at least one weight above 0; a category left out goes and its work keeps none; `class_categories(class)` for the editor).
+`assignments.category_id` (trigger `assignments_category` drops it when the work's class isn't the category's) and `assignments.assessment`
+(formative|summative, null = from the kind: `_assessment(kind, set)`, tests and exams summative; the same rule is `assessmentOf` in
+src/lib/grading.js); `set_work_grading(assignment, category, assessment)` lets any of the class's teachers change both from the gradebook.
+`_class_marks(class)` = each member's latest try at each posted piece (pct once status marked or returned, `counts` = everything counts or
+it's summative); `_class_overall`: with weighted categories, each category's average weighted (categories with no marks left out, work with
+no category doesn't count), else the plain average; `_class_myp`: an MYP class's median level per criterion and the 1–7 grade once all four
+have one. `class_gradebook` (moved to the gradebook-depth block) adds categories, grading, each learner's overall, by_category, counted,
+levels, `suggested` (MYP criteria; else the class's scale via `_scale_grade`; else the teacher's own newest grade boundaries for the subject's
+exam via `_grade_for(…, overall, 100)`) and predicted, each work's category/assessment/counts/mine, and each cell's pct. Predicted grades:
+`set_predicted_grade(class, learner, grade, note, shared)` (an empty grade deletes; a changed grade goes into `history`, 20 kept; the note is
+staff-only; when shared and new or changed, the learner and their parents get a 'predicted' notification), `my_predicted(learner?)` (the learner
+or a parent: shared ones from every class, never the note; in export_my_data), and `report_class` hints include the class's predicted grade.
+The assessment calendar: `assessment_calendar(from, to, all)` = summative work due between two days at the teacher's place
+(`_place_of`; their own drafts too, never another place's), for the learners they teach (`_learners_of`), or the whole centre or school for a
+manager (`all`); days in `_school_tz`; `clashes` = a learner with 2+ on one day, `busy` = 3+ in a Monday week; `_work_learners(a)` is who a
+piece is for. `assessment_clashes(due, class, learners, subject, except)` for the editor: other summative work those learners have that day,
+and how many would have 3+ that week. UI: the class's Gradebook tab (ClassPage.jsx: Set up = `GradingSetup` with "Start with tests 60% and
+homework 40%" and starting scales `SCALES` in grading.js (IB 1–7, GCSE 9–1, IGCSE, A Level, letters; starting points only), a view filter
+(all/summative/formative/category), each work header opens `WorkGrading`, category columns, Overall, Suggested, Predicted (`Predicted`
+dialog: use the suggestion, note, share), faded columns that don't count, "Use suggested grades (N)", the CSV with all of it); the editor's
+"Formative or summative", "Gradebook category" and `ClashNote` under Due (AssignmentEditor.jsx); Timetable → Assessments and Centre →
+Assessments (`AssessmentCalendar` in src/screens/tutor/Assessments.jsx: four weeks a page, clashes and busy weeks, filter by year or class);
+`PredictedGrades` (TermReport.jsx) on the learner's Progress and the parent's Marks. Demo: Year 10 maths has Tests 60% / Homework 40%,
+Chipo's predicted A (shared) and two pieces due the same day next week. Website: schools.html "A gradebook that adds it up" and "An
+assessment calendar", features.html's "Progress and reports", privacy.html (predicted grades).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

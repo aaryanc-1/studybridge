@@ -272,6 +272,7 @@ function ClassReports({ roundId, classId }) {
         const hint = [
           h.work ? `Average ${h.pct}% on ${h.work} piece${h.work === 1 ? '' : 's'} of work given back` : 'No marked work for this class in these dates',
           h.criteria && `Levels given: ${levelsText(h.criteria)}`,
+          h.predicted && `Predicted grade ${h.predicted}`,
           h.attendance != null && `Attendance ${h.attendance}%`,
           (h.positive > 0 || h.concern > 0) && `+${h.positive} points${h.concern ? `, ${h.concern} concern${h.concern === 1 ? '' : 's'}` : ''}`,
         ].filter(Boolean);

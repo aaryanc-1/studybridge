@@ -2510,6 +2510,15 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   assert.deepEqual(chipo.plan.map((p) => p.topics), [['Algebra']]);
   assert.equal(tendai.last_mark, null);
   assert.equal(await val('L', `select tutor_home()`), null, 'tutors only');
+  // its gradebook: tests 60% and homework 40%, Chipo's overall from both, a grade from Mercy's boundaries, her shared predicted grade
+  const gbk = await val(Mc, `select class_gradebook((select id from classes where name = 'Year 10 maths'))`);
+  const cg = gbk.learners.find((l) => l.id === ids.learner1);
+  assert.deepEqual([gbk.categories.map((c) => c.name), Number(cg.overall), cg.suggested, cg.predicted.grade], [['Tests', 'Homework'], 70.8, 'A', 'A']);
+  assert.equal((await val(L1, `select my_predicted()`))[0].grade, 'A');
+  // and the assessment calendar: two pieces on one day next week for both of them
+  const cal = await val(Mc, `select assessment_calendar(current_date, current_date + 14)`);
+  assert.deepEqual(cal.items.map((x) => x.title), ['Algebra test', 'Statistics project']);
+  assert.deepEqual(cal.clashes.map((c) => c.name).sort(), ['Chipo Banda', 'Tendai Moyo']);
   // Daniel has Amara's quiz to mark
   const T = await open('tutor2');
   assert.equal((await as(T, `select id from attempts where status = 'submitted'`)).length, 1);
@@ -3990,6 +3999,8 @@ test('running a school, part 2: IB MYP criteria levels in marking and the gradeb
   assert.deepEqual(seen.attempt.criteria, { A: 6, C: 5 });
   const gb = await val('QT', `select class_gradebook($1)`, [sciClass]);
   assert.deepEqual([gb.myp.A, gb.work[0].criteria, gb.cells[0].criteria], ['Knowing and understanding', ['A', 'C'], { A: 6, C: 5 }]);
+  const gqa = gb.learners.find((l) => l.id === U.QA);
+  assert.deepEqual([gqa.levels, gqa.suggested], [{ A: 6, C: 5 }, null], 'a suggested MYP grade once all four criteria have a level');
 
   // a term report: set up by the manager, written by each class's teachers
   await fails(as('QT', `select save_report_round(null, '{"title": "Term 1"}')`), /Only a manager/);
@@ -4262,4 +4273,171 @@ test('the PYP: units of inquiry, the programme of inquiry, Learner Profile notes
   const card = await val('YP', `select report_card($1, $2)`, [round, U.YL]);
   assert.deepEqual([card.subjects[0].grade, card.subjects[0].atl], ['Consolidating', [{ skill: 'Thinking', rating: 'Extending' }, { skill: 'Social', rating: 'Consolidating' }]]);
   assert.deepEqual(card.profile, [{ attribute: 'Risk-takers', times: 2, note: 'Tried the harder puzzle' }, { attribute: 'Caring', times: 1, note: 'Helped a new classmate' }]);
+});
+
+test('gradebook depth: categories with weights, formative and summative work, an overall and a suggested grade, predicted grades shared with learners and parents, and the assessment calendar with clashes', async () => {
+  // the app's rules are the server's: tests and exams summative, and a percentage's grade on a scale
+  const { assessmentOf, scaleGrade, SCALES } = await import('../src/lib/grading.js');
+  for (const k of ['homework', 'quiz', 'test', 'exam']) assert.equal((await db.query(`select public._assessment($1, null) a`, [k])).rows[0].a, assessmentOf(k), k);
+  const ibScale = SCALES.find((x) => x.id === 'ib').grades;
+  for (const n of [0, 24.9, 25, 64.5, 80, 100]) {
+    assert.equal((await db.query(`select public._scale_grade(public._check_scale($1), $2) g`, [JSON.stringify(ibScale), n])).rows[0].g, scaleGrade(ibScale, n), String(n));
+  }
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['GM', 'GT1', 'GT2', 'GX']) {
+    await mk(k, k.toLowerCase() + '@grades.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const join = async (tutor, k) => {
+    if (!U[k]) await mk(k, k.toLowerCase() + '@grades.x');
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  };
+  await join('GT1', 'GA');
+  await join('GT1', 'GB');
+  await join('GT2', 'GC');
+  await join('GX', 'GA'); // a tutor of her own too, somewhere else
+  await mk('GP', 'gp@grades.x');
+  const inv = await one('GT1', `select * from create_parent_invite($1, 'Mum')`, [U.GA]);
+  await one('GP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const centre = await val('GM', `select org_make_centre('Hillside School')`);
+  await val('GT1', `select org_join($1)`, [centre.code]);
+  await val('GT2', `select org_join($1)`, [centre.code]);
+  const maths = await val('GT1', `insert into subjects (name, exam) values ('Maths', 'cie:0580') returning id`);
+  const mcls = await val('GT1', `select save_class(null, 'Year 10 maths', $1, $2)`, [maths, [U.GA, U.GB]]);
+  const scls = await val('GM', `select save_class(null, 'Year 10 science', null, $1, $2)`, [[U.GA, U.GC], [U.GT2]]);
+  const D = await val('GT1', `select (date_trunc('week', now()) + interval '14 days 12 hours')::text`);
+  const at = (h) => val('GT1', `select ($1::timestamptz + make_interval(hours => $2))::text`, [D, h]);
+  const work = (who, title, kind, cls, due, x = {}) =>
+    val(who, `insert into assignments (title, kind, class_id, visibility, due_at, assessment, draft) values ($1, $2, $3, 'visible', $4, $5, $6) returning id`,
+      [title, kind, cls, due, x.assessment ?? null, x.draft ?? false]);
+  const hw = await work('GT1', 'Homework 1', 'homework', mcls, D);
+  const test1 = await work('GT1', 'Test 1', 'test', mcls, await at(2));
+  const quiz = await work('GT1', 'Quiz 1', 'quiz', mcls, await at(24), { assessment: 'summative' });
+  await fails(as('GT1', `insert into assignments (title, assessment) values ('Bad', 'graded')`), /assessment_check/);
+  const mark = (a, l, score, max) =>
+    db.query(`insert into attempts (assignment_id, learner_id, tutor_id, status, started_at, submitted_at, score, max_score, released) values ($1, $2, $3, 'marked', now(), now(), $4, $5, true)`,
+      [a, U[l], U.GT1, score, max]);
+  await mark(hw, 'GA', 5, 10);
+  await mark(test1, 'GA', 40, 50);
+  await mark(quiz, 'GA', 7, 10);
+  await mark(test1, 'GB', 30, 50);
+  const book = () => val('GT1', `select class_gradebook($1)`, [mcls]);
+  const L = (g, k) => g.learners.find((l) => l.id === U[k]);
+
+  // no categories: everything counts, homework formative and tests summative unless the teacher says so
+  let g = await book();
+  assert.deepEqual(g.work.map((w) => [w.title, w.assessment, w.counts]), [['Homework 1', 'formative', true], ['Test 1', 'summative', true], ['Quiz 1', 'summative', true]]);
+  assert.deepEqual([Number(L(g, 'GA').overall), Number(L(g, 'GB').overall), L(g, 'GA').suggested], [66.7, 60, null]);
+  assert.equal(g.cells.find((x) => x.assignment_id === test1 && x.learner_id === U.GA).pct, 80);
+
+  // categories with weights, set up by the class's teachers only
+  await fails(as('GT2', `select save_grading($1, '{}')`, [mcls]), /Not your class/);
+  await fails(as('GM', `select save_grading($1, '{}')`, [mcls]), /Not your class/, 'a manager who doesn’t teach it');
+  const setup = (x) => val('GT1', `select save_grading($1, $2)`, [mcls, JSON.stringify(x)]);
+  await fails(setup({ categories: [{ name: 'Tests', weight: 60 }, { name: 'tests', weight: 40 }] }), /there twice/);
+  await fails(setup({ categories: [{ name: 'Tests', weight: 120 }] }), /from 0 to 100/);
+  await fails(setup({ categories: [{ name: 'Tests', weight: 0 }] }), /above 0/);
+  await fails(setup({ categories: [{ name: ' ', weight: 10 }] }), /needs a name/);
+  await fails(setup({ categories: Array.from({ length: 13 }, (_, i) => ({ name: 'C' + i, weight: 5 })) }), /Up to 12/);
+  const cats = await setup({ categories: [{ name: 'Tests', weight: 60 }, { name: 'Homework', weight: 40 }] });
+  const [tests, home] = cats.map((c) => c.id);
+  g = await book();
+  assert.equal(L(g, 'GA').overall, null, 'work with no category doesn’t count once there are categories');
+  assert.ok(g.work.every((w) => !w.counts));
+  await fails(as('GT2', `select set_work_grading($1, $2, null)`, [hw, home]), /your classes/);
+  const sciCats = await val('GT2', `select save_grading($1, '{"categories": [{"name": "Exams", "weight": 100}]}')`, [scls]);
+  await fails(as('GT1', `select set_work_grading($1, $2, null)`, [hw, sciCats[0].id]), /isn’t this class’s/);
+  await val('GT1', `select set_work_grading($1, $2, null)`, [hw, home]);
+  await val('GT1', `select set_work_grading($1, $2, null)`, [test1, tests]);
+  assert.deepEqual(await val('GT1', `select set_work_grading($1, $2, 'summative')`, [quiz, tests]), { id: quiz, category_id: tests, assessment: 'summative' });
+  g = await book();
+  // tests (80 + 70) / 2 = 75, weighted 60; homework 50, weighted 40
+  assert.deepEqual([Number(L(g, 'GA').overall), L(g, 'GA').by_category, L(g, 'GA').counted], [65, { [tests]: 75, [home]: 50 }, 3]);
+  assert.equal(Number(L(g, 'GB').overall), 60, 'only the categories with marks count');
+  assert.deepEqual(await val('GT1', `select class_categories($1)`, [mcls]), cats);
+  await fails(as('GT2', `select class_categories($1)`, [mcls]), /Not your class/);
+
+  // summative work only: the homework stops counting until it's made summative
+  const body = { categories: cats.map(({ id, name, weight }) => ({ id, name, weight })) };
+  assert.deepEqual((await setup({ ...body, counts: 'summative' })).map((c) => c.id), [tests, home], 'the same categories');
+  g = await book();
+  assert.deepEqual([Number(L(g, 'GA').overall), g.work.find((w) => w.id === hw).counts], [75, false]);
+  await val('GT1', `select set_work_grading($1, $2, 'summative')`, [hw, home]);
+  assert.equal(Number(L(await book(), 'GA').overall), 65);
+
+  // a grade suggested by the class's scale (by plain maths), or else the teacher's own grade boundaries for the exam
+  await fails(setup({ ...body, scale: [{ grade: '7', min: 80 }, { grade: '7', min: 70 }] }), /twice/);
+  await fails(setup({ ...body, scale: [{ grade: '7', min: 180 }] }), /from 0 to 100/);
+  await fails(setup({ ...body, scale: [{ grade: '7', min: 80 }, { grade: '6', min: 80 }] }), /same percentage/);
+  await setup({ ...body, scale: [{ grade: '5', min: 60 }, { grade: '7', min: 80 }, { grade: '6', min: 70 }, { grade: '4', min: 0 }], scale_name: 'own' });
+  g = await book();
+  assert.deepEqual([g.grading.scale.map((x) => x.grade), g.grading.scale_name, L(g, 'GA').suggested, L(g, 'GB').suggested], [['7', '6', '5', '4'], 'own', '5', '5']);
+  await val('GT1', `insert into grade_boundaries (exam, session, max_mark, grades) values ('cie:0580', 'June 2026', 200, '[{"grade": "A", "min": 140}, {"grade": "B", "min": 120}, {"grade": "C", "min": 100}]') returning id`);
+  await setup(body);
+  g = await book();
+  assert.deepEqual([g.grading.scale, g.grading.boundaries.session, L(g, 'GA').suggested, L(g, 'GB').suggested], [null, 'June 2026', 'B', 'B']);
+
+  // predicted grades: the class's teachers set them; the learner and their parents see them once shared, never the note
+  await fails(as('GT2', `select set_predicted_grade($1, $2, '6')`, [mcls, U.GA]), /Not your class/);
+  await fails(as('GT1', `select set_predicted_grade($1, $2, '6')`, [mcls, U.GC]), /aren’t in this class/);
+  await val('GT1', `select set_predicted_grade($1, $2, 'B', 'More practice on vectors', false)`, [mcls, U.GA]);
+  assert.deepEqual(await val('GA', `select my_predicted()`), [], 'not shared yet');
+  assert.equal((await as('GA', `select id from notifications where kind = 'predicted'`)).length, 0);
+  await val('GT1', `select set_predicted_grade($1, $2, 'A', 'More practice on vectors', true)`, [mcls, U.GA]);
+  const shared = await val('GA', `select my_predicted()`);
+  assert.deepEqual(shared.map((x) => [x.class, x.subject, x.grade, x.by, x.place, x.note]), [['Year 10 maths', 'Maths', 'A', 'GT1', 'Hillside School', undefined]]);
+  assert.match((await as('GA', `select title from notifications where kind = 'predicted'`))[0].title, /Year 10 maths: A$/);
+  assert.equal((await val('GP', `select my_predicted($1)`, [U.GA]))[0].grade, 'A');
+  assert.equal((await as('GP', `select id from notifications where kind = 'predicted'`)).length, 1);
+  await fails(as('GB', `select my_predicted($1)`, [U.GA]), /can’t see/);
+  await fails(as('GX', `select my_predicted($1)`, [U.GA]), /can’t see/);
+  await val('GT1', `select set_predicted_grade($1, $2, 'A', 'Vectors are better now', true)`, [mcls, U.GA]);
+  assert.equal((await as('GA', `select id from notifications where kind = 'predicted'`)).length, 1, 'the same grade tells nobody again');
+  const pg = L(await book(), 'GA').predicted;
+  assert.deepEqual([pg.grade, pg.note, pg.shared, pg.history.map((h) => h.grade)], ['A', 'Vectors are better now', true, ['B']]);
+  assert.equal((await val('GA', `select export_my_data()`)).predicted_grades[0].grade, 'A');
+  await val('GT1', `select set_predicted_grade($1, $2, 'C')`, [mcls, U.GB]);
+  await val('GT1', `select set_predicted_grade($1, $2, '  ')`, [mcls, U.GB]);
+  assert.equal(L(await book(), 'GB').predicted, null, 'an empty grade takes it away');
+
+  // the assessment calendar: summative work at the teacher's place for the learners they teach; a clash is two on one day
+  await val('GT1', `select set_work_grading($1, $2, 'formative')`, [hw, home]); // (formative work stays off it)
+  const stest = await work('GT2', 'Science test', 'test', scls, D);
+  await work('GT2', 'Science draft', 'exam', scls, D, { draft: true });
+  await work('GT2', 'Science homework', 'homework', scls, D);
+  await work('GX', 'Outside test', 'test', null, D);
+  const from = await val('GT1', `select (date_trunc('week', now()) + interval '14 days')::date::text`);
+  const to = await val('GT1', `select (date_trunc('week', now()) + interval '20 days')::date::text`);
+  const cal = await val('GT1', `select assessment_calendar($1, $2)`, [from, to]);
+  assert.deepEqual(cal.items.map((x) => [x.title, x.learners, x.clash, x.mine]), [['Science test', 1, true, false], ['Test 1', 2, true, true], ['Quiz 1', 2, false, true]]);
+  assert.deepEqual(cal.clashes.map((c) => [c.day, c.name, c.ids]), [[from, 'GA', [stest, test1]]]);
+  assert.deepEqual(cal.busy.map((b) => [b.week, b.name]), [[from, 'GA']], 'three in a week');
+  const cal2 = await val('GT2', `select assessment_calendar($1, $2)`, [from, to]);
+  assert.deepEqual(cal2.items.map((x) => [x.title, x.state, x.learners]), [['Science draft', 'draft', 2], ['Science test', 'posted', 2], ['Test 1', 'posted', 1], ['Quiz 1', 'posted', 1]]);
+  await fails(as('GT1', `select assessment_calendar($1, $2, true)`, [from, to]), /Only a manager/);
+  const whole = await val('GM', `select assessment_calendar($1, $2, true)`, [from, to]);
+  assert.deepEqual(whole.items.map((x) => [x.title, x.learners]), [['Science test', 2], ['Test 1', 2], ['Quiz 1', 2]], 'everything at the school, not drafts');
+  assert.deepEqual((await val('GX', `select assessment_calendar($1, $2)`, [from, to])).items.map((x) => x.title), ['Outside test'], 'the wall: other places stay out');
+  await fails(as('GA', `select assessment_calendar($1, $2)`, [from, to]), /Teachers only/);
+  await fails(as('GT1', `select assessment_calendar($1::date, $1::date + 200)`, [from]), /four months/);
+
+  // before setting it: what the same learners already have that day, and who'd have three or more that week
+  let cl = await val('GT1', `select assessment_clashes($1, $2, null, null, $3)`, [D, mcls, test1]);
+  assert.deepEqual([cl.day, cl.items.map((x) => [x.title, x.learners, x.names, x.by]), cl.learners, cl.busy], [from, [['Science test', 1, ['GA'], 'GT2']], 1, 1]);
+  cl = await val('GT1', `select assessment_clashes($1, null, $2)`, [D, [U.GB]]);
+  assert.deepEqual(cl.items.map((x) => x.title), ['Test 1']);
+  cl = await val('GT1', `select assessment_clashes($1, null, $2)`, [D, [U.GC]]);
+  assert.deepEqual([cl.items, cl.learners], [[], 0], 'only learners they teach');
+  await fails(as('GT1', `select assessment_clashes($1, $2)`, [D, scls]), /Not your class/);
+
+  // a category belongs to its class: work that leaves the class drops it, and so does a category that's taken away
+  await as('GT1', `update assignments set class_id = null where id = $1`, [quiz]);
+  assert.equal(await val('GT1', `select category_id from assignments where id = $1`, [quiz]), null);
+  await setup({ categories: [{ id: tests, name: 'Tests', weight: 100 }] });
+  assert.equal(await val('GT1', `select category_id from assignments where id = $1`, [hw]), null);
+  assert.equal(await val('GT1', `select category_id from assignments where id = $1`, [test1]), tests);
 });

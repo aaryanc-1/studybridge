@@ -5032,7 +5032,9 @@ begin
                      'entries', (select coalesce(jsonb_agg(jsonb_build_object('kind', e.kind, 'title', e.title, 'body', e.body, 'day', e.day,
                                    'outcomes', e.outcomes, 'strands', e.strands, 'hours', e.hours, 'status', e.status, 'feedback', e.feedback,
                                    'at', e.created_at) order by e.created_at), '[]') from public.core_entries e where e.project_id = p.id))), '[]')
-                    from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id where p.learner_id = me.id));
+                    from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id where p.learner_id = me.id),
+      -- predicted grades their teachers shared with them
+      'predicted_grades', public.my_predicted(me.id));
   elsif me.role = 'parent' then
     v := v || jsonb_build_object('children', public.parent_children());
   end if;
@@ -7765,7 +7767,7 @@ declare
   org uuid;
   maths uuid; phys uuid; bio uuid; t_alg uuid; t_num uuid; t_geo uuid; t_stat uuid; t_mot uuid; t_elec uuid; t_cell uuid; t_eco uuid;
   y10 uuid; y11 uuid; y9 uuid;
-  hw uuid; quiz uuid; paper uuid; mock uuid; series uuid; bhw uuid;
+  hw uuid; quiz uuid; paper uuid; mock uuid; series uuid; bhw uuid; cat_t uuid; cat_h uuid;
   q1 uuid; q2 uuid; q3 uuid; pq1 uuid; pq2 uuid; qq1 uuid; qq2 uuid; bq1 uuid; bq2 uuid;
   a1 uuid; a3 uuid; ma uuid;
   wk date := (date_trunc('week', now()) - interval '7 days')::date;
@@ -7891,6 +7893,20 @@ begin
   insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, marks) values
     (ma, pq1, l1, m, '{"text": "(answers written on paper)"}', 19),
     (ma, pq2, l1, m, '{"text": "(answers written on paper)"}', 15);
+
+  -- the gradebook: Year 10 maths counts tests 60% and homework 40%, Chipo's predicted grade is shared with her, and two
+  -- pieces due on the same day next week show as a clash on the assessment calendar
+  insert into public.grade_categories (class_id, name, weight, position) values (y10, 'Tests', 60, 1) returning id into cat_t;
+  insert into public.grade_categories (class_id, name, weight, position) values (y10, 'Homework', 40, 2) returning id into cat_h;
+  update public.assignments set category_id = cat_h where id = hw;
+  update public.assignments set category_id = cat_t where id = paper;
+  insert into public.predicted_grades (class_id, learner_id, grade, note, shared, by_id)
+  values (y10, l1, 'A', 'Strong on algebra. More geometry practice before the exams.', true, m);
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, topic_id, class_id, visibility, due_at, category_id, time_limit_min)
+  values (m, 'test', 'Algebra test', 'Forty minutes, in class.', maths, t_alg, y10, 'visible', date_trunc('day', now()) + interval '8 days 9 hours', cat_t, 40);
+  insert into public.assignments (tutor_id, kind, title, instructions_md, subject_id, topic_id, class_id, visibility, due_at, category_id, assessment)
+  values (m, 'homework', 'Statistics project', 'A survey of your own, written up.', maths, t_stat, y10, 'visible',
+          date_trunc('day', now()) + interval '8 days 15 hours', cat_h, 'summative');
 
   -- Daniel's Year 11 physics: a quiz Amara has handed in, waiting for him to mark
   insert into public.assignments (tutor_id, kind, title, subject_id, topic_id, class_id, visibility, due_at)
@@ -10495,33 +10511,7 @@ begin
       from public.files f where f.class_id = p_class) z), '[]');
 end $$;
 
--- Gradebook: each learner in the class × each piece of work set for it (their latest try), for its teachers
-create or replace function public.class_gradebook(p_class uuid) returns jsonb
-language plpgsql stable security definer set search_path = public as $$
-declare c public.classes;
-begin
-  select * into c from public.classes where id = p_class;
-  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
-  return jsonb_build_object(
-    'class', c.name,
-    'myp', public._myp_criteria((select to_jsonb(s) ->> 'myp_group' from public.subjects s where s.id = c.subject_id)),
-    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
-                   from public.class_members m join public.profiles p on p.id = m.learner_id where m.class_id = c.id),
-    'work', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'due_at', a.due_at,
-                                                          'criteria', to_jsonb(a) -> 'criteria',
-                                                          'topic', (select name from public.topics where id = a.topic_id))
-                                       order by coalesce(a.due_at, a.created_at)), '[]')
-               from public.assignments a where a.class_id = c.id and not a.draft and not a.practice),
-    'cells', (select coalesce(jsonb_agg(jsonb_build_object('learner_id', t.learner_id, 'assignment_id', t.assignment_id, 'attempt_id', t.id,
-                                                           'status', t.status, 'score', t.score, 'max', t.max_score, 'released', public._is_released(t),
-                                                           'criteria', to_jsonb(t) -> 'criteria',
-                                                           'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id))), '[]')
-                from (select distinct on (x.assignment_id, x.learner_id) x.* from public.attempts x
-                        join public.assignments a2 on a2.id = x.assignment_id
-                       where a2.class_id = c.id and not a2.draft and not a2.practice
-                       order by x.assignment_id, x.learner_id, x.number desc) t
-                join public.assignments a on a.id = t.assignment_id));
-end $$;
+-- (the gradebook, class_gradebook, is further down with gradebook depth: categories, weights and predicted grades)
 
 -- A whole class list at once: an invite (with its own code) for each name, which puts them in the class when used
 create or replace function public.class_invites(p_class uuid, p_names text[]) returns jsonb
@@ -13491,7 +13481,8 @@ begin
                     'positive', (select coalesce(sum(points), 0) from public.behaviour where place_id = v_place and learner_id = l.id and removed_at is null
                                     and kind = 'positive' and created_at::date between v_from and v_to),
                     'concern', (select coalesce(sum(points), 0) from public.behaviour where place_id = v_place and learner_id = l.id and removed_at is null
-                                   and kind = 'concern' and created_at::date between v_from and v_to))))
+                                   and kind = 'concern' and created_at::date between v_from and v_to),
+                    'predicted', (select grade from public.predicted_grades where class_id = c.id and learner_id = l.id))))
         order by l.display_name), '[]')
       from public.class_members cm join public.profiles l on l.id = cm.learner_id where cm.class_id = c.id));
 end $$;
@@ -14441,6 +14432,498 @@ alter table public.report_entries add column if not exists atl jsonb; -- {"Think
 alter table public.report_entries drop constraint if exists report_entries_grade_check; -- (room for "Consolidating")
 alter table public.report_entries add constraint report_entries_grade_check check (grade is null or length(grade) <= 30);
 
+-- =====================================================================
+-- Gradebook depth (4 Nov 2026; Aaryan: "go", step 2 of the order for schools). A class's gradebook can sort its work
+-- into categories with weights (Tests 60%, Homework 40%). Each piece of work is formative (practice and feedback) or
+-- summative (it counts for grades): tests and exams are summative and the rest formative unless the teacher says
+-- otherwise, and a class counts everything or summative work only. Its teachers see each learner's overall, a grade
+-- suggested by plain maths (from the class's grade scale, their own grade boundaries for the subject's exam, or an MYP
+-- class's criteria) and set a predicted grade, which the learner and their parents see only once it's shared. The
+-- assessment calendar shows the summative work set at a teacher's place and warns when a learner has two on one day
+-- or three in a week; the assignment editor warns before it happens.
+-- =====================================================================
+create table if not exists public.grade_categories (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  name text not null check (length(name) between 1 and 40),
+  weight numeric not null default 0 check (weight >= 0 and weight <= 100),
+  position int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists grade_categories_class on public.grade_categories (class_id, position);
+create table if not exists public.class_grading (
+  class_id uuid primary key references public.classes (id) on delete cascade,
+  counts text not null default 'all' check (counts in ('all', 'summative')),
+  scale jsonb,      -- [{"grade": "7", "min": 80}, …] in percent, highest first; null: none (their own boundaries, if any)
+  scale_name text,  -- the scale it started from ('ib', 'gcse', …), for the editor
+  updated_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+create table if not exists public.predicted_grades (
+  class_id uuid not null references public.classes (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  grade text not null check (length(grade) between 1 and 12),
+  note text not null default '' check (length(note) <= 1000), -- for the class's teachers only
+  shared boolean not null default false,                       -- the learner and their parents see the grade
+  by_id uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  history jsonb not null default '[]',                         -- earlier grades [{grade, at, by}], newest first (20 at most)
+  primary key (class_id, learner_id)
+);
+create index if not exists predicted_grades_learner on public.predicted_grades (learner_id) where shared;
+alter table public.grade_categories enable row level security;
+alter table public.class_grading enable row level security;
+alter table public.predicted_grades enable row level security;
+revoke all on public.grade_categories, public.class_grading, public.predicted_grades from public, anon, authenticated;
+drop trigger if exists grade_categories_paid on public.grade_categories;
+create trigger grade_categories_paid before insert or update on public.grade_categories for each row execute function public._paid_guard();
+drop trigger if exists class_grading_paid on public.class_grading;
+create trigger class_grading_paid before insert or update on public.class_grading for each row execute function public._paid_guard();
+drop trigger if exists predicted_grades_paid on public.predicted_grades;
+create trigger predicted_grades_paid before insert or update on public.predicted_grades for each row execute function public._paid_guard();
+
+alter table public.assignments add column if not exists category_id uuid references public.grade_categories (id) on delete set null;
+alter table public.assignments add column if not exists assessment text; -- null: from its kind (tests and exams summative)
+do $$ begin
+  alter table public.assignments add constraint assignments_assessment_check check (assessment is null or assessment in ('formative', 'summative'));
+exception when duplicate_object then null; end $$;
+create index if not exists idx_assignments_due on public.assignments (due_at) where due_at is not null;
+
+-- A category belongs to one class: work that moves to another class (or none) drops it
+create or replace function public._assignment_category() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.category_id is not null
+     and not exists (select 1 from public.grade_categories g where g.id = new.category_id and g.class_id is not distinct from new.class_id) then
+    new.category_id := null;
+  end if;
+  return new;
+end $$;
+drop trigger if exists assignments_category on public.assignments;
+create trigger assignments_category before insert or update of category_id, class_id on public.assignments
+  for each row execute function public._assignment_category();
+
+-- Formative or summative: what the teacher chose, else tests and exams are summative and the rest formative
+create or replace function public._assessment(p_kind text, p_assessment text) returns text
+language sql immutable as $$
+  select coalesce(p_assessment, case when p_kind in ('test', 'exam') then 'summative' else 'formative' end)
+$$;
+
+-- A class's grade scale: [{grade, min}] with the lowest percentage for each, kept highest first (null: no scale)
+create or replace function public._check_scale(p_scale jsonb) returns jsonb
+language plpgsql immutable set search_path = public as $$
+declare
+  g jsonb;
+  n text;
+  v numeric;
+  names text[] := '{}';
+  mins numeric[] := '{}';
+  outv jsonb := '[]';
+begin
+  if p_scale is null or jsonb_typeof(p_scale) = 'null' then return null; end if;
+  if jsonb_typeof(p_scale) <> 'array' then raise exception 'That grade scale isn’t right.'; end if;
+  if jsonb_array_length(p_scale) = 0 then return null; end if;
+  if jsonb_array_length(p_scale) > 15 then raise exception 'Up to 15 grades.'; end if;
+  for g in select * from jsonb_array_elements(p_scale) loop
+    n := left(trim(coalesce(g ->> 'grade', '')), 12);
+    if n = '' then raise exception 'Every grade needs a name, like A* or 7.'; end if;
+    begin
+      v := (g ->> 'min')::numeric;
+    exception when others then
+      v := null;
+    end;
+    if v is null or v < 0 or v > 100 then raise exception 'Grade %: give the lowest percentage for it, from 0 to 100.', n; end if;
+    if upper(n) = any (names) then raise exception 'Grade % is there twice.', n; end if;
+    if v = any (mins) then raise exception 'Two grades can’t start at the same percentage (%).', v; end if;
+    names := names || upper(n);
+    mins := mins || v;
+    outv := outv || jsonb_build_object('grade', n, 'min', v);
+  end loop;
+  return (select jsonb_agg(x order by (x ->> 'min')::numeric desc) from jsonb_array_elements(outv) x);
+end $$;
+-- The grade a percentage gets on a scale (the best one whose lowest percentage it reaches)
+create or replace function public._scale_grade(p_scale jsonb, p_pct numeric) returns text
+language sql immutable as $$
+  select x ->> 'grade' from jsonb_array_elements(coalesce(p_scale, '[]')) x
+   where p_pct is not null and (x ->> 'min')::numeric <= p_pct
+   order by (x ->> 'min')::numeric desc limit 1
+$$;
+
+-- Who a piece of work is for: its learners (a class's, or the ones picked), else the setter's learners taking its
+-- subject, else all the setter's own learners
+create or replace function public._work_learners(a public.assignments) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select x from unnest(a.learner_ids) x
+   where cardinality(a.learner_ids) > 0 and exists (select 1 from public.profiles p where p.id = x and p.role = 'learner')
+  union
+  select x from public._learners_of(a.tutor_id) x
+   where coalesce(cardinality(a.learner_ids), 0) = 0
+     and case when a.subject_id is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = x and ls.subject_id = a.subject_id)
+              else public._is_linked(x, a.tutor_id) end
+$$;
+
+-- Each learner in a class × each piece of posted work set for it: their latest try, as a percentage once marked
+-- (also while they redo part of it), and whether it counts (summative, or anything when the class counts everything)
+create or replace function public._class_marks(p_class uuid)
+returns table (learner_id uuid, assignment_id uuid, pct numeric, marked boolean, counts boolean, category_id uuid, criteria jsonb)
+language sql stable security definer set search_path = public as $$
+  select t.learner_id, a.id,
+         case when t.status in ('marked', 'returned') and t.score is not null and coalesce(t.max_score, 0) > 0 then 100.0 * t.score / t.max_score end,
+         t.status in ('marked', 'returned'),
+         coalesce((select g.counts from public.class_grading g where g.class_id = p_class), 'all') = 'all'
+           or public._assessment(a.kind, a.assessment) = 'summative',
+         a.category_id, t.criteria
+    from public.assignments a
+    join lateral (select distinct on (x.learner_id) x.* from public.attempts x where x.assignment_id = a.id order by x.learner_id, x.number desc) t on true
+    join public.class_members cm on cm.class_id = p_class and cm.learner_id = t.learner_id
+   where a.class_id = p_class and not a.draft and not a.practice
+$$;
+
+-- Each learner's overall in a class. With weighted categories: each category's average, weighted (categories with no
+-- marks yet are left out, and work with no category doesn't count). Without: the average of everything that counts.
+create or replace function public._class_overall(p_class uuid) returns table (learner_id uuid, overall numeric, by_category jsonb, counted int)
+language sql stable security definer set search_path = public as $$
+  with m as (select * from public._class_marks(p_class) k where k.counts and k.pct is not null),
+  cats as (select id, weight from public.grade_categories where class_id = p_class),
+  w as (select exists (select 1 from cats where weight > 0) as weighted),
+  c as (select m.learner_id, m.category_id as cat, avg(m.pct) as a from m where m.category_id is not null group by 1, 2)
+  select cm.learner_id,
+         case when (select weighted from w)
+              then (select round(sum(c.a * g.weight) / nullif(sum(g.weight), 0), 1) from c join cats g on g.id = c.cat
+                     where c.learner_id = cm.learner_id and g.weight > 0)
+              else (select round(avg(m.pct), 1) from m where m.learner_id = cm.learner_id) end,
+         coalesce((select jsonb_object_agg(c.cat, round(c.a, 1)) from c where c.learner_id = cm.learner_id), '{}'),
+         (select count(*)::int from m where m.learner_id = cm.learner_id
+             and (not (select weighted from w) or exists (select 1 from cats g where g.id = m.category_id and g.weight > 0)))
+    from public.class_members cm where cm.class_id = p_class
+$$;
+
+-- An MYP class: each learner's usual level on each criterion (the middle of the levels given on work that counts) and,
+-- once all four have one, the 1–7 grade they add up to
+create or replace function public._class_myp(p_class uuid) returns table (learner_id uuid, levels jsonb, grade text)
+language sql stable security definer set search_path = public as $$
+  with lv as (select m.learner_id, x.key as k, round(percentile_cont(0.5) within group (order by x.value::int))::int as lvl
+                from public._class_marks(p_class) m cross join jsonb_each_text(case when jsonb_typeof(m.criteria) = 'object' then m.criteria else '{}' end) x
+               where m.marked and m.counts and x.key in ('A', 'B', 'C', 'D') and x.value ~ '^[0-8]$'
+               group by m.learner_id, x.key)
+  select lv.learner_id, jsonb_object_agg(lv.k, lv.lvl), case when count(*) = 4 then public._myp_grade(sum(lv.lvl)::int)::text end
+    from lv group by lv.learner_id
+$$;
+
+-- Gradebook: each learner in the class × each piece of work set for it (their latest try), the categories, each
+-- learner's overall, a suggested grade and their predicted grade; for the class's teachers
+create or replace function public.class_gradebook(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  c public.classes;
+  s public.class_grading;
+  b public.grade_boundaries;
+  v_myp jsonb;
+  v_counts text;
+  v_weighted boolean;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  select * into s from public.class_grading where class_id = c.id;
+  v_counts := coalesce(s.counts, 'all');
+  v_weighted := exists (select 1 from public.grade_categories where class_id = c.id and weight > 0);
+  v_myp := public._myp_criteria((select myp_group from public.subjects where id = c.subject_id));
+  -- no scale of the class's own: the teacher's own grade boundaries for the subject's exam, if they have some
+  if s.scale is null and v_myp is null then
+    select g.* into b from public.grade_boundaries g join public.subjects x on x.id = c.subject_id
+     where g.tutor_id = auth.uid() and g.exam = public._subject_exam(x)
+     order by g.created_at desc limit 1;
+  end if;
+  return jsonb_build_object(
+    'class', c.name,
+    'myp', v_myp,
+    'grading', jsonb_build_object('counts', v_counts, 'scale', s.scale, 'scale_name', s.scale_name,
+                 'boundaries', case when b.id is not null then jsonb_build_object('session', b.session, 'option', b.option_label) end),
+    'categories', (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'weight', g.weight) order by g.position, g.created_at), '[]')
+                     from public.grade_categories g where g.class_id = c.id),
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name,
+                   'overall', o.overall, 'by_category', coalesce(o.by_category, '{}'), 'counted', coalesce(o.counted, 0), 'levels', y.levels,
+                   'suggested', case when v_myp is not null then y.grade
+                                     when s.scale is not null then public._scale_grade(s.scale, o.overall)
+                                     when b.id is not null and o.overall is not null then public._grade_for(b.grades, b.max_mark, o.overall, 100) ->> 'grade' end,
+                   'predicted', (select jsonb_build_object('grade', pg.grade, 'note', pg.note, 'shared', pg.shared, 'updated_at', pg.updated_at,
+                                                           'by', (select display_name from public.profiles where id = pg.by_id), 'history', pg.history)
+                                   from public.predicted_grades pg where pg.class_id = c.id and pg.learner_id = p.id))
+                   order by p.display_name), '[]')
+                   from public.class_members m join public.profiles p on p.id = m.learner_id
+                   left join public._class_overall(c.id) o on o.learner_id = p.id
+                   left join public._class_myp(c.id) y on y.learner_id = p.id
+                  where m.class_id = c.id),
+    'work', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'due_at', a.due_at,
+                                                          'criteria', to_jsonb(a.criteria),
+                                                          'topic', (select name from public.topics where id = a.topic_id),
+                                                          'category_id', a.category_id, 'assessment', public._assessment(a.kind, a.assessment),
+                                                          'assessment_set', a.assessment, 'mine', a.tutor_id = auth.uid(),
+                                                          'by', (select display_name from public.profiles where id = a.tutor_id),
+                                                          'counts', (v_counts = 'all' or public._assessment(a.kind, a.assessment) = 'summative')
+                                                                    and (not v_weighted or exists (select 1 from public.grade_categories g
+                                                                                                    where g.id = a.category_id and g.weight > 0)))
+                                       order by coalesce(a.due_at, a.created_at)), '[]')
+               from public.assignments a where a.class_id = c.id and not a.draft and not a.practice),
+    'cells', (select coalesce(jsonb_agg(jsonb_build_object('learner_id', t.learner_id, 'assignment_id', t.assignment_id, 'attempt_id', t.id,
+                                                           'status', t.status, 'score', t.score, 'max', t.max_score, 'released', public._is_released(t),
+                                                           'pct', case when t.status in ('marked', 'returned') and t.score is not null and coalesce(t.max_score, 0) > 0
+                                                                       then round(100.0 * t.score / t.max_score, 1) end,
+                                                           'criteria', t.criteria,
+                                                           'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id))), '[]')
+                from (select distinct on (x.assignment_id, x.learner_id) x.* from public.attempts x
+                        join public.assignments a2 on a2.id = x.assignment_id
+                       where a2.class_id = c.id and not a2.draft and not a2.practice
+                       order by x.assignment_id, x.learner_id, x.number desc) t
+                join public.assignments a on a.id = t.assignment_id));
+end $$;
+
+-- A class's categories (for the assignment editor), for its teachers
+create or replace function public.class_categories(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'weight', g.weight) order by g.position, g.created_at), '[]')
+            from public.grade_categories g where g.class_id = p_class);
+end $$;
+
+-- Set up a class's gradebook: {categories: [{id?, name, weight}], counts: 'all'|'summative', scale: [{grade, min}]|null,
+-- scale_name}. Categories left out go (their work keeps no category). Any of the class's teachers.
+create or replace function public.save_grading(p_class uuid, p_setup jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_cats jsonb := coalesce(p_setup -> 'categories', '[]');
+  v_counts text := coalesce(nullif(p_setup ->> 'counts', ''), 'all');
+  v_scale jsonb;
+  x jsonb;
+  i int := 0;
+  v_id uuid;
+  v_keep uuid[] := '{}';
+  v_name text;
+  v_w numeric;
+  v_names text[] := '{}';
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  if jsonb_typeof(v_cats) <> 'array' then raise exception 'Those categories aren’t right.'; end if;
+  if jsonb_array_length(v_cats) > 12 then raise exception 'Up to 12 categories.'; end if;
+  if v_counts not in ('all', 'summative') then raise exception 'Count everything, or summative work only.'; end if;
+  for x in select * from jsonb_array_elements(v_cats) loop
+    v_name := left(trim(coalesce(x ->> 'name', '')), 40);
+    if v_name = '' then raise exception 'Every category needs a name.'; end if;
+    if lower(v_name) = any (v_names) then raise exception '“%” is there twice.', v_name; end if;
+    v_names := v_names || lower(v_name);
+    begin
+      v_w := (x ->> 'weight')::numeric;
+    exception when others then
+      v_w := null;
+    end;
+    if v_w is null or v_w < 0 or v_w > 100 then raise exception '%: give it a weight from 0 to 100.', v_name; end if;
+  end loop;
+  if jsonb_array_length(v_cats) > 0 and (select sum((e ->> 'weight')::numeric) from jsonb_array_elements(v_cats) e) <= 0 then
+    raise exception 'At least one category needs a weight above 0.';
+  end if;
+  v_scale := public._check_scale(p_setup -> 'scale');
+  for x in select * from jsonb_array_elements(v_cats) loop
+    i := i + 1;
+    v_id := null;
+    if coalesce(x ->> 'id', '') ~ '^[0-9a-f-]{36}$' then
+      update public.grade_categories set name = left(trim(x ->> 'name'), 40), weight = (x ->> 'weight')::numeric, position = i
+       where id = (x ->> 'id')::uuid and class_id = p_class returning id into v_id;
+    end if;
+    if v_id is null then
+      insert into public.grade_categories (class_id, name, weight, position)
+      values (p_class, left(trim(x ->> 'name'), 40), (x ->> 'weight')::numeric, i) returning id into v_id;
+    end if;
+    v_keep := v_keep || v_id;
+  end loop;
+  delete from public.grade_categories where class_id = p_class and not (id = any (v_keep));
+  insert into public.class_grading (class_id, counts, scale, scale_name, updated_by, updated_at)
+  values (p_class, v_counts, v_scale, case when v_scale is not null then left(nullif(trim(coalesce(p_setup ->> 'scale_name', '')), ''), 20) end, auth.uid(), now())
+  on conflict (class_id) do update set counts = excluded.counts, scale = excluded.scale, scale_name = excluded.scale_name,
+                                       updated_by = excluded.updated_by, updated_at = now();
+  return public.class_categories(p_class);
+end $$;
+
+-- A piece of the class's work: its category and whether it's formative or summative (null: from its kind). Its setter or
+-- any of the class's teachers, from the gradebook.
+create or replace function public.set_work_grading(p_assignment uuid, p_category uuid, p_assessment text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.class_id is null or not public._class_teacher(a.class_id) then raise exception 'That isn’t work for one of your classes.'; end if;
+  if p_category is not null and not exists (select 1 from public.grade_categories where id = p_category and class_id = a.class_id) then
+    raise exception 'That category isn’t this class’s.';
+  end if;
+  if p_assessment is not null and p_assessment not in ('formative', 'summative') then raise exception 'Formative or summative.'; end if;
+  update public.assignments set category_id = p_category, assessment = p_assessment where id = a.id;
+  return jsonb_build_object('id', a.id, 'category_id', p_category, 'assessment', public._assessment(a.kind, p_assessment));
+end $$;
+
+-- A learner's predicted grade in a class, by one of its teachers (an empty grade takes it away). The note stays with the
+-- class's teachers; the learner and their parents see the grade once it's shared, and are told when it's new or changes.
+create or replace function public.set_predicted_grade(p_class uuid, p_learner uuid, p_grade text, p_note text default '', p_shared boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c public.classes;
+  old public.predicted_grades;
+  v_grade text := left(trim(coalesce(p_grade, '')), 12);
+  v_note text := trim(coalesce(p_note, ''));
+  v_shared boolean := coalesce(p_shared, false);
+  v_me text := (select display_name from public.profiles where id = auth.uid());
+  v_first text;
+  v_hist jsonb;
+  p record;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  if not exists (select 1 from public.class_members where class_id = p_class and learner_id = p_learner) then raise exception 'They aren’t in this class.'; end if;
+  if length(v_note) > 1000 then raise exception 'Keep the note under 1000 characters.'; end if;
+  select * into old from public.predicted_grades where class_id = p_class and learner_id = p_learner for update;
+  if v_grade = '' then
+    delete from public.predicted_grades where class_id = p_class and learner_id = p_learner;
+    return null;
+  end if;
+  if old.grade is null then
+    insert into public.predicted_grades (class_id, learner_id, grade, note, shared, by_id, updated_at)
+    values (p_class, p_learner, v_grade, v_note, v_shared, auth.uid(), now());
+  else
+    -- a new grade keeps the one before it in the history (newest first, 20 at most)
+    v_hist := coalesce(old.history, '[]');
+    if old.grade is distinct from v_grade then
+      v_hist := jsonb_build_array(jsonb_build_object('grade', old.grade, 'at', old.updated_at,
+                                                     'by', (select display_name from public.profiles where id = old.by_id))) || v_hist;
+      v_hist := (select coalesce(jsonb_agg(e.h order by e.n), '[]') from jsonb_array_elements(v_hist) with ordinality as e (h, n) where e.n <= 20);
+    end if;
+    update public.predicted_grades
+       set grade = v_grade, note = v_note, shared = v_shared, history = v_hist,
+           by_id = case when old.grade is distinct from v_grade then auth.uid() else by_id end,
+           updated_at = case when old.grade is distinct from v_grade then now() else updated_at end
+     where class_id = p_class and learner_id = p_learner;
+  end if;
+  if v_shared and (old.grade is distinct from v_grade or not coalesce(old.shared, false)) then
+    perform public.notify_user(p_learner, 'predicted', 'Your predicted grade in ' || c.name || ': ' || v_grade, 'From ' || v_me,
+      jsonb_build_object('learner_id', p_learner, 'class_id', c.id));
+    select split_part(display_name, ' ', 1) into v_first from public.profiles where id = p_learner;
+    for p in select parent_id from public.parent_links where learner_id = p_learner loop
+      perform public.notify_user(p.parent_id, 'predicted', v_first || '’s predicted grade in ' || c.name || ': ' || v_grade, 'From ' || v_me,
+        jsonb_build_object('learner_id', p_learner, 'class_id', c.id));
+    end loop;
+  end if;
+  return (select jsonb_build_object('grade', grade, 'note', note, 'shared', shared, 'updated_at', updated_at, 'history', history)
+            from public.predicted_grades where class_id = p_class and learner_id = p_learner);
+end $$;
+
+-- A learner's shared predicted grades from every class they're in (the learner, or a parent who follows them)
+create or replace function public.my_predicted(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v uuid := coalesce(p_learner, auth.uid());
+begin
+  if v <> auth.uid() and (public._parent_link(v)).id is null then raise exception 'You can’t see this.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('class', c.name, 'subject', s.name, 'grade', pg.grade, 'updated_at', pg.updated_at,
+                                                       'by', t.display_name, 'place', public._place_name(public._org_place(c.org_id)))
+                                    order by s.name nulls last, c.name), '[]')
+            from public.predicted_grades pg join public.classes c on c.id = pg.class_id
+            left join public.subjects s on s.id = c.subject_id left join public.profiles t on t.id = pg.by_id
+           where pg.learner_id = v and pg.shared);
+end $$;
+
+-- The assessment calendar: summative work with a due date between two days at the teacher's place (their own drafts too),
+-- for the learners they teach, or the whole centre or school for a manager (p_all). Clashes: a learner with two or more
+-- on one day; busy weeks: three or more in a week (Monday to Sunday). Days are the school's (or the tutor's) own.
+create or replace function public.assessment_calendar(p_from date, p_to date, p_all boolean default false) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_place uuid := public._place_of(auth.uid());
+  v_org uuid := public._org_of(auth.uid());
+  v_all boolean := coalesce(p_all, false);
+  v_tz text;
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Teachers only.'; end if;
+  if v_all and not public._org_manager(v_org) then raise exception 'Only a manager sees the whole calendar.'; end if;
+  if p_from is null or p_to is null or p_to < p_from or p_to - p_from > 125 then raise exception 'Pick up to four months at a time.'; end if;
+  v_tz := public._school_tz(v_org);
+  return (with
+    w as (select a.id, a.title, a.kind, a.tutor_id, a.class_id, a.subject_id, a.due_at, a.assessment, (a.due_at at time zone v_tz)::date as d,
+                 case when a.draft then 'draft' when a.visibility = 'hidden' then 'hidden'
+                      when a.visibility = 'scheduled' and a.visible_from > now() then 'scheduled' else 'posted' end as state
+            from public.assignments a
+           where a.due_at is not null and not a.practice
+             and a.due_at >= (p_from::timestamp at time zone v_tz) and a.due_at < ((p_to + 1)::timestamp at time zone v_tz)
+             and public._assessment(a.kind, a.assessment) = 'summative'
+             and public._place_of(a.tutor_id) = v_place and (not a.draft or a.tutor_id = auth.uid())),
+    wl as (select a.id, x as learner_id from public.assignments a cross join lateral public._work_learners(a) x
+            where a.id in (select id from w) and (v_all or x in (select public._learners_of(auth.uid())))),
+    clash as (select wl.learner_id, w.d, jsonb_agg(w.id order by w.due_at) as ids from wl join w on w.id = wl.id
+               group by wl.learner_id, w.d having count(*) >= 2),
+    busy as (select wl.learner_id, date_trunc('week', w.d)::date as wk, jsonb_agg(w.id order by w.due_at) as ids from wl join w on w.id = wl.id
+              group by wl.learner_id, date_trunc('week', w.d) having count(*) >= 3)
+    select jsonb_build_object(
+      'tz', v_tz,
+      'items', coalesce((select jsonb_agg(jsonb_build_object('id', w.id, 'title', w.title, 'kind', w.kind, 'due_at', w.due_at, 'day', w.d, 'state', w.state,
+                  'mine', w.tutor_id = auth.uid(), 'by', (select display_name from public.profiles where id = w.tutor_id),
+                  'class_id', w.class_id, 'class', (select name from public.classes where id = w.class_id),
+                  'year', case when w.class_id is not null then public._class_grade(w.class_id) end,
+                  'subject', (select name from public.subjects where id = w.subject_id),
+                  'learners', (select count(*) from wl where wl.id = w.id),
+                  'clash', exists (select 1 from clash k where k.d = w.d and k.ids ? w.id::text))
+                  order by w.due_at, w.title) from w where v_all or w.tutor_id = auth.uid() or exists (select 1 from wl where wl.id = w.id)), '[]'),
+      'clashes', coalesce((select jsonb_agg(jsonb_build_object('day', k.d, 'learner_id', k.learner_id,
+                    'name', (select display_name from public.profiles where id = k.learner_id), 'ids', k.ids)
+                    order by k.d, (select display_name from public.profiles where id = k.learner_id)) from clash k), '[]'),
+      'busy', coalesce((select jsonb_agg(jsonb_build_object('week', b.wk, 'learner_id', b.learner_id,
+                    'name', (select display_name from public.profiles where id = b.learner_id), 'ids', b.ids)
+                    order by b.wk, (select display_name from public.profiles where id = b.learner_id)) from busy b), '[]')));
+end $$;
+
+-- Before setting summative work: the other summative work the same learners already have due that day (at the
+-- teacher's place), and how many of them would have three or more that week. Who it's for: a class, picked learners,
+-- the teacher's learners taking a subject, or all their own learners.
+create or replace function public.assessment_clashes(p_due timestamptz, p_class uuid default null, p_learners uuid[] default null,
+                                                     p_subject uuid default null, p_except uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_place uuid := public._place_of(auth.uid());
+  v_tz text := public._school_tz(public._org_of(auth.uid()));
+  v_day date;
+  v_week date;
+  v_who uuid[];
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Teachers only.'; end if;
+  if p_due is null then return null; end if;
+  v_day := (p_due at time zone v_tz)::date;
+  v_week := date_trunc('week', v_day)::date;
+  if p_class is not null then
+    if not public._teaches_class(p_class) then raise exception 'Not your class.'; end if;
+    select coalesce(array_agg(learner_id), '{}') into v_who from public.class_members where class_id = p_class;
+  elsif coalesce(cardinality(p_learners), 0) > 0 then
+    select coalesce(array_agg(x), '{}') into v_who from unnest(p_learners) x where x in (select public._learners_of(auth.uid()));
+  else
+    select coalesce(array_agg(x), '{}') into v_who from public._learners_of(auth.uid()) x
+     where case when p_subject is not null then exists (select 1 from public.learner_subjects ls where ls.learner_id = x and ls.subject_id = p_subject)
+                else public._is_linked(x) end;
+  end if;
+  return (with
+    w as (select a.id, a.title, a.kind, a.tutor_id, a.class_id, (a.due_at at time zone v_tz)::date as d
+            from public.assignments a
+           where a.due_at is not null and not a.practice and a.id is distinct from p_except
+             and a.due_at >= (v_week::timestamp at time zone v_tz) and a.due_at < ((v_week + 7)::timestamp at time zone v_tz)
+             and public._assessment(a.kind, a.assessment) = 'summative'
+             and public._place_of(a.tutor_id) = v_place and (not a.draft or a.tutor_id = auth.uid())),
+    wl as (select a.id, x as learner_id from public.assignments a cross join lateral public._work_learners(a) x
+            where a.id in (select id from w) and x = any (v_who))
+    select jsonb_build_object('day', v_day,
+      'items', coalesce((select jsonb_agg(jsonb_build_object('id', w.id, 'title', w.title, 'kind', w.kind, 'mine', w.tutor_id = auth.uid(),
+                  'by', (select display_name from public.profiles where id = w.tutor_id),
+                  'class', (select name from public.classes where id = w.class_id),
+                  'learners', (select count(*) from wl where wl.id = w.id),
+                  'names', (select jsonb_agg(z.n) from (select p.display_name as n from wl join public.profiles p on p.id = wl.learner_id
+                                                         where wl.id = w.id order by 1 limit 6) z)) order by w.title)
+                  from w where w.d = v_day and exists (select 1 from wl where wl.id = w.id)), '[]'),
+      'learners', (select count(distinct wl.learner_id) from wl join w on w.id = wl.id where w.d = v_day),
+      'busy', (select count(*) from (select wl.learner_id from wl group by wl.learner_id having count(*) >= 2) z)));
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -14580,6 +15063,14 @@ revoke execute on function public._core_tick() from public, anon, authenticated;
 revoke execute on function public._class_grade(uuid) from public, anon, authenticated;
 revoke execute on function public._learner_profile() from public, anon, authenticated;
 revoke execute on function public._atl_skills() from public, anon, authenticated;
+revoke execute on function public._assignment_category() from public, anon, authenticated;
+revoke execute on function public._assessment(text, text) from public, anon, authenticated;
+revoke execute on function public._check_scale(jsonb) from public, anon, authenticated;
+revoke execute on function public._scale_grade(jsonb, numeric) from public, anon, authenticated;
+revoke execute on function public._work_learners(public.assignments) from public, anon, authenticated;
+revoke execute on function public._class_marks(uuid) from public, anon, authenticated;
+revoke execute on function public._class_overall(uuid) from public, anon, authenticated;
+revoke execute on function public._class_myp(uuid) from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

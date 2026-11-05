@@ -372,6 +372,20 @@ export const myTeachers = () => run(sb().rpc('my_teachers'));
 // A class's page: its classwork by topic, its gradebook, and a whole class list at once (an invite each)
 export const classWork = (classId) => run(sb().rpc('class_work', { p_class: classId }));
 export const classGradebook = (classId) => run(sb().rpc('class_gradebook', { p_class: classId }));
+// Gradebook depth: a class's categories and weights, what counts and its grade scale; each piece of work's category and
+// formative or summative; predicted grades (shared with the learner and their parents when the teacher chooses)
+export const classCategories = (classId) => run(sb().rpc('class_categories', { p_class: classId }));
+export const saveGrading = (classId, setup) => run(sb().rpc('save_grading', { p_class: classId, p_setup: setup }));
+export const setWorkGrading = (assignmentId, categoryId, assessment) =>
+  run(sb().rpc('set_work_grading', { p_assignment: assignmentId, p_category: categoryId || null, p_assessment: assessment || null }));
+export const setPredictedGrade = (classId, learnerId, { grade, note = '', shared = false }) =>
+  run(sb().rpc('set_predicted_grade', { p_class: classId, p_learner: learnerId, p_grade: grade, p_note: note, p_shared: shared }));
+export const myPredicted = (learnerId = null) => run(sb().rpc('my_predicted', { p_learner: learnerId }));
+// The assessment calendar (summative work with due dates; a manager can see the whole centre or school) and, before
+// setting work, what the same learners already have that day
+export const assessmentCalendar = (from, to, all = false) => run(sb().rpc('assessment_calendar', { p_from: from, p_to: to, p_all: all }));
+export const assessmentClashes = ({ due, classId = null, learners = null, subject = null, except = null }) =>
+  run(sb().rpc('assessment_clashes', { p_due: due, p_class: classId, p_learners: learners?.length ? learners : null, p_subject: subject, p_except: except }));
 export const classInvites = (classId, names) => run(sb().rpc('class_invites', { p_class: classId, p_names: names }));
 // The class stream: posts to one class or several at once, replies when a post allows them
 export const streamClasses = () => run(sb().rpc('stream_classes'));

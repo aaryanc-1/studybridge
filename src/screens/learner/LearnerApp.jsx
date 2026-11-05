@@ -22,7 +22,7 @@ import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { AttendanceCard, BehaviourCard, ProfileCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
-import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
+import { MyReports, PredictedGrades, TermReportPage } from '../shared/TermReport.jsx';
 import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
@@ -42,6 +42,7 @@ function notificationTarget(n) {
   if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
   if (n.kind === 'core') return r.project_id ? `/projects/p/${r.project_id}` : '/projects';
   if (n.kind === 'profile') return '/progress';
+  if (n.kind === 'predicted') return '/progress';
   return '/';
 }
 
@@ -136,6 +137,7 @@ export default function LearnerApp() {
     page = (
       <Page title="My progress" subtitle="Time you’ve spent, how your work went, and which topics are strong or need more practice.">
         <MyReports />
+        <PredictedGrades />
         <ProgressView learnerId={app.me.id} name={app.me.display_name} />
         <AttendanceCard learnerId={app.me.id} name={app.me.display_name} />
         <BehaviourCard learnerId={app.me.id} name={app.me.display_name} />

@@ -22,7 +22,7 @@ import { gradeLine } from '../shared/MockHistory.jsx';
 import { StreamFiles } from '../shared/Stream.jsx';
 import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
 import { ParentProjects } from '../shared/Projects.jsx';
-import { MyReports, TermReportPage } from '../shared/TermReport.jsx';
+import { MyReports, PredictedGrades, TermReportPage } from '../shared/TermReport.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -34,6 +34,7 @@ const upcoming = (v) =>
 function notificationTarget(n) {
   const r = n.ref || {};
   if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
+  if (n.kind === 'predicted' && r.learner_id) return `/marks?child=${r.learner_id}`;
   if (r.learner_id) return `/child/${r.learner_id}${r.report_id ? `?report=${r.report_id}` : ''}`;
   return '/';
 }
@@ -290,6 +291,7 @@ function Child({ id, kids, section }) {
       {section === 'marks' && (
         <>
           <MyReports learnerId={id} />
+          <PredictedGrades learnerId={id} />
           <div className="card">
             <h2>Marks</h2>
             {v.marks.length === 0 ? (

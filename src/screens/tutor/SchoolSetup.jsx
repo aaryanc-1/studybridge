@@ -13,6 +13,7 @@ import { parseTimetable } from '../../lib/roster.js';
 import { useLookups } from '../shared/lookups.jsx';
 import { GiveBehaviour, STATUS, Week, pctTone, useInSchool } from '../shared/School.jsx';
 import { SessionForm } from '../shared/Live.jsx';
+import { AssessmentCalendar } from './Assessments.jsx';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const USUAL_DAY = [
@@ -1120,6 +1121,7 @@ export function GiveButton({ onClick }) {
 // ---------- every tutor's Timetable: their week, their learners' attendance and behaviour ----------
 const TT_TABS = [
   { value: 'week', label: 'Week' },
+  { value: 'assessments', label: 'Assessments' },
   { value: 'attendance', label: 'Attendance' },
   { value: 'behaviour', label: 'Behaviour' },
 ];
@@ -1140,9 +1142,11 @@ export function TutorTimetable({ tab }) {
     location: '',
   });
   return (
-    <Page title="Timetable" subtitle="Your lessons week by week, each with its register, and your learners’ attendance and behaviour.">
+    <Page title="Timetable" subtitle="Your lessons week by week, each with its register; your learners’ tests and exams; their attendance and behaviour.">
       <Seg label="Timetable" value={shown} onChange={(t) => go(t === 'week' ? '/timetable' : `/timetable/${t}`, { replace: true })} options={TT_TABS} />
-      {shown === 'attendance' ? (
+      {shown === 'assessments' ? (
+        <AssessmentCalendar />
+      ) : shown === 'attendance' ? (
         <TutorAttendance />
       ) : shown === 'behaviour' ? (
         <TutorBehaviour />

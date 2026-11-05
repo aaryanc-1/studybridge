@@ -14,6 +14,7 @@ import { KIND_DEFAULTS } from './Assignments.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { items, multi } from '../../lib/questions.js';
 import { LETTERS, MYP_GROUPS } from '../../lib/myp.js';
+import { ASSESSMENT, assessmentOf, pctText } from '../../lib/grading.js';
 
 let seq = 0;
 const k = () => 'q' + ++seq;
@@ -156,6 +157,8 @@ export default function AssignmentEditor({ id }) {
           show_answers: !!a.show_answers,
           self_mark: !!a.self_mark,
           criteria: a.criteria || [], // IB MYP criteria it's assessed on
+          category_id: a.class_id ? a.category_id || null : null, // its class's gradebook category
+          assessment: a.assessment || null, // formative or summative (unset: from its kind)
           draft: publish || post ? false : a.draft,
           updated_at: new Date().toISOString(),
         };
@@ -431,6 +434,7 @@ export default function AssignmentEditor({ id }) {
             <Field label="Due">
               <input className="input" type="datetime-local" value={toLocalInput(a.due_at)} onChange={(e) => setField({ due_at: fromLocalInput(e.target.value) })} />
             </Field>
+            <ClashNote a={a} />
           </div>
           <div className="card">
             <h3>Settings</h3>
@@ -451,6 +455,7 @@ export default function AssignmentEditor({ id }) {
                 ))}
               </select>
             </Field>
+            <GradingFields a={a} setField={setField} />
             <div className="grid g2" style={{ gap: 10 }}>
               <Field label="Subject">
                 <select className="select" value={a.subject_id || ''} onChange={(e) => setField({ subject_id: e.target.value || null, topic_id: null })}>
@@ -901,5 +906,64 @@ function MypCriteria({ a, setField }) {
         )}
       </div>
     </Field>
+  );
+}
+
+// Gradebook depth: formative (practice and feedback) or summative (it counts for grades; tests and exams are summative
+// unless the teacher says otherwise), and, for work set to a class with categories, which category it goes in
+function GradingFields({ a, setField }) {
+  const cats = useQuery(a.class_id ? `class-cats:${a.class_id}` : null, () => api.classCategories(a.class_id)).data || [];
+  const kind = assessmentOf(a.kind, a.assessment);
+  return (
+    <>
+      <Field label="Formative or summative" hint={kind === 'summative' ? 'Summative: it counts for grades, and shows on the assessment calendar.' : 'Formative: practice and feedback.'}>
+        <Seg
+          label="Formative or summative"
+          value={kind}
+          onChange={(v) => setField({ assessment: v === assessmentOf(a.kind, null) ? null : v })}
+          options={['formative', 'summative'].map((v) => ({ value: v, label: ASSESSMENT[v].label }))}
+        />
+      </Field>
+      {a.class_id && cats.length > 0 && (
+        <Field label="Gradebook category" hint="How it counts in the class’s gradebook.">
+          <select className="select" value={cats.some((c) => c.id === a.category_id) ? a.category_id : ''} onChange={(e) => setField({ category_id: e.target.value || null })}>
+            <option value="">No category (doesn’t count)</option>
+            {cats.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({pctText(c.weight)})
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+    </>
+  );
+}
+
+// Before setting summative work: what the same learners already have due that day at this centre or school (or from
+// this tutor), and how many would then have three or more that week
+function ClashNote({ a }) {
+  const summative = assessmentOf(a.kind, a.assessment) === 'summative';
+  const key = summative && a.due_at ? `clash:${a.id}:${a.due_at}:${a.class_id || ''}:${(a.learner_ids || []).join(',')}:${a.subject_id || ''}` : null;
+  const q = useQuery(key, () => api.assessmentClashes({ due: a.due_at, classId: a.class_id, learners: a.learner_ids, subject: a.subject_id, except: a.id }));
+  const c = key && q.data;
+  if (!c || (!c.items.length && !c.busy)) return null;
+  const n = (k, one, many = one + 's') => `${k} ${k === 1 ? one : many}`;
+  return (
+    <div className="card warn stack sm" role="status" style={{ padding: '10px 12px' }}>
+      {c.items.length > 0 && (
+        <div className="small">
+          <b>A clash that day:</b> {n(c.learners, 'learner')} already {c.learners === 1 ? 'has' : 'have'}{' '}
+          {c.items
+            .map((x) => `${x.title} (${[x.class, x.mine ? null : x.by].filter(Boolean).join(', ') || kindLabel[x.kind]}: ${x.learners <= 3 ? (x.names || []).join(', ') : `${x.learners} learners`})`)
+            .join('; ')}
+          .
+        </div>
+      )}
+      {c.busy > 0 && <div className="small">That week, {n(c.busy, 'learner')} would have three or more tests and exams.</div>}
+      <Link to="/timetable/assessments" className="small">
+        See the assessment calendar
+      </Link>
+    </div>
   );
 }

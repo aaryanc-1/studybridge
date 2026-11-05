@@ -7,6 +7,7 @@ import Icon from '../../ui/Icon.jsx';
 import { Empty, Link, Loading, Page } from '../../ui/kit.jsx';
 import { useQuery } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
+import { day } from '../../lib/format.js';
 
 export const EFFORT = { 1: 'Excellent', 2: 'Good', 3: 'Needs work', 4: 'A concern' };
 export const SCALES = {
@@ -220,6 +221,37 @@ export function MyReports({ learnerId = null }) {
             </span>
             <Icon name="right" size={16} />
           </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// Predicted grades a learner's teachers chose to share (gradebook depth), from every class they're in: on the learner's
+// Progress and the parent's Marks. Teachers' notes about them never come here.
+export function PredictedGrades({ learnerId = null }) {
+  const app = useApp();
+  const who = learnerId || app.me.id;
+  const list = useQuery(`my-predicted:${who}`, () => api.myPredicted(learnerId)).data || [];
+  if (!list.length) return null;
+  return (
+    <section className="card">
+      <h2>Predicted grades</h2>
+      <div className="small muted">What {learnerId ? 'their' : 'your'} teachers expect from the work so far. They can change as the year goes on.</div>
+      <div className="list">
+        {list.map((x, i) => (
+          <div key={i} className="item">
+            <span className="grow">
+              <span className="name">{x.subject || x.class}</span>
+              <span className="meta">
+                {x.subject && <span>{x.class}</span>}
+                {x.by && <span>from {x.by}</span>}
+                {x.place && x.place !== x.by && <span>{x.place}</span>}
+                <span>{day(x.updated_at)}</span>
+              </span>
+            </span>
+            <b className="predicted-grade">{x.grade}</b>
+          </div>
         ))}
       </div>
     </section>

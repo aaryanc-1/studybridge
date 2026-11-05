@@ -1584,6 +1584,81 @@ try {
   const lpTold = await srv.db.query(`select n.title from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'anaya@example.com' and n.kind = 'profile'`);
   assert.deepEqual(lpTold.rows.map((r) => r.title), ['Learner Profile: Risk-takers']);
 
+  step('Gradebook depth: the teacher weights Year 10 maths (tests 60%, homework 40%), makes the investigation summative homework, gives Anaya a predicted grade and shares it; two tests on one day show as a clash on the assessment calendar, and the editor warns before a third; Anaya and her dad see the predicted grade');
+  await A.goto(web.url + '#/learners/classes/' + k10.id + '/gradebook');
+  await A.getByRole('button', { name: 'Set up', exact: true }).click();
+  const gs = A.getByRole('dialog', { name: 'Set up the gradebook' });
+  await gs.getByRole('button', { name: 'Start with tests 60% and homework 40%' }).click();
+  await gs.getByText(/MYP class: its suggested grade comes from the levels/).waitFor(); // (maths is an MYP subject now)
+  await gs.getByRole('button', { name: 'Summative work only' }).click();
+  await shot(A, 'gradebook-setup');
+  await a11y(A, 'Setting up a gradebook');
+  await gs.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Gradebook set up').waitFor();
+  const gbook = A.locator('table.gradebook');
+  await gbook.getByRole('columnheader', { name: /Tests/ }).waitFor();
+  // the investigation: homework (formative), so it doesn't count yet; made summative and put in Homework, it does
+  await A.getByRole('button', { name: 'How Patterns investigation counts' }).click();
+  const wg = A.getByRole('dialog', { name: 'Patterns investigation' });
+  await wg.getByRole('button', { name: 'Summative', exact: true }).click();
+  await wg.getByLabel('Category').selectOption({ label: 'Homework (40%)' });
+  await wg.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Saved', { exact: true }).first().waitFor();
+  const gbAnaya = gbook.locator('tr', { has: A.getByRole('rowheader', { name: 'Anaya' }) });
+  await gbAnaya.locator('td.gb-sum', { hasText: '80%' }).first().waitFor(); // 8 out of 10, the only work that counts
+  // her predicted grade, shared with her and her parents (the note stays with teachers)
+  await A.getByRole('button', { name: 'Predicted grade for Anaya' }).click();
+  const pd = A.getByRole('dialog', { name: 'Anaya: predicted grade' });
+  await pd.getByLabel('Predicted grade').fill('6');
+  await pd.getByLabel('Note for teachers').fill('Strong on patterns; more practice with algebraic proof.');
+  await pd.getByRole('switch', { name: /Share it with Anaya/ }).click();
+  await pd.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Saved, and shared with Anaya').waitFor();
+  await gbAnaya.getByRole('button', { name: 'Predicted grade for Anaya' }).getByText('6').waitFor();
+  await shot(A, 'gradebook-weighted');
+  await a11y(A, 'A weighted gradebook');
+  const told = await srv.db.query(`select p.email from public.notifications n join public.profiles p on p.id = n.user_id where n.kind = 'predicted' order by p.email`);
+  assert.deepEqual(told.rows.map((r) => r.email), ['anaya@example.com', 'dad@example.com'], 'Anaya and her dad are told');
+  // two tests on one day next week: a clash for everyone in the class
+  const testDay = nyDay(8) + 'T12:00:00-05:00';
+  for (const title of ['Unit test: sequences', 'Mental maths test']) {
+    await tc.from('assignments').insert({ title, kind: 'test', subject_id: maths.id, class_id: k10.id, visibility: 'visible', due_at: testDay });
+  }
+  await A.goto(web.url + '#/timetable/assessments');
+  await A.locator('.ac-item', { hasText: 'Unit test: sequences' }).waitFor();
+  await A.locator('.ac-clash').first().waitFor();
+  await shot(A, 'assessment-calendar');
+  await a11y(A, 'The assessment calendar');
+  // a third, planned for the same day: the editor warns before it's saved
+  const third = (await tc.from('assignments').insert({ title: 'Quiz on circles', kind: 'test', subject_id: maths.id, class_id: k10.id, visibility: 'hidden' }).select().single()).data;
+  await A.goto(web.url + '#/assignments/' + third.id);
+  await A.getByLabel('Due', { exact: true }).fill(nyDay(8) + 'T09:00');
+  await A.getByText(/A clash that day:/).waitFor();
+  await A.getByText(/Unit test: sequences/).first().waitFor();
+  await shot(A, 'editor-clash');
+  await A.getByRole('button', { name: 'Save draft' }).click();
+  await A.getByText('Saved', { exact: true }).first().waitFor();
+  // the centre's managers see every class's tests and exams
+  await A.goto(web.url + '#/centre/assessments');
+  await A.locator('.ac-item', { hasText: 'Quiz on circles' }).waitFor();
+  // Anaya sees her predicted grade on My progress (never the note); her dad on Marks
+  const AP = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'America/New_York' })).newPage();
+  watch(AP, 'learner (predicted grade)');
+  await (await import('./sweep.mjs')).signIn(AP, web.url, 'anaya@example.com');
+  await AP.goto(web.url + '#/progress');
+  await AP.getByRole('heading', { name: 'Predicted grades' }).waitFor();
+  await AP.locator('.predicted-grade', { hasText: '6' }).waitFor();
+  assert.equal(await AP.getByText(/algebraic proof/).count(), 0, 'never the teacher’s note');
+  await shot(AP, 'learner-predicted');
+  await AP.close();
+  const PG = await (await browser.newContext({ viewport: { width: 1200, height: 860 }, timezoneId: 'America/New_York' })).newPage();
+  watch(PG, 'parent (predicted grade)');
+  await (await import('./sweep.mjs')).signIn(PG, web.url, 'dad@example.com');
+  await PG.goto(web.url + '#/marks');
+  await PG.getByRole('heading', { name: 'Predicted grades' }).waitFor();
+  await PG.locator('.predicted-grade', { hasText: '6' }).waitFor();
+  await PG.close();
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
