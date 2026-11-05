@@ -725,6 +725,30 @@ Chipo's predicted A (shared) and two pieces due the same day next week. Website:
 assessment calendar", features.html's "Progress and reports", privacy.html (predicted grades).
 Run 106 failed (nothing released): the walkthrough waited for a "Saved" pop-up that an earlier one already satisfied and left the editor
 before the save; it now waits for "All changes saved". CI's sweep job posts its last 40 lines as an error annotation too (it had none).
+Report polish (5 Nov 2026, app 1.1.108; Aaryan: "go", step 3 of the order for schools). A place's look: `report_brands` (org_id; logo as a
+small data: URL the app shrinks to 320 px (`shrinkImage` in TermReports.jsx; under 300 KB, PNG or JPEG), colour, address, contact, head_name,
+head_title, footer; `save_report_brand` managers only, `report_brand()` for anyone teaching there, `_brand_json(org)` = it plus the place's name);
+colours are picked from `BRAND_COLOURS` in src/lib/proof.js (each ≥ 4.5:1 with white writing; text.test.mjs checks); "How reports look" on
+Learners → Term reports (`BrandEditor`). Every report card (`report_card` gives `brand`) and transcript shows it: `BrandHead` (logo, name,
+address/contact on the colour, `--rc`), the head's signature line (`Signature`) and the footer. Each report: `report_rounds.layout` full|grid
+(grid: one table of subject, teacher, effort, grade, then the comments), `show` {attendance, behaviour, teachers, signature} (false hides),
+`proofing`, `proofreaders` (teachers of the place a manager names; managers always can; `_proofreader(round)`; `_round_json` leaves the ids out,
+`report_rounds()`/`report_round()` give them to managers). ATL ratings are now one table on the card (subjects × the five skills). Proofreading:
+`report_entries.check_state` (null | checked | returned), `check_note`, `checked_by/at`; `report_proof(round)` (every part, for proofreaders),
+`proof_entry(round, class, learner, checked|returned|reopen, note, comment)`: checked (the part must be finished; a new comment replaces the
+teacher's), returned (a note; the part goes back to not finished and the class's other teachers get 'term_proof', which opens their writing page);
+`save_report_entry` clears the check when anything changes or a sent-back part is finished again; counts in `report_round().proof`
+(to_check/checked/returned/finished) and the send-out confirm says how many aren't proofread. Plain checks (no AI) in src/lib/proof.js:
+`proofIssues(comment, {learner, others, twins, grade})` (another learner's name, the same comment as another's, placeholders, a word twice,
+small letters starting sentences, no full stop, two spaces, a space before punctuation, a lone "i", unclosed brackets, very short, no grade) and
+`tidyComment` ("Fix the small things": spaces, capitals, "I", the full stop); they show on the writing page, the overall comments and the
+proofreaders' page (`ProofPage`, `/learners/terms/:round/proof`: To check / Sent back / Checked / Still being written). Transcripts:
+`transcript(learner, org?, predicted?)`: the grades from every report a place sent out (a column a report, efforts too), attendance over each
+report's dates, IB core projects at that place (grade once completed), and predicted grades when asked (staff: all; learners and parents: shared
+ones); staff = the place's managers or a teacher of the learner; learners and parents pick from `places`. UI: `TranscriptPage`
+(TermReport.jsx, `/transcript/:learner` for tutors and parents, `/transcript` for learners), the learner page's Transcript button, and a link under
+the learner's/parent's Term reports. The demo: Riverside's look and a proofread, sent-out Term 1 report for Year 10 maths (Chipo's transcript).
+Website: schools.html "Term reports", features.html "Progress and reports", privacy.html (transcripts, proofreaders).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

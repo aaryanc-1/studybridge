@@ -22,7 +22,7 @@ import { gradeLine } from '../shared/MockHistory.jsx';
 import { StreamFiles } from '../shared/Stream.jsx';
 import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
 import { ParentProjects } from '../shared/Projects.jsx';
-import { MyReports, PredictedGrades, TermReportPage } from '../shared/TermReport.jsx';
+import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -69,6 +69,7 @@ export default function ParentApp() {
   let page;
   if (a === 'settings') page = <Settings />;
   else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
+  else if (a === 'transcript' && b) page = <TranscriptPage learner={b} />;
   else if (!kids.data) page = <Loading />;
   else if (!current) page = <NoChildren />;
   else page = <Child key={current.id} id={current.id} kids={list} section={a === 'coming' ? 'coming' : a === 'marks' ? 'marks' : 'week'} />;

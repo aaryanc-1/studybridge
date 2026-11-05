@@ -8065,6 +8065,25 @@ begin
       values (pa, 'interview', t, 'Talked about balancing CAS with exams. Amara wants to start a coding club as the CAS project.', 'i1', 20, now() - interval '9 days');
     end;
   end if;
+  -- report polish: Riverside's own look, and a Term 1 report for Year 10 maths that was proofread and sent out (so the
+  -- report and Chipo's transcript show it)
+  if to_regclass('public.report_brands') is not null then
+    declare
+      tr uuid;
+    begin
+      insert into public.report_brands (org_id, colour, address, contact, head_name, head_title, footer, updated_by)
+      values (org, '#1F3A5F', '14 Riverside Road, Lusaka', '+260 97 000 0000 · office@riverside.example', 'Grace Mwansa', 'Centre manager',
+              'Riverside Tuition: small classes, big steps.', g);
+      insert into public.report_rounds (org_id, title, starts, ends, due, scale, effort, class_ids, status, published_at, created_by, proofing)
+      values (org, 'Term 1 report', current_date - 70, current_date - 5, current_date - 7, 'letters', true, array[y10], 'published', now() - interval '4 days', g, true)
+      returning id into tr;
+      insert into public.report_entries (round_id, learner_id, class_id, grade, effort, comment, done, by_id, check_state, checked_by, checked_at)
+      values (tr, l1, y10, 'A', 1, 'Chipo works carefully and explains her steps clearly. Next term: more practice with geometry.', true, m, 'checked', g, now() - interval '5 days'),
+             (tr, l2, y10, 'C', 2, 'Tendai has made good progress with algebra. He should hand homework in on time to keep it up.', true, m, 'checked', g, now() - interval '5 days');
+      insert into public.report_overall (round_id, learner_id, comment, by_id)
+      values (tr, l1, 'A strong first term, Chipo. Keep asking questions.', g);
+    end;
+  end if;
 
   perform public._admin_log('demo_made', null, jsonb_build_object('accounts', p_accounts));
   return public.admin_demo();
@@ -13346,7 +13365,7 @@ language sql immutable as $$
 $$;
 create or replace function public._round_json(r public.report_rounds) returns jsonb
 language sql stable security definer set search_path = public as $$
-  select to_jsonb(r) - 'org_id' - 'created_by' -- (every column but those, so later ones come along by themselves)
+  select to_jsonb(r) - 'org_id' - 'created_by' - 'proofreaders' -- (every column but those, so later ones come along by themselves)
 $$;
 
 -- The reports at my place: managers see every one; teachers the ones with a class they teach, or a learner of their own
@@ -13367,10 +13386,17 @@ begin
                            from public.classes c where c.id in (select public._round_classes(r.id)) and (v_mgr or public._teaches_class(c.id))),
              'learners', (select count(distinct cm.learner_id) from public.class_members cm where cm.class_id in (select public._round_classes(r.id))),
              'my_learners', (select count(distinct cm.learner_id) from public.class_members cm join public.profiles l on l.id = cm.learner_id
-                              where cm.class_id in (select public._round_classes(r.id)) and l.tutor_id = auth.uid())) as x
+                              where cm.class_id in (select public._round_classes(r.id)) and l.tutor_id = auth.uid()),
+             'can_proof', v_mgr or auth.uid() = any (r.proofreaders),
+             'proofreaders', case when v_mgr then to_jsonb(r.proofreaders) end,
+             'proof', (select jsonb_build_object('to_check', count(*) filter (where e.done and e.check_state is null),
+                                                 'checked', count(*) filter (where e.check_state = 'checked'),
+                                                 'returned', count(*) filter (where e.check_state = 'returned'))
+                         from public.report_entries e join public.class_members cm on cm.class_id = e.class_id and cm.learner_id = e.learner_id
+                        where e.round_id = r.id and e.class_id in (select public._round_classes(r.id)))) as x
       from public.report_rounds r
      where r.org_id = v_org
-       and (v_mgr or exists (select 1 from public.class_members cm left join public.profiles l on l.id = cm.learner_id
+       and (v_mgr or auth.uid() = any (r.proofreaders) or exists (select 1 from public.class_members cm left join public.profiles l on l.id = cm.learner_id
                               where cm.class_id in (select public._round_classes(r.id))
                                 and (public._teaches_class(cm.class_id) or l.tutor_id = auth.uid())))) q));
 end $$;
@@ -13424,6 +13450,17 @@ begin
   update public.report_rounds set descriptors = coalesce(v_words, descriptors), atl = coalesce((p_round ->> 'atl')::boolean, false),
          profile = coalesce((p_round ->> 'profile')::boolean, false)
    where id = v_id;
+  -- report polish: its layout, the sections it shows, and proofreading (managers, and the teachers named here)
+  if coalesce(p_round ->> 'layout', 'full') not in ('full', 'grid') then raise exception 'Pick a layout.'; end if;
+  update public.report_rounds
+     set layout = coalesce(nullif(p_round ->> 'layout', ''), 'full'),
+         show = (select coalesce(jsonb_object_agg(k, (p_round -> 'show' ->> k)::boolean), '{}')
+                   from unnest(array['attendance', 'behaviour', 'teachers', 'signature']) k
+                  where jsonb_typeof(p_round -> 'show' -> k) = 'boolean'),
+         proofing = coalesce((p_round ->> 'proofing')::boolean, false),
+         proofreaders = coalesce((select array_agg(m.user_id) from public.org_members m
+                                   where m.org_id = v_org and m.user_id::text in (select jsonb_array_elements_text(coalesce(p_round -> 'proofreaders', '[]')))), '{}')
+   where id = v_id;
   return v_id;
 end $$;
 
@@ -13462,7 +13499,9 @@ begin
     'class', jsonb_build_object('id', c.id, 'name', c.name, 'subject', (select name from public.subjects where id = c.subject_id)),
     'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name,
         'entry', (select jsonb_build_object('grade', e.grade, 'criteria', e.criteria, 'effort', e.effort, 'comment', e.comment, 'done', e.done, 'atl', e.atl,
-                                            'by', (select display_name from public.profiles where id = e.by_id), 'updated_at', e.updated_at)
+                                            'by', (select display_name from public.profiles where id = e.by_id), 'updated_at', e.updated_at,
+                                            'check_state', e.check_state, 'check_note', e.check_note,
+                                            'checked_by', (select display_name from public.profiles where id = e.checked_by))
                     from public.report_entries e where e.round_id = r.id and e.class_id = c.id and e.learner_id = l.id),
         'hints', (with w as (select distinct on (t.assignment_id) t.score, t.max_score, t.criteria, public._is_released(t) as rel
                                from public.attempts t join public.assignments a on a.id = t.assignment_id
@@ -13538,9 +13577,13 @@ begin
   values (r.id, p_learner, c.id, v_grade, nullif(v_crit, '{}'), v_effort, public._txt(p_entry, 'comment', 2000),
           coalesce((p_entry ->> 'done')::boolean, false), nullif(v_atl, '{}'), auth.uid(), now())
   on conflict (round_id, learner_id, class_id) do update set grade = excluded.grade, criteria = excluded.criteria, effort = excluded.effort,
-    comment = excluded.comment, done = excluded.done, atl = excluded.atl, by_id = auth.uid(), updated_at = now();
-  return jsonb_build_object('grade', v_grade, 'criteria', nullif(v_crit, '{}'), 'effort', v_effort, 'atl', nullif(v_atl, '{}'),
-                            'comment', public._txt(p_entry, 'comment', 2000), 'done', coalesce((p_entry ->> 'done')::boolean, false));
+    comment = excluded.comment, done = excluded.done, atl = excluded.atl, by_id = auth.uid(), updated_at = now(),
+    check_state = case when (report_entries.grade, report_entries.criteria, report_entries.effort, report_entries.comment, report_entries.atl)
+                            is distinct from (excluded.grade, excluded.criteria, excluded.effort, excluded.comment, excluded.atl)
+                         or (excluded.done and report_entries.check_state = 'returned') then null else report_entries.check_state end;
+  return (select jsonb_build_object('grade', e.grade, 'criteria', e.criteria, 'effort', e.effort, 'atl', e.atl, 'comment', e.comment, 'done', e.done,
+                                    'check_state', e.check_state, 'check_note', e.check_note)
+            from public.report_entries e where e.round_id = r.id and e.class_id = c.id and e.learner_id = p_learner);
 end $$;
 
 -- A report as a whole: each class's progress, and each learner with their overall comment. Managers see everyone; a
@@ -13555,6 +13598,14 @@ begin
   if r.id is null or r.org_id is distinct from public._org_of(auth.uid()) or public.my_role() is distinct from 'tutor' then raise exception 'That report isn’t here.'; end if;
   v_mgr := public._org_manager(r.org_id);
   return public._round_json(r) || jsonb_build_object('manager', v_mgr,
+    'can_proof', v_mgr or auth.uid() = any (r.proofreaders),
+    'proofreaders', case when v_mgr then to_jsonb(r.proofreaders) end,
+    'proof', (select jsonb_build_object('to_check', count(*) filter (where e.done and e.check_state is null),
+                                        'checked', count(*) filter (where e.check_state = 'checked'),
+                                        'returned', count(*) filter (where e.check_state = 'returned'),
+                                        'finished', count(*) filter (where e.done))
+                from public.report_entries e join public.class_members cm on cm.class_id = e.class_id and cm.learner_id = e.learner_id
+               where e.round_id = r.id and e.class_id in (select public._round_classes(r.id))),
     'classes', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'mine', public._teaches_class(c.id),
                                   'teachers', (select coalesce(string_agg(p.display_name, ', ' order by p.display_name), '') from public.class_teachers ct
                                                  join public.profiles p on p.id = ct.teacher_id where ct.class_id = c.id),
@@ -13675,6 +13726,7 @@ begin
   v_from := coalesce(r.starts, r.created_at::date - 120);
   v_to := coalesce(r.ends, coalesce(r.published_at, now())::date);
   return jsonb_build_object('round', public._round_json(r), 'place', public._place_name(v_place), 'staff', v_staff,
+    'brand', public._brand_json(r.org_id),
     'learner', (select jsonb_build_object('id', id, 'name', display_name, 'grade', grade) from public.profiles where id = p_learner),
     'subjects', (select coalesce(jsonb_agg(jsonb_build_object('class', c.name, 'subject', s.name,
                     'teachers', (select coalesce(string_agg(p.display_name, ', ' order by p.display_name), '') from public.class_teachers ct
@@ -14924,6 +14976,225 @@ begin
       'busy', (select count(*) from (select wl.learner_id from wl group by wl.learner_id having count(*) >= 2) z)));
 end $$;
 
+-- =====================================================================
+-- Report polish (5 Nov 2026; Aaryan: "go", step 3 of the order for schools). A school's (or centre's, or tutor's) own look
+-- on its reports: a logo, a colour, its address and contact line, the head's name and title for a signature, and a footer.
+-- Each term report picks a layout (full: each subject with its comment; grid: one table of grades, then the comments) and
+-- which sections show. Proofreading: a manager can ask for every part to be checked before it goes out; proofreaders (the
+-- managers and any teachers they name) look at each finished part, fix it or send it back to its teacher with a note,
+-- helped by plain checks in the app (src/lib/proof.js: another learner's name, the same comment twice, a placeholder left
+-- in, a missing full stop). Transcripts: a learner's grades from every term report a place sent out, with attendance, IB
+-- core results and (when asked for) predicted grades, printed with the place's look.
+-- =====================================================================
+create table if not exists public.report_brands (
+  org_id uuid primary key references public.organisations (id) on delete cascade,
+  logo text,          -- a small picture, as a data: address (resized in the app)
+  colour text,        -- '#1F3A5F'
+  address text,
+  contact text,
+  head_name text,
+  head_title text,
+  footer text,
+  updated_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+alter table public.report_brands enable row level security;
+revoke all on public.report_brands from public, anon, authenticated;
+drop trigger if exists report_brands_paid on public.report_brands;
+create trigger report_brands_paid before insert or update on public.report_brands for each row execute function public._paid_guard();
+
+alter table public.report_rounds add column if not exists layout text not null default 'full';
+alter table public.report_rounds drop constraint if exists report_rounds_layout_check;
+alter table public.report_rounds add constraint report_rounds_layout_check check (layout in ('full', 'grid'));
+alter table public.report_rounds add column if not exists show jsonb not null default '{}'; -- {attendance, behaviour, teachers, signature}: false hides it
+alter table public.report_rounds add column if not exists proofing boolean not null default false;
+alter table public.report_rounds add column if not exists proofreaders uuid[] not null default '{}';
+alter table public.report_entries add column if not exists check_state text;
+alter table public.report_entries drop constraint if exists report_entries_check_state_check;
+alter table public.report_entries add constraint report_entries_check_state_check check (check_state is null or check_state in ('checked', 'returned'));
+alter table public.report_entries add column if not exists check_note text;
+alter table public.report_entries add column if not exists checked_by uuid references public.profiles (id) on delete set null;
+alter table public.report_entries add column if not exists checked_at timestamptz;
+
+-- A place's look, as reports show it (its name too)
+create or replace function public._brand_json(p_org uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('name', public._place_name(public._org_place(p_org))) ||
+         coalesce((select to_jsonb(b) - 'org_id' - 'updated_by' - 'updated_at' from public.report_brands b where b.org_id = p_org), '{}')
+$$;
+
+-- My place's look (anyone who teaches there reads it; its managers change it)
+create or replace function public.report_brand() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._org_of(auth.uid());
+begin
+  if public.my_role() is distinct from 'tutor' or v_org is null then raise exception 'Tutors only.'; end if;
+  return public._brand_json(v_org) || jsonb_build_object('can_edit', public._org_manager(v_org));
+end $$;
+
+create or replace function public.save_report_brand(p_brand jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._org_of(auth.uid());
+  v_logo text := nullif(p_brand ->> 'logo', '');
+  v_colour text := nullif(trim(coalesce(p_brand ->> 'colour', '')), '');
+begin
+  if public.my_role() is distinct from 'tutor' or v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager changes how reports look.'; end if;
+  if v_logo is not null and (v_logo !~ '^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$' or length(v_logo) > 400000) then
+    raise exception 'The logo needs to be a picture (PNG or JPEG) under 300 KB.';
+  end if;
+  if v_colour is not null and v_colour !~ '^#[0-9A-Fa-f]{6}$' then raise exception 'Pick one of the colours.'; end if;
+  insert into public.report_brands (org_id, logo, colour, address, contact, head_name, head_title, footer, updated_by, updated_at)
+  values (v_org, v_logo, v_colour, public._txt(p_brand, 'address', 200), public._txt(p_brand, 'contact', 160), public._txt(p_brand, 'head_name', 80),
+          public._txt(p_brand, 'head_title', 80), public._txt(p_brand, 'footer', 300), auth.uid(), now())
+  on conflict (org_id) do update set logo = excluded.logo, colour = excluded.colour, address = excluded.address, contact = excluded.contact,
+    head_name = excluded.head_name, head_title = excluded.head_title, footer = excluded.footer, updated_by = auth.uid(), updated_at = now();
+  return public.report_brand();
+end $$;
+
+-- Who proofreads a report: its place's managers and the teachers they named
+create or replace function public._proofreader(p_round uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.report_rounds r where r.id = p_round and r.org_id = public._org_of(auth.uid()) and public.my_role() = 'tutor'
+                   and (public._org_manager(r.org_id) or auth.uid() = any (r.proofreaders)))
+$$;
+
+-- Every part of a report, for its proofreaders: each learner in each class, what's written and where it stands
+create or replace function public.report_proof(p_round uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r public.report_rounds;
+begin
+  select * into r from public.report_rounds where id = p_round;
+  if r.id is null or not public._proofreader(p_round) then raise exception 'Only the report’s proofreaders see this.'; end if;
+  return jsonb_build_object('round', public._round_json(r),
+    'parts', (select coalesce(jsonb_agg(jsonb_build_object(
+                 'class_id', c.id, 'class', c.name, 'subject', s.name, 'learner_id', l.id, 'learner', l.display_name,
+                 'teachers', (select coalesce(string_agg(p.display_name, ', ' order by p.display_name), '') from public.class_teachers ct
+                                join public.profiles p on p.id = ct.teacher_id where ct.class_id = c.id),
+                 'grade', e.grade, 'effort', e.effort, 'comment', e.comment, 'criteria', e.criteria, 'atl', e.atl, 'done', coalesce(e.done, false),
+                 'written', e.round_id is not null, 'check_state', e.check_state, 'check_note', e.check_note,
+                 'checked_by', (select display_name from public.profiles where id = e.checked_by), 'updated_at', e.updated_at,
+                 'by', (select display_name from public.profiles where id = e.by_id))
+               order by c.name, l.display_name), '[]')
+                from public.classes c join public.class_members cm on cm.class_id = c.id join public.profiles l on l.id = cm.learner_id
+                left join public.subjects s on s.id = c.subject_id
+                left join public.report_entries e on e.round_id = r.id and e.class_id = c.id and e.learner_id = l.id
+               where c.id in (select public._round_classes(r.id))));
+end $$;
+
+-- A proofreader's verdict on one part: 'checked' (with the comment, if they tidied it), 'returned' (with a note: it goes back
+-- to its teachers, who are told) or 'reopen' (not checked after all)
+create or replace function public.proof_entry(p_round uuid, p_class uuid, p_learner uuid, p_action text, p_note text default null, p_comment text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  r public.report_rounds;
+  e public.report_entries;
+  v_note text := nullif(left(trim(coalesce(p_note, '')), 500), '');
+  v_comment text := nullif(left(trim(coalesce(p_comment, '')), 2000), '');
+  v_me text := (select display_name from public.profiles where id = auth.uid());
+  v_first text;
+  v_class text;
+  t uuid;
+begin
+  select * into r from public.report_rounds where id = p_round;
+  if r.id is null or not public._proofreader(p_round) then raise exception 'Only the report’s proofreaders can do that.'; end if;
+  if r.status <> 'writing' then raise exception 'This report has gone out. Take it back first to change it.'; end if;
+  select * into e from public.report_entries where round_id = r.id and class_id = p_class and learner_id = p_learner for update;
+  if e.round_id is null then raise exception 'Nothing is written for them yet.'; end if;
+  if p_action = 'checked' then
+    if not e.done then raise exception 'Their teacher hasn’t finished it yet.'; end if;
+    update public.report_entries set check_state = 'checked', check_note = null, checked_by = auth.uid(), checked_at = now(),
+           comment = case when p_comment is null then comment else v_comment end
+     where round_id = r.id and class_id = p_class and learner_id = p_learner;
+  elsif p_action = 'returned' then
+    if v_note is null then raise exception 'Say what to change.'; end if;
+    update public.report_entries set check_state = 'returned', check_note = v_note, done = false, checked_by = auth.uid(), checked_at = now()
+     where round_id = r.id and class_id = p_class and learner_id = p_learner;
+    select split_part(display_name, ' ', 1) into v_first from public.profiles where id = p_learner;
+    select name into v_class from public.classes where id = p_class;
+    for t in select ct.teacher_id from public.class_teachers ct where ct.class_id = p_class and ct.teacher_id <> auth.uid() loop
+      perform public.notify_user(t, 'term_proof', 'Sent back: ' || v_first || '’s ' || r.title || ' (' || v_class || ')',
+        v_me || ': ' || v_note, jsonb_build_object('round_id', r.id, 'class_id', p_class));
+    end loop;
+  elsif p_action = 'reopen' then
+    update public.report_entries set check_state = null, checked_by = null, checked_at = null
+     where round_id = r.id and class_id = p_class and learner_id = p_learner;
+  else
+    raise exception 'Checked, sent back or reopened.';
+  end if;
+  return (select jsonb_build_object('check_state', x.check_state, 'check_note', x.check_note, 'done', x.done, 'comment', x.comment)
+            from public.report_entries x where x.round_id = r.id and x.class_id = p_class and x.learner_id = p_learner);
+end $$;
+
+-- A learner's transcript from one place: the grades from every term report it sent out (a column a report), attendance over
+-- each report's dates, its IB core projects and, when asked for, predicted grades. Staff there (its managers, or a teacher
+-- of the learner) see their own place's; the learner and their parents pick from the places that sent them reports, and see
+-- only predicted grades that were shared with them.
+create or replace function public.transcript(p_learner uuid, p_org uuid default null, p_predicted boolean default false) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_org uuid;
+  v_staff boolean := false;
+  v_place uuid;
+  v_places jsonb;
+begin
+  -- the places that sent this learner a report
+  select coalesce(jsonb_agg(jsonb_build_object('org_id', z.org_id, 'name', public._place_name(public._org_place(z.org_id))) order by z.last desc), '[]')
+    into v_places
+    from (select r.org_id, max(r.published_at) as last from public.report_rounds r
+           where r.status = 'published'
+             and exists (select 1 from public.class_members cm where cm.learner_id = p_learner and cm.class_id in (select public._round_classes(r.id)))
+           group by r.org_id) z;
+  if public.my_role() = 'tutor' then
+    v_org := public._org_of(auth.uid());
+    v_staff := v_org is not null and public._place_of(auth.uid()) is not null
+               and ((public._org_manager(v_org) and (p_learner in (select public._org_learner_ids(v_org))
+                                                    or v_places @> jsonb_build_array(jsonb_build_object('org_id', v_org))))
+                    or public._teaches(auth.uid(), p_learner));
+    if not v_staff then raise exception 'You can’t see this learner’s transcript.'; end if;
+  elsif p_learner = auth.uid() or public._parent_of(p_learner) then
+    v_org := coalesce(p_org, (v_places -> 0 ->> 'org_id')::uuid);
+    if v_org is null then
+      return jsonb_build_object('places', v_places, 'terms', '[]'::jsonb, 'rows', '[]'::jsonb,
+                                'learner', (select jsonb_build_object('id', id, 'name', display_name, 'grade', grade) from public.profiles where id = p_learner));
+    end if;
+    if not v_places @> jsonb_build_array(jsonb_build_object('org_id', v_org)) then raise exception 'That place hasn’t sent you a report.'; end if;
+  else
+    raise exception 'You can’t see this transcript.';
+  end if;
+  v_place := public._org_place(v_org);
+  return (with rounds as (
+      select r.* from public.report_rounds r
+       where r.org_id = v_org and r.status = 'published'
+         and exists (select 1 from public.class_members cm where cm.learner_id = p_learner and cm.class_id in (select public._round_classes(r.id)))),
+    marks as (
+      select r.id as round_id, coalesce(s.name, c.name) as subject, e.grade, e.effort
+        from rounds r join public.report_entries e on e.round_id = r.id and e.learner_id = p_learner
+        join public.classes c on c.id = e.class_id left join public.subjects s on s.id = c.subject_id
+       where e.grade is not null or e.effort is not null)
+    select jsonb_build_object(
+      'brand', public._brand_json(v_org), 'staff', v_staff, 'places', v_places, 'org_id', v_org, 'issued', now(),
+      'learner', (select jsonb_build_object('id', id, 'name', display_name, 'grade', grade) from public.profiles where id = p_learner),
+      'terms', (select coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'title', r.title, 'starts', r.starts, 'ends', r.ends, 'published_at', r.published_at,
+                   'attendance', (select case when count(*) filter (where status <> 'excused') > 0
+                                              then round(100.0 * count(*) filter (where status in ('present', 'late')) / count(*) filter (where status <> 'excused')) end
+                                    from public.attendance a where a.place_id = v_place and a.learner_id = p_learner
+                                     and a.day between coalesce(r.starts, r.created_at::date - 120) and coalesce(r.ends, r.published_at::date)))
+                   order by coalesce(r.ends, r.published_at::date), r.published_at), '[]') from rounds r),
+      'rows', (select coalesce(jsonb_agg(jsonb_build_object('subject', m.subject, 'grades', m.grades, 'efforts', m.efforts) order by m.subject), '[]')
+                 from (select subject, jsonb_object_agg(round_id, grade) filter (where grade is not null) as grades,
+                              jsonb_object_agg(round_id, effort) filter (where effort is not null) as efforts
+                         from marks group by subject) m),
+      'core', (select coalesce(jsonb_agg(jsonb_build_object('kind', public._core_kind(c.kind) ->> 'name', 'title', p.title, 'status', p.status,
+                    'session', c.session, 'grade', case when p.status = 'completed' then p.grade end) order by c.created_at), '[]')
+                 from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id
+                where p.learner_id = p_learner and c.org_id = v_org and p.status <> 'withdrawn'),
+      'predicted', case when coalesce(p_predicted, false) then
+                     (select coalesce(jsonb_agg(jsonb_build_object('subject', coalesce(s.name, c.name), 'grade', pg.grade) order by coalesce(s.name, c.name)), '[]')
+                        from public.predicted_grades pg join public.classes c on c.id = pg.class_id left join public.subjects s on s.id = c.subject_id
+                       where pg.learner_id = p_learner and c.org_id = v_org and (v_staff or pg.shared)) end));
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -15071,6 +15342,8 @@ revoke execute on function public._work_learners(public.assignments) from public
 revoke execute on function public._class_marks(uuid) from public, anon, authenticated;
 revoke execute on function public._class_overall(uuid) from public, anon, authenticated;
 revoke execute on function public._class_myp(uuid) from public, anon, authenticated;
+revoke execute on function public._brand_json(uuid) from public, anon, authenticated;
+revoke execute on function public._proofreader(uuid) from public, anon, authenticated;
 revoke execute on function public._paid_guard() from public, anon, authenticated;
 revoke execute on function public._link_room() from public, anon, authenticated;
 revoke execute on function public._class_room() from public, anon, authenticated;

@@ -874,6 +874,9 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           <button className="btn" onClick={() => go(`/messages/${id}`)}>
             <Icon name="message" size={18} /> Message
           </button>
+          <button className="btn" onClick={() => go(`/transcript/${id}`)}>
+            <Icon name="file" size={18} /> Transcript
+          </button>
           {own && (
             <>
               <button className="btn" onClick={() => setEditing(true)}>

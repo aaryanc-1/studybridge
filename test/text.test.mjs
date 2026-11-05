@@ -5,6 +5,7 @@ import { plainMaths } from '../src/lib/plain.js';
 import { mainScript } from '../src/lib/autoupdate.js';
 import { parseTable, parseTimetable, weekdayOf } from '../src/lib/roster.js';
 import { SCALES, assessmentOf, scaleGrade, scaleProblem, pctText } from '../src/lib/grading.js';
+import { BRAND_COLOURS, proofIssues, tidyComment } from '../src/lib/proof.js';
 
 test('plain maths: no dollar signs, stars or LaTeX left', () => {
   const fb = 'Good start: taking out the common factor 3 to get $3(x^2-25)$ is right. Factorise **fully**: $a^2-b^2=(a+b)(a-b)$ gives $3(x+5)(x-5)$.';
@@ -67,4 +68,26 @@ test('gradebook depth: the starting grade scales are valid, a percentage gets th
   assert.deepEqual(['homework', 'quiz', 'test', 'exam'].map((k) => assessmentOf(k)), ['formative', 'formative', 'summative', 'summative']);
   assert.equal(assessmentOf('homework', 'summative'), 'summative');
   assert.deepEqual([pctText(65), pctText(70.85), pctText(null)], ['65%', '70.9%', '—']);
+});
+
+test('report polish: plain checks on a report comment, tidying the safe ones, and report colours dark enough for white writing', () => {
+  const kinds = (c, o) => proofIssues(c, o).map((x) => x.kind);
+  // a comment copied from another learner's
+  assert.deepEqual(kinds('Zara works hard and asks good questions.', { learner: 'Anaya Patel', others: ['Zara Phiri', 'Al Li'] }), ['name']);
+  assert.deepEqual(kinds('Anaya works hard and asks good questions.', { learner: 'Anaya Patel', others: ['Zara Phiri', 'Zarah Banda'] }), [], 'her own name, and no part-word matches');
+  assert.deepEqual(kinds('Works hard and asks good questions.', { learner: 'A', twins: [{ name: 'Ben Moyo', comment: 'works hard, and asks good questions' }] }), ['same']);
+  assert.deepEqual(kinds('[Name] has made a good start this term.'), ['placeholder']);
+  assert.deepEqual(kinds('She has made a good start this term'), ['stop']);
+  assert.deepEqual(kinds('she has made a  good start , and i think the the next step is algebra'), ['repeat', 'capital', 'stop', 'spaces', 'space', 'i']);
+  assert.deepEqual(kinds('Good (mostly.'), ['bracket', 'short']);
+  assert.deepEqual(kinds('', { grade: false }), ['grade', 'empty']);
+  assert.equal(tidyComment('she has made a  good start , and i think it shows. next term: algebra'), 'She has made a good start, and I think it shows. Next term: algebra.');
+  assert.equal(tidyComment('Well done!'), 'Well done!');
+  assert.deepEqual(kinds(tidyComment('she has made a  good start , and i think it shows')), [], 'nothing left after tidying');
+  // white writing on each colour: at least 4.5 to 1
+  const lum = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  for (const c of BRAND_COLOURS) assert.ok(1.05 / (lum(c.hex) + 0.05) >= 4.5, `${c.name} ${c.hex}`);
 });

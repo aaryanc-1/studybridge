@@ -1659,6 +1659,92 @@ try {
   await PG.locator('.predicted-grade', { hasText: '6' }).waitFor();
   await PG.close();
 
+  step('Report polish: the manager gives reports the centre’s look (logo, colour, the head’s name) and sets up a proofread Term 2 report in a grid; a comment naming Zara is flagged and sent back, fixed and checked, then sent out; Anaya’s dad reads it and her transcript');
+  await A.goto(web.url + '#/learners/terms');
+  await A.getByRole('button', { name: 'How reports look' }).click();
+  const be = A.getByRole('dialog', { name: 'How reports look' });
+  const logoPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR42mNk+M/wn4GBgYGJAQoAAAD//wMAEggCBNkVhVcAAAAASUVORK5CYII=', 'base64');
+  await be.getByLabel('Logo').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: logoPng });
+  await be.locator('img.term-logo').waitFor();
+  await be.getByRole('button', { name: 'Navy' }).click();
+  await be.getByLabel('Address').fill('12 Hill Street');
+  await be.getByLabel('The head’s name').fill('Ms Okafor');
+  await be.getByLabel('Their title').fill('Head of centre');
+  await shot(A, 'report-look');
+  await a11y(A, 'How reports look');
+  await be.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Saved. Every report and transcript from here looks like this.').waitFor();
+  // a Term 2 report: a grid of grades, proofread before it goes out
+  await A.getByRole('button', { name: 'New term report' }).click();
+  const t2f = A.getByRole('dialog', { name: 'New term report' });
+  await t2f.getByLabel('Name').fill('Term 2 report');
+  await t2f.getByRole('button', { name: 'Grid: a table of grades, then comments' }).click();
+  await t2f.getByRole('switch', { name: 'Proofread before it goes out' }).click();
+  await t2f.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Term report set up. Each class’s teachers can write their part now.').waitFor();
+  // Anaya's part names Zara (copied from someone else's?): the writing page flags it, and it's finished anyway
+  await A.locator('.card', { hasText: 'Term 2 report' }).locator('.item', { hasText: 'Year 10 maths' }).getByRole('button', { name: 'Write' }).click();
+  const a2 = A.locator('.term-entry').filter({ has: A.getByRole('heading', { name: 'Anaya' }) });
+  for (const [k, n] of [['A: Knowing and understanding', '6'], ['B: Investigating patterns', '6'], ['C: Communicating', '5'], ['D: Applying mathematics in real-life contexts', '5']]) {
+    await a2.getByLabel(k).selectOption(n);
+  }
+  await a2.getByLabel('Comment').fill('Zara explains her thinking clearly and checks her answers');
+  await a2.getByText('Mentions Zara: is this the right learner?').waitFor();
+  await a2.getByText('No full stop at the end').waitFor();
+  await shot(A, 'term-writing-checks');
+  await a2.getByRole('button', { name: 'Save and finish' }).click();
+  await A.getByText('Anaya’s part is finished').waitFor();
+  // the proofreader (the manager here) sends it back with a note
+  await A.goto(web.url + '#/learners/terms');
+  await A.locator('.card', { hasText: 'Term 2 report' }).getByRole('button', { name: /^Proofread/ }).click();
+  await A.getByRole('heading', { name: 'Proofreading' }).waitFor();
+  const pp = A.locator('.proof-part', { has: A.getByRole('heading', { name: 'Anaya' }) });
+  await pp.getByText('Mentions Zara: is this the right learner?').waitFor();
+  await shot(A, 'proofreading');
+  await a11y(A, 'Proofreading');
+  await pp.getByRole('button', { name: 'Send back', exact: true }).click();
+  await pp.getByLabel('What should they change?').fill('It says Zara: is this Anaya’s comment?');
+  await pp.getByRole('button', { name: 'Send it back' }).click();
+  await A.getByText(/^Sent back to/).waitFor();
+  // the teacher sees why, fixes it (and the small things), and finishes it again
+  await A.goto(web.url + '#/learners/terms');
+  await A.locator('.card', { hasText: 'Term 2 report' }).locator('.item', { hasText: 'Year 10 maths' }).getByRole('button', { name: 'Write' }).click();
+  await a2.getByText('It says Zara: is this Anaya’s comment?').waitFor();
+  await a2.getByLabel('Comment').fill('anaya explains her thinking clearly and checks her answers');
+  await a2.getByRole('button', { name: 'Fix the small things' }).click();
+  assert.equal(await a2.getByLabel('Comment').inputValue(), 'Anaya explains her thinking clearly and checks her answers.');
+  await a2.getByRole('button', { name: 'Save and finish' }).click();
+  await A.getByText('Anaya’s part is finished').waitFor();
+  // checked, then sent out
+  await A.goto(web.url + '#/learners/terms');
+  await A.locator('.card', { hasText: 'Term 2 report' }).getByRole('button', { name: /^Proofread/ }).click();
+  await pp.getByRole('button', { name: 'Looks good' }).click();
+  await A.getByText(/is checked$/).waitFor();
+  await A.goto(web.url + '#/learners/terms');
+  await A.locator('.card', { hasText: 'Term 2 report' }).getByRole('button', { name: 'Overall comments and sending' }).click();
+  await A.getByRole('button', { name: 'Send it out' }).click();
+  await A.getByRole('dialog').getByRole('button', { name: 'Send it out' }).click();
+  await A.getByText(/^Sent out to \d+ learners? and their parents/).waitFor();
+  // her dad: the centre's look and the head's signature line, then every term together on her transcript
+  const PB = await (await browser.newContext({ viewport: { width: 1200, height: 900 }, timezoneId: 'America/New_York' })).newPage();
+  watch(PB, 'parent (report polish)');
+  await (await import('./sweep.mjs')).signIn(PB, web.url, 'dad@example.com');
+  await PB.goto(web.url + '#/marks');
+  await PB.getByRole('link', { name: /Term 2 report/ }).click();
+  await PB.locator('.term-card img.term-logo').waitFor();
+  await PB.getByText('Ms Okafor').waitFor();
+  await PB.getByText('Anaya explains her thinking clearly and checks her answers.').waitFor();
+  await shot(PB, 'report-branded');
+  await a11y(PB, 'A report with the centre’s look');
+  await PB.goto(web.url + '#/marks');
+  await PB.getByRole('link', { name: /Their transcript/ }).click();
+  await PB.getByRole('heading', { name: 'Transcript' }).waitFor();
+  await PB.getByRole('columnheader', { name: /Term 1 report/ }).waitFor();
+  await PB.getByRole('columnheader', { name: /Term 2 report/ }).waitFor();
+  await shot(PB, 'transcript');
+  await a11y(PB, 'A transcript');
+  await PB.close();
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });

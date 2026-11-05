@@ -22,7 +22,7 @@ import { SchoolWaiting } from './SchoolJoin.jsx';
 import { SelfSetup, StartingCheck, TrialOver } from './SelfStudy.jsx';
 import { studentAccess } from '../../lib/students.js';
 import { AttendanceCard, BehaviourCard, ProfileCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
-import { MyReports, PredictedGrades, TermReportPage } from '../shared/TermReport.jsx';
+import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
@@ -153,6 +153,7 @@ export default function LearnerApp() {
   else if (a === 'projects' && b === 'p' && route.parts[2]) page = <ProjectPage id={route.parts[2]} />;
   else if (a === 'projects') page = <MyProjects />;
   else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
+  else if (a === 'transcript') page = <TranscriptPage learner={app.me.id} />;
   else page = <Today />;
   if (waiting && a !== 'settings') page = <SchoolWaiting />;
   if (self && a !== 'settings') {

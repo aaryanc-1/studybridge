@@ -31,7 +31,7 @@ import { LessonPlanPage, ProgrammeOfInquiry } from '../shared/Planner.jsx';
 import { ProjectPage } from '../shared/Projects.jsx';
 import TutorProjects from './ProjectsAdmin.jsx';
 import TermReports from './TermReports.jsx';
-import { TermReportPage } from '../shared/TermReport.jsx';
+import { TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 
 function notificationTarget(n) {
@@ -52,6 +52,7 @@ function notificationTarget(n) {
   if (n.kind === 'class') return '/learners/classes';
   if (n.kind === 'cover') return '/timetable';
   if (n.kind === 'core') return r.project_id ? `/projects/p/${r.project_id}` : '/projects';
+  if (n.kind === 'term_proof' && r.round_id) return `/learners/terms/${r.round_id}/${r.class_id}`;
   if (n.kind === 'reports_on' || n.kind === 'report_ready' || (n.kind === 'prof' && r.report_id)) return '/learners/reports';
   return '/';
 }
@@ -100,6 +101,7 @@ export default function TutorApp() {
   else if ((a === 'learners' && b === 'reports') || a === 'reports') page = <ParentReports />;
   else if (a === 'learners' && b === 'terms') page = <TermReports round={c} part={route.parts[3]} />;
   else if (a === 'report' && b && c) page = <TermReportPage round={b} learner={c} />;
+  else if (a === 'transcript' && b) page = <TranscriptPage learner={b} />;
   else if (a === 'see' && b) page = <SeeAs learnerId={b} tab={c} id={route.parts[3]} />;
   else if (a === 'learners' && b) page = <LearnerDetail id={b} tab={c} />;
   else if (a === 'learners') page = <Learners />;

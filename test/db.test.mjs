@@ -2519,6 +2519,9 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   const cal = await val(Mc, `select assessment_calendar(current_date, current_date + 14)`);
   assert.deepEqual(cal.items.map((x) => x.title), ['Algebra test', 'Statistics project']);
   assert.deepEqual(cal.clashes.map((c) => c.name).sort(), ['Chipo Banda', 'Tendai Moyo']);
+  // report polish: Riverside's look on Chipo's Term 1 report, and her transcript
+  const ct = await val(L1, `select transcript($1)`, [ids.learner1]);
+  assert.deepEqual([ct.brand.name, ct.brand.head_name, ct.terms.map((x) => x.title), ct.rows[0].grades[ct.terms[0].id]], ['Riverside Tuition (demo)', 'Grace Mwansa', ['Term 1 report'], 'A']);
   // Daniel has Amara's quiz to mark
   const T = await open('tutor2');
   assert.equal((await as(T, `select id from attempts where status = 'submitted'`)).length, 1);
@@ -4440,4 +4443,109 @@ test('gradebook depth: categories with weights, formative and summative work, an
   await setup({ categories: [{ id: tests, name: 'Tests', weight: 100 }] });
   assert.equal(await val('GT1', `select category_id from assignments where id = $1`, [hw]), null);
   assert.equal(await val('GT1', `select category_id from assignments where id = $1`, [test1]), tests);
+});
+
+test('report polish: a place’s own look on its reports, a layout and sections per report, proofreading before it goes out, and transcripts', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['RM', 'RT1', 'RT2', 'RX']) {
+    await mk(k, k.toLowerCase() + '@polish.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  for (const k of ['RA', 'RB']) {
+    await mk(k, k.toLowerCase() + '@polish.x');
+    const code = await val('RT1', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  await mk('RP', 'rp@polish.x');
+  const inv = await one('RT1', `select * from create_parent_invite($1, 'Mum')`, [U.RA]);
+  await one('RP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const centre = await val('RM', `select org_make_centre('Hillcrest School')`);
+  await val('RT1', `select org_join($1)`, [centre.code]);
+  await val('RT2', `select org_join($1)`, [centre.code]);
+  const maths = await val('RM', `select save_class(null, 'Year 9 maths', null, $1, $2)`, [[U.RA, U.RB], [U.RT1]]);
+  const eng = await val('RM', `select save_class(null, 'Year 9 English', null, $1, $2)`, [[U.RA, U.RB], [U.RT2]]);
+
+  // the place's look: only a manager changes it, and only with a real picture and colour
+  await fails(as('RT1', `select save_report_brand('{}')`), /Only a manager/);
+  await fails(as('RM', `select save_report_brand('{"logo": "data:text/html;base64,PHNjcmlwdD4="}')`), /needs to be a picture/);
+  await fails(as('RM', `select save_report_brand('{"colour": "red"}')`), /Pick one of the colours/);
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  await val('RM', `select save_report_brand($1)`, [JSON.stringify({ logo: png, colour: '#1F3A5F', address: '1 Hill Road', head_name: 'Mrs Banda', head_title: 'Head of school', footer: 'Learning together' })]);
+  const seen = await val('RT1', `select report_brand()`);
+  assert.deepEqual([seen.name, seen.head_name, seen.colour, seen.logo, seen.can_edit], ['Hillcrest School', 'Mrs Banda', '#1F3A5F', png, false]);
+  await fails(as('RA', `select report_brand()`), /Tutors only/);
+
+  // a report: grid layout, some sections off (unknown ones ignored), proofreading by the manager and one named teacher
+  await fails(as('RM', `select save_report_round(null, '{"title": "T1", "layout": "poster"}')`), /Pick a layout/);
+  const t1 = await val('RM', `select save_report_round(null, $1)`, [JSON.stringify({ title: 'Term 1', scale: 'letters', layout: 'grid',
+    show: { attendance: false, teachers: false, junk: true }, proofing: true, proofreaders: [U.RT2, U.RX] })]);
+  const ov = await val('RM', `select report_round($1)`, [t1]);
+  assert.deepEqual([ov.layout, ov.show, ov.proofing, ov.proofreaders, ov.can_proof], ['grid', { attendance: false, teachers: false }, true, [U.RT2], true], 'only teachers here can proofread');
+  assert.equal((await val('RT2', `select report_rounds()`)).rounds.find((r) => r.id === t1).can_proof, true);
+  assert.equal((await val('RT1', `select report_rounds()`)).rounds.find((r) => r.id === t1).can_proof, false);
+  assert.deepEqual((await val('RM', `select report_rounds()`)).rounds.find((r) => r.id === t1).proofreaders, [U.RT2], 'for the editor');
+  assert.equal((await val('RT2', `select report_rounds()`)).rounds.find((r) => r.id === t1).proofreaders, null, 'managers only');
+
+  // proofreading: a finished part goes back to its teacher with a note, comes back when finished again, then is checked
+  const write = (who, cls, l, comment, done = true, grade = 'A') =>
+    val(who, `select save_report_entry($1, $2, $3, $4)`, [t1, cls, U[l], JSON.stringify({ grade, effort: 1, comment, done })]);
+  await write('RT1', maths, 'RA', 'RB works hard in class');
+  await write('RT1', maths, 'RB', 'Steady progress this term.');
+  await fails(as('RT1', `select report_proof($1)`, [t1]), /proofreaders/);
+  await fails(as('RX', `select report_proof($1)`, [t1]), /proofreaders/);
+  let pr = await val('RT2', `select report_proof($1)`, [t1]);
+  const part = (l, cls = maths) => pr.parts.find((p) => p.learner_id === U[l] && p.class_id === cls);
+  assert.deepEqual([pr.parts.length, part('RA').done, part('RA').check_state, part('RA', eng).written], [4, true, null, false]);
+  assert.equal((await val('RM', `select report_round($1)`, [t1])).proof.to_check, 2);
+  await fails(as('RT2', `select proof_entry($1, $2, $3, 'returned')`, [t1, maths, U.RA]), /what to change/);
+  await fails(as('RT2', `select proof_entry($1, $2, $3, 'checked')`, [t1, eng, U.RA]), /Nothing is written/);
+  await val('RT2', `select proof_entry($1, $2, $3, 'returned', 'It names RB: is this RA’s comment?')`, [t1, maths, U.RA]);
+  const told = await as('RT1', `select title, body from notifications where kind = 'term_proof'`);
+  assert.deepEqual(told.map((n) => n.title), ['Sent back: RA’s Term 1 (Year 9 maths)']);
+  assert.match(told[0].body, /^RT2: It names RB/);
+  let cls = await val('RT1', `select report_class($1, $2)`, [t1, maths]);
+  const ra = () => cls.learners.find((l) => l.id === U.RA).entry;
+  assert.deepEqual([ra().done, ra().check_state, ra().check_note, ra().checked_by], [false, 'returned', 'It names RB: is this RA’s comment?', 'RT2']);
+  await fails(as('RT2', `select proof_entry($1, $2, $3, 'checked')`, [t1, maths, U.RA]), /hasn’t finished/);
+  assert.equal((await write('RT1', maths, 'RA', 'RA works hard in class')).check_state, null, 'finished again: back to be checked');
+  await val('RT2', `select proof_entry($1, $2, $3, 'checked', null, 'RA works hard in class.')`, [t1, maths, U.RA]);
+  cls = await val('RT1', `select report_class($1, $2)`, [t1, maths]);
+  assert.deepEqual([ra().comment, ra().check_state, ra().checked_by], ['RA works hard in class.', 'checked', 'RT2'], 'the proofreader tidied it');
+  assert.equal((await write('RT1', maths, 'RA', 'RA works very hard in class.')).check_state, null, 'a change needs checking again');
+  await val('RM', `select proof_entry($1, $2, $3, 'checked')`, [t1, maths, U.RA]);
+  await val('RM', `select proof_entry($1, $2, $3, 'reopen')`, [t1, maths, U.RB]);
+  await fails(as('RM', `select proof_entry($1, $2, $3, 'approve')`, [t1, maths, U.RA]), /Checked, sent back or reopened/);
+  await write('RT2', eng, 'RA', 'A lively reader.', true, 'B');
+  assert.deepEqual((await val('RM', `select report_round($1)`, [t1])).proof, { to_check: 2, checked: 1, returned: 0, finished: 3 });
+  await val('RM', `select publish_report_round($1, true)`, [t1]);
+  await fails(as('RT2', `select proof_entry($1, $2, $3, 'checked')`, [t1, eng, U.RA]), /gone out/);
+
+  // the report a parent reads: the place's look, the layout and sections; never who proofreads
+  const card = await val('RP', `select report_card($1, $2)`, [t1, U.RA]);
+  assert.deepEqual([card.brand.name, card.brand.head_name, card.brand.logo, card.round.layout, card.round.show.attendance, 'proofreaders' in card.round],
+    ['Hillcrest School', 'Mrs Banda', png, 'grid', false, false]);
+
+  // transcripts: every term report sent out, a column each
+  const t2 = await val('RM', `select save_report_round(null, '{"title": "Term 2", "scale": "letters"}')`);
+  await val('RT1', `select save_report_entry($1, $2, $3, '{"grade": "B", "comment": "Keep going.", "done": true}')`, [t2, maths, U.RA]);
+  await val('RM', `select publish_report_round($1, true)`, [t2]);
+  const cohort = (await db.query(`insert into core_cohorts (org_id, kind, title, session, created_by) values ((select org_id from org_members where user_id = $1), 'ee', 'Extended Essay', 'May 2027', $1) returning id`, [U.RM])).rows[0].id;
+  await db.query(`insert into core_projects (cohort_id, learner_id, title, status, grade) values ($1, $2, 'Bridges and trade', 'completed', 'A')`, [cohort, U.RA]);
+  await val('RT1', `select set_predicted_grade($1, $2, 'A*', 'Secret note', false)`, [maths, U.RA]);
+  const mine = await val('RA', `select transcript($1)`, [U.RA]);
+  assert.deepEqual(mine.terms.map((x) => x.title), ['Term 1', 'Term 2']);
+  const mrow = mine.rows.find((r) => r.subject === 'Year 9 maths');
+  assert.deepEqual([mrow.grades[t1], mrow.grades[t2], mrow.efforts[t1]], ['A', 'B', 1]);
+  assert.deepEqual(mine.rows.map((r) => r.subject), ['Year 9 English', 'Year 9 maths']);
+  assert.deepEqual([mine.brand.name, mine.places.map((p) => p.name), mine.core.map((c) => [c.kind, c.title, c.grade]), mine.predicted],
+    ['Hillcrest School', ['Hillcrest School'], [['Extended Essay', 'Bridges and trade', 'A']], null]);
+  assert.deepEqual((await val('RP', `select transcript($1, null, true)`, [U.RA])).predicted, [], 'only predicted grades that were shared');
+  assert.deepEqual((await val('RM', `select transcript($1, null, true)`, [U.RA])).predicted, [{ subject: 'Year 9 maths', grade: 'A*' }]);
+  assert.equal((await val('RT2', `select transcript($1)`, [U.RA])).staff, true, 'a teacher of hers there');
+  await fails(as('RB', `select transcript($1)`, [U.RA]), /can’t see this transcript/);
+  await fails(as('RX', `select transcript($1)`, [U.RA]), /can’t see this learner’s transcript/);
+  await fails(as('RA', `select transcript($1, $2)`, [U.RA, U.RX]), /hasn’t sent you a report/);
 });

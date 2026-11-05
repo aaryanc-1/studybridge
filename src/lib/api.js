@@ -169,6 +169,13 @@ export const publishReportRound = (roundId, on) => run(sb().rpc('publish_report_
 export const myReports = (learnerId = null) => run(sb().rpc('my_reports', { p_learner: learnerId }));
 export const reportCard = (roundId, learnerId) => run(sb().rpc('report_card', { p_round: roundId, p_learner: learnerId }));
 export const reportCards = (roundId) => run(sb().rpc('report_cards', { p_round: roundId }));
+// Report polish: a place's own look on its reports, proofreading before they go out, and transcripts
+export const reportBrand = () => run(sb().rpc('report_brand'));
+export const saveReportBrand = (brand) => run(sb().rpc('save_report_brand', { p_brand: brand }));
+export const reportProof = (roundId) => run(sb().rpc('report_proof', { p_round: roundId }));
+export const proofEntry = (roundId, classId, learnerId, action, { note = null, comment = null } = {}) =>
+  run(sb().rpc('proof_entry', { p_round: roundId, p_class: classId, p_learner: learnerId, p_action: action, p_note: note, p_comment: comment }));
+export const transcript = (learnerId, orgId = null, predicted = false) => run(sb().rpc('transcript', { p_learner: learnerId, p_org: orgId, p_predicted: predicted }));
 // IB core (CAS, the Extended Essay, TOK, MYP projects, the PYP Exhibition) and the PYP
 export const coreOn = () => run(sb().rpc('core_on')).catch((e) => (e.offline ? Promise.reject(e) : false));
 export const coreCohorts = () => run(sb().rpc('core_cohorts'));
