@@ -5034,9 +5034,19 @@ begin
                                    'at', e.created_at) order by e.created_at), '[]') from public.core_entries e where e.project_id = p.id))), '[]')
                     from public.core_projects p join public.core_cohorts c on c.id = p.cohort_id where p.learner_id = me.id),
       -- predicted grades their teachers shared with them
-      'predicted_grades', public.my_predicted(me.id));
+      'predicted_grades', public.my_predicted(me.id),
+      -- what each school or tutor keeps about them (never the office's own note), and absences reported for them
+      'school_records', (select coalesce(jsonb_agg(jsonb_build_object('where', public._place_name(x.place_id)) || public._record_json(x, 'learner')), '[]')
+                           from public.student_records x where x.learner_id = me.id),
+      'absences_reported', (select coalesce(jsonb_agg(jsonb_build_object('where', public._place_name(x.place_id), 'from', x.starts, 'to', x.ends,
+                              'part', x.part, 'reason', x.reason, 'note', x.note, 'status', x.status, 'reply', x.reply) order by x.starts), '[]')
+                              from public.absence_reports x where x.learner_id = me.id));
   elsif me.role = 'parent' then
-    v := v || jsonb_build_object('children', public.parent_children());
+    v := v || jsonb_build_object('children', public.parent_children(),
+      'absences_reported', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = x.learner_id),
+                              'where', public._place_name(x.place_id), 'from', x.starts, 'to', x.ends, 'part', x.part, 'reason', x.reason,
+                              'note', x.note, 'status', x.status, 'reply', x.reply) order by x.starts), '[]')
+                              from public.absence_reports x where x.by_id = me.id));
   end if;
   return v;
 end $$;
@@ -7319,8 +7329,10 @@ begin
   select * into o from public.organisations where id = v;
   select role into v_role from public.org_members where org_id = v and user_id = auth.uid();
   return jsonb_build_object('id', o.id, 'name', o.name, 'kind', o.kind, 'role', v_role,
+    'years', (select to_jsonb(years) from public.org_members where org_id = v and user_id = auth.uid()),
     'code', case when v_role = 'manager' and o.kind in ('centre', 'school') then o.join_code end,
     'members', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'role', m.role, 'joined_at', m.joined_at,
+                   'years', to_jsonb(m.years),
                    'me', p.id = auth.uid(), 'learners', (select count(*) from public.profiles l where l.tutor_id = p.id and l.role = 'learner'))
                    order by m.role = 'manager' desc, p.display_name), '[]')
                   from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = v));
@@ -7482,12 +7494,17 @@ create or replace function public.org_set_role(p_user uuid, p_role text) returns
 language plpgsql security definer set search_path = public as $$
 declare o public.organisations := public._org_mine_to_change();
 begin
-  if p_role not in ('manager', 'tutor') then raise exception 'Unknown role.'; end if;
-  if p_role = 'tutor' and not exists (select 1 from public.org_members where org_id = o.id and role = 'manager' and user_id <> p_user) then
+  if p_role not in ('manager', 'tutor', 'office') then raise exception 'Unknown role.'; end if;
+  if p_role = 'office' and o.kind not in ('centre', 'school') then raise exception 'The office is for centres and schools.'; end if;
+  if p_role <> 'manager' and not exists (select 1 from public.org_members where org_id = o.id and role = 'manager' and user_id <> p_user) then
     raise exception 'A centre needs at least one manager.';
   end if;
   update public.org_members set role = p_role where org_id = o.id and user_id = p_user;
   if not found then raise exception 'They aren’t in your centre.'; end if;
+  if p_role = 'office' then
+    perform public.notify_user(p_user, 'org', 'You’re in ' || o.name || '’s office now',
+      'Records, daily registers, absences and cover are under Office.', '{}');
+  end if;
   return public.my_org();
 end $$;
 
@@ -7497,7 +7514,7 @@ create or replace function public.org_overview() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare v uuid := public._org_of(auth.uid()); wk date := (now() - interval '6 days')::date;
 begin
-  if public.my_role() is distinct from 'tutor' or not public._org_manager(v)
+  if public.my_role() is distinct from 'tutor' or not public._org_office(v)
      or (select kind from public.organisations where id = v) not in ('centre', 'school') then
     raise exception 'Only a centre’s manager can see this.';
   end if;
@@ -8082,6 +8099,52 @@ begin
              (tr, l2, y10, 'C', 2, 'Tendai has made good progress with algebra. He should hand homework in on time to keep it up.', true, m, 'checked', g, now() - interval '5 days');
       insert into public.report_overall (round_id, learner_id, comment, by_id)
       values (tr, l1, 'A strong first term, Chipo. Keep asking questions.', g);
+    end;
+  end if;
+
+  -- school office basics: three homerooms with a morning register (Kofi missed one; Chipo was off ill, and her mum said
+  -- so), Daniel is head of Year 11 (Grade 10), what the office keeps about three learners, and Ruth's note about a dentist
+  -- appointment next week, waiting for the office
+  if to_regclass('public.absence_reports') is not null then
+    declare
+      fa uuid;
+      fb uuid;
+      fc uuid;
+      ill date;
+      gone date;
+    begin
+      update public.org_members set years = '{10}' where org_id = org and user_id = t;
+      update public.organisations set daily_registers = 1, am_at = '08:15' where id = org;
+      insert into public.classes (tutor_id, name, homeroom) values (m, 'Form 10M', true) returning id into fa;
+      insert into public.class_members (class_id, learner_id) values (fa, l1), (fa, l2);
+      insert into public.classes (tutor_id, name, homeroom) values (t, 'Form 11D', true) returning id into fb;
+      insert into public.class_members (class_id, learner_id) values (fb, l3), (fb, l4);
+      insert into public.classes (tutor_id, name, homeroom) values (j, 'Form 9L', true) returning id into fc;
+      insert into public.class_members (class_id, learner_id) values (fc, l5), (fc, l6);
+      select max(dd)::date into ill from generate_series(current_date - 9, current_date - 4, interval '1 day') dd where extract(isodow from dd) <= 5;
+      select max(dd)::date into gone from generate_series(current_date - 3, current_date - 1, interval '1 day') dd where extract(isodow from dd) <= 5;
+      insert into public.attendance (place_id, class_id, day, part, label, learner_id, status, marked_by, marked_at)
+      select org, cm.class_id, dd::date, 'am', cl.name || ' · morning register', cm.learner_id,
+             case when cm.learner_id = l1 and dd::date = ill then 'excused' when cm.learner_id = l4 and dd::date = gone then 'absent' else 'present' end,
+             case when cm.class_id = fa then m when cm.class_id = fb then t else j end, dd::date + time '08:20'
+        from generate_series(current_date - 14, current_date - 1, interval '1 day') dd
+        join public.class_members cm on cm.class_id in (fa, fb, fc)
+        join public.classes cl on cl.id = cm.class_id
+       where extract(isodow from dd) <= 5;
+      insert into public.student_records (place_id, learner_id, student_no, birth_date, home_language, address, contacts, allergies, dietary, photos,
+                                          going_home, office_note, updated_by)
+      values (org, l1, 'RT-0412', make_date(extract(year from now())::int - 15, 3, 14), 'English, Bemba', '22 Mulungushi Road, Lusaka',
+              jsonb_build_array(jsonb_build_object('name', 'Ruth Banda', 'relation', 'Mother', 'phone', '+260 97 111 2233', 'collect', true),
+                                jsonb_build_object('name', 'Peter Banda', 'relation', 'Father', 'phone', '+260 96 444 5566', 'collect', true)),
+              'Peanuts (she carries an adrenaline pen)', 'No nuts', true, 'Collected by her mum or dad', 'Spare adrenaline pen kept in the office.', g);
+      insert into public.student_records (place_id, learner_id, student_no, contacts, support, photos, going_home, updated_by)
+      values (org, l3, 'RT-0388', jsonb_build_array(jsonb_build_object('name', 'Grace Phiri', 'relation', 'Aunt', 'phone', '+260 95 222 7788')),
+              'Dyslexia: coloured overlays and a little extra time help. Reading aloud is fine if she offers.', false, 'Takes the school bus', g);
+      insert into public.student_records (place_id, learner_id, student_no, medical, photos, updated_by)
+      values (org, l4, 'RT-0391', 'Asthma: his inhaler is in his bag.', true, g);
+      insert into public.absence_reports (place_id, learner_id, by_id, by_parent, starts, ends, part, at_time, reason, note, status, reply, decided_by, decided_at, created_at)
+      values (org, l1, par, true, ill, ill, 'day', null, 'ill', 'A fever since last night.', 'accepted', 'Get well soon, Chipo!', g, ill + time '09:00', ill + time '07:10'),
+             (org, l1, par, true, current_date + 8, current_date + 8, 'late', '10:30', 'medical', 'Dentist at 9; she’ll be in by 10:30.', 'waiting', null, null, null, now() - interval '3 hours');
     end;
   end if;
 
@@ -9981,7 +10044,7 @@ create or replace function public.org_overview() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare v uuid := public._org_of(auth.uid()); wk date := (now() - interval '6 days')::date;
 begin
-  if public.my_role() is distinct from 'tutor' or not public._org_manager(v)
+  if public.my_role() is distinct from 'tutor' or not public._org_office(v)
      or (select kind from public.organisations where id = v) not in ('centre', 'school') then
     raise exception 'Only a centre’s manager can see this.';
   end if;
@@ -11409,7 +11472,8 @@ begin
 end $$;
 -- The manager lets a teacher in (approved, in the school) or says they aren't one of theirs (they go back to waiting for
 -- StudyBridge, outside the school)
-create or replace function public.org_approve_teacher(p_user uuid, p_ok boolean) returns void
+drop function if exists public.org_approve_teacher(uuid, boolean);
+create or replace function public.org_approve_teacher(p_user uuid, p_ok boolean, p_role text default 'tutor') returns void
 language plpgsql security definer set search_path = public as $$
 declare
   v_org uuid := public._org_of(auth.uid());
@@ -11423,8 +11487,14 @@ begin
   end if;
   select name into v_name from public.organisations where id = v_org;
   if p_ok then
+    if coalesce(p_role, 'tutor') not in ('tutor', 'office') then raise exception 'Let them in as a teacher or as the office.'; end if;
     update public.profiles set status = 'active' where id = p_user;
-    perform public.notify_user(p_user, 'approved', 'You’re in ' || v_name || '!', 'Your manager approved your teacher account. Your classes are in Learners → Classes.', '{}');
+    if p_role = 'office' then
+      update public.org_members set role = 'office' where org_id = v_org and user_id = p_user;
+      perform public.notify_user(p_user, 'approved', 'You’re in ' || v_name || '!', 'Your manager let you in as the office. Records, daily registers and absences are under Office.', '{}');
+    else
+      perform public.notify_user(p_user, 'approved', 'You’re in ' || v_name || '!', 'Your manager approved your teacher account. Your classes are in Learners → Classes.', '{}');
+    end if;
   else
     delete from public.org_members where org_id = v_org and user_id = p_user;
     update public.profiles set school_id = null where id = p_user;
@@ -11817,6 +11887,12 @@ create unique index if not exists attendance_slot_day on public.attendance (slot
 create unique index if not exists attendance_session on public.attendance (session_id, learner_id) where session_id is not null;
 create index if not exists attendance_learner on public.attendance (learner_id, day);
 create index if not exists attendance_place on public.attendance (place_id, day);
+-- School office basics (5 Nov 2026): a homeroom's daily registers, 'am' and 'pm', one each a day for each learner at a place
+alter table public.attendance add column if not exists part text;
+do $$ begin
+  alter table public.attendance add constraint attendance_part_check check (part is null or part in ('am', 'pm'));
+exception when duplicate_object then null; end $$;
+create unique index if not exists attendance_daily on public.attendance (place_id, learner_id, day, part) where part is not null;
 -- Which parents have been told about an absence today (and whether it still stands), so they hear once a day
 create table if not exists public.attendance_told (
   learner_id uuid not null references public.profiles (id) on delete cascade,
@@ -12054,7 +12130,7 @@ begin
                                           order by c.name), '[]')
                   from public.classes c where c.org_id = o.id and not c.archived),
     'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
-                   from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = o.id and p.role = 'tutor'));
+                   from public.org_members m join public.profiles p on p.id = m.user_id where m.org_id = o.id and p.role = 'tutor' and m.role <> 'office'));
 end $$;
 
 -- The school day: its periods, in order. A period taken away takes its lessons with it.
@@ -12328,12 +12404,15 @@ language plpgsql stable security definer set search_path = public as $$
 declare
   s public.timetable_slots;
   se public.sessions;
+  c public.classes;
   v_day date;
   v_ids uuid[];
   v_title text;
   v_when text;
   v_class uuid;
   v_today date;
+  v_place uuid;
+  v_starts time;
 begin
   if p_kind = 'lesson' then
     select * into s from public.timetable_slots where id = p_ref;
@@ -12346,9 +12425,10 @@ begin
       raise exception 'That lesson was cancelled.';
     end if;
     v_class := s.class_id;
+    v_place := s.org_id;
     select array_agg(learner_id) into v_ids from public.class_members where class_id = s.class_id;
-    select c.name, p.name || ' · ' || to_char(p.starts, 'HH24:MI') || '–' || to_char(p.ends, 'HH24:MI') into v_title, v_when
-      from public.classes c, public.school_periods p where c.id = s.class_id and p.id = s.period_id;
+    select c2.name, p.name || ' · ' || to_char(p.starts, 'HH24:MI') || '–' || to_char(p.ends, 'HH24:MI'), p.starts into v_title, v_when, v_starts
+      from public.classes c2, public.school_periods p where c2.id = s.class_id and p.id = s.period_id;
     v_ids := coalesce(v_ids, '{}') || coalesce((select array_agg(learner_id) from public.attendance where slot_id = s.id and day = v_day), '{}');
   elsif p_kind = 'live' then
     select * into se from public.sessions where id = p_ref;
@@ -12356,23 +12436,58 @@ begin
     v_today := (now() at time zone public._tz_of(se.tutor_id))::date;
     v_day := (se.starts_at at time zone public._tz_of(se.tutor_id))::date;
     v_class := se.class_id;
+    v_place := public._place_of(se.tutor_id);
+    v_starts := (se.starts_at at time zone public._tz_of(se.tutor_id))::time;
     v_ids := se.learner_ids || coalesce((select array_agg(learner_id) from public.attendance where session_id = se.id), '{}');
     v_title := se.title;
     v_when := case when se.in_person then coalesce(nullif(trim(se.location), ''), 'In person') else 'Live lesson' end
               || ' · ' || to_char(se.starts_at at time zone public._tz_of(se.tutor_id), 'HH24:MI');
+  elsif p_kind in ('am', 'pm') then
+    -- a homeroom's daily register (5 Nov 2026): its teachers, the office and managers, or the head of its year
+    select * into c from public.classes where id = p_ref and homeroom and not archived;
+    if c.id is null or not (public._teaches_class(c.id) or public._org_office(c.org_id)
+                            or (c.org_id = public._my_school()
+                                and exists (select 1 from public.class_members cm join public.profiles l on l.id = cm.learner_id
+                                             where cm.class_id = c.id and l.grade = any (public._my_years())))) then
+      raise exception 'You can’t take this register.';
+    end if;
+    if p_kind = 'pm' and (select daily_registers from public.organisations where id = c.org_id) < 2 then
+      raise exception 'Your school takes one register a day, in the morning.';
+    end if;
+    v_today := public._school_today(c.org_id);
+    v_day := coalesce(p_day, v_today);
+    if not public._school_day(c.org_id, v_day) then raise exception 'There’s no school that day.'; end if;
+    v_class := c.id;
+    v_place := c.org_id;
+    select array_agg(learner_id) into v_ids from public.class_members where class_id = c.id;
+    v_ids := coalesce(v_ids, '{}') || coalesce((select array_agg(learner_id) from public.attendance where class_id = c.id and day = v_day and part = p_kind), '{}');
+    v_title := c.name;
+    select case when p_kind = 'am' then am_at else pm_at end into v_starts from public.organisations where id = c.org_id;
+    v_when := case when p_kind = 'am' then 'Morning register' else 'Afternoon register' end || ' · ' || to_char(v_starts, 'HH24:MI');
   else
     raise exception 'Unknown register.';
   end if;
   return jsonb_build_object('kind', p_kind, 'id', p_ref, 'day', v_day, 'today', v_today, 'title', v_title, 'when', v_when, 'class_id', v_class,
     'starts_at', se.starts_at, 'in_person', coalesce(se.in_person, false),
-    'taken', exists (select 1 from public.attendance a where a.marked_by is not null
-                       and case when p_kind = 'lesson' then a.slot_id = p_ref and a.day = v_day else a.session_id = p_ref end),
+    'taken', exists (select 1 from public.attendance a where a.marked_by is not null and public._on_register(a, p_kind, p_ref, v_day)),
     'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'status', a.status, 'minutes_late', a.minutes_late,
-                                             'note', a.note, 'joined_at', a.joined_at, 'by_joining', a.id is not null and a.marked_by is null)
+                                             'note', a.note, 'joined_at', a.joined_at, 'by_joining', a.id is not null and a.marked_by is null,
+                                             -- a parent said they'd be away (5 Nov 2026), and what that suggests for this register
+                                             'reported', (select jsonb_build_object('id', ar.id, 'reason', ar.reason, 'part', ar.part,
+                                                                                    'at_time', to_char(ar.at_time, 'HH24:MI'), 'note', ar.note,
+                                                                                    'status', ar.status, 'by', b.display_name)
+                                                            from public.absence_reports ar left join public.profiles b on b.id = ar.by_id
+                                                           where ar.place_id = v_place and ar.learner_id = l.id and v_day between ar.starts and ar.ends
+                                                             and ar.status <> 'withdrawn' order by ar.created_at desc limit 1),
+                                             'suggest', public._absence_suggest(v_place, l.id, v_day, p_kind, v_starts),
+                                             -- what staff need to know, from the place's record
+                                             'alert', (select nullif(concat_ws(' · ', case when coalesce(sr.allergies, '') <> '' then 'Allergies' end,
+                                                                                     case when coalesce(sr.medical, '') <> '' then 'Health' end,
+                                                                                     case when coalesce(sr.support, '') <> '' then 'Learning support' end), '')
+                                                         from public.student_records sr where sr.place_id = v_place and sr.learner_id = l.id))
                                    order by l.display_name), '[]')
                    from public.profiles l
-                   left join public.attendance a on a.learner_id = l.id
-                    and case when p_kind = 'lesson' then a.slot_id = p_ref and a.day = v_day else a.session_id = p_ref end
+                   left join public.attendance a on a.learner_id = l.id and public._on_register(a, p_kind, p_ref, v_day)
                   where l.id = any (v_ids) and l.role = 'learner'));
 end $$;
 
@@ -12388,6 +12503,11 @@ declare
   v_where text;
   p record;
 begin
+  -- a parent told them (or the office noted a call): nobody needs telling (5 Nov 2026)
+  if exists (select 1 from public.absence_reports where place_id = p_place and learner_id = p_learner and p_day between starts and ends
+              and status <> 'withdrawn') then
+    return;
+  end if;
   select string_agg(label, ', ' order by marked_at) into v_what from public.attendance
    where place_id = p_place and learner_id = p_learner and day = p_day and status = 'absent';
   v_absent := v_what is not null;
@@ -12441,6 +12561,9 @@ begin
     select * into s from public.timetable_slots where id = p_ref;
     v_place := s.org_id;
     v_label := (r ->> 'title') || ' · ' || split_part(r ->> 'when', ' · ', 1);
+  elsif p_kind in ('am', 'pm') then
+    v_place := (select org_id from public.classes where id = p_ref);
+    v_label := (r ->> 'title') || ' · ' || case when p_kind = 'am' then 'morning register' else 'afternoon register' end;
   else
     select * into se from public.sessions where id = p_ref;
     v_place := public._place_of(se.tutor_id);
@@ -12455,10 +12578,15 @@ begin
     v_late := case when v_status = 'late' then least(greatest(coalesce((m ->> 'minutes_late')::int, 0), 0), 600) end;
     v_note := nullif(left(trim(coalesce(m ->> 'note', '')), 300), '');
     if v_status is null then
-      delete from public.attendance where learner_id = v_learner
-         and case when p_kind = 'lesson' then slot_id = p_ref and day = v_day else session_id = p_ref end;
+      delete from public.attendance a where a.learner_id = v_learner and public._on_register(a, p_kind, p_ref, v_day);
     elsif v_status not in ('present', 'late', 'absent', 'excused') then
       raise exception 'Mark each learner present, late, absent or excused.';
+    elsif p_kind in ('am', 'pm') then
+      insert into public.attendance (place_id, class_id, day, part, label, learner_id, status, minutes_late, note, marked_by)
+      values (v_place, p_ref, v_day, p_kind, v_label, v_learner, v_status, v_late, v_note, auth.uid())
+      on conflict (place_id, learner_id, day, part) where part is not null
+      do update set class_id = excluded.class_id, label = excluded.label, status = excluded.status, minutes_late = excluded.minutes_late,
+                    note = excluded.note, marked_by = auth.uid(), marked_at = now();
     elsif p_kind = 'lesson' then
       insert into public.attendance (place_id, slot_id, class_id, day, label, learner_id, status, minutes_late, note, marked_by)
       values (v_place, p_ref, s.class_id, v_day, v_label, v_learner, v_status, v_late, v_note, auth.uid())
@@ -12525,10 +12653,18 @@ begin
       'pct', case when count(*) filter (where status <> 'excused') > 0
                   then round(100.0 * count(*) filter (where status in ('present', 'late')) / count(*) filter (where status <> 'excused')) end)
     into v from public.attendance a
-   where a.learner_id = p_learner and a.day between v_from and v_to and (v_all or a.place_id = v_place);
+   where a.learner_id = p_learner and a.day between v_from and v_to and (v_all or a.place_id = v_place) and a.part is null;
+  v := v || jsonb_build_object('days', (
+      select case when count(*) > 0 then jsonb_build_object('sessions', count(*), 'present', count(*) filter (where status = 'present'),
+               'late', count(*) filter (where status = 'late'), 'absent', count(*) filter (where status = 'absent'),
+               'excused', count(*) filter (where status = 'excused'),
+               'pct', case when count(*) filter (where status <> 'excused') > 0
+                           then round(100.0 * count(*) filter (where status in ('present', 'late')) / count(*) filter (where status <> 'excused')) end) end
+        from public.attendance a
+       where a.learner_id = p_learner and a.day between v_from and v_to and (v_all or a.place_id = v_place) and a.part is not null));
   return v || jsonb_build_object('records', (select coalesce(jsonb_agg(r order by r ->> 'day' desc, r ->> 'at' desc), '[]') from (
       select jsonb_build_object('id', a.id, 'day', a.day, 'at', a.marked_at, 'label', a.label, 'status', a.status, 'minutes_late', a.minutes_late,
-               'place', public._place_name(a.place_id), 'live', a.session_id is not null, 'note', case when not v_all then a.note end) as r
+               'place', public._place_name(a.place_id), 'live', a.session_id is not null, 'part', a.part, 'note', case when not v_all then a.note end) as r
         from public.attendance a
        where a.learner_id = p_learner and a.day between v_from and v_to and (v_all or a.place_id = v_place)
        order by a.day desc, a.marked_at desc limit 200) q));
@@ -12541,7 +12677,9 @@ declare
   v_from date := coalesce(p_from, current_date - 120);
   v_to date := coalesce(p_to, current_date + 1);
 begin
-  if not (public._teaches_class(p_class) or public._class_org_manager(p_class)) then raise exception 'You don’t teach this class.'; end if;
+  if not (public._teaches_class(p_class) or public._class_org_manager(p_class) or public._org_office((select org_id from public.classes where id = p_class))) then
+    raise exception 'You don’t teach this class.';
+  end if;
   return jsonb_build_object(
     'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'lessons', x.lessons, 'present', x.present, 'late', x.late,
                                              'absent', x.absent, 'excused', x.excused, 'pct', x.pct) order by l.display_name), '[]')
@@ -12554,12 +12692,12 @@ begin
                        from public.attendance a where a.class_id = p_class and a.learner_id = l.id and a.day between v_from and v_to) x
                   where cm.class_id = p_class),
     'registers', (select coalesce(jsonb_agg(g order by g ->> 'day' desc), '[]') from (
-                    select jsonb_build_object('day', a.day, 'kind', case when a.session_id is not null then 'live' else 'lesson' end,
-                             'id', coalesce(a.slot_id, a.session_id), 'label', max(a.label),
+                    select jsonb_build_object('day', a.day, 'kind', case when a.session_id is not null then 'live' when a.part is not null then a.part else 'lesson' end,
+                             'id', coalesce(a.slot_id, a.session_id, p_class), 'label', max(a.label),
                              'present', count(*) filter (where a.status = 'present'), 'late', count(*) filter (where a.status = 'late'),
                              'absent', count(*) filter (where a.status = 'absent'), 'excused', count(*) filter (where a.status = 'excused')) as g
                       from public.attendance a where a.class_id = p_class and a.day between v_from and v_to
-                     group by a.day, a.slot_id, a.session_id order by a.day desc limit 30) q));
+                     group by a.day, a.slot_id, a.session_id, a.part order by a.day desc, a.part limit 30) q));
 end $$;
 
 -- The whole school's attendance, for its managers: by year and by class, who's below 90%, and today's registers not taken yet
@@ -12570,10 +12708,17 @@ declare
   v_from date := coalesce(p_from, current_date - 120);
   v_to date := coalesce(p_to, current_date + 1);
   v_today date;
+  v_years int[] := case when public._org_office(public._my_school()) then null else public._my_years() end;
+  v_daily boolean;
 begin
-  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager sees the whole school’s attendance.'; end if;
+  if v_org is null or not (public._org_office(v_org) or cardinality(v_years) > 0) then
+    raise exception 'Only a manager, the office or a head of year sees the whole school’s attendance.';
+  end if;
   v_today := public._school_today(v_org);
-  return (with a as (select * from public.attendance where place_id = v_org and day between v_from and v_to),
+  -- a school taking daily registers counts school days (morning and afternoon); else every lesson's register
+  v_daily := exists (select 1 from public.classes where org_id = v_org and homeroom and not archived);
+  return (with a as (select * from public.attendance x where x.place_id = v_org and x.day between v_from and v_to and (x.part is not null) = v_daily
+                        and (v_years is null or x.learner_id in (select id from public.profiles where grade = any (v_years)))),
           per as (select a.learner_id, count(*) as lessons, count(*) filter (where status = 'absent') as absent, count(*) filter (where status = 'late') as late,
                          count(*) filter (where status <> 'excused') as counted, count(*) filter (where status in ('present', 'late')) as came
                     from a group by a.learner_id)
@@ -12591,7 +12736,7 @@ begin
                               case when count(*) filter (where status <> 'excused') > 0
                                    then round(100.0 * count(*) filter (where status in ('present', 'late')) / count(*) filter (where status <> 'excused')) end as pct
                          from a where a.class_id = c.id) k on true
-                    where c.org_id = v_org and not c.archived),
+                    where c.org_id = v_org and not c.archived and (k.registers > 0 or not v_daily)),
       'below', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade, 'pct', round(100.0 * per.came / per.counted),
                                                               'absent', per.absent, 'lessons', per.lessons) order by per.came::numeric / per.counted, l.display_name), '[]')
                   from per join public.profiles l on l.id = per.learner_id
@@ -12606,7 +12751,7 @@ begin
                        and (s.week = 0 or s.week = public._school_week(v_org, v_today)) and not coalesce(ch.cancelled, false)
                        and p.starts <= (now() at time zone public._school_tz(v_org))::time
                        and not exists (select 1 from public.attendance x where x.slot_id = s.id and x.day = v_today)),
-      'today', v_today));
+      'today', v_today, 'basis', case when v_daily then 'days' else 'lessons' end, 'years', to_jsonb(v_years)));
 end $$;
 
 -- Whose list of positives and concerns a tutor picks from: their centre's or school's, or (a tutor on their own, 30 Oct
@@ -12746,8 +12891,11 @@ declare
   v_from date := coalesce(p_from, current_date - 120);
   v_to date := coalesce(p_to, current_date + 1);
 begin
-  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager sees the whole school’s behaviour.'; end if;
-  return (with b as (select * from public.behaviour where place_id = v_org and removed_at is null and created_at::date between v_from and v_to)
+  if v_org is null or not (public._org_office(v_org) or cardinality(public._my_years()) > 0) then
+    raise exception 'Only a manager, the office or a head of year sees the whole school’s behaviour.';
+  end if;
+  return (with b as (select * from public.behaviour x where x.place_id = v_org and x.removed_at is null and x.created_at::date between v_from and v_to
+                        and (public._org_office(v_org) or x.learner_id in (select id from public.profiles where grade = any (public._my_years()))))
     select jsonb_build_object(
       'positive', coalesce((select sum(points) from b where kind = 'positive'), 0),
       'concern', coalesce((select sum(points) from b where kind = 'concern'), 0),
@@ -12801,8 +12949,8 @@ begin
                                              order by pct nulls last, display_name), '[]') from per),
       'recent', (select coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'learner_id', r.learner_id, 'learner', l.display_name, 'day', r.day, 'label', r.label,
                                                              'status', r.status, 'minutes_late', r.minutes_late, 'note', r.note,
-                                                             'kind', case when r.session_id is not null then 'live' else 'lesson' end,
-                                                             'ref', coalesce(r.session_id, r.slot_id))
+                                                             'kind', case when r.session_id is not null then 'live' when r.part is not null then r.part else 'lesson' end,
+                                                             'ref', coalesce(r.session_id, r.slot_id, r.class_id))
                                            order by r.day desc, r.marked_at desc), '[]')
                    from (select * from a where status in ('absent', 'late') order by day desc, marked_at desc limit 30) r
                    join public.profiles l on l.id = r.learner_id),
@@ -12891,7 +13039,7 @@ declare
   v_day date;
   v_wk int;
 begin
-  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager arranges cover.'; end if;
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only a manager or the office arranges cover.'; end if;
   v_day := coalesce(p_day, public._school_today(v_org));
   v_wk := public._school_week(v_org, v_day);
   return (with away as (select a.*, p.display_name from public.staff_away a join public.profiles p on p.id = a.teacher_id
@@ -12926,7 +13074,7 @@ begin
                                                     where not l.cancelled and coalesce(l.cover_id, l.teacher_id) = p.id))
                                         order by p.display_name), '[]')
                    from public.org_members m join public.profiles p on p.id = m.user_id
-                  where m.org_id = v_org and p.role = 'tutor' and p.status = 'active')));
+                  where m.org_id = v_org and p.role = 'tutor' and p.status = 'active' and m.role <> 'office')));
 end $$;
 
 -- A teacher away for a day or several (staff only; their lessons then show as needing cover)
@@ -12936,7 +13084,7 @@ declare
   v_org uuid := public._my_school();
   v_id uuid;
 begin
-  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager arranges cover.'; end if;
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only a manager or the office arranges cover.'; end if;
   if not exists (select 1 from public.org_members where org_id = v_org and user_id = p_teacher) then raise exception 'That teacher isn’t in your centre or school.'; end if;
   if p_starts is null then raise exception 'Pick the first day they’re away.'; end if;
   if coalesce(p_ends, p_starts) < p_starts then raise exception 'The last day is before the first.'; end if;
@@ -12950,7 +13098,7 @@ end $$;
 create or replace function public.remove_staff_away(p_id uuid) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  delete from public.staff_away where id = p_id and org_id = public._my_school() and public._org_manager(org_id);
+  delete from public.staff_away where id = p_id and org_id = public._my_school() and public._org_office(org_id);
   if not found then raise exception 'That isn’t one you can take off.'; end if;
 end $$;
 
@@ -12974,7 +13122,7 @@ declare
   v_what text;
   v_learner uuid;
 begin
-  if v_org is null or not public._org_manager(v_org) then raise exception 'Only a manager arranges cover.'; end if;
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only a manager or the office arranges cover.'; end if;
   select * into s from public.timetable_slots where id = p_slot and org_id = v_org;
   if s.id is null then raise exception 'That lesson isn’t on your timetable.'; end if;
   if p_day is null or not public._slot_on(s.id, p_day) then raise exception 'That lesson isn’t on that day.'; end if;
@@ -12982,7 +13130,7 @@ begin
   v_teacher := public._slot_teacher(s.id);
   if v_cover is not null then
     select p.display_name into v_name from public.org_members m join public.profiles p on p.id = m.user_id
-     where m.org_id = v_org and m.user_id = v_cover and p.role = 'tutor';
+     where m.org_id = v_org and m.user_id = v_cover and p.role = 'tutor' and m.role <> 'office';
     if v_name is null then raise exception 'That teacher isn’t in your centre or school.'; end if;
     if v_cover = v_teacher then raise exception 'That’s already their lesson.'; end if;
     if exists (select 1 from public.staff_away where org_id = v_org and teacher_id = v_cover and p_day between starts and ends) then
@@ -13690,13 +13838,19 @@ end $$;
 -- A learner's term reports that have gone out (the learner, or a parent)
 create or replace function public.my_reports(p_learner uuid default null) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
-declare v_who uuid := coalesce(p_learner, auth.uid());
+declare
+  v_who uuid := coalesce(p_learner, auth.uid());
+  v_staff boolean := false;
 begin
-  if v_who <> auth.uid() and not public._parent_of(v_who) then raise exception 'You can’t see these reports.'; end if;
+  if v_who <> auth.uid() and not public._parent_of(v_who) then
+    -- the office and the head of their year: their own school's (5 Nov 2026)
+    if not public._looks_after(v_who) then raise exception 'You can’t see these reports.'; end if;
+    v_staff := true;
+  end if;
   return (select coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'title', r.title, 'starts', r.starts, 'ends', r.ends, 'published_at', r.published_at,
                                                         'place', public._place_name(public._org_place(r.org_id))) order by r.published_at desc), '[]')
             from public.report_rounds r
-           where r.status = 'published'
+           where r.status = 'published' and (not v_staff or r.org_id = public._my_school())
              and exists (select 1 from public.class_members cm where cm.learner_id = v_who and cm.class_id in (select public._round_classes(r.id))));
 end $$;
 
@@ -13718,7 +13872,8 @@ begin
   v_staff := public.my_role() = 'tutor' and (public._org_manager(r.org_id)
              or exists (select 1 from public.class_members cm where cm.learner_id = p_learner and cm.class_id in (select public._round_classes(r.id))
                          and public._teaches_class(cm.class_id))
-             or exists (select 1 from public.profiles where id = p_learner and tutor_id = auth.uid()));
+             or exists (select 1 from public.profiles where id = p_learner and tutor_id = auth.uid())
+             or (public._looks_after(p_learner) and r.org_id = public._my_school()));
   if not v_staff and not ((p_learner = auth.uid() or public._parent_of(p_learner)) and r.status = 'published') then
     raise exception 'That report isn’t here.';
   end if;
@@ -15150,7 +15305,7 @@ begin
     v_staff := v_org is not null and public._place_of(auth.uid()) is not null
                and ((public._org_manager(v_org) and (p_learner in (select public._org_learner_ids(v_org))
                                                     or v_places @> jsonb_build_array(jsonb_build_object('org_id', v_org))))
-                    or public._teaches(auth.uid(), p_learner));
+                    or public._teaches(auth.uid(), p_learner) or public._looks_after(p_learner));
     if not v_staff then raise exception 'You can’t see this learner’s transcript.'; end if;
   elsif p_learner = auth.uid() or public._parent_of(p_learner) then
     v_org := coalesce(p_org, (v_places -> 0 ->> 'org_id')::uuid);
@@ -15193,6 +15348,682 @@ begin
                      (select coalesce(jsonb_agg(jsonb_build_object('subject', coalesce(s.name, c.name), 'grade', pg.grade) order by coalesce(s.name, c.name)), '[]')
                         from public.predicted_grades pg join public.classes c on c.id = pg.class_id left join public.subjects s on s.id = c.subject_id
                        where pg.learner_id = p_learner and c.org_id = v_org and (v_staff or pg.shared)) end));
+end $$;
+
+-- =====================================================================
+-- School office basics (5 Nov 2026; Aaryan: "go", step 4 of the order for schools).
+-- More roles in a centre or school: the office (records, daily registers, absences, cover; never work, marks or
+-- messages) and heads of year (any teacher, manager or office member can look after one or more years). Each learner's
+-- record at a place (contacts, health, learning support, permissions): the office keeps it, parents keep it up to date,
+-- teachers see what they need to know. Daily homeroom registers (a morning one, and an afternoon one if the school takes
+-- two). Parents tell a school or tutor their child will be away: it shows on every register at that place, nobody sends
+-- them an "absent today" message for it, and the office accepts it or not.
+-- =====================================================================
+alter table public.org_members drop constraint if exists org_members_role_check;
+alter table public.org_members add constraint org_members_role_check check (role in ('manager', 'tutor', 'office'));
+alter table public.org_members add column if not exists years int[] not null default '{}'; -- head of year: the grades they look after
+alter table public.classes add column if not exists homeroom boolean not null default false; -- takes the daily register
+alter table public.organisations add column if not exists daily_registers int not null default 1; -- 1: morning; 2: morning and afternoon
+alter table public.organisations add column if not exists am_at time not null default '08:30';
+alter table public.organisations add column if not exists pm_at time not null default '13:30';
+do $$ begin
+  alter table public.organisations add constraint organisations_daily_registers_check check (daily_registers in (1, 2));
+exception when duplicate_object then null; end $$;
+
+-- A learner's record at a place (a centre or school, or a tutor on their own)
+create table if not exists public.student_records (
+  place_id uuid not null,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  student_no text check (student_no is null or length(student_no) <= 30),          -- the school's own number
+  preferred_name text check (preferred_name is null or length(preferred_name) <= 60),
+  birth_date date,
+  home_language text check (home_language is null or length(home_language) <= 60),
+  address text check (address is null or length(address) <= 300),
+  contacts jsonb not null default '[]',                                           -- [{name, relation, phone, email, collect}] in the order to call
+  allergies text check (allergies is null or length(allergies) <= 300),
+  medical text check (medical is null or length(medical) <= 1000),                 -- conditions and medicines
+  dietary text check (dietary is null or length(dietary) <= 300),
+  doctor text check (doctor is null or length(doctor) <= 200),
+  support text check (support is null or length(support) <= 1000),                -- learning support: what they need, what helps
+  photos boolean,                                                                  -- may be in the school's photos (null: not asked yet)
+  going_home text check (going_home is null or length(going_home) <= 300),         -- how they get home, who collects them
+  office_note text check (office_note is null or length(office_note) <= 2000),     -- staff who look after them only
+  updated_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (place_id, learner_id)
+);
+create index if not exists student_records_learner on public.student_records (learner_id);
+create table if not exists public.student_record_changes (
+  id uuid primary key default gen_random_uuid(),
+  place_id uuid not null,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  by_id uuid references public.profiles (id) on delete set null,
+  by_parent boolean not null default false,
+  fields text[] not null,
+  at timestamptz not null default now()
+);
+create index if not exists student_record_changes_rec on public.student_record_changes (place_id, learner_id, at desc);
+-- A parent saying their child will be away (or the office noting a call): one row for each place told
+create table if not exists public.absence_reports (
+  id uuid primary key default gen_random_uuid(),
+  place_id uuid not null,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  by_id uuid references public.profiles (id) on delete set null,
+  by_parent boolean not null default true,
+  starts date not null,
+  ends date not null,
+  part text not null default 'day' check (part in ('day', 'am', 'pm', 'late', 'early')),
+  at_time time, -- coming in (late) or leaving (early) at
+  reason text not null check (reason in ('ill', 'medical', 'family', 'religious', 'holiday', 'other')),
+  note text check (note is null or length(note) <= 500),
+  status text not null default 'waiting' check (status in ('waiting', 'accepted', 'not_accepted', 'withdrawn')),
+  reply text check (reply is null or length(reply) <= 500),
+  decided_by uuid references public.profiles (id) on delete set null,
+  decided_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (ends >= starts and ends - starts <= 60),
+  check ((part in ('late', 'early')) = (at_time is not null))
+);
+create index if not exists absence_reports_place on public.absence_reports (place_id, starts);
+create index if not exists absence_reports_learner on public.absence_reports (learner_id, starts);
+alter table public.student_records enable row level security;
+alter table public.student_record_changes enable row level security;
+alter table public.absence_reports enable row level security;
+revoke all on public.student_records, public.student_record_changes, public.absence_reports from public, anon, authenticated;
+
+-- ---------------- who's who ----------------
+-- The signed-in member is the office or a manager of this centre or school
+create or replace function public._org_office(p_org uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id join public.organisations o on o.id = m.org_id
+                  where m.org_id = p_org and m.user_id = auth.uid() and m.role in ('manager', 'office') and p.role = 'tutor' and p.status = 'active'
+                    and o.kind in ('centre', 'school'))
+$$;
+-- The years (grades) the signed-in member is head of, in their centre or school
+create or replace function public._my_years() returns int[]
+language sql stable security definer set search_path = public as $$
+  select coalesce((select m.years from public.org_members m where m.user_id = auth.uid() and m.org_id = public._my_school()), '{}')
+$$;
+-- Everyone a centre or school looks after, paused or not: its teachers' learners, its classes', and school sign-ups
+create or replace function public._school_learner_ids(p_org uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l join public.org_members m on m.user_id = l.tutor_id where m.org_id = p_org and l.role = 'learner'
+  union
+  select k.learner_id from public.learner_links k join public.org_members m on m.user_id = k.tutor_id where m.org_id = p_org
+  union
+  select cm.learner_id from public.class_members cm join public.classes c on c.id = cm.class_id where c.org_id = p_org and not c.archived
+  union
+  select l.id from public.profiles l where l.school_id = p_org and l.role = 'learner'
+$$;
+-- Staff who look after a learner without teaching them: their centre's or school's office and managers, and the head
+-- of their year
+create or replace function public._looks_after(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select (public._org_office(o) or (select grade from public.profiles where id = p_learner) = any (public._my_years()))
+                          and p_learner in (select public._school_learner_ids(o))
+                     from public._my_school() o where o is not null), false)
+$$;
+-- Every place a learner belongs to: each teacher's centre, school or (on their own) the tutor, and a school they signed
+-- up to. Never StudyBridge's own (students on their own).
+create or replace function public._places_of(p_learner uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select x from (select public._place_of(t) x from public._teachers_of(p_learner) t
+                 union
+                 select school_id from public.profiles where id = p_learner and role = 'learner' and school_id is not null) z
+   where x is not null and not exists (select 1 from public.profiles s where s.id = z.x and s.is_studybridge)
+     and not exists (select 1 from public.organisations o where o.id = z.x and o.kind = 'studybridge')
+$$;
+-- Who gives a learner access arrangements and sees their attendance, behaviour, timetable and Learner Profile notes:
+-- one of their teachers, a manager of their centre or school, and (5 Nov 2026) its office and the head of their year
+create or replace function public._can_arrange(p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.my_role() = 'tutor' and (public._teaches(auth.uid(), p_learner)
+     or (public._org_manager(public._org_of(auth.uid())) and p_learner in (select public._org_learner_ids(public._org_of(auth.uid()))))
+     or public._looks_after(p_learner))
+$$;
+-- How the signed-in person sees a learner's record at a place: 'office' (everything: the office, managers, the head of
+-- their year, or a tutor on their own with their own learner), 'teacher' (what teachers need to know), 'parent' (all
+-- but the staff note; they can change most of it) or 'learner' (theirs, to read)
+create or replace function public._record_view(p_place uuid, p_learner uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select case
+    when p_place is null or not exists (select 1 from public.profiles where id = p_learner and role = 'learner') then null
+    when public.my_role() = 'tutor' then
+      case when p_place is distinct from public._place_of(auth.uid()) then null
+           when p_place = auth.uid() and public._teaches(auth.uid(), p_learner) then 'office'
+           when p_place <> auth.uid() and public._looks_after(p_learner) then 'office'
+           when public._teaches(auth.uid(), p_learner) then 'teacher' end
+    when public._parent_of(p_learner) and p_place in (select public._places_of(p_learner)) then 'parent'
+    when p_learner = auth.uid() and p_place in (select public._places_of(p_learner)) then 'learner'
+  end
+$$;
+-- Who hears about a learner's absences and record changes at a place: a tutor on their own; a centre's or school's
+-- office (its managers when it has no office) and the head of the learner's year
+create or replace function public._office_people(p_place uuid, p_learner uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select p_place where not exists (select 1 from public.organisations where id = p_place)
+                   and exists (select 1 from public.profiles where id = p_place and role = 'tutor')
+  union
+  select m.user_id from public.org_members m join public.profiles p on p.id = m.user_id
+   where m.org_id = p_place and p.status = 'active' and p.role = 'tutor'
+     and (m.role = 'office'
+          or (m.role = 'manager' and not exists (select 1 from public.org_members x join public.profiles xp on xp.id = x.user_id
+                                                  where x.org_id = p_place and x.role = 'office' and xp.status = 'active'))
+          or (select grade from public.profiles where id = p_learner) = any (m.years))
+$$;
+create or replace function public._year_text(p_grade int) returns text
+language sql immutable as $$
+  select 'Grade ' || p_grade || ' (Year ' || (p_grade + 1) || ')'
+$$;
+-- A school day: open (in a term, not a holiday), a weekday or a day the school has lessons on
+create or replace function public._school_day(p_org uuid, p_day date) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._school_open(p_org, p_day)
+     and (extract(isodow from p_day) <= 5
+          or exists (select 1 from public.timetable_slots where org_id = p_org and weekday = extract(isodow from p_day)::int))
+$$;
+
+-- A manager makes someone head of one or more years (or none)
+create or replace function public.org_set_years(p_user uuid, p_years int[]) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  o public.organisations := public._org_mine_to_change();
+  v int[];
+  was int[];
+begin
+  if o.kind not in ('centre', 'school') then raise exception 'Heads of year are for centres and schools.'; end if;
+  select coalesce(array_agg(distinct g order by g), '{}') into v from unnest(coalesce(p_years, '{}')) g where g is not null;
+  if exists (select 1 from unnest(v) g where g not between 1 and 13) then raise exception 'Pick years from Grade 1 to Grade 13.'; end if;
+  select years into was from public.org_members where org_id = o.id and user_id = p_user;
+  if not found then raise exception 'They aren’t in your centre.'; end if;
+  update public.org_members set years = v where org_id = o.id and user_id = p_user;
+  if cardinality(v) > 0 and v is distinct from was and p_user <> auth.uid() then
+    perform public.notify_user(p_user, 'org', 'You’re head of year now',
+      'You look after ' || (select string_agg(public._year_text(g), ', ' order by g) from unnest(v) g)
+      || ': their records, attendance, behaviour and absences are under Office.', '{}');
+  end if;
+  return public.my_org();
+end $$;
+
+-- ---------------- student records ----------------
+create or replace function public._record_json(r public.student_records, p_view text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select case when p_view = 'teacher' then jsonb_build_object(
+      'student_no', r.student_no, 'preferred_name', r.preferred_name, 'contacts', coalesce(r.contacts, '[]'::jsonb),
+      'allergies', r.allergies, 'medical', r.medical, 'dietary', r.dietary, 'support', r.support, 'photos', r.photos, 'going_home', r.going_home)
+    else jsonb_build_object(
+      'student_no', r.student_no, 'preferred_name', r.preferred_name, 'birth_date', r.birth_date, 'home_language', r.home_language,
+      'address', r.address, 'contacts', coalesce(r.contacts, '[]'::jsonb), 'allergies', r.allergies, 'medical', r.medical, 'dietary', r.dietary,
+      'doctor', r.doctor, 'support', r.support, 'photos', r.photos, 'going_home', r.going_home, 'updated_at', r.updated_at,
+      'updated_by', (select display_name from public.profiles where id = r.updated_by))
+      || case when p_view = 'office' then jsonb_build_object('office_note', r.office_note) else '{}'::jsonb end
+  end
+$$;
+-- The parts of a record, in words (for "Ruth changed Chipo's contacts and allergies")
+create or replace function public._record_field(p_key text) returns text
+language sql immutable as $$
+  select case p_key when 'student_no' then 'student number' when 'preferred_name' then 'the name they go by' when 'birth_date' then 'date of birth'
+    when 'home_language' then 'home language' when 'address' then 'address' when 'contacts' then 'contacts' when 'allergies' then 'allergies'
+    when 'medical' then 'health and medicines' when 'dietary' then 'diet' when 'doctor' then 'doctor' when 'support' then 'learning support'
+    when 'photos' then 'photo permission' when 'going_home' then 'going home' when 'office_note' then 'office note' else p_key end
+$$;
+
+-- One learner's record at a place (staff: their own place; parents and the learner name it, else the first)
+create or replace function public.student_record(p_learner uuid, p_place uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_place uuid := coalesce(p_place, case when public.my_role() = 'tutor' then public._place_of(auth.uid()) end,
+                           (select x from public._places_of(p_learner) x order by public._place_name(x) limit 1));
+  v_view text := public._record_view(v_place, p_learner);
+  r public.student_records;
+  l public.profiles;
+begin
+  if v_view is null then raise exception 'You can’t see this learner’s details.'; end if;
+  select * into l from public.profiles where id = p_learner;
+  select * into r from public.student_records where place_id = v_place and learner_id = p_learner;
+  return jsonb_build_object('view', v_view, 'place_id', v_place, 'place', public._place_name(v_place), 'can_edit', v_view in ('office', 'parent'),
+    'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade),
+    'homeroom', (select string_agg(c.name, ', ' order by c.name) from public.class_members cm join public.classes c on c.id = cm.class_id
+                  where cm.learner_id = p_learner and c.homeroom and not c.archived and c.org_id = v_place),
+    'record', public._record_json(r, v_view),
+    'parents', case when v_view = 'office' then
+                 (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'email', p.email) order by p.display_name), '[]')
+                    from public.parent_links pl join public.profiles p on p.id = pl.parent_id where pl.learner_id = p_learner) end,
+    'history', case when v_view = 'office' then
+                 (select coalesce(jsonb_agg(jsonb_build_object('at', h.at, 'by', p.display_name, 'by_parent', h.by_parent,
+                                                               'fields', (select jsonb_agg(public._record_field(f)) from unnest(h.fields) f)) order by h.at desc), '[]')
+                    from (select * from public.student_record_changes where place_id = v_place and learner_id = p_learner order by at desc limit 20) h
+                    left join public.profiles p on p.id = h.by_id) end);
+end $$;
+
+-- Change a record: the office (and managers, heads of year, a tutor on their own) any part; a parent everything but the
+-- student number and the office note, and they can send the same to their child's other schools and tutors. Only the
+-- parts given change. A parent's change tells the office.
+create or replace function public.save_student_record(p_learner uuid, p_place uuid, p_fields jsonb, p_also uuid[] default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_view text := public._record_view(p_place, p_learner);
+  v_parent boolean := public._record_view(p_place, p_learner) = 'parent';
+  v_keys text[] := array['student_no', 'preferred_name', 'birth_date', 'home_language', 'address', 'contacts', 'allergies', 'medical', 'dietary',
+                         'doctor', 'support', 'photos', 'going_home', 'office_note'];
+  f jsonb := coalesce(p_fields, '{}');
+  v_contacts jsonb := '[]';
+  c jsonb;
+  v_birth date;
+  v_place uuid;
+  v_places uuid[];
+  r public.student_records;
+  n public.student_records;
+  v_changed text[];
+  v_first text := (select split_part(display_name, ' ', 1) from public.profiles where id = p_learner);
+  v_me text := (select display_name from public.profiles where id = auth.uid());
+  x uuid;
+begin
+  if v_view is distinct from 'office' and not coalesce(v_parent, false) then raise exception 'You can’t change these details.'; end if;
+  if jsonb_typeof(f) <> 'object' then raise exception 'Nothing to save.'; end if;
+  if v_parent and (f ? 'office_note' or f ? 'student_no') then raise exception 'The school keeps that part.'; end if;
+  if f ? 'contacts' then
+    if jsonb_typeof(f -> 'contacts') <> 'array' or jsonb_array_length(f -> 'contacts') > 6 then raise exception 'Up to 6 contacts.'; end if;
+    for c in select * from jsonb_array_elements(f -> 'contacts') loop
+      if jsonb_typeof(c) <> 'object' or public._txt(c, 'name', 80) is null then raise exception 'Each contact needs a name.'; end if;
+      if public._txt(c, 'phone', 40) is null and public._txt(c, 'email', 120) is null then
+        raise exception 'Give a phone number or an email for %.', public._txt(c, 'name', 80);
+      end if;
+      v_contacts := v_contacts || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+        'name', public._txt(c, 'name', 80), 'relation', public._txt(c, 'relation', 40), 'phone', public._txt(c, 'phone', 40),
+        'email', public._txt(c, 'email', 120), 'collect', coalesce((c ->> 'collect')::boolean, false))));
+    end loop;
+  end if;
+  if f ? 'birth_date' then
+    v_birth := nullif(f ->> 'birth_date', '')::date;
+    if v_birth is not null and (v_birth > current_date or v_birth < current_date - 365 * 30) then raise exception 'That date of birth doesn’t look right.'; end if;
+  end if;
+  v_places := array[p_place];
+  if v_parent and p_also is not null then
+    v_places := v_places || array(select distinct y from unnest(p_also) y where y <> p_place and y in (select public._places_of(p_learner)));
+  end if;
+  foreach v_place in array v_places loop
+    select * into r from public.student_records where place_id = v_place and learner_id = p_learner;
+    insert into public.student_records (place_id, learner_id) values (v_place, p_learner) on conflict do nothing;
+    update public.student_records set
+        student_no = case when f ? 'student_no' then public._txt(f, 'student_no', 30) else student_no end,
+        preferred_name = case when f ? 'preferred_name' then public._txt(f, 'preferred_name', 60) else preferred_name end,
+        birth_date = case when f ? 'birth_date' then v_birth else birth_date end,
+        home_language = case when f ? 'home_language' then public._txt(f, 'home_language', 60) else home_language end,
+        address = case when f ? 'address' then public._txt(f, 'address', 300) else address end,
+        contacts = case when f ? 'contacts' then v_contacts else contacts end,
+        allergies = case when f ? 'allergies' then public._txt(f, 'allergies', 300) else allergies end,
+        medical = case when f ? 'medical' then public._txt(f, 'medical', 1000) else medical end,
+        dietary = case when f ? 'dietary' then public._txt(f, 'dietary', 300) else dietary end,
+        doctor = case when f ? 'doctor' then public._txt(f, 'doctor', 200) else doctor end,
+        support = case when f ? 'support' then public._txt(f, 'support', 1000) else support end,
+        photos = case when f ? 'photos' then (f ->> 'photos')::boolean else photos end,
+        going_home = case when f ? 'going_home' then public._txt(f, 'going_home', 300) else going_home end,
+        office_note = case when f ? 'office_note' then public._txt(f, 'office_note', 2000) else office_note end,
+        updated_by = auth.uid(), updated_at = now()
+     where place_id = v_place and learner_id = p_learner returning * into n;
+    v_changed := array(select k from unnest(v_keys) k
+                        where f ? k and coalesce(to_jsonb(r) -> k, 'null') is distinct from coalesce(to_jsonb(n) -> k, 'null')
+                          and not (k = 'contacts' and coalesce(to_jsonb(r) -> k, '[]') = '[]' and to_jsonb(n) -> k = '[]'));
+    if cardinality(v_changed) > 0 then
+      insert into public.student_record_changes (place_id, learner_id, by_id, by_parent, fields) values (v_place, p_learner, auth.uid(), v_parent, v_changed);
+      delete from public.student_record_changes where id in (select id from public.student_record_changes where place_id = v_place and learner_id = p_learner
+                                                               order by at desc offset 50);
+      if v_parent then
+        for x in select public._office_people(v_place, p_learner) loop
+          perform public.notify_user(x, 'record', v_me || ' updated ' || v_first || '’s details',
+            'Changed: ' || (select string_agg(public._record_field(k), ', ') from unnest(v_changed) k) || '.',
+            jsonb_build_object('learner_id', p_learner));
+        end loop;
+      end if;
+    end if;
+  end loop;
+  return public.student_record(p_learner, p_place);
+end $$;
+
+-- Every learner the office (or a head of year: theirs) looks after, with what their records say at a glance
+create or replace function public.student_records() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_org uuid := public._my_school();
+  v_all boolean := public._org_office(public._my_school());
+  v_years int[] := public._my_years();
+begin
+  if v_org is null then raise exception 'Student records are for centres and schools.'; end if;
+  if not v_all and cardinality(v_years) = 0 then raise exception 'Only the office, managers and heads of year see every record.'; end if;
+  return jsonb_build_object('all', v_all, 'years', to_jsonb(v_years),
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade,
+        'homeroom', (select string_agg(c.name, ', ' order by c.name) from public.class_members cm join public.classes c on c.id = cm.class_id
+                      where cm.learner_id = l.id and c.homeroom and not c.archived and c.org_id = v_org),
+        'student_no', r.student_no, 'allergies', coalesce(r.allergies, '') <> '', 'medical', coalesce(r.medical, '') <> '',
+        'support', coalesce(r.support, '') <> '', 'photos', r.photos, 'contacts', coalesce(jsonb_array_length(r.contacts), 0),
+        'parents', (select count(*) from public.parent_links pl where pl.learner_id = l.id),
+        'access', exists (select 1 from public.access_arrangements a where a.learner_id = l.id and a.place_id = v_org),
+        'updated_at', r.updated_at) order by l.grade nulls last, l.display_name), '[]')
+       from public.profiles l left join public.student_records r on r.place_id = v_org and r.learner_id = l.id
+      where l.role = 'learner' and l.id in (select public._school_learner_ids(v_org)) and (v_all or l.grade = any (v_years))));
+end $$;
+
+-- A child's records at each of their places, for their parents (to keep up to date) and for the learner (to read)
+create or replace function public.child_records(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_who uuid := coalesce(p_learner, auth.uid());
+begin
+  if v_who <> auth.uid() and not public._parent_of(v_who) then raise exception 'You can’t see these details.'; end if;
+  return (select coalesce(jsonb_agg(public.student_record(v_who, x) order by public._place_name(x)), '[]') from public._places_of(v_who) x);
+end $$;
+
+-- ---------------- homerooms and daily registers ----------------
+create or replace function public.homeroom_setup() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare o public.organisations;
+begin
+  select * into o from public.organisations where id = public._my_school();
+  if o.id is null then raise exception 'Homerooms are for centres and schools.'; end if;
+  return jsonb_build_object('can_edit', public._org_office(o.id), 'daily_registers', o.daily_registers,
+    'am_at', to_char(o.am_at, 'HH24:MI'), 'pm_at', to_char(o.pm_at, 'HH24:MI'),
+    'classes', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'homeroom', c.homeroom,
+                  'size', (select count(*) from public.class_members cm where cm.class_id = c.id),
+                  'teachers', (select coalesce(jsonb_agg(p.display_name order by p.display_name), '[]')
+                                 from public.class_teachers ct join public.profiles p on p.id = ct.teacher_id where ct.class_id = c.id))
+                  order by c.homeroom desc, c.name), '[]')
+                  from public.classes c where c.org_id = o.id and not c.archived));
+end $$;
+create or replace function public.set_homeroom(p_class uuid, p_on boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.classes c where c.id = p_class and c.org_id = public._my_school() and public._org_office(c.org_id)) then
+    raise exception 'Only a manager or the office can change this.';
+  end if;
+  update public.classes set homeroom = coalesce(p_on, false) where id = p_class;
+end $$;
+create or replace function public.set_daily_registers(p_count int, p_am text default null, p_pm text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._my_school();
+  o public.organisations;
+begin
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only a manager or the office can change this.'; end if;
+  if p_count is null or p_count not in (1, 2) then raise exception 'One register a day, or two.'; end if;
+  update public.organisations set daily_registers = p_count,
+         am_at = coalesce(nullif(trim(coalesce(p_am, '')), '')::time, am_at), pm_at = coalesce(nullif(trim(coalesce(p_pm, '')), '')::time, pm_at)
+   where id = v_org returning * into o;
+  if p_count = 2 and o.pm_at <= o.am_at then raise exception 'The afternoon register comes after the morning one.'; end if;
+end $$;
+
+create or replace function public._daily_counts(p_class uuid, p_day date, p_part text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('marked', count(*), 'present', count(*) filter (where status = 'present'), 'late', count(*) filter (where status = 'late'),
+                            'absent', count(*) filter (where status = 'absent'), 'excused', count(*) filter (where status = 'excused'))
+    from public.attendance where class_id = p_class and day = p_day and part = p_part
+$$;
+-- Which attendance rows belong to a register
+create or replace function public._on_register(a public.attendance, p_kind text, p_ref uuid, p_day date) returns boolean
+language sql immutable as $$
+  select case p_kind when 'lesson' then a.slot_id = p_ref and a.day = p_day
+                     when 'live' then a.session_id = p_ref
+                     else a.class_id = p_ref and a.day = p_day and a.part = p_kind end
+$$;
+-- A homeroom teacher's daily registers for a day (Home and Timetable)
+create or replace function public.my_homerooms(p_day date default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  o public.organisations;
+  v_day date;
+begin
+  select * into o from public.organisations where id = public._my_school();
+  if o.id is null then return jsonb_build_object('homerooms', '[]'::jsonb); end if;
+  v_day := coalesce(p_day, public._school_today(o.id));
+  return jsonb_build_object('day', v_day, 'today', public._school_today(o.id), 'open', public._school_day(o.id, v_day),
+    'daily_registers', o.daily_registers, 'am_at', to_char(o.am_at, 'HH24:MI'), 'pm_at', to_char(o.pm_at, 'HH24:MI'),
+    'now', to_char(now() at time zone public._school_tz(o.id), 'HH24:MI'),
+    'homerooms', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name,
+                     'size', (select count(*) from public.class_members cm where cm.class_id = c.id),
+                     'am', public._daily_counts(c.id, v_day, 'am'),
+                     'pm', case when o.daily_registers = 2 then public._daily_counts(c.id, v_day, 'pm') end) order by c.name), '[]')
+                    from public.classes c where c.org_id = o.id and c.homeroom and not c.archived and public._teaches_class(c.id)));
+end $$;
+
+-- ---------------- absences parents report ----------------
+create or replace function public._absence_reason(p_reason text) returns text
+language sql immutable as $$
+  select case p_reason when 'ill' then 'Ill' when 'medical' then 'A medical or dental appointment' when 'family' then 'Family reasons'
+    when 'religious' then 'A religious festival or observance' when 'holiday' then 'A holiday' else 'Another reason' end
+$$;
+create or replace function public._absence_when(p_starts date, p_ends date, p_part text, p_at time) returns text
+language sql immutable as $$
+  select case
+    when p_ends > p_starts then 'from ' || to_char(p_starts, 'Dy FMDD Mon') || ' to ' || to_char(p_ends, 'Dy FMDD Mon')
+    when p_part = 'am' then 'on the morning of ' || to_char(p_starts, 'Dy FMDD Mon')
+    when p_part = 'pm' then 'on the afternoon of ' || to_char(p_starts, 'Dy FMDD Mon')
+    when p_part = 'late' then 'until ' || to_char(p_at, 'HH24:MI') || ' on ' || to_char(p_starts, 'Dy FMDD Mon')
+    when p_part = 'early' then 'from ' || to_char(p_at, 'HH24:MI') || ' on ' || to_char(p_starts, 'Dy FMDD Mon')
+    else 'on ' || to_char(p_starts, 'Dy FMDD Mon') end
+$$;
+-- What a register suggests for someone a parent said would be away: excused (absent if the school didn't accept it),
+-- for the registers it covers: the whole day, the morning or afternoon, before they come in or after they leave
+create or replace function public._absence_suggest(p_place uuid, p_learner uuid, p_day date, p_kind text, p_starts time) returns text
+language sql stable security definer set search_path = public as $$
+  select case when ar.status = 'not_accepted' then 'absent' else 'excused' end
+    from public.absence_reports ar
+   where ar.place_id = p_place and ar.learner_id = p_learner and p_day between ar.starts and ar.ends and ar.status <> 'withdrawn'
+     and (ar.part = 'day'
+          or (ar.part = 'am' and (p_kind = 'am' or (p_kind <> 'pm' and p_starts < '12:00')))
+          or (ar.part = 'pm' and (p_kind = 'pm' or (p_kind <> 'am' and p_starts >= '12:00')))
+          or (ar.part = 'late' and p_starts < ar.at_time)
+          or (ar.part = 'early' and p_starts >= ar.at_time))
+   order by ar.created_at desc limit 1
+$$;
+-- The staff who hear about a new report: the office (or managers), the head of their year, their homeroom's teachers
+create or replace function public._absence_tell(p_report uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  ar public.absence_reports;
+  v_first text;
+  v_by text;
+  x uuid;
+begin
+  select * into ar from public.absence_reports where id = p_report;
+  select split_part(display_name, ' ', 1) into v_first from public.profiles where id = ar.learner_id;
+  select display_name into v_by from public.profiles where id = ar.by_id;
+  for x in select public._office_people(ar.place_id, ar.learner_id)
+           union
+           select ct.teacher_id from public.class_members cm join public.classes c on c.id = cm.class_id
+             join public.class_teachers ct on ct.class_id = c.id
+            where cm.learner_id = ar.learner_id and c.homeroom and not c.archived and c.org_id = ar.place_id loop
+    perform public.notify_user(x, 'absence_report', v_first || ' will be away ' || public._absence_when(ar.starts, ar.ends, ar.part, ar.at_time),
+      coalesce(v_by, 'Their parent') || ': ' || public._absence_reason(ar.reason) || coalesce('. ' || ar.note, '.'),
+      jsonb_build_object('report_id', ar.id, 'learner_id', ar.learner_id));
+  end loop;
+end $$;
+
+-- A parent tells their child's schools and tutors (all of them, or the ones picked) that the child will be away. The
+-- office (or a tutor on their own, or a head of year) notes one from a phone call or a letter: accepted already.
+create or replace function public.report_absence(p_learner uuid, p_starts date, p_ends date default null, p_part text default 'day',
+                                                 p_reason text default 'ill', p_note text default null, p_at text default null,
+                                                 p_places uuid[] default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_staff boolean := public.my_role() = 'tutor';
+  v_part text := coalesce(p_part, 'day');
+  v_ends date := coalesce(p_ends, p_starts);
+  v_at time := case when coalesce(p_part, 'day') in ('late', 'early') then nullif(trim(coalesce(p_at, '')), '')::time end;
+  v_places uuid[];
+  v_place uuid;
+  v_id uuid;
+  n int := 0;
+begin
+  if p_starts is null then raise exception 'Pick the day they’ll be away.'; end if;
+  if v_ends < p_starts then raise exception 'The last day is before the first.'; end if;
+  if v_ends - p_starts > 60 then raise exception 'Up to two months at a time.'; end if;
+  if v_part not in ('day', 'am', 'pm', 'late', 'early') then raise exception 'All day, the morning, the afternoon, coming in late or leaving early.'; end if;
+  if v_part <> 'day' and v_ends <> p_starts then raise exception 'Part of a day is for one day at a time.'; end if;
+  if v_part in ('late', 'early') and v_at is null then raise exception 'Say what time.'; end if;
+  if coalesce(p_reason, '') not in ('ill', 'medical', 'family', 'religious', 'holiday', 'other') then raise exception 'Pick a reason.'; end if;
+  if v_staff then
+    v_place := public._place_of(auth.uid());
+    if public._record_view(v_place, p_learner) is distinct from 'office' then
+      raise exception 'Only the office, a manager or the learner’s head of year can add one.';
+    end if;
+    v_places := array[v_place];
+  elsif public._parent_of(p_learner) then
+    if p_starts < current_date - 14 then raise exception 'For a day more than two weeks ago, contact them directly.'; end if;
+    if (select count(*) from public.absence_reports where by_id = auth.uid() and created_at > now() - interval '1 day') >= 30 then
+      raise exception 'That’s a lot for one day. Try again tomorrow, or contact them directly.';
+    end if;
+    v_places := array(select x from public._places_of(p_learner) x where p_places is null or x = any (p_places));
+    if coalesce(cardinality(v_places), 0) = 0 then raise exception 'Pick who to tell.'; end if;
+  else
+    raise exception 'Only a parent who follows them can do this.';
+  end if;
+  foreach v_place in array v_places loop
+    insert into public.absence_reports (place_id, learner_id, by_id, by_parent, starts, ends, part, at_time, reason, note, status, decided_by, decided_at)
+    values (v_place, p_learner, auth.uid(), not v_staff, p_starts, v_ends, v_part, v_at, p_reason, nullif(left(trim(coalesce(p_note, '')), 500), ''),
+            case when v_staff then 'accepted' else 'waiting' end, case when v_staff then auth.uid() end, case when v_staff then now() end)
+    returning id into v_id;
+    if not v_staff then perform public._absence_tell(v_id); end if;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- A parent takes one back (they won't be away after all)
+create or replace function public.withdraw_absence(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare ar public.absence_reports;
+begin
+  select * into ar from public.absence_reports where id = p_id;
+  if ar.id is null or not ar.by_parent or not public._parent_of(ar.learner_id) then raise exception 'That isn’t one you can take back.'; end if;
+  if ar.status = 'withdrawn' then return; end if;
+  update public.absence_reports set status = 'withdrawn' where id = p_id;
+end $$;
+
+-- The office (or a head of year, or a tutor on their own) accepts a report, doesn't, or puts it back to waiting. The
+-- parents who follow the learner hear, with any reply.
+create or replace function public.decide_absence(p_id uuid, p_status text, p_reply text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  ar public.absence_reports;
+  v_first text;
+  v_where text;
+  p record;
+begin
+  select * into ar from public.absence_reports where id = p_id;
+  if ar.id is null or public._record_view(ar.place_id, ar.learner_id) is distinct from 'office' then
+    raise exception 'Only the office, a manager or the learner’s head of year can do this.';
+  end if;
+  if ar.status = 'withdrawn' then raise exception 'Their parent took this one back.'; end if;
+  if coalesce(p_status, '') not in ('accepted', 'not_accepted', 'waiting') then raise exception 'Accept it or not.'; end if;
+  update public.absence_reports set status = p_status, reply = nullif(left(trim(coalesce(p_reply, '')), 500), ''),
+         decided_by = case when p_status = 'waiting' then null else auth.uid() end, decided_at = case when p_status = 'waiting' then null else now() end
+   where id = p_id returning * into ar;
+  if p_status <> 'waiting' then
+    select split_part(display_name, ' ', 1) into v_first from public.profiles where id = ar.learner_id;
+    v_where := public._place_name(ar.place_id);
+    for p in select parent_id from public.parent_links where learner_id = ar.learner_id loop
+      perform public.notify_user(p.parent_id, 'absence_reply',
+        v_where || case when p_status = 'accepted' then ' accepted ' else ' didn’t accept ' end || v_first || '’s absence',
+        'Away ' || public._absence_when(ar.starts, ar.ends, ar.part, ar.at_time) || '.' || coalesce(' ' || ar.reply, ''),
+        jsonb_build_object('learner_id', ar.learner_id, 'report_id', ar.id));
+    end loop;
+  end if;
+  return jsonb_build_object('id', ar.id, 'status', ar.status, 'reply', ar.reply);
+end $$;
+
+create or replace function public._absence_json(ar public.absence_reports) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', ar.id, 'learner_id', ar.learner_id, 'place_id', ar.place_id, 'place', public._place_name(ar.place_id),
+    'starts', ar.starts, 'ends', ar.ends, 'part', ar.part, 'at_time', to_char(ar.at_time, 'HH24:MI'), 'reason', ar.reason, 'note', ar.note,
+    'status', ar.status, 'reply', ar.reply, 'by_parent', ar.by_parent, 'at', ar.created_at,
+    'by', (select display_name from public.profiles where id = ar.by_id),
+    'decided_by', (select display_name from public.profiles where id = ar.decided_by), 'decided_at', ar.decided_at,
+    'learner', (select display_name from public.profiles where id = ar.learner_id),
+    'grade', (select grade from public.profiles where id = ar.learner_id))
+$$;
+-- Staff: absences reported at their place for learners they look after (deciding them) or teach (reading them).
+-- 'open': waiting, or today and later; 'past': the last 60 days before today, and ones taken back.
+create or replace function public.absence_list(p_which text default 'open') returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_place uuid := public._place_of(auth.uid());
+  v_today date;
+begin
+  if public.my_role() is distinct from 'tutor' then raise exception 'Tutors only.'; end if;
+  v_today := case when exists (select 1 from public.organisations where id = v_place) then public._school_today(v_place)
+                  else (now() at time zone public._tz_of(auth.uid()))::date end;
+  return (select coalesce(jsonb_agg(z.j || jsonb_build_object('can_decide', z.v = 'office')
+                                    order by (z.j ->> 'status') <> 'waiting', case when p_which = 'past' then '' else z.j ->> 'starts' end,
+                                             z.j ->> 'starts' desc, z.j ->> 'learner'), '[]')
+            from (select public._absence_json(ar) as j, public._record_view(v_place, ar.learner_id) as v
+                    from public.absence_reports ar
+                   where ar.place_id = v_place
+                     and case when p_which = 'past' then (ar.ends < v_today or ar.status = 'withdrawn') and ar.ends >= v_today - 60
+                              else ar.status = 'waiting' or (ar.ends >= v_today and ar.status <> 'withdrawn') end
+                   order by ar.starts desc limit 200) z
+           where z.v in ('office', 'teacher'));
+end $$;
+-- A parent's (or the learner's own) list: what they told each place, and what it said back
+create or replace function public.child_absences(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_who uuid := coalesce(p_learner, auth.uid());
+begin
+  if v_who <> auth.uid() and not public._parent_of(v_who) then raise exception 'You can’t see these.'; end if;
+  return (select coalesce(jsonb_agg(public._absence_json(ar) || jsonb_build_object('can_withdraw', ar.by_parent and ar.status <> 'withdrawn'
+                                                                                     and ar.ends >= current_date - 1 and public._parent_of(v_who))
+                                    order by ar.starts desc, ar.created_at desc), '[]')
+            from public.absence_reports ar where ar.learner_id = v_who and ar.ends >= current_date - 60);
+end $$;
+
+-- ---------------- the office's day ----------------
+-- One day at a centre or school, for its office and managers (everyone) and heads of year (their years): each homeroom's
+-- daily registers, who isn't in (and why, if anyone said), who came in late, and the absences parents reported
+create or replace function public.office_day(p_day date default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_org uuid := public._my_school();
+  o public.organisations;
+  v_all boolean := public._org_office(public._my_school());
+  v_years int[] := public._my_years();
+  v_day date;
+begin
+  if v_org is null then raise exception 'The office is for centres and schools.'; end if;
+  if not v_all and cardinality(v_years) = 0 then raise exception 'Only the office, managers and heads of year see this.'; end if;
+  select * into o from public.organisations where id = v_org;
+  v_day := coalesce(p_day, public._school_today(v_org));
+  return (with who as (select l.id, l.display_name, l.grade from public.profiles l
+                        where l.role = 'learner' and l.id in (select public._school_learner_ids(v_org)) and (v_all or l.grade = any (v_years))),
+               a as (select x.* from public.attendance x join who on who.id = x.learner_id where x.place_id = v_org and x.day = v_day),
+               rep as (select ar.id, ar.learner_id, ar.created_at from public.absence_reports ar join who on who.id = ar.learner_id
+                        where ar.place_id = v_org and v_day between ar.starts and ar.ends and ar.status <> 'withdrawn')
+    select jsonb_build_object('day', v_day, 'today', public._school_today(v_org), 'open', public._school_day(v_org, v_day),
+      'all', v_all, 'years', to_jsonb(v_years), 'learners', (select count(*) from who),
+      'daily_registers', o.daily_registers, 'am_at', to_char(o.am_at, 'HH24:MI'), 'pm_at', to_char(o.pm_at, 'HH24:MI'),
+      'now', to_char(now() at time zone public._school_tz(v_org), 'HH24:MI'),
+      'waiting', (select count(*) from public.absence_reports ar join who on who.id = ar.learner_id where ar.place_id = v_org and ar.status = 'waiting'),
+      'homerooms', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name,
+                       'teachers', (select coalesce(jsonb_agg(p.display_name order by p.display_name), '[]')
+                                      from public.class_teachers ct join public.profiles p on p.id = ct.teacher_id where ct.class_id = c.id),
+                       'size', (select count(*) from public.class_members cm where cm.class_id = c.id),
+                       'am', public._daily_counts(c.id, v_day, 'am'),
+                       'pm', case when o.daily_registers = 2 then public._daily_counts(c.id, v_day, 'pm') end) order by c.name), '[]')
+                      from public.classes c where c.org_id = v_org and c.homeroom and not c.archived
+                       and (v_all or exists (select 1 from public.class_members cm join who on who.id = cm.learner_id where cm.class_id = c.id))),
+      'away', (select coalesce(jsonb_agg(z order by z ->> 'name'), '[]') from (
+                 select jsonb_build_object('id', w.id, 'name', w.display_name, 'grade', w.grade,
+                   'homeroom', (select string_agg(c.name, ', ' order by c.name) from public.class_members cm join public.classes c on c.id = cm.class_id
+                                 where cm.learner_id = w.id and c.homeroom and not c.archived and c.org_id = v_org),
+                   'marks', (select jsonb_agg(jsonb_build_object('label', a.label, 'status', a.status, 'part', a.part) order by a.part nulls last, a.marked_at)
+                               from a where a.learner_id = w.id and a.status in ('absent', 'excused')),
+                   'report', (select public._absence_json(x) from public.absence_reports x join rep r on r.id = x.id
+                               where r.learner_id = w.id order by x.created_at desc limit 1),
+                   'unexplained', exists (select 1 from a where a.learner_id = w.id and a.status = 'absent') and not exists (select 1 from rep r where r.learner_id = w.id),
+                   'contact', (select sr.contacts -> 0 from public.student_records sr where sr.place_id = v_org and sr.learner_id = w.id)) as z
+                   from who w where exists (select 1 from a where a.learner_id = w.id and a.status in ('absent', 'excused'))) q),
+      'late', (select coalesce(jsonb_agg(jsonb_build_object('id', w.id, 'name', w.display_name, 'grade', w.grade, 'label', a.label,
+                                                            'minutes_late', a.minutes_late) order by w.display_name, a.marked_at), '[]')
+                 from a join who w on w.id = a.learner_id where a.status = 'late'),
+      'reported', (select coalesce(jsonb_agg(public._absence_json(x) order by w.display_name), '[]')
+                     from public.absence_reports x join rep r on r.id = x.id join who w on w.id = x.learner_id)));
 end $$;
 
 grant execute on all functions in schema public to authenticated;
@@ -15332,6 +16163,19 @@ revoke execute on function public._core_progress(uuid) from public, anon, authen
 revoke execute on function public._core_project_json(public.core_projects) from public, anon, authenticated;
 revoke execute on function public._core_tick() from public, anon, authenticated;
 revoke execute on function public._class_grade(uuid) from public, anon, authenticated;
+revoke execute on function public._org_office(uuid) from public, anon, authenticated;
+revoke execute on function public._my_years() from public, anon, authenticated;
+revoke execute on function public._school_learner_ids(uuid) from public, anon, authenticated;
+revoke execute on function public._looks_after(uuid) from public, anon, authenticated;
+revoke execute on function public._places_of(uuid) from public, anon, authenticated;
+revoke execute on function public._record_view(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._office_people(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._school_day(uuid, date) from public, anon, authenticated;
+revoke execute on function public._record_json(public.student_records, text) from public, anon, authenticated;
+revoke execute on function public._daily_counts(uuid, date, text) from public, anon, authenticated;
+revoke execute on function public._absence_suggest(uuid, uuid, date, text, time) from public, anon, authenticated;
+revoke execute on function public._absence_tell(uuid) from public, anon, authenticated;
+revoke execute on function public._absence_json(public.absence_reports) from public, anon, authenticated;
 revoke execute on function public._learner_profile() from public, anon, authenticated;
 revoke execute on function public._atl_skills() from public, anon, authenticated;
 revoke execute on function public._assignment_category() from public, anon, authenticated;

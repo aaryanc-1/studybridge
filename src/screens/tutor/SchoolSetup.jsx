@@ -14,6 +14,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { GiveBehaviour, STATUS, Week, pctTone, useInSchool } from '../shared/School.jsx';
 import { SessionForm } from '../shared/Live.jsx';
 import { AssessmentCalendar } from './Assessments.jsx';
+import { FamiliesToldUs, HomeroomRegisters } from '../shared/Office.jsx';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const USUAL_DAY = [
@@ -782,7 +783,7 @@ export function AttendanceReport() {
   return (
     <>
       <div className="row between wrap" style={{ gap: 10 }}>
-        <span className="small muted">Every register taken in your centre or school. Late still counts as there; excused lessons don’t count either way.</span>
+        <span className="small muted">Every register taken in your centre or school (the daily registers, when it takes them). Late still counts as there; excused times don’t count either way.</span>
         <RangePick value={range} onChange={setRange} />
       </div>
       {!o ? (
@@ -790,11 +791,12 @@ export function AttendanceReport() {
       ) : (
         <>
           <div className="kpi">
-            <Stat n={o.pct != null ? `${o.pct}%` : '—'} l="Attendance" />
-            <Stat n={o.lessons} l="Marks in registers" />
+            <Stat n={o.pct != null ? `${o.pct}%` : '—'} l={o.basis === 'days' ? 'Attendance (school days)' : 'Attendance'} />
+            <Stat n={o.lessons} l={o.basis === 'days' ? 'Marks in daily registers' : 'Marks in registers'} />
             <Stat n={o.absent} l="Absences" />
             <Stat n={o.late} l="Lates" />
           </div>
+          {o.years && <div className="small muted">Your years only: {o.years.map(yearName).join(', ')}.</div>}
           <div className="split even">
             <div className="card">
               <h2>Registers not taken yet today</h2>
@@ -1092,7 +1094,7 @@ export function ClassAttendance({ id }) {
         ) : (
           <div className="list">
             {c.registers.map((r) => (
-              <Link key={r.kind + r.id + r.day} to={r.kind === 'live' ? `/register/live/${r.id}` : `/register/lesson/${r.id}/${r.day}`} className="item">
+              <Link key={r.kind + r.id + r.day} to={r.kind === 'live' ? `/register/live/${r.id}` : `/register/${r.kind}/${r.id}/${r.day}`} className="item">
                 <span className="grow">
                   <span className="name">{r.label}</span>
                   <span className="meta">
@@ -1151,6 +1153,8 @@ export function TutorTimetable({ tab }) {
       ) : shown === 'behaviour' ? (
         <TutorBehaviour />
       ) : (
+        <>
+        <HomeroomRegisters />
         <Week
           actions={
             <>
@@ -1165,13 +1169,14 @@ export function TutorTimetable({ tab }) {
             </>
           }
         />
+        </>
       )}
       {adding && <SessionForm initial={adding} onClose={() => setAdding(null)} />}
     </Page>
   );
 }
 
-const registerOf = (kind, id, d) => (kind === 'live' ? `/register/live/${id}` : `/register/lesson/${id}/${d}`);
+const registerOf = (kind, id, d) => (kind === 'live' ? `/register/live/${id}` : `/register/${kind || 'lesson'}/${id}/${d}`);
 
 // The learners a tutor teaches: each one's attendance, the latest absences and lates, and registers still to take
 function TutorAttendance() {
@@ -1194,6 +1199,7 @@ function TutorAttendance() {
             <Stat n={o.absent} l="Absences" />
             <Stat n={o.late} l="Lates" />
           </div>
+          <FamiliesToldUs />
           {o.not_taken.length > 0 && (
             <div className="card">
               <h2>Registers to take</h2>

@@ -23,6 +23,7 @@ import { StreamFiles } from '../shared/Stream.jsx';
 import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
 import { ParentProjects } from '../shared/Projects.jsx';
 import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
+import { ChildAbsences, ChildRecords } from '../shared/Office.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -223,6 +224,7 @@ function Child({ id, kids, section }) {
               </div>
             )}
           </div>
+          <ChildAbsences id={id} name={v.learner.name} />
           <ChildToday id={id} name={v.learner.name} />
           <AttendanceCard learnerId={id} name={v.learner.name} />
           <BehaviourCard learnerId={id} name={v.learner.name} />
@@ -230,6 +232,7 @@ function Child({ id, kids, section }) {
           <ParentProjects childId={id} name={v.learner.name.split(' ')[0]} />
           <ClassPosts id={id} name={v.learner.name} />
           <ChildAccess id={id} name={v.learner.name} />
+          <ChildRecords id={id} name={v.learner.name} />
         </>
       )}
 

@@ -341,6 +341,8 @@ function useAnnouncer(target) {
     if (fresh.some((n) => n.kind === 'joined')) invalidate('learners', 'learner_subjects', 'invites', 'accounts', 'class_members');
     if (fresh.some((n) => n.kind === 'class')) invalidate('assignments', 'lessons', 'files', 'sessions', 'learners', 'classes', 'class_members', 'class_teachers', 'class-pool');
     if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
+    // the school office (5 Nov 2026): a family's absence note or a change to a learner's details, and the office's reply
+    if (fresh.some((n) => ['absence_report', 'absence_reply', 'record'].includes(n.kind))) invalidate('absences', 'office-day', 'child-absences', 'record', 'student-records', 'register:');
     // a payment came through (card or mobile money): the plan and what's open follow straight away
     if (fresh.some((n) => n.kind === 'plan')) {
       app.refreshMe?.().catch(() => {});

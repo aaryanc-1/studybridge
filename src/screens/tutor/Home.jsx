@@ -9,6 +9,7 @@ import { useLookups } from '../shared/lookups.jsx';
 import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { useDueFor } from './Access.jsx';
 import { TodayLessons } from '../shared/School.jsx';
+import { HomeroomRegisters } from '../shared/Office.jsx';
 
 function greeting() {
   const h = new Date().getHours();
@@ -431,6 +432,7 @@ export default function Home() {
         ))}
       </div>
 
+      <HomeroomRegisters />
       <TodayLessons staff />
 
       {manager && (

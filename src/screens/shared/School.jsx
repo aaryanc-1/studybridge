@@ -11,6 +11,7 @@ import * as api from '../../lib/api.js';
 import { colorFor, day, time, ymd } from '../../lib/format.js';
 import { SessionForm } from './Live.jsx';
 import { LEARNER_PROFILE } from '../../lib/core.js';
+import { PARTS, REASONS } from '../../lib/office.js';
 
 export const STATUS = { present: 'Present', late: 'Late', absent: 'Absent', excused: 'Excused' };
 const addDays = (d, n) => {
@@ -25,7 +26,8 @@ const roomText = (r) => (r ? (/^\d/.test(r) ? `Room ${r}` : r) : '');
 const nowHM = () => new Date().toTimeString().slice(0, 5);
 // 95% and up is good; under 90% is the usual line for "missing a lot"
 export const pctTone = (p) => (p == null ? '' : p >= 95 ? 'good' : p >= 90 ? 'warn' : 'bad');
-const registerPath = (x) => (x.kind === 'live' ? `/register/live/${x.id}` : `/register/lesson/${x.id}/${x.day}`);
+// a lesson's register, a live lesson's, or (5 Nov 2026) a homeroom's daily one ('am' or 'pm')
+const registerPath = (x) => (x.kind === 'live' ? `/register/live/${x.id}` : `/register/${x.kind || 'lesson'}/${x.id}/${x.day}`);
 const planPath = (x) => `/plan/${x.kind}/${x.id}/${x.day}`;
 // a lesson someone else covers (its register is theirs to take), or one that's cancelled
 const notMine = (x) => x.cancelled || !!x.covered_by;
@@ -368,7 +370,8 @@ export function RegisterPage({ kind, id, day: onDay }) {
   const [busy, setBusy] = useState(false);
   const [giving, setGiving] = useState(null);
   useEffect(() => {
-    if (r && !marks) setMarks(Object.fromEntries(r.learners.map((l) => [l.id, { status: l.status || '', minutes_late: l.minutes_late ?? '', note: l.note || '' }])));
+    // someone a parent said would be away starts as excused (absent if the school didn't accept it), until saved
+    if (r && !marks) setMarks(Object.fromEntries(r.learners.map((l) => [l.id, { status: l.status || l.suggest || '', minutes_late: l.minutes_late ?? '', note: l.note || '' }])));
   }, [r, marks]);
   const changed = (l) => {
     const m = marks?.[l.id];
@@ -409,7 +412,7 @@ export function RegisterPage({ kind, id, day: onDay }) {
     <Page
       eyebrow={
         <>
-          <Link to="/timetable">Timetable</Link> <Icon name="right" size={14} />
+          {kind === 'am' || kind === 'pm' ? <Link to="/">Homeroom</Link> : <Link to="/timetable">Timetable</Link>} <Icon name="right" size={14} />
         </>
       }
       title={r.title}
@@ -436,6 +439,19 @@ export function RegisterPage({ kind, id, day: onDay }) {
                   <span className="grow">
                     <span className="name">{l.name}</span>
                     {l.by_joining && l.joined_at && <span className="meta">Came in at {time(l.joined_at)}</span>}
+                    {l.reported && (
+                      <span className="small reg-told">
+                        <Icon name="info" size={13} /> {l.reported.by ? `${l.reported.by}: ` : ''}
+                        {REASONS[l.reported.reason]}
+                        {l.reported.part !== 'day' ? ` (${PARTS[l.reported.part].toLowerCase()}${l.reported.at_time ? ` ${l.reported.part === 'late' ? 'until' : 'from'} ${l.reported.at_time}` : ''})` : ''}
+                        {l.reported.status === 'not_accepted' ? ' · not accepted' : ''}
+                      </span>
+                    )}
+                    {l.alert && (
+                      <span className="small reg-told" style={{ color: 'var(--amber-ink)' }}>
+                        <Icon name="alert" size={13} /> {l.alert}
+                      </span>
+                    )}
                   </span>
                   <span className="reg-pick" role="group" aria-label={`${l.name}: present, late, absent or excused`}>
                     {Object.keys(STATUS).map((s) => (
@@ -671,7 +687,8 @@ export function AttendanceCard({ learnerId, name, staff = false }) {
   const [all, setAll] = useState(false);
   const a = q.data;
   if (!a) return staff ? <div className="card">{q.error ? <div className="error">{q.error.message}</div> : <Loading />}</div> : null;
-  if (!a.lessons && !staff) return null;
+  const days = a.days; // the daily (homeroom) register, when the school takes one
+  if (!a.lessons && !days && !staff) return null;
   const first = (name || '').split(' ')[0];
   const notable = a.records.filter((r) => all || r.status !== 'present');
   const places = new Set(a.records.map((r) => r.place)).size > 1;
@@ -679,19 +696,38 @@ export function AttendanceCard({ learnerId, name, staff = false }) {
     <div className="card">
       <div className="card-head">
         <h2>Attendance</h2>
-        {a.pct != null && <span className={'pill ' + pctTone(a.pct)}>{a.pct}% of lessons</span>}
+        <span className="row wrap" style={{ gap: 6 }}>
+          {days?.pct != null && <span className={'pill ' + pctTone(days.pct)}>{days.pct}% of school days</span>}
+          {a.pct != null && <span className={'pill ' + pctTone(a.pct)}>{a.pct}% of lessons</span>}
+        </span>
       </div>
-      {a.lessons === 0 ? (
+      {a.lessons === 0 && !days ? (
         <div className="small muted">No registers yet. Registers from {first}’s lessons show here, in person and live.</div>
       ) : (
         <>
-          <div className="kpi">
-            <Stat n={a.present} l="Present" />
-            <Stat n={a.late} l="Late" />
-            <Stat n={a.absent} l="Absent" />
-            <Stat n={a.excused} l="Excused" />
-          </div>
-          <div className="small muted">The last four months. Late still counts as there; excused lessons don’t count either way.</div>
+          {days && (
+            <>
+              {a.lessons > 0 && <div className="tiny strong muted">School days (the daily register)</div>}
+              <div className="kpi">
+                <Stat n={days.present} l="Present" />
+                <Stat n={days.late} l="Late" />
+                <Stat n={days.absent} l="Absent" />
+                <Stat n={days.excused} l="Excused" />
+              </div>
+            </>
+          )}
+          {a.lessons > 0 && (
+            <>
+              {days && <div className="tiny strong muted">Lessons</div>}
+              <div className="kpi">
+                <Stat n={a.present} l="Present" />
+                <Stat n={a.late} l="Late" />
+                <Stat n={a.absent} l="Absent" />
+                <Stat n={a.excused} l="Excused" />
+              </div>
+            </>
+          )}
+          <div className="small muted">The last four months. Late still counts as there; excused {days ? 'times' : 'lessons'} don’t count either way.</div>
           {notable.length > 0 && (
             <div className="list">
               {notable.slice(0, all ? 200 : 8).map((r) => (

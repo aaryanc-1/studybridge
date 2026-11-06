@@ -1237,7 +1237,7 @@ try {
   await A.reload();
   await A.getByRole('heading', { name: 'Teachers waiting for you' }).waitFor();
   await shot(A, 'school-teacher-waiting');
-  await A.getByRole('button', { name: 'Let Kunda Sakala in' }).click();
+  await A.getByRole('button', { name: 'Let Kunda Sakala in as a teacher' }).click();
   await A.getByText('Kunda Sakala is in').waitFor();
   assert.equal((await srv.db.query(`select status from public.profiles where email = 'kunda@brightminds.test'`)).rows[0].status, 'active');
   await srv.db.query(`update public.platform_secrets set resend_key = null where id = 1`);
@@ -1744,6 +1744,106 @@ try {
   await shot(PB, 'transcript');
   await a11y(PB, 'A transcript');
   await PB.close();
+
+  step('School office basics: the manager makes Tom head of Anaya’s year and Year 10 maths a homeroom; her dad says she’ll be away this morning, so the morning register starts her as excused and nobody tells him she’s missing; the office accepts it, keeps her details, and her dad adds to them');
+  await srv.db.query(`update public.profiles set grade = 9 where email = 'anaya@example.com' and grade is null`);
+  const anayaGrade = (await srv.db.query(`select grade from public.profiles where email = 'anaya@example.com'`)).rows[0].grade;
+  const gradeName = `Grade ${anayaGrade} (Year ${anayaGrade + 1})`;
+  await A.goto(web.url + '#/settings?s=org');
+  await A.locator('#set-org .item', { hasText: 'Tom Phiri' }).getByRole('button', { name: 'Tom Phiri’s role' }).click();
+  const roleBox = A.getByRole('dialog', { name: 'Tom Phiri’s role' });
+  await roleBox.getByRole('button', { name: gradeName }).click();
+  await shot(A, 'staff-role');
+  await a11y(A, 'A staff member’s role');
+  await roleBox.getByRole('button', { name: 'Save' }).click();
+  await A.locator('#set-org .item', { hasText: 'Tom Phiri' }).getByText(`Head of ${gradeName}`).waitFor();
+  // Year 10 maths takes the daily register now
+  await nav(A, 'Office').click();
+  await A.getByRole('heading', { name: 'Office' }).waitFor();
+  await A.getByRole('button', { name: 'Homerooms' }).click();
+  await A.getByRole('switch', { name: 'Year 10 maths', exact: true }).click();
+  await A.getByText('Year 10 maths takes the daily register now').waitFor();
+  // her dad: she has a temperature, so she'll be in later
+  const PO = await (await browser.newContext({ viewport: { width: 390, height: 820 }, isMobile: true, hasTouch: true, timezoneId: 'America/New_York' })).newPage();
+  watch(PO, 'parent (absence)');
+  await (await import('./sweep.mjs')).signIn(PO, web.url, 'dad@example.com');
+  await PO.getByRole('button', { name: 'Tell them Anaya will be away' }).click();
+  const away = PO.getByRole('dialog', { name: 'Anaya will be away' });
+  await away.getByRole('button', { name: 'The morning' }).click();
+  await away.getByLabel('Why').selectOption('ill');
+  await away.getByLabel('Anything they should know').fill('A temperature this morning');
+  await shot(PO, 'report-absence');
+  await a11y(PO, 'Telling them she’ll be away');
+  await away.getByRole('button', { name: 'Send' }).click();
+  await PO.locator('.absence-item', { hasText: 'A temperature this morning' }).getByText('Waiting').waitFor();
+  const centreName = (await srv.db.query(`select o.name from public.organisations o join public.org_members m on m.org_id = o.id join public.profiles p on p.id = m.user_id where p.email = 'aaryan@example.com'`)).rows[0].name;
+  const dadAbsent = async () => (await srv.db.query(`select count(*)::int n from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'dad@example.com' and n.kind = 'absence'`)).rows[0].n;
+  const toldBefore = await dadAbsent();
+  // the morning register: Anaya starts as excused, with what her dad said
+  await nav(A, 'Home').click();
+  await A.getByRole('heading', { name: 'Homeroom registers' }).waitFor();
+  await A.locator('.card', { hasText: 'Homeroom registers' }).getByRole('button', { name: /^Morning register/ }).click();
+  await A.getByRole('heading', { name: 'Year 10 maths' }).waitFor();
+  const hrAnaya = A.locator('.reg-row', { hasText: 'Anaya' });
+  await hrAnaya.getByText('Dad: Ill (the morning)').waitFor();
+  assert.equal(await hrAnaya.getByRole('button', { name: 'Excused' }).getAttribute('aria-pressed'), 'true');
+  await A.getByRole('button', { name: 'Everyone else is here' }).click();
+  await shot(A, 'homeroom-register');
+  await a11y(A, 'A homeroom register');
+  await A.getByRole('button', { name: 'Save the register' }).click();
+  await A.getByRole('button', { name: 'Save changes' }).waitFor();
+  assert.equal(await dadAbsent(), toldBefore, 'he told them about this morning, so nobody tells him');
+  // the office's day, then the absence: accepted, and her dad hears
+  await nav(A, 'Office').click();
+  await A.getByRole('heading', { name: 'Not in' }).waitFor();
+  await A.locator('.card', { hasText: 'Families told us about today' }).getByText('A temperature this morning').waitFor();
+  await shot(A, 'office-today');
+  await a11y(A, 'The office’s day');
+  await A.getByRole('button', { name: 'Absences' }).click();
+  await A.getByRole('button', { name: /^Accept Anaya/ }).click();
+  const decide = A.getByRole('dialog');
+  await decide.getByLabel('A reply (if you like)').fill('Get well soon, Anaya.');
+  await decide.getByRole('button', { name: 'Accept', exact: true }).click();
+  await A.locator('.absence-item', { hasText: 'A temperature this morning' }).getByText('Accepted').waitFor();
+  const replied = await srv.db.query(`select n.title from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'dad@example.com' and n.kind = 'absence_reply'`);
+  assert.equal(replied.rows.length, 1);
+  // her details: the office adds an allergy and a contact; teachers see what they need to know
+  await A.getByRole('button', { name: 'Students' }).click();
+  await A.getByRole('link', { name: /Anaya/ }).first().click();
+  await A.getByRole('button', { name: 'Change details' }).click();
+  const det = A.getByRole('dialog');
+  await det.getByLabel('Allergies').fill('Peanuts');
+  await det.getByRole('button', { name: 'Add a contact' }).click();
+  await det.getByRole('group', { name: 'Contact 1' }).getByLabel('Name').fill('Dad');
+  await det.getByRole('group', { name: 'Contact 1' }).getByLabel('Phone').fill('+1 555 0100');
+  await det.getByLabel('Office note').fill('Spare inhaler in the office');
+  await shot(A, 'student-details');
+  await a11y(A, 'A learner’s details');
+  await det.getByRole('button', { name: 'Save' }).click();
+  await A.getByText('Spare inhaler in the office').waitFor();
+  await shot(A, 'student-page');
+  await a11y(A, 'A student’s page');
+  // her dad checks them and adds how she gets home; the office never shows him its own note
+  await PO.reload();
+  await PO.getByRole('heading', { name: 'Anaya’s details' }).waitFor();
+  await PO.locator('.card', { hasText: 'Anaya’s details' }).getByText('Peanuts').waitFor();
+  assert.equal(await PO.getByText('Spare inhaler in the office').count(), 0);
+  await PO.locator('.rec-place', { hasText: centreName }).getByRole('button', { name: 'Check and update' }).click();
+  await PO.getByRole('dialog').getByLabel('Going home').fill('Collected by her dad');
+  await PO.getByRole('dialog').getByRole('button', { name: 'Send' }).click();
+  await PO.locator('.card', { hasText: 'Anaya’s details' }).getByText('Collected by her dad').waitFor();
+  await shot(PO, 'parent-details');
+  await PO.close();
+  const heard = await srv.db.query(`select n.body from public.notifications n join public.profiles p on p.id = n.user_id where p.email = 'aaryan@example.com' and n.kind = 'record'`);
+  assert.deepEqual(heard.rows.map((r) => r.body), ['Changed: going home.']);
+  // Tom, head of her year, finds Office in his menu with his year in it
+  const TO = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/New_York' })).newPage();
+  watch(TO, 'head of year');
+  await (await import('./sweep.mjs')).signIn(TO, web.url, 'tom@example.com');
+  await nav(TO, 'Office').click();
+  await TO.getByRole('button', { name: 'Students' }).click();
+  await TO.getByRole('link', { name: /Anaya/ }).first().waitFor();
+  await TO.close();
 
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });

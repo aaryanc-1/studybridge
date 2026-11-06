@@ -2485,7 +2485,7 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   const ov = await val(G, `select org_overview()`);
   assert.deepEqual(ov.learners.map((l) => l.name), ['Amara Phiri', 'Chipo Banda', 'Kofi Mensah', 'Mwila Zulu', 'Natasha Mwale', 'Tendai Moyo']);
   assert.deepEqual(ov.tutors.map((t) => [t.name, t.learners]), [['Grace Mwansa', 0], ['Daniel Okafor', 2], ['Joseph Lungu', 2], ['Mercy Tembo', 2]]);
-  assert.ok(ov.learners.every((l) => l.classes.length === 1 && l.subjects.length === 1));
+  assert.ok(ov.learners.every((l) => l.classes.length === 2 && l.subjects.length === 1), 'a class and a homeroom each');
   // Chipo: the class's homework (marked and back), its notes, a weekly lesson, her mock grade, a message
   const L1 = await open('learner1');
   const hw = await one(L1, `select id, learner_ids from assignments where title = 'Simultaneous equations'`);
@@ -2522,8 +2522,17 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   // report polish: Riverside's look on Chipo's Term 1 report, and her transcript
   const ct = await val(L1, `select transcript($1)`, [ids.learner1]);
   assert.deepEqual([ct.brand.name, ct.brand.head_name, ct.terms.map((x) => x.title), ct.rows[0].grades[ct.terms[0].id]], ['Riverside Tuition (demo)', 'Grace Mwansa', ['Term 1 report'], 'A']);
+  // school office basics: homerooms with a morning register, what the office keeps, and Ruth's note about the dentist
+  const od = await val(G, `select office_day(current_date - 1)`);
+  assert.deepEqual(od.homerooms.map((h) => h.name), ['Form 10M', 'Form 11D', 'Form 9L']);
+  assert.deepEqual((await val(G, `select absence_list()`)).filter((r) => r.status === 'waiting').map((r) => [r.learner, r.part, r.at_time]), [['Chipo Banda', 'late', '10:30']]);
+  const recs = await val(G, `select student_records()`);
+  assert.deepEqual(recs.learners.filter((l) => l.allergies || l.support || l.medical).map((l) => l.name), ['Chipo Banda', 'Amara Phiri', 'Kofi Mensah']);
+  assert.ok((await val(L1, `select learner_attendance($1)`, [ids.learner1])).days.excused >= 1, 'off ill, and her mum said so');
   // Daniel has Amara's quiz to mark
   const T = await open('tutor2');
+  assert.deepEqual((await val(T, `select my_org()`)).years, [10], 'head of Year 11');
+  assert.deepEqual((await val(T, `select student_records()`)).learners.map((l) => l.name), ['Amara Phiri', 'Kofi Mensah']);
   assert.equal((await as(T, `select id from attempts where status = 'submitted'`)).length, 1);
   // Joseph nudges Year 9 about the homework nobody has started: both are told, once in 12 hours; only posted work
   const J = await open('tutor3');
@@ -4548,4 +4557,176 @@ test('report polish: a place’s own look on its reports, a layout and sections 
   await fails(as('RB', `select transcript($1)`, [U.RA]), /can’t see this transcript/);
   await fails(as('RX', `select transcript($1)`, [U.RA]), /can’t see this learner’s transcript/);
   await fails(as('RA', `select transcript($1, $2)`, [U.RA, U.RX]), /hasn’t sent you a report/);
+});
+
+test('school office basics: the office and heads of year, student records, daily homeroom registers, and absences parents report', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['OM', 'OT1', 'OT2', 'OF', 'OX', 'OPT']) {
+    await mk(k, k.toLowerCase() + '@office.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const join = async (tutor, k) => {
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  };
+  for (const k of ['OA', 'OB']) {
+    await mk(k, k.toLowerCase() + '@office.x');
+    await join('OT1', k);
+  }
+  await db.query(`update profiles set grade = 9 where id = $1`, [U.OA]);
+  await db.query(`update profiles set grade = 10 where id = $1`, [U.OB]);
+  await join('OPT', 'OA'); // OA also has a private tutor
+  await mk('OP', 'op@office.x');
+  const inv = await one('OT1', `select * from create_parent_invite($1, 'Mum')`, [U.OA]);
+  await one('OP', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [inv.code]);
+  const centre = await val('OM', `select org_make_centre('Lakeside School')`);
+  for (const k of ['OT1', 'OT2', 'OF']) await val(k, `select org_join($1)`, [centre.code]);
+  const org = centre.id;
+  await as('OM', `select set_school_timezone('UTC')`);
+
+  // roles: the office, and a head of year (only a manager sets them)
+  await fails(as('OT1', `select org_set_role($1, 'office')`, [U.OF]), /Only the manager/);
+  await val('OM', `select org_set_role($1, 'office')`, [U.OF]);
+  await fails(as('OM', `select org_set_years($1, $2)`, [U.OT2, [20]]), /Grade 1 to Grade 13/);
+  const mo = await val('OM', `select org_set_years($1, $2)`, [U.OT2, [9, 9]]);
+  assert.deepEqual(mo.members.find((m) => m.id === U.OT2).years, [9]);
+  assert.deepEqual([(await val('OF', `select my_org()`)).role, (await val('OT2', `select my_org()`)).years], ['office', [9]]);
+  assert.deepEqual((await as('OT2', `select title from notifications where kind = 'org' order by created_at desc limit 1`)).map((n) => n.title), ['You’re head of year now']);
+  // the office never shows as a teacher to pick; it sees the centre and arranges cover
+  assert.ok(!(await val('OM', `select school_setup()`)).teachers.some((t) => t.id === U.OF));
+  assert.ok((await val('OF', `select org_overview()`)).learners.length >= 2);
+  await val('OF', `select cover_day()`);
+  await fails(as('OT1', `select cover_day()`), /Only a manager or the office/);
+  // a school-email sign-up let in as the office
+  await as('A', `select admin_set_school_domains($1, $2)`, [org, ['lakeside.edu']]);
+  await mk('OW', 'ow@lakeside.edu');
+  await one('OW', `select * from become_tutor('OW', 'UTC')`);
+  await fails(as('OM', `select org_approve_teacher($1, true, 'admin')`, [U.OW]), /teacher or as the office/);
+  await as('OM', `select org_approve_teacher($1, true, 'office')`, [U.OW]);
+  assert.equal((await val('OW', `select my_org()`)).role, 'office');
+
+  // a homeroom with two daily registers (the office sets them up); a lesson on today's weekday makes today a school day
+  const ninea = await val('OM', `select save_class(null, '9A', null, $1, $2)`, [[U.OA, U.OB], [U.OT1]]);
+  await fails(as('OT1', `select set_homeroom($1, true)`, [ninea]), /Only a manager or the office/);
+  await as('OF', `select set_homeroom($1, true)`, [ninea]);
+  await fails(as('OF', `select set_daily_registers(2, '13:00', '09:00')`), /comes after the morning/);
+  await as('OF', `select set_daily_registers(2, '08:30', '13:30')`);
+  const hs = await val('OF', `select homeroom_setup()`);
+  assert.deepEqual([hs.can_edit, hs.daily_registers, hs.classes.find((c) => c.id === ninea).homeroom], [true, 2, true]);
+  await as('OM', `select save_periods($1)`, [JSON.stringify([{ name: 'P1', starts: '00:00', ends: '00:30' }])]);
+  const p1 = (await val('OM', `select school_setup()`)).periods[0].id;
+  const today = (await db.query(`select public._school_today($1)::text d`, [org])).rows[0].d;
+  const dow = (await db.query(`select extract(isodow from $1::date)::int d`, [today])).rows[0].d;
+  await val('OM', `select save_slot(null, $1, $2, $3)`, [ninea, dow, p1]);
+
+  // records: the office keeps everything; a teacher sees what they need to know; a parent keeps it up to date
+  await fails(as('OT1', `select save_student_record($1, $2, '{"allergies": "x"}')`, [U.OA, org]), /can’t change/);
+  let rec = await val('OF', `select save_student_record($1, $2, $3)`, [U.OA, org, JSON.stringify({
+    allergies: 'Peanuts', student_no: 'L-104', office_note: 'Inhaler kept in the office', contacts: [{ name: 'Mum', relation: 'Mother', phone: '0977 123' }] })]);
+  assert.deepEqual([rec.view, rec.record.allergies, rec.record.office_note, rec.record.contacts.length], ['office', 'Peanuts', 'Inhaler kept in the office', 1]);
+  await fails(as('OF', `select save_student_record($1, $2, $3)`, [U.OA, org, JSON.stringify({ contacts: [{ name: 'Gran' }] })]), /phone number or an email for Gran/);
+  await fails(as('OF', `select save_student_record($1, $2, $3)`, [U.OA, org, JSON.stringify({ contacts: Array(7).fill({ name: 'A', phone: '1' }) })]), /Up to 6/);
+  const teach = await val('OT1', `select student_record($1)`, [U.OA]);
+  assert.deepEqual([teach.view, teach.record.allergies, 'office_note' in teach.record, 'address' in teach.record, teach.can_edit], ['teacher', 'Peanuts', false, false, false]);
+  await fails(as('OX', `select student_record($1)`, [U.OA]), /can’t see this learner’s details/);
+  const mum = await val('OP', `select student_record($1, $2)`, [U.OA, org]);
+  assert.deepEqual([mum.view, 'office_note' in mum.record, mum.can_edit, mum.place], ['parent', false, true, 'Lakeside School']);
+  await fails(as('OP', `select save_student_record($1, $2, '{"office_note": "hi"}')`, [U.OA, org]), /The school keeps that part/);
+  await val('OP', `select save_student_record($1, $2, $3, $4)`, [U.OA, org, JSON.stringify({
+    address: '4 Lake Road', contacts: [{ name: 'Mum', relation: 'Mother', phone: '0977 123', collect: true }, { name: 'Dad', email: 'dad@x.y' }] }), [U.OPT]]);
+  const fromMum = await as('OF', `select title, body from notifications where kind = 'record'`);
+  assert.deepEqual(fromMum.map((n) => n.title), ['Mum updated OA’s details']);
+  assert.match(fromMum[0].body, /^Changed: address, contacts\.$/);
+  assert.equal((await as('OM', `select 1 from notifications where kind = 'record'`)).length, 0, 'the office hears, not the manager');
+  const tutorOwn = await val('OPT', `select student_record($1)`, [U.OA]);
+  assert.deepEqual([tutorOwn.view, tutorOwn.record.address, tutorOwn.record.allergies], ['office', '4 Lake Road', null], 'sent to her tutor too; the school’s own parts stay with the school');
+  assert.deepEqual((await val('OP', `select child_records($1)`, [U.OA])).map((r) => r.place).sort(), ['Lakeside School', 'OPT']);
+  rec = await val('OF', `select student_record($1)`, [U.OA]);
+  assert.deepEqual([rec.history[0].by_parent, rec.history[0].fields, rec.parents.map((p) => p.name)], [true, ['address', 'contacts'], ['Mum']]);
+  const list = await val('OF', `select student_records()`);
+  assert.deepEqual(list.learners.map((l) => [l.name, l.allergies, l.contacts]), [['OA', true, 2], ['OB', false, 0]]);
+  assert.deepEqual((await val('OT2', `select student_records()`)).learners.map((l) => l.name), ['OA'], 'a head of year: theirs');
+  await fails(as('OT1', `select student_records()`), /Only the office, managers and heads of year/);
+  assert.equal((await val('OT2', `select student_record($1)`, [U.OA])).view, 'office', 'the head of her year');
+  assert.equal((await val('OA', `select export_my_data()`)).school_records.length, 2);
+
+  // a parent says she'll be away this morning: every register at that place shows it, and nobody tells her it happened
+  await fails(as('OB', `select report_absence($1, $2::date)`, [U.OA, today]), /Only a parent/);
+  await fails(as('OX', `select report_absence($1, $2::date)`, [U.OA, today]), /Only the office/);
+  await fails(as('OP', `select report_absence($1, $2::date, null, 'late')`, [U.OA, today]), /what time/);
+  await fails(as('OP', `select report_absence($1, $2::date, $2::date - 1)`, [U.OA, today]), /before the first/);
+  assert.equal(await val('OP', `select report_absence($1, $2::date, null, 'am', 'ill', 'A temperature', null, $3)`, [U.OA, today, [org]]), 1);
+  const heard = async (k) => (await as(k, `select title from notifications where kind = 'absence_report'`)).map((n) => n.title);
+  assert.equal((await heard('OF')).length, 1);
+  assert.match((await heard('OF'))[0], /^OA will be away on the morning of /);
+  assert.equal((await heard('OT2')).length, 1, 'the head of her year');
+  assert.equal((await heard('OT1')).length, 1, 'her homeroom teacher');
+  assert.equal((await heard('OM')).length, 0, 'the office has it');
+  assert.equal((await heard('OPT')).length, 0, 'not told: only the school was picked');
+  await fails(as('OX', `select register('am', $1, $2::date)`, [ninea, today]), /can’t take/);
+  let reg = await val('OT1', `select register('am', $1, $2::date)`, [ninea, today]);
+  const oa = () => reg.learners.find((l) => l.id === U.OA);
+  assert.deepEqual([reg.title, reg.when, oa().reported.reason, oa().suggest, oa().alert], ['9A', 'Morning register · 08:30', 'ill', 'excused', 'Allergies']);
+  assert.equal((await val('OT2', `select register('am', $1, $2::date)`, [ninea, today])).learners.length, 2, 'her head of year can take it too');
+  await val('OT1', `select save_register('am', $1, $2::date, $3)`, [ninea, today, JSON.stringify([{ learner: U.OA, status: 'absent' }, { learner: U.OB, status: 'present' }])]);
+  assert.equal((await as('OP', `select 1 from notifications where kind = 'absence'`)).length, 0, 'she told them, so she isn’t told');
+  assert.equal((await db.query(`select label from attendance where learner_id = $1 and part = 'am'`, [U.OA])).rows[0].label, '9A · morning register');
+  reg = await val('OT1', `select register('pm', $1, $2::date)`, [ninea, today]);
+  assert.deepEqual([reg.taken, oa().suggest], [false, null], 'the afternoon isn’t covered');
+  await fails(as('OT1', `select save_register('am', $1, $2::date + 1, '[]')`, [ninea, today]), /on the day|no school/);
+  const hr = await val('OT1', `select my_homerooms()`);
+  assert.deepEqual([hr.daily_registers, hr.homerooms.map((h) => [h.name, h.am.marked, h.pm.marked])], [2, [['9A', 2, 0]]]);
+  assert.deepEqual((await val('OT1', `select class_attendance($1)`, [ninea])).registers.map((r) => r.kind), ['am']);
+  const seen = await val('OP', `select learner_attendance($1)`, [U.OA]);
+  assert.deepEqual([seen.lessons, seen.days.sessions, seen.days.absent], [0, 1, 1]);
+
+  // the office's day: homerooms, who isn't in and why
+  const day = await val('OF', `select office_day()`);
+  assert.deepEqual([day.homerooms[0].am.absent, day.away.map((a) => [a.name, a.unexplained, a.report.reason, a.contact.name]), day.reported.length],
+    [1, [['OA', false, 'ill', 'Mum']], 1]);
+  assert.equal((await val('OT2', `select office_day()`)).learners, 1, 'the head of year sees their year');
+  await fails(as('OT1', `select office_day()`), /Only the office, managers and heads of year/);
+  const ov = await val('OF', `select attendance_overview()`);
+  assert.deepEqual([ov.basis, ov.lessons, ov.pct], ['days', 2, 50]);
+  const ov2 = await val('OT2', `select attendance_overview()`);
+  assert.deepEqual([ov2.pct, ov2.years], [0, [9]]);
+  await fails(as('OT1', `select attendance_overview()`), /Only a manager/);
+
+  // a future one goes to both places; the office accepts it and her mum hears; she takes another back
+  assert.equal(await val('OP', `select report_absence($1, $2::date + 7, $2::date + 8, 'day', 'medical', 'Dentist')`, [U.OA, today]), 2);
+  assert.equal((await heard('OPT')).length, 1);
+  let open = await val('OF', `select absence_list()`);
+  const dentist = open.find((r) => r.reason === 'medical');
+  assert.deepEqual([dentist.can_decide, dentist.status, dentist.by, dentist.place], [true, 'waiting', 'Mum', 'Lakeside School']);
+  assert.equal((await val('OT1', `select absence_list()`)).find((r) => r.id === dentist.id).can_decide, false, 'her teacher reads it');
+  assert.deepEqual(await val('OX', `select absence_list()`), []);
+  await fails(as('OT1', `select decide_absence($1, 'accepted')`, [dentist.id]), /Only the office/);
+  await val('OF', `select decide_absence($1, 'accepted', 'Thanks for letting us know.')`, [dentist.id]);
+  const back = await as('OP', `select title, body from notifications where kind = 'absence_reply'`);
+  assert.deepEqual(back.map((n) => n.title), ['Lakeside School accepted OA’s absence']);
+  assert.match(back[0].body, /Thanks for letting us know\.$/);
+  const mine = await val('OP', `select child_absences($1)`, [U.OA]);
+  assert.equal(mine.length, 3);
+  const atTutor = mine.find((r) => r.place === 'OPT');
+  await val('OP', `select withdraw_absence($1)`, [atTutor.id]);
+  await fails(as('OPT', `select decide_absence($1, 'accepted')`, [atTutor.id]), /took this one back/);
+  assert.equal((await val('OA', `select child_absences()`)).find((r) => r.id === atTutor.id).status, 'withdrawn');
+  // the office notes a phone call: accepted already
+  await fails(as('OT1', `select report_absence($1, $2::date, null, 'late', 'medical', null, '10:30')`, [U.OB, today]), /Only the office/);
+  assert.equal(await val('OF', `select report_absence($1, $2::date, null, 'late', 'medical', 'Doctor', '10:30')`, [U.OB, today]), 1);
+  open = await val('OF', `select absence_list()`);
+  assert.deepEqual(open.filter((r) => r.learner === 'OB').map((r) => [r.status, r.by_parent, r.at_time]), [['accepted', false, '10:30']]);
+
+  // the app's words for the reasons are the database's
+  const { REASONS } = await import('../src/lib/office.js');
+  for (const [k, v] of Object.entries(REASONS)) assert.equal((await db.query(`select public._absence_reason($1) r`, [k])).rows[0].r, v, k);
+
+  // the office and her head of year read what her teachers do: attendance, term reports
+  assert.equal((await val('OF', `select learner_attendance($1)`, [U.OA])).days.sessions, 1);
+  assert.deepEqual(await val('OT2', `select my_reports($1)`, [U.OA]), []);
+  await fails(as('OX', `select my_reports($1)`, [U.OA]), /can’t see these reports/);
+  await fails(as('OT2', `select student_record($1)`, [U.OB]), /can’t see/);
 });

@@ -33,9 +33,13 @@ import TutorProjects from './ProjectsAdmin.jsx';
 import TermReports from './TermReports.jsx';
 import { TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
+import Office, { StudentPage, officeAccess } from './Office.jsx';
 
-function notificationTarget(n) {
+function notificationTarget(n, office) {
   const r = n.ref || {};
+  // the school office (5 Nov 2026): absences families report, and changes to a learner's details
+  if (n.kind === 'absence_report') return office ? '/office/absences' : '/timetable/attendance';
+  if (n.kind === 'record' && r.learner_id) return office ? `/student/${r.learner_id}` : `/learners/${r.learner_id}/details`;
   if ((n.kind === 'submitted' || n.kind === 'self_marked') && r.attempt_id) return `/marking/${r.attempt_id}`;
   if (n.kind === 'note' && r.learner_id) return `/messages/${r.learner_id}`;
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
@@ -70,11 +74,18 @@ export default function TutorApp() {
   // a tuition centre's managers get a Centre page: every tutor and learner in it
   const org = useQuery('org', api.myOrg).data;
   const manager = !!org && org.role === 'manager' && (org.kind === 'centre' || org.kind === 'school');
+  // the school office: its office and managers (everyone), heads of year (their years); office staff teach nobody, so
+  // their menu is just the office and the centre
+  const office = officeAccess(org);
+  const officeOnly = !!org && org.role === 'office' && (org.kind === 'centre' || org.kind === 'school');
   // IB core and the PYP: coordinators (a centre's or school's managers) and anyone supervising a project
   const coreOn = useQuery('core-on', api.coreOn).data;
 
   // every tutor has Timetable: their week with each lesson's register, and their learners' attendance and behaviour
-  const nav = [
+  const nav = officeOnly ? [
+    { to: '/', label: 'Office', icon: 'clipboard', also: ['/office', '/student', '/register', '/report', '/transcript'] },
+    { to: '/centre', label: 'Centre', icon: 'chart' },
+  ] : [
     { to: '/', label: 'Home', icon: 'home' },
     { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register', '/plan'] },
     { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
@@ -85,15 +96,19 @@ export default function TutorApp() {
     { to: '/live', label: 'Live', icon: 'video', also: ['/watch'] },
     ...(coreOn ? [{ to: '/projects', label: 'Projects', icon: 'flag' }] : []),
     { to: '/prof', label: 'Prof', icon: 'cap', count: draftCount, tone: 'claude', also: ['/claude'] },
+    ...(office ? [{ to: '/office', label: 'Office', icon: 'clipboard', also: ['/student'] }] : []),
     ...(manager ? [{ to: '/centre', label: 'Centre', icon: 'chart' }] : []),
     ...(app.me.admin_to_move ? [{ to: '/admin', label: 'Admin', icon: 'shield', count: 1 }] : []),
   ];
   const byTo = (to) => nav.find((x) => x.to === to);
-  const tabs = [byTo('/'), byTo('/assignments'), byTo('/marking'), byTo('/messages'), byTo('/learners')];
+  const tabs = officeOnly ? nav : [byTo('/'), byTo('/assignments'), byTo('/marking'), byTo('/messages'), byTo('/learners')];
 
   const [a, b, c] = route.parts;
   let page;
-  if (!a) page = <Home />;
+  if (officeOnly && (!a || a === 'office')) page = <Office tab={b} />;
+  else if (a === 'office' && office) page = <Office tab={b} />;
+  else if (a === 'student' && b && office) page = <StudentPage id={b} />;
+  else if (!a) page = <Home />;
   else if (a === 'learners' && b === 'classes' && c) page = <ClassPage id={c} tab={route.parts[3]} />;
   else if (a === 'learners' && b === 'classes') page = <Learners tab="classes" />;
   else if (a === 'learners' && b === 'school') page = <SchoolLearners />;
@@ -122,7 +137,7 @@ export default function TutorApp() {
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;
   else if (a === 'settings') page = <Settings />;
-  else if (a === 'centre' && manager) page = <Centre tab={b} />;
+  else if (a === 'centre' && (manager || officeOnly)) page = <Centre tab={b} />;
   else if (a === 'timetable' && b === 'setup')
     page = (
       <Page title="Set out lessons" subtitle="The school day, its terms and holidays, and each class’s lessons in the week.">
@@ -147,11 +162,11 @@ export default function TutorApp() {
         <LessonPlanPage kind={b} id={c} day={route.parts[3]} />
       </Page>
     );
-  else page = <Home />;
+  else page = officeOnly ? <Office /> : <Home />;
 
   return (
     <LookupsProvider tutor>
-      <Shell nav={nav} tabs={tabs} roleLabel="Tutor" notificationTarget={notificationTarget}>
+      <Shell nav={nav} tabs={tabs} roleLabel={officeOnly ? 'Office' : 'Tutor'} notificationTarget={(n) => notificationTarget(n, !!office)}>
         {page}
       </Shell>
     </LookupsProvider>

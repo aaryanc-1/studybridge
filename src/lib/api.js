@@ -176,6 +176,24 @@ export const reportProof = (roundId) => run(sb().rpc('report_proof', { p_round: 
 export const proofEntry = (roundId, classId, learnerId, action, { note = null, comment = null } = {}) =>
   run(sb().rpc('proof_entry', { p_round: roundId, p_class: classId, p_learner: learnerId, p_action: action, p_note: note, p_comment: comment }));
 export const transcript = (learnerId, orgId = null, predicted = false) => run(sb().rpc('transcript', { p_learner: learnerId, p_org: orgId, p_predicted: predicted }));
+// School office basics: the office and heads of year, each learner's record, homerooms' daily registers, absences parents report
+export const orgSetYears = (userId, years) => run(sb().rpc('org_set_years', { p_user: userId, p_years: years }));
+export const studentRecord = (learnerId, placeId = null) => run(sb().rpc('student_record', { p_learner: learnerId, p_place: placeId }));
+export const saveStudentRecord = (learnerId, placeId, fields, also = null) =>
+  run(sb().rpc('save_student_record', { p_learner: learnerId, p_place: placeId, p_fields: fields, p_also: also }));
+export const studentRecords = () => run(sb().rpc('student_records'));
+export const childRecords = (learnerId = null) => run(sb().rpc('child_records', { p_learner: learnerId }));
+export const homeroomSetup = () => run(sb().rpc('homeroom_setup'));
+export const setHomeroom = (classId, on) => run(sb().rpc('set_homeroom', { p_class: classId, p_on: on }));
+export const setDailyRegisters = (count, am = null, pm = null) => run(sb().rpc('set_daily_registers', { p_count: count, p_am: am, p_pm: pm }));
+export const myHomerooms = (day = null) => run(sb().rpc('my_homerooms', { p_day: day }));
+export const reportAbsence = (learnerId, { starts, ends = null, part = 'day', reason = 'ill', note = null, at = null, places = null }) =>
+  run(sb().rpc('report_absence', { p_learner: learnerId, p_starts: starts, p_ends: ends, p_part: part, p_reason: reason, p_note: note, p_at: at, p_places: places }));
+export const withdrawAbsence = (id) => run(sb().rpc('withdraw_absence', { p_id: id }));
+export const decideAbsence = (id, status, reply = null) => run(sb().rpc('decide_absence', { p_id: id, p_status: status, p_reply: reply }));
+export const absenceList = (which = 'open') => run(sb().rpc('absence_list', { p_which: which }));
+export const childAbsences = (learnerId = null) => run(sb().rpc('child_absences', { p_learner: learnerId }));
+export const officeDay = (day = null) => run(sb().rpc('office_day', { p_day: day }));
 // IB core (CAS, the Extended Essay, TOK, MYP projects, the PYP Exhibition) and the PYP
 export const coreOn = () => run(sb().rpc('core_on')).catch((e) => (e.offline ? Promise.reject(e) : false));
 export const coreCohorts = () => run(sb().rpc('core_cohorts'));
@@ -226,7 +244,7 @@ export const behaviourOverview = (from = null, to = null) => run(sb().rpc('behav
 export const myBehaviour = (from = null, to = null) => run(sb().rpc('my_behaviour', { p_from: from, p_to: to }));
 export const examUpdates = (attemptId) => run(sb().rpc('exam_updates', { p_attempt: attemptId }));
 export const orgWaitingTeachers = () => run(sb().rpc('org_waiting_teachers'));
-export const orgApproveTeacher = (userId, ok) => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok }));
+export const orgApproveTeacher = (userId, ok, role = 'tutor') => run(sb().rpc('org_approve_teacher', { p_user: userId, p_ok: ok, p_role: role }));
 export const exportMyData = () => run(sb().rpc('export_my_data'));
 export const deleteMyAccount = (confirm) => run(sb().rpc('delete_my_account', { p_confirm: confirm }));
 export const adminSelling = () => run(sb().rpc('admin_selling'));

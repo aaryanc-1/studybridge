@@ -74,7 +74,7 @@ function Overview() {
               <span className="grow">
                 <span className="row" style={{ gap: 8 }}>
                   <span className="name">{t.name}</span>
-                  <span className={'pill' + (t.role === 'manager' ? ' accent' : '')}>{t.role === 'manager' ? 'Manager' : 'Tutor'}</span>
+                  <span className={'pill' + (t.role === 'manager' ? ' accent' : '')}>{t.role === 'manager' ? 'Manager' : t.role === 'office' ? 'Office' : 'Tutor'}</span>
                 </span>
                 <span className="meta">
                   {count(t.learners, 'learner')} · {count(t.classes, 'class', 'classes')} · {t.to_mark} to mark · {t.last_seen_at ? `last here ${ago(t.last_seen_at)}` : 'not signed in yet'}

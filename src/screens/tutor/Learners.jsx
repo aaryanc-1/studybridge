@@ -11,6 +11,7 @@ import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import ProgressView from '../shared/Progress.jsx';
 import { AccessLine } from './Access.jsx';
 import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
+import { NeedToKnow, NeedToKnowLine } from '../shared/Office.jsx';
 
 // When a learner is paused for me: by me as their main tutor (on their account), or on the link if they added me
 function pausedFor(l, me, links) {
@@ -864,6 +865,7 @@ export function LearnerDetail({ id, tab = 'progress' }) {
             </span>
           )}
           <AccessLine id={id} first={first} />
+          <NeedToKnowLine learnerId={id} />
         </>
       }
       actions={
@@ -910,11 +912,14 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'work', label: `Work (${attempts.length})` },
           { value: 'study', label: 'Study' },
           { value: 'school', label: 'Attendance & behaviour' },
+          { value: 'details', label: 'Details' },
           ...(main ? [{ value: 'parents', label: 'Parents' }] : []),
         ]}
       />
       {tab === 'parents' ? (
         <ParentsPanel learner={l} />
+      ) : tab === 'details' ? (
+        <NeedToKnow learnerId={id} name={l.display_name} />
       ) : tab === 'school' ? (
         <>
           <AttendanceCard learnerId={id} name={l.display_name} staff />

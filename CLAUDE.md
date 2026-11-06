@@ -752,6 +752,44 @@ Website: schools.html "Term reports", features.html "Progress and reports", priv
 Run 108 failed (nothing released) the same way as 106: the walkthrough waited for an "Anaya’s part is finished" pop-up that an
 earlier one already satisfied; it now waits for the part's own "Finished" mark. In walkthrough steps, wait for something on the page
 that only the new save can make, never a pop-up's words.
+School office basics (5 Nov 2026, app VERSION; Aaryan: "go", step 4 of the order for schools). Roles: `org_members.role` manager|tutor|office
+and `org_members.years` (int[] of grades: head of year, any member). `_org_office(org)` = an active manager or office member of a centre or
+school; `_my_years()`; `_school_learner_ids(org)` (paused and school sign-ups too); `_looks_after(learner)` = the office/managers of their
+school, or the head of their year; `_can_arrange` now includes `_looks_after` (access arrangements, attendance, behaviour, timetable,
+Learner Profile notes for them), and report_card/my_reports/transcript let them read. `org_set_role(user, 'office')`, `org_set_years(user,
+years)` (managers; the person is told), `org_approve_teacher(user, ok, role)` (a school-email sign-up let in as teacher or office). The office
+gets only Office and Centre in its menu (TutorApp `officeOnly`; Centre overview, cover, timetable read-only) and is never a teacher to pick
+(school_setup/cover_day lists skip it). Records: `student_records` (place_id = `_place_of` the staff, learner; student number, the name they go
+by, birth date, home language, address, `contacts` [{name, relation, phone, email, collect}] up to 6 in calling order, allergies, medical,
+dietary, doctor, support, photos, going_home, office_note) and `student_record_changes` (last 50). `_record_view(place, learner)`: 'office'
+(`_looks_after`, or a tutor on their own with their own learner), 'teacher' (`_teaches` at that place: `_record_json` gives only what teachers
+need: contacts, allergies, health, diet, support, photos, going home), 'parent' (all but the office note; they change all but the student
+number and office note, and can send the same to other places with `p_also`), 'learner' (read). `student_record`, `save_student_record`
+(only the parts given; a parent's change tells `_office_people`: the office, else managers, plus the head of the year; a tutor on their own),
+`student_records()` (office list with flags), `child_records(learner)` (every place, `_places_of`, never StudyBridge's own). Homerooms:
+`classes.homeroom`, `organisations.daily_registers` (1 or 2) / `am_at` / `pm_at` (`homeroom_setup`, `set_homeroom`, `set_daily_registers`:
+the office or managers). Daily registers are `attendance.part` 'am'|'pm' rows (class_id = the homeroom; unique per place+learner+day+part,
+`attendance_daily`); `register('am'|'pm', class, day)` and `save_register` take them (the homeroom's teachers, the office, the head of a year in
+it; `_school_day`: open and a weekday, or a weekday with lessons); `_on_register(a, kind, ref, day)` matches rows to a register.
+`learner_attendance` counts lessons (`part is null`) and gives `days` for the daily ones; `attendance_overview` counts school days when
+the school has homerooms (`basis` 'days'|'lessons'; heads of year: their years), `class_attendance` lists am/pm registers, `my_homerooms(day)`
+for a teacher's Home/Timetable. Absences: `absence_reports` (place, learner, by, by_parent, starts/ends (≤ 60 days), part day|am|pm|late|early,
+at_time, reason ill|medical|family|religious|holiday|other (`_absence_reason` = REASONS in src/lib/office.js; db.test checks), note, status
+waiting|accepted|not_accepted|withdrawn, reply). `report_absence(learner, starts, ends, part, reason, note, at, places)`: a parent (to every
+place or the ones picked; 14 days back at most, 30 a day) → `_absence_tell` (the office people and the homeroom's teachers); the office (or
+a head of year, or a tutor on their own) notes a call: accepted already. `decide_absence(id, status, reply)` tells the parents;
+`withdraw_absence` (the parent); `absence_list('open'|'past')` (staff at their place: decide when 'office', read when teacher);
+`child_absences(learner)`. Registers show `reported` and suggest (`_absence_suggest`: excused, or absent if not accepted, for the parts
+covered) a status the page fills in until saved, plus an `alert` (allergies, health, learning support from the record); `_absence_check`
+tells nobody about an absence someone reported. `office_day(day)`: homerooms' am/pm counts, who isn't in (with the report, or
+"unexplained" and the first contact), late, reported. UI: src/screens/tutor/Office.jsx (`/office/:tab` Today, Absences, Students,
+Attendance, Behaviour, Homerooms (office/managers); `StudentPage` at `/student/:id`; `officeAccess(org)`), src/screens/shared/Office.jsx
+(`RecordView`, `RecordEditor`, `NeedToKnow` (learner page → Details tab) and `NeedToKnowLine`, `ReportAbsence`, `AbsenceItem`, `Decide`,
+`FamiliesToldUs` (Timetable → Attendance), `ChildAbsences` and `ChildRecords` (parent's This week), `MyRecords` (learner Settings → Your
+details), `HomeroomRegisters` (Home and Timetable), `YearPicker`), Settings → Your organisation → Role (`StaffRole`) and "In the office" for
+waiting teachers. The data export has `school_records` and `absences_reported`. Demo: homerooms Form 10M/11D/9L with two weeks of morning
+registers, Daniel head of Grade 10, records for Chipo, Amara and Kofi, Ruth's accepted "ill" and a waiting dentist note. Website:
+schools.html "The school office", parents.html and features.html (say they'll be away), privacy.html (records, absences, the office).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

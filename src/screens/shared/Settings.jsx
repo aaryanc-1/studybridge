@@ -20,6 +20,8 @@ import { PayOptions } from '../learner/SelfStudy.jsx';
 import MobileMoney from './MobileMoney.jsx';
 import { SetUpChild, AddWithCode } from '../parent/ChildCodes.jsx';
 import site from '../../../website/site.config.json';
+import { ROLES, yearName } from '../../lib/office.js';
+import { MyRecords, YearPicker } from './Office.jsx';
 
 export default function Settings() {
   const app = useApp();
@@ -49,6 +51,11 @@ export default function Settings() {
       {isLearner && <LinkedParents />}
       {isLearner && !isStudent && <YourPlaces />}
       {isLearner && !isStudent && <MyAccess />}
+      {isLearner && !isStudent && (
+        <Section id="details" icon="user" title="Your details" sub="Contacts, health, learning support and photos, as your schools and tutors have them.">
+          <MyRecords />
+        </Section>
+      )}
       {isLearner && !isStudent && <ParentReportsSetting />}
       {isLearner && <LearnerNotifications />}
       {isLearner && <StudyReminder />}
@@ -211,13 +218,13 @@ function WaitingTeachers() {
   const q = useQuery('org-waiting-teachers', api.orgWaitingTeachers);
   const list = q.data || [];
   if (!list.length) return null;
-  async function decide(t, ok) {
+  async function decide(t, ok, role = 'tutor') {
     if (!ok && !(await confirm({ title: `${t.name} isn’t one of your teachers?`, body: 'They won’t join your school. StudyBridge looks at their account instead.', ok: 'Not one of ours' }))) return;
     try {
-      await api.orgApproveTeacher(t.id, ok);
+      await api.orgApproveTeacher(t.id, ok, role);
       q.refresh();
       invalidate('org', 'org-overview');
-      toast(ok ? `${t.name} is in` : `${t.name} isn’t in your school`);
+      toast(ok ? (role === 'office' ? `${t.name} is in, in the office` : `${t.name} is in`) : `${t.name} isn’t in your school`);
     } catch (e) {
       toast({ title: 'Couldn’t do that', body: e.message, tone: 'bad' });
     }
@@ -225,7 +232,7 @@ function WaitingTeachers() {
   return (
     <div className="stack sm">
       <h3>Teachers waiting for you</h3>
-      <div className="small muted">They signed up with your school email. Let them in if they teach here.</div>
+      <div className="small muted">They signed up with your school email. Let them in if they work here: as a teacher, or in the office (records, daily registers, absences and cover; never anyone’s work or marks).</div>
       <div className="list">
         {list.map((t) => (
           <div key={t.id} className="item">
@@ -235,8 +242,11 @@ function WaitingTeachers() {
                 {t.email} · {ago(t.at)}
               </span>
             </span>
-            <button className="btn sm primary" onClick={() => decide(t, true)} aria-label={`Let ${t.name} in`}>
-              Let them in
+            <button className="btn sm primary" onClick={() => decide(t, true)} aria-label={`Let ${t.name} in as a teacher`}>
+              Let in as a teacher
+            </button>
+            <button className="btn sm" onClick={() => decide(t, true, 'office')} aria-label={`Let ${t.name} in as the office`}>
+              In the office
             </button>
             <button className="btn sm ghost" onClick={() => decide(t, false)} aria-label={`${t.name} isn’t one of ours`}>
               Not one of ours
@@ -256,6 +266,7 @@ function YourOrganisation() {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [roleFor, setRoleFor] = useState(null);
   useEffect(() => {
     if (o?.name) setName(o.name);
   }, [o?.name]);
@@ -404,24 +415,24 @@ function YourOrganisation() {
                           {m.me ? ' (you)' : ''}
                         </span>
                         <span className="meta">
-                          <span className={'pill' + (m.role === 'manager' ? ' accent' : '')}>{m.role === 'manager' ? 'Manager' : 'Tutor'}</span>
-                          <span>
-                            {m.learners} learner{Number(m.learners) === 1 ? '' : 's'}
-                          </span>
+                          <span className={'pill' + (m.role === 'manager' ? ' accent' : '')}>{ROLES[m.role] || 'Teacher'}</span>
+                          {(m.years || []).length > 0 && <span className="pill">Head of {m.years.map(yearName).join(', ')}</span>}
+                          {m.role !== 'office' && (
+                            <span>
+                              {m.learners} learner{Number(m.learners) === 1 ? '' : 's'}
+                            </span>
+                          )}
                         </span>
                       </span>
+                      {manager && m.me && (
+                        <button className="btn sm" disabled={busy} onClick={() => setRoleFor(m)} aria-label="Your years">
+                          Head of year
+                        </button>
+                      )}
                       {manager && !m.me && (
                         <span className="row wrap" style={{ gap: 6 }}>
-                          <button
-                            className="btn sm"
-                            disabled={busy}
-                            onClick={() =>
-                              m.role === 'manager'
-                                ? act(() => api.orgSetRole(m.id, 'tutor'), `${m.name} isn’t a manager any more`)
-                                : act(() => api.orgSetRole(m.id, 'manager'), `${m.name} is a manager now`)
-                            }
-                          >
-                            {m.role === 'manager' ? 'Make tutor' : 'Make manager'}
+                          <button className="btn sm" disabled={busy} onClick={() => setRoleFor(m)} aria-label={`${m.name}’s role`}>
+                            Role
                           </button>
                           <button
                             className="btn sm ghost"
@@ -456,7 +467,64 @@ function YourOrganisation() {
           )}
         </>
       )}
+      {roleFor && <StaffRole m={roleFor} act={act} onClose={() => setRoleFor(null)} />}
     </Section>
+  );
+}
+
+// A manager picks someone's role (manager, teacher, the office) and the years they're head of (5 Nov 2026)
+function StaffRole({ m, act, onClose }) {
+  const [role, setRole] = useState(m.role);
+  const [years, setYears] = useState(m.years || []);
+  async function save() {
+    let ok = true;
+    if (role !== m.role) ok = await act(() => api.orgSetRole(m.id, role), `${m.name} is ${role === 'office' ? 'in the office' : role === 'manager' ? 'a manager' : 'a teacher'} now`);
+    if (ok && JSON.stringify(years) !== JSON.stringify(m.years || []))
+      ok = await act(() => api.orgSetYears(m.id, years), years.length ? `${m.name} is head of ${years.map(yearName).join(', ')}` : `${m.name} isn’t a head of year now`);
+    if (ok) onClose();
+  }
+  return (
+    <Modal
+      title={m.me ? 'Head of year' : `${m.name}’s role`}
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={save}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <div className="stack">
+        {!m.me && (
+          <Field label="Role">
+            <div className="stack sm" role="radiogroup" aria-label="Role">
+              {[
+                ['manager', 'Manager', 'Runs the centre or school: its people, timetable, reports and settings.'],
+                ['tutor', 'Teacher', 'Teaches, marks and approves everything for their own learners and classes.'],
+                ['office', 'Office', 'Records, daily registers, absences and cover. Never anyone’s work, marks or messages.'],
+              ].map(([v, t, sub]) => (
+                <label key={v} className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+                  <input type="radio" name="staff-role" checked={role === v} onChange={() => setRole(v)} />
+                  <span>
+                    <span className="strong">{t}</span>
+                    <span className="small muted" style={{ display: 'block' }}>
+                      {sub}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        )}
+        <Field label="Head of year" hint="They look after these years: their records, attendance, behaviour, absences and reports (under Office).">
+          <YearPicker value={years} onChange={setYears} />
+        </Field>
+      </div>
+    </Modal>
   );
 }
 
