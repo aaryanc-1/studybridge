@@ -752,7 +752,7 @@ Website: schools.html "Term reports", features.html "Progress and reports", priv
 Run 108 failed (nothing released) the same way as 106: the walkthrough waited for an "Anaya’s part is finished" pop-up that an
 earlier one already satisfied; it now waits for the part's own "Finished" mark. In walkthrough steps, wait for something on the page
 that only the new save can make, never a pop-up's words.
-School office basics (5 Nov 2026, app VERSION; Aaryan: "go", step 4 of the order for schools). Roles: `org_members.role` manager|tutor|office
+School office basics (5 Nov 2026, app 1.1.111; Aaryan: "go", step 4 of the order for schools). Roles: `org_members.role` manager|tutor|office
 and `org_members.years` (int[] of grades: head of year, any member). `_org_office(org)` = an active manager or office member of a centre or
 school; `_my_years()`; `_school_learner_ids(org)` (paused and school sign-ups too); `_looks_after(learner)` = the office/managers of their
 school, or the head of their year; `_can_arrange` now includes `_looks_after` (access arrangements, attendance, behaviour, timetable,
