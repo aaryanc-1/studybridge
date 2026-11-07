@@ -740,7 +740,8 @@ function PastLesson({ session: s, notes, onClose }) {
 }
 
 // ---------- in a live session ----------
-function LiveRoom({ session, onLeave }) {
+// (6 Nov 2026) a parents' meeting by video uses the same room: its own room name, and no study time counted
+function LiveRoom({ session, onLeave, roomName = null, label = 'Live session' }) {
   const app = useApp();
   const [room, setRoom] = useState(null);
   const [err, setErr] = useState('');
@@ -753,7 +754,7 @@ function LiveRoom({ session, onLeave }) {
   useEffect(() => {
     let r = null;
     let alive = true;
-    joinRoom(`session-${session.id}`)
+    joinRoom(roomName || `session-${session.id}`)
       .then((x) => {
         r = x;
         if (alive) setRoom(x);
@@ -766,14 +767,14 @@ function LiveRoom({ session, onLeave }) {
       clearInterval(t);
       r?.disconnect();
     };
-  }, [session.id]);
+  }, [session.id, roomName]);
 
   // Count live-session time for learners
   useEffect(() => {
-    if (app.me.role !== 'learner' || !room) return;
+    if (app.me.role !== 'learner' || !room || roomName) return;
     const t = setInterval(() => api.logTime('session', session.id, 60), 60000);
     return () => clearInterval(t);
-  }, [room, app.me.role, session.id]);
+  }, [room, app.me.role, session.id, roomName]);
 
   const toggle = useCallback(
     async (what) => {
@@ -792,7 +793,7 @@ function LiveRoom({ session, onLeave }) {
   const screens = people.filter((p) => p.screen);
 
   return (
-    <div className="live" role="dialog" aria-label={`Live session: ${session.title}`}>
+    <div className="live" role="dialog" aria-label={`${label}: ${session.title}`}>
       <div className="lbar">
         <span className="dot live" />
         <span className="strong">{session.title}</span>
@@ -847,6 +848,11 @@ function LiveRoom({ session, onLeave }) {
       )}
     </div>
   );
+}
+
+// A parents' meeting by video: the teacher and the parent who booked it, from 15 minutes before
+export function MeetingRoom({ bookingId, title, onLeave }) {
+  return <LiveRoom session={{ id: bookingId, title }} roomName={`meeting-${bookingId}`} label="Parents’ meeting" onLeave={onLeave} />;
 }
 
 // Watched work done in a browser: which device, e.g. "Done on a Chromebook (watched)". The desktop app needs no note.

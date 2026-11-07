@@ -1642,7 +1642,7 @@ begin
   return exists (select 1 from pg_extension where extname = 'pg_net');
 end $$;
 
--- Rooms: 'session-<uuid>' (lessons) and 'attempt-<uuid>' (exam camera).
+-- Rooms: 'session-<uuid>' (lessons), 'attempt-<uuid>' (exam camera) and 'meeting-<uuid>' (a parents' meeting by video).
 create or replace function public.live_pass(p_room text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -1653,6 +1653,9 @@ declare
   v_secret text;
   v_name text;
   v_now bigint := extract(epoch from now())::bigint;
+  v_exp bigint := extract(epoch from now())::bigint + 6 * 3600;
+  v_from timestamptz;
+  v_until timestamptz;
 begin
   begin
     v_id := substring(p_room from '([0-9a-f-]{36})$')::uuid;
@@ -1661,6 +1664,16 @@ begin
     select tutor_id into v_tutor from public.sessions where id = v_id and (tutor_id = auth.uid() or auth.uid() = any (learner_ids));
   elsif p_room like 'attempt-%' then
     select tutor_id into v_tutor from public.attempts where id = v_id and (tutor_id = auth.uid() or learner_id = auth.uid());
+  elsif p_room like 'meeting-%' then
+    -- a parents' meeting by video (6 Nov 2026): the teacher and the parent who booked it, from 15 minutes before to 30 after
+    select b.teacher_id, b.starts_at, b.ends_at into v_tutor, v_from, v_until
+      from public.meeting_bookings b join public.meeting_events e on e.id = b.event_id
+     where b.id = v_id and b.status in ('booked', 'met') and b.how = 'video' and e.status <> 'cancelled'
+       and (b.teacher_id = auth.uid()
+            or (b.parent_id = auth.uid() and exists (select 1 from public.parent_links pl where pl.parent_id = b.parent_id and pl.learner_id = b.learner_id)));
+    if v_tutor is not null and now() < v_from - interval '15 minutes' then raise exception 'You can join from 15 minutes before the meeting.'; end if;
+    if v_tutor is not null and now() > v_until + interval '30 minutes' then raise exception 'This meeting has finished.'; end if;
+    if v_tutor is not null then v_exp := least(v_exp, extract(epoch from v_until + interval '30 minutes')::bigint); end if;
   end if;
   if v_tutor is null then raise exception 'You are not part of this room.'; end if;
   -- a learner coming into a live lesson fills in their line of its register
@@ -1683,7 +1696,7 @@ begin
   end if;
   select display_name into v_name from public.profiles where id = auth.uid();
   return jsonb_build_object('url', v_url, 'token', public._jwt_hs256(jsonb_build_object(
-    'iss', v_key, 'sub', auth.uid()::text, 'name', coalesce(v_name, ''), 'nbf', v_now - 10, 'exp', v_now + 6 * 3600,
+    'iss', v_key, 'sub', auth.uid()::text, 'name', coalesce(v_name, ''), 'nbf', v_now - 10, 'exp', v_exp,
     'video', jsonb_build_object('room', p_room, 'roomJoin', true, 'canPublish', true, 'canSubscribe', true, 'canPublishData', true)
   ), v_secret));
 end $$;
@@ -3286,6 +3299,15 @@ begin
        where a.due_at is not null and not a.draft and a.source <> 'self'
          and a.due_at > now() - interval '60 days' and a.due_at < now() + interval '400 days'
          and ((p.role = 'tutor' and a.tutor_id = p.id) or (p.role = 'learner' and a.tutor_id = p.tutor_id and public._assignment_visible_to(a, p.id)))
+      union all
+      -- a teacher's parents' meetings (6 Nov 2026): the child's name only, never what the family wrote
+      select jsonb_build_object('uid', 'm-' || b.id, 'title', 'Parents’ meeting: ' || (select display_name from public.profiles where id = b.learner_id),
+                                'start', b.starts_at, 'end', b.ends_at,
+                                'location', case when b.how = 'in_person' then coalesce((public._meeting_block(b)).room, e.location) end,
+                                'description', case when b.how = 'video' then 'By video on StudyBridge. Open the app to join.' else 'In person, from StudyBridge.' end)
+        from public.meeting_bookings b join public.meeting_events e on e.id = b.event_id
+       where p.role = 'tutor' and b.teacher_id = p.id and b.status = 'booked'
+         and b.starts_at > now() - interval '60 days' and b.starts_at < now() + interval '400 days'
     ) z), '[]'));
 end $$;
 
@@ -4992,6 +5014,21 @@ begin
       execute 'select coalesce(jsonb_agg(to_jsonb(p)), ''[]'') from public.class_posts p where p.author_id = $1' into rows using me.id;
       v := v || jsonb_build_object('class_posts', rows);
     end if;
+    -- parents, more (6 Nov 2026): their conversations with families, their parents' meetings, and pieces they added
+    v := v || jsonb_build_object(
+      'family_messages', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = t.learner_id),
+                            'parent', (select display_name from public.profiles where id = t.parent_id), 'where', public._place_name(t.place_id),
+                            'messages', (select coalesce(jsonb_agg(jsonb_build_object('at', m.created_at, 'from_me', m.author_id = me.id,
+                                            'text', case when m.deleted_at is null or m.author_id = me.id then m.body end, 'deleted', m.deleted_at is not null)
+                                            order by m.created_at), '[]') from public.family_messages m where m.thread_id = t.id)) order by t.created_at), '[]')
+                            from public.family_threads t where t.staff_id = me.id and not t.to_office),
+      'parents_meetings', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = b.learner_id),
+                             'parent', (select display_name from public.profiles where id = b.parent_id), 'at', b.starts_at, 'how', b.how,
+                             'status', b.status, 'family_note', b.parent_note, 'my_note', b.staff_note) order by b.starts_at), '[]')
+                             from public.meeting_bookings b where b.teacher_id = me.id),
+      'portfolio_pieces_added', (select coalesce(jsonb_agg(jsonb_build_object('learner', (select display_name from public.profiles where id = i.learner_id),
+                                   'title', i.title, 'text', i.body, 'files', i.files, 'at', i.created_at) order by i.created_at), '[]')
+                                   from public.portfolio_items i where i.added_by = me.id));
   elsif me.role = 'learner' then
     v := v || jsonb_build_object(
       'tutor', (select display_name from public.profiles where id = me.tutor_id),
@@ -5040,13 +5077,33 @@ begin
                            from public.student_records x where x.learner_id = me.id),
       'absences_reported', (select coalesce(jsonb_agg(jsonb_build_object('where', public._place_name(x.place_id), 'from', x.starts, 'to', x.ends,
                               'part', x.part, 'reason', x.reason, 'note', x.note, 'status', x.status, 'reply', x.reply) order by x.starts), '[]')
-                              from public.absence_reports x where x.learner_id = me.id));
+                              from public.absence_reports x where x.learner_id = me.id),
+      -- their portfolio, with the comments on it (files stay in StudyBridge)
+      'portfolio', (select coalesce(jsonb_agg(jsonb_build_object('title', i.title, 'text', i.body, 'work', i.snapshot, 'files', i.files,
+                      'added_by', case when i.by_teacher then (select display_name from public.profiles where id = i.added_by) else 'me' end,
+                      'shown_to', (select coalesce(jsonb_agg(public._place_name(x)), '[]') from unnest(i.places) x), 'at', i.created_at,
+                      'comments', (select coalesce(jsonb_agg(jsonb_build_object('at', c.created_at, 'from', (select display_name from public.profiles where id = c.author_id),
+                                     'where', public._place_name(c.place_id), 'text', c.body) order by c.created_at), '[]')
+                                     from public.portfolio_comments c where c.item_id = i.id)) order by i.created_at), '[]')
+                     from public.portfolio_items i where i.learner_id = me.id));
   elsif me.role = 'parent' then
     v := v || jsonb_build_object('children', public.parent_children(),
       'absences_reported', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = x.learner_id),
                               'where', public._place_name(x.place_id), 'from', x.starts, 'to', x.ends, 'part', x.part, 'reason', x.reason,
                               'note', x.note, 'status', x.status, 'reply', x.reply) order by x.starts), '[]')
-                              from public.absence_reports x where x.by_id = me.id));
+                              from public.absence_reports x where x.by_id = me.id),
+      -- their conversations with teachers and offices, and their parents' meetings (never the teacher's own notes)
+      'messages_with_teachers', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = t.learner_id),
+                                   'with', case when t.to_office then 'The office' else (select display_name from public.profiles where id = t.staff_id) end,
+                                   'where', public._place_name(t.place_id),
+                                   'messages', (select coalesce(jsonb_agg(jsonb_build_object('at', m.created_at, 'from_me', m.author_id = me.id,
+                                                   'text', case when m.deleted_at is null or m.author_id = me.id then m.body end, 'deleted', m.deleted_at is not null)
+                                                   order by m.created_at), '[]') from public.family_messages m where m.thread_id = t.id)) order by t.created_at), '[]')
+                                   from public.family_threads t where t.parent_id = me.id),
+      'meetings', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = b.learner_id),
+                     'teacher', (select display_name from public.profiles where id = b.teacher_id), 'at', b.starts_at, 'how', b.how,
+                     'status', b.status, 'my_note', b.parent_note) order by b.starts_at), '[]')
+                     from public.meeting_bookings b where b.parent_id = me.id));
   end if;
   return v;
 end $$;
@@ -7328,7 +7385,7 @@ begin
   v := public._ensure_org(auth.uid());
   select * into o from public.organisations where id = v;
   select role into v_role from public.org_members where org_id = v and user_id = auth.uid();
-  return jsonb_build_object('id', o.id, 'name', o.name, 'kind', o.kind, 'role', v_role,
+  return jsonb_build_object('id', o.id, 'name', o.name, 'kind', o.kind, 'role', v_role, 'parents_message', o.parents_message,
     'years', (select to_jsonb(years) from public.org_members where org_id = v and user_id = auth.uid()),
     'code', case when v_role = 'manager' and o.kind in ('centre', 'school') then o.join_code end,
     'members', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name, 'role', m.role, 'joined_at', m.joined_at,
@@ -8148,6 +8205,56 @@ begin
     end;
   end if;
 
+  -- parents, more: Ruth and Mercy talking about Chipo's algebra, Ruth's note to the office, parents' meetings next week
+  -- (Ruth has a time with Mercy), and Chipo's portfolio (her poster, her simultaneous equations, and Mercy's pick)
+  if to_regclass('public.portfolio_items') is not null then
+    declare
+      th uuid;
+      ev uuid;
+      md date;
+      tz text;
+      pi uuid;
+    begin
+      insert into public.family_threads (learner_id, parent_id, place_id, staff_id, started_by, last_at, created_at)
+      values (l1, par, org, m, par, now() - interval '20 hours', now() - interval '2 days') returning id into th;
+      insert into public.family_messages (thread_id, author_id, body, created_at) values
+        (th, par, 'Hello Mrs Tembo, Chipo found last week’s algebra homework hard. Is there anything we can do at home to help?', now() - interval '2 days'),
+        (th, m, 'Thank you for asking! Ten minutes a day on simultaneous equations will make a real difference. I’ve set her a short practice on StudyBridge, and we can talk more at the parents’ meetings.', now() - interval '20 hours');
+      insert into public.family_reads (thread_id, user_id, seen_at) values (th, par, now() - interval '2 days'), (th, m, now() - interval '20 hours');
+      insert into public.family_threads (learner_id, parent_id, place_id, to_office, started_by, last_at, created_at)
+      values (l1, par, org, true, par, now() - interval '3 hours', now() - interval '5 hours') returning id into th;
+      insert into public.family_messages (thread_id, author_id, body, created_at) values
+        (th, par, 'Chipo has a new adrenaline pen. I’ll drop the spare one at the office tomorrow morning.', now() - interval '5 hours'),
+        (th, g, 'Thank you, Mrs Banda. We’ll keep it with her care plan in the office.', now() - interval '3 hours');
+      insert into public.family_reads (thread_id, user_id, seen_at) values (th, par, now() - interval '5 hours'), (th, g, now() - interval '3 hours');
+
+      tz := public._place_tz(org);
+      select min(dd)::date into md from generate_series(current_date + 7, current_date + 13, interval '1 day') dd where extract(isodow from dd) = 4;
+      insert into public.meeting_events (place_id, created_by, title, note, how, location, slot_min, gap_min, closes_at, status, told_at, created_at)
+      values (org, g, 'Term 1 parents’ meetings', 'Ten minutes with each of your child’s teachers. Come to the hall, or meet by video from home.',
+              'choice', 'The main hall', 10, 0, public._series_start(md - 1, '00:00', tz), 'open', now() - interval '1 day', now() - interval '1 day')
+      returning id into ev;
+      insert into public.meeting_times (event_id, teacher_id, starts_at, ends_at, room)
+      select ev, x, public._series_start(md, '16:00', tz), public._series_start(md, '18:00', tz), r from (values (m, 'Table 1'), (t, 'Table 2'), (j, 'Table 3')) v(x, r);
+      insert into public.meeting_bookings (event_id, teacher_id, learner_id, parent_id, booked_by, starts_at, ends_at, how, parent_note)
+      values (ev, m, l1, par, par, public._series_start(md, '16:20', tz), public._series_start(md, '16:30', tz), 'in_person', 'How is she getting on with algebra?');
+
+      insert into public.portfolio_items (learner_id, added_by, title, body, class_id, places, created_at)
+      values (l1, l1, 'My fractions poster', 'I made this to explain adding fractions with different denominators. The hardest part was the drawings!',
+              y10, array[org], now() - interval '6 days') returning id into pi;
+      insert into public.portfolio_comments (item_id, place_id, author_id, body, created_at)
+      values (pi, org, m, 'Lovely, clear poster, Chipo. Could we put it on the class wall?', now() - interval '5 days'),
+             (pi, org, l1, 'Yes please!', now() - interval '5 days' + interval '2 hours');
+      insert into public.portfolio_items (learner_id, added_by, title, body, attempt_id, snapshot, class_id, places, created_at)
+      values (l1, l1, 'Simultaneous equations', 'I nearly had them all. Next time I’ll check my last step.', a1,
+              jsonb_build_object('title', 'Simultaneous equations', 'kind', 'homework', 'subject', 'IGCSE Maths', 'score', 3, 'max', 4,
+                                 'at', now() - interval '25 hours', 'from', 'Riverside Tuition (demo)'), y10, array[org], now() - interval '18 hours');
+      insert into public.portfolio_items (learner_id, added_by, place_id, title, body, class_id, places, by_teacher, created_at)
+      values (l1, m, org, 'Teacher’s pick: explaining tree diagrams', 'Chipo explained tree diagrams to her group so clearly that two of them got every probability question right.',
+              y10, array[org], true, now() - interval '3 days');
+    end;
+  end if;
+
   perform public._admin_log('demo_made', null, jsonb_build_object('accounts', p_accounts));
   return public.admin_demo();
 end $$;
@@ -8170,6 +8277,12 @@ language plpgsql security definer set search_path = public as $$
 declare n int;
 begin
   perform public._admin();
+  -- parents' meetings and stopped parents belong to the demo centre, not to an account
+  if to_regclass('public.meeting_events') is not null then
+    execute 'delete from public.meeting_events where place_id in (select m.org_id from public.org_members m join public.profiles p on p.id = m.user_id where p.demo)'
+         || ' or place_id in (select id from public.profiles where demo)';
+    execute 'delete from public.family_blocks where place_id in (select m.org_id from public.org_members m join public.profiles p on p.id = m.user_id where p.demo)';
+  end if;
   delete from auth.users where id in (select id from public.profiles where demo);
   get diagnostics n = row_count;
   -- and any demo sign-ups left half-made (the app stopped before they were filled in)
@@ -16026,6 +16139,1791 @@ begin
                      from public.absence_reports x join rep r on r.id = x.id join who w on w.id = x.learner_id)));
 end $$;
 
+-- =====================================================================
+-- Parents, more (6 Nov 2026; Aaryan: "go", step 5 of the order for schools). Families and teachers message each other
+-- (one parent and one teacher, or a centre's or school's office, about one child); parents' meetings booked online, in
+-- person or by video; and each learner's portfolio (pieces they choose to show, and pieces their teachers add). Any of a
+-- learner's teachers, and the office, can give a parent a code now, and a class's teachers print codes for every family.
+-- The wall stays: a teacher sees only their own conversations, the office only the office's, managers read one only once
+-- someone reports it; parents see their own conversations and bookings, never another parent's; learners never see
+-- these conversations; Prof never reads them.
+-- =====================================================================
+
+-- ---------------- who teaches whom, now ----------------
+-- A teacher who teaches a learner now: an active tutor (never StudyBridge's own content account) who is their main
+-- tutor, added them with a code, or teaches a class they're in that isn't put away, while still in its organisation
+create or replace function public._teaches_now(p_teacher uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles t where t.id = p_teacher and t.role = 'tutor' and t.status = 'active' and not t.is_studybridge)
+     and (exists (select 1 from public.profiles l where l.id = p_learner and l.role = 'learner' and l.tutor_id = p_teacher)
+          or exists (select 1 from public.learner_links k where k.learner_id = p_learner and k.tutor_id = p_teacher)
+          or exists (select 1 from public.class_teachers ct join public.classes c on c.id = ct.class_id
+                       join public.class_members cm on cm.class_id = c.id
+                      where ct.teacher_id = p_teacher and cm.learner_id = p_learner and not c.archived
+                        and (c.org_id is null or exists (select 1 from public.org_members m where m.org_id = c.org_id and m.user_id = p_teacher))))
+$$;
+create or replace function public._teachers_now(p_learner uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select t from public._teachers_of(p_learner) t where public._teaches_now(t, p_learner)
+$$;
+-- Someone on a place's staff for a learner: one of their teachers now, or the office, a manager or the head of their
+-- year at their centre or school (used when a parent's code is used)
+create or replace function public._staff_for(p_staff uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._teaches_now(p_staff, p_learner)
+      or exists (select 1 from public.org_members m join public.profiles p on p.id = m.user_id join public.organisations o on o.id = m.org_id
+                  where m.user_id = p_staff and p.role = 'tutor' and p.status = 'active' and o.kind in ('centre', 'school')
+                    and (m.role in ('manager', 'office') or (select grade from public.profiles where id = p_learner) = any (m.years))
+                    and p_learner in (select public._school_learner_ids(o.id)))
+$$;
+-- A place's clock: a centre's or school's, or a tutor's own
+create or replace function public._place_tz(p_place uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select case when exists (select 1 from public.organisations where id = p_place) then public._school_tz(p_place) else public._tz_of(p_place) end
+$$;
+-- A place whose free week has ended unpaid: a centre or school (asked of its first active manager), or a tutor on their own
+create or replace function public._place_unpaid_at(p_place uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case when exists (select 1 from public.organisations where id = p_place)
+              then coalesce(public._place_unpaid((select m.user_id from public.org_members m join public.profiles p on p.id = m.user_id
+                                                   where m.org_id = p_place and p.status = 'active' and p.role = 'tutor'
+                                                   order by m.role = 'manager' desc, m.joined_at limit 1)), false)
+              else coalesce(public._place_unpaid(p_place), false) end
+$$;
+create or replace function public._first_name(p_user uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce(nullif(split_part(btrim((select display_name from public.profiles where id = p_user)), ' ', 1), ''), 'them')
+$$;
+create or replace function public._is_centre(p_place uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.organisations where id = p_place and kind in ('centre', 'school'))
+$$;
+
+-- ---------------- parent codes from any of a learner's teachers, or the office ----------------
+create or replace function public.create_parent_invite(p_learner uuid, p_name text default null)
+returns public.parent_invites language plpgsql security definer set search_path = public as $$
+declare v public.parent_invites;
+begin
+  if not (public.is_my_learner(p_learner) or public._teaches_now(auth.uid(), p_learner) or public._looks_after(p_learner)) then
+    raise exception 'Not your learner.';
+  end if;
+  if not public._tutor_active() then raise exception 'Your account needs to be approved first.'; end if;
+  if (select self_learner from public.profiles where id = p_learner) then raise exception 'Students on their own give their parents a code themselves.'; end if;
+  if (select count(*) from public.parent_invites where learner_id = p_learner and accepted_by is null and not revoked) >= 5 then
+    raise exception 'There are already 5 unused parent codes for this learner. Cancel one first.';
+  end if;
+  insert into public.parent_invites (tutor_id, learner_id, name) values (auth.uid(), p_learner, left(trim(coalesce(p_name, '')), 80))
+  returning * into v;
+  return v;
+end $$;
+
+-- A parent joins with the code: from their child's tutor, any teacher of theirs, their school's office, or the child
+create or replace function public.accept_parent_invite(p_code text, p_name text default null, p_timezone text default 'UTC')
+returns public.profiles language plpgsql security definer set search_path = public as $$
+declare
+  inv public.parent_invites;
+  v public.profiles;
+  l public.profiles;
+  r uuid;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select * into inv from public.parent_invites where code = upper(trim(p_code)) and not revoked for update;
+  if inv.id is null then raise exception 'That parent code is not valid.'; end if;
+  if inv.accepted_by is not null and inv.accepted_by <> auth.uid() then raise exception 'That parent code has already been used.'; end if;
+  select * into v from public.profiles where id = auth.uid();
+  if v.role is not null and v.role <> 'parent' then raise exception 'This account is already a % account. Use a different email for the parent account.', v.role; end if;
+  select * into l from public.profiles where id = inv.learner_id and role = 'learner';
+  if l.id is null or not ((l.tutor_id = inv.tutor_id and public._tutor_active(inv.tutor_id)) or public._staff_for(inv.tutor_id, l.id)) then
+    raise exception 'This code can’t be used right now. Ask for a new one.';
+  end if;
+  update public.profiles
+     set role = 'parent', tutor_id = null, programme_id = null,
+         display_name = coalesce(nullif(trim(p_name), ''), nullif(display_name, ''), nullif(inv.name, ''), 'Parent'),
+         timezone = coalesce(p_timezone, timezone)
+   where id = auth.uid() returning * into v;
+  insert into public.parent_links (parent_id, learner_id, tutor_id) values (auth.uid(), inv.learner_id, inv.tutor_id)
+  on conflict (parent_id, learner_id) do update set tutor_id = excluded.tutor_id;
+  update public.parent_invites set accepted_by = auth.uid(), accepted_at = now() where id = inv.id;
+  if not l.self_learner then
+    perform public.notify_user(inv.tutor_id, 'parent_joined', v.display_name || ' can now follow ' || l.display_name || '’s progress',
+      'They joined as a parent. They see approved reports, lessons, due dates and marks once they’re given back, and can message ' || l.display_name || '’s teachers.',
+      jsonb_build_object('learner_id', l.id));
+    -- with a code from someone else, their main tutor and the office hear too (so a parent nobody expected is noticed)
+    for r in select distinct x from (select l.tutor_id x union select o from public._places_of(l.id) pl, public._office_people(pl, l.id) o) z
+              where x is not null and x <> inv.tutor_id loop
+      perform public.notify_user(r, 'parent_joined', v.display_name || ' can now follow ' || l.display_name || '’s progress',
+        'With a parent code from ' || coalesce((select display_name from public.profiles where id = inv.tutor_id), 'a teacher') || '. If that isn’t right, take them off on '
+          || split_part(l.display_name, ' ', 1) || '’s page (Parents).', jsonb_build_object('learner_id', l.id));
+    end loop;
+  end if;
+  perform public.notify_user(l.id, 'parent_joined', v.display_name || ' can now see your progress',
+    case when l.self_learner then 'They see your plan, how much you study, your marks and how each topic is going. Never your answers or messages. You can remove them in Settings.'
+         else 'They see your weekly reports, lessons, due dates, marks once they’re given back, and what you share in your portfolio. Never your messages with your teachers. You can remove them in Settings.' end, '{}');
+  return v;
+end $$;
+
+-- Who follows a learner: for the learner, and for their teachers and the office (with the codes they made, not used yet)
+create or replace function public.learner_parents(p_learner uuid default null)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  v_main boolean := public.is_my_learner(v_l);
+  v_office boolean := public._looks_after(v_l);
+  v_staff boolean := v_main or v_office or public._teaches_now(auth.uid(), v_l);
+begin
+  if not v_staff and not (v_l = auth.uid() and public.my_role() = 'learner') then raise exception 'Not your learner.'; end if;
+  return jsonb_build_object(
+    'parents', coalesce((select jsonb_agg(jsonb_build_object('id', pl.id, 'parent_id', p.id, 'name', p.display_name, 'since', pl.created_at,
+                                                             'email', case when v_main or v_office then p.email end,
+                                                             'can_remove', v_l = auth.uid() or v_main or v_office or pl.tutor_id = auth.uid())
+                                         order by pl.created_at)
+                           from public.parent_links pl join public.profiles p on p.id = pl.parent_id where pl.learner_id = v_l), '[]'),
+    'can_invite', v_staff and not coalesce((select self_learner from public.profiles where id = v_l), false),
+    'invites', case when v_staff then coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'code', i.code, 'name', i.name, 'created_at', i.created_at) order by i.created_at)
+                                                  from public.parent_invites i where i.learner_id = v_l and i.tutor_id = auth.uid()
+                                                   and i.accepted_by is null and not i.revoked), '[]')
+                    when v_l = auth.uid() and (select self_learner from public.profiles where id = v_l) then
+                      coalesce((select jsonb_agg(jsonb_build_object('id', i.id, 'code', i.code, 'name', i.name, 'created_at', i.created_at) order by i.created_at)
+                                  from public.parent_invites i where i.learner_id = v_l and i.accepted_by is null and not i.revoked), '[]') end);
+end $$;
+
+-- The learner, their main tutor, whoever made the parent's code, or their school's office takes a parent off
+create or replace function public.remove_parent(p_link uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare pl public.parent_links;
+begin
+  select * into pl from public.parent_links where id = p_link;
+  if pl.id is null or not (pl.learner_id = auth.uid() or pl.tutor_id = auth.uid() or public.is_my_learner(pl.learner_id) or public._looks_after(pl.learner_id)) then
+    raise exception 'Not found.';
+  end if;
+  delete from public.parent_links where id = pl.id;
+  perform public.notify_user(pl.parent_id, 'parent_removed', 'You no longer see ' || (select display_name from public.profiles where id = pl.learner_id) || '’s progress',
+    'Ask their school or tutor for a new parent code if this is a mistake.', '{}');
+end $$;
+
+-- Codes for every family in a class, to print as letters (a code each, reusing one this teacher made and nobody used)
+create or replace function public.class_parent_codes(p_class uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c public.classes;
+  l record;
+  v_code text;
+  v_out jsonb := '[]';
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._tutor_active() or not (public._class_teacher(p_class) or public._org_office(c.org_id)) then
+    raise exception 'You can’t make parent codes for this class.';
+  end if;
+  for l in select p.id, p.display_name from public.class_members cm join public.profiles p on p.id = cm.learner_id
+            where cm.class_id = p_class and p.role = 'learner' and not p.self_learner order by p.display_name loop
+    v_code := (select code from public.parent_invites where learner_id = l.id and tutor_id = auth.uid() and accepted_by is null and not revoked
+                order by created_at desc limit 1);
+    if v_code is null and (select count(*) from public.parent_invites where learner_id = l.id and accepted_by is null and not revoked) < 5 then
+      insert into public.parent_invites (tutor_id, learner_id, name) values (auth.uid(), l.id, '') returning code into v_code;
+    end if;
+    v_out := v_out || jsonb_build_array(jsonb_build_object('learner_id', l.id, 'name', l.display_name, 'code', v_code,
+                                                           'parents', (select count(*) from public.parent_links where learner_id = l.id)));
+  end loop;
+  return jsonb_build_object('class', c.name, 'place', public._place_name(public._place_of(auth.uid())), 'codes', v_out);
+end $$;
+
+-- =====================================================================
+-- Messages between families and teachers
+-- =====================================================================
+-- Who parents can start a conversation with at a centre or school: any of their child's teachers ('teachers'), only
+-- the teachers of their child's homeroom ('homeroom'), or only the office ('office'). Teachers can always write first,
+-- and a parent can always answer.
+alter table public.organisations add column if not exists parents_message text not null default 'teachers';
+do $$ begin
+  alter table public.organisations add constraint organisations_parents_message_check check (parents_message in ('teachers', 'homeroom', 'office'));
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.family_threads (
+  id uuid primary key default gen_random_uuid(),
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  parent_id uuid references public.profiles (id) on delete set null,
+  place_id uuid not null,                 -- the centre or school, or a tutor on their own
+  to_office boolean not null default false,
+  staff_id uuid references public.profiles (id) on delete set null,   -- the teacher (null for the office)
+  started_by uuid references public.profiles (id) on delete set null,
+  last_at timestamptz not null default now(),
+  emailed_at timestamptz,
+  closed_at timestamptz,
+  closed_by uuid references public.profiles (id) on delete set null,
+  reported_at timestamptz,
+  reported_by uuid references public.profiles (id) on delete set null,
+  report_reason text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists family_threads_staff on public.family_threads (learner_id, parent_id, place_id, staff_id) where not to_office;
+create unique index if not exists family_threads_office on public.family_threads (learner_id, parent_id, place_id) where to_office;
+create index if not exists family_threads_staff_last on public.family_threads (staff_id, last_at desc);
+create index if not exists family_threads_parent_last on public.family_threads (parent_id, last_at desc);
+create index if not exists family_threads_place_last on public.family_threads (place_id, last_at desc);
+create table if not exists public.family_messages (
+  id uuid primary key default gen_random_uuid(),
+  thread_id uuid not null references public.family_threads (id) on delete cascade,
+  author_id uuid references public.profiles (id) on delete set null,
+  body text not null check (length(btrim(body)) between 1 and 4000),
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz                  -- hidden from both sides; kept with the conversation in case it's reported
+);
+create index if not exists family_messages_thread on public.family_messages (thread_id, created_at);
+create index if not exists family_messages_author on public.family_messages (author_id, created_at);
+create table if not exists public.family_reads (
+  thread_id uuid not null references public.family_threads (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  seen_at timestamptz not null default now(),
+  primary key (thread_id, user_id)
+);
+-- A place stops one parent contacting it (no new messages or meeting bookings there)
+create table if not exists public.family_blocks (
+  place_id uuid not null,
+  parent_id uuid not null references public.profiles (id) on delete cascade,
+  by_id uuid references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now(),
+  primary key (place_id, parent_id)
+);
+-- Managers who read a conversation after it was reported (shown on it)
+create table if not exists public.family_views (
+  thread_id uuid not null references public.family_threads (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  day date not null default current_date,
+  at timestamptz not null default now(),
+  primary key (thread_id, user_id, day)
+);
+alter table public.family_threads enable row level security;
+alter table public.family_messages enable row level security;
+alter table public.family_reads enable row level security;
+alter table public.family_blocks enable row level security;
+alter table public.family_views enable row level security;
+-- nobody reads these tables directly, and never the Prof server
+revoke all on public.family_threads, public.family_messages, public.family_reads, public.family_blocks, public.family_views
+  from public, anon, authenticated, service_role;
+
+-- The office side of a conversation with a centre or school: its office and managers, and the head of the child's year
+create or replace function public._family_office(p_place uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce(p_place = public._my_school()
+     and (public._org_office(p_place) or (select grade from public.profiles where id = p_learner) = any (public._my_years()))
+     and p_learner in (select public._school_learner_ids(p_place)), false)
+$$;
+-- The signed-in person's side of a conversation: 'parent', 'staff' (the teacher, while still at that place), 'office',
+-- 'review' (a manager of the place, once someone reported it), or null
+create or replace function public._family_side(t public.family_threads) returns text
+language sql stable security definer set search_path = public as $$
+  select case
+    when t.id is null then null
+    when t.parent_id = auth.uid() and public.my_role() = 'parent' then 'parent'
+    when public.my_role() is distinct from 'tutor' then null
+    when not t.to_office and t.staff_id = auth.uid() and t.place_id in (public._place_of(auth.uid()), auth.uid()) then 'staff'
+    when t.to_office and public._family_office(t.place_id, t.learner_id) then 'office'
+    when t.reported_at is not null and t.place_id = public._my_school() and public._org_manager(t.place_id) then 'review'
+  end
+$$;
+-- Why nobody can write in a conversation now (null: they can)
+create or replace function public._family_closed(t public.family_threads) returns text
+language sql stable security definer set search_path = public as $$
+  select case
+    when t.closed_at is not null then 'This conversation was closed.'
+    when t.parent_id is null or not exists (select 1 from public.parent_links pl where pl.parent_id = t.parent_id and pl.learner_id = t.learner_id)
+      then 'This parent no longer follows ' || public._first_name(t.learner_id) || '.'
+    when t.place_id not in (select public._places_of(t.learner_id)) then public._first_name(t.learner_id) || ' isn’t with ' || public._place_name(t.place_id) || ' any more.'
+    when not t.to_office and (t.staff_id is null or not public._teaches_now(t.staff_id, t.learner_id) or public._place_of(t.staff_id) <> t.place_id)
+      then coalesce((select display_name from public.profiles where id = t.staff_id), 'This teacher') || ' doesn’t teach ' || public._first_name(t.learner_id) || ' now.'
+    when exists (select 1 from public.family_blocks b where b.place_id = t.place_id and b.parent_id = t.parent_id)
+      then public._place_name(t.place_id) || ' isn’t taking messages from this parent.'
+    when public._place_unpaid_at(t.place_id) then public._place_name(t.place_id) || '’s StudyBridge is paused for now.'
+  end
+$$;
+-- Whether a parent can start a conversation with this teacher (the place's rule)
+create or replace function public._family_can_start(p_place uuid, p_staff uuid, p_learner uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case coalesce((select parents_message from public.organisations where id = p_place and kind in ('centre', 'school')), 'teachers')
+    when 'teachers' then true
+    when 'homeroom' then exists (select 1 from public.class_teachers ct join public.classes c on c.id = ct.class_id join public.class_members cm on cm.class_id = c.id
+                                  where ct.teacher_id = p_staff and cm.learner_id = p_learner and c.homeroom and not c.archived)
+    else false end
+$$;
+-- Who reads the office's conversations with families, in words for the parent
+create or replace function public._family_office_text(p_place uuid, p_learner uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select 'Read by the office' || coalesce(' and the head of ' || (select 'Grade ' || grade from public.profiles where id = p_learner and grade is not null
+                                                                    and exists (select 1 from public.org_members m where m.org_id = p_place and grade = any (m.years))), '')
+         || ' at ' || public._place_name(p_place) || '.'
+$$;
+
+create or replace function public._family_json(t public.family_threads) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', t.id, 'side', public._family_side(t),
+    'learner', jsonb_build_object('id', l.id, 'name', l.display_name),
+    'parent', jsonb_build_object('id', t.parent_id, 'name', coalesce(pa.display_name, 'A former parent')),
+    'staff', case when not t.to_office then jsonb_build_object('id', t.staff_id, 'name', coalesce(st.display_name, 'A former teacher')) end,
+    'to_office', t.to_office, 'place_id', t.place_id, 'place', public._place_name(t.place_id),
+    'office_text', case when t.to_office then public._family_office_text(t.place_id, t.learner_id) end,
+    'last_at', t.last_at,
+    'last', (select jsonb_build_object('body', case when m.deleted_at is null then left(m.body, 140) end, 'mine', m.author_id = auth.uid(), 'at', m.created_at)
+               from public.family_messages m where m.thread_id = t.id order by m.created_at desc limit 1),
+    'unread', (select count(*) from public.family_messages m where m.thread_id = t.id and m.author_id is distinct from auth.uid() and m.deleted_at is null
+                 and m.created_at > coalesce((select r.seen_at from public.family_reads r where r.thread_id = t.id and r.user_id = auth.uid()), '-infinity'::timestamptz)),
+    'closed', public._family_closed(t), 'closed_by_staff', t.closed_at is not null,
+    'reported', t.reported_at is not null,
+    'blocked', case when public.my_role() = 'tutor' then exists (select 1 from public.family_blocks b where b.place_id = t.place_id and b.parent_id = t.parent_id) end,
+    'can_block', public.my_role() = 'tutor' and (public._org_office(t.place_id) or t.place_id = auth.uid()))
+  from public.profiles l left join public.profiles pa on pa.id = t.parent_id left join public.profiles st on st.id = t.staff_id
+  where l.id = t.learner_id
+$$;
+
+-- A parent's conversations, or a teacher's (theirs, the office's for the office, reported ones for managers)
+create or replace function public.family_list(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_role text := public.my_role(); v_school uuid := public._my_school();
+begin
+  if v_role not in ('parent', 'tutor') then return '[]'; end if;
+  return (select coalesce(jsonb_agg(public._family_json(t) order by t.last_at desc), '[]') from public.family_threads t
+   where t.id in (select x.id from public.family_threads x
+                   where (p_learner is null or x.learner_id = p_learner)
+                     and case when v_role = 'parent' then x.parent_id = auth.uid()
+                              else (not x.to_office and x.staff_id = auth.uid()) or (x.place_id = v_school and (x.to_office or x.reported_at is not null)) end
+                     and exists (select 1 from public.family_messages m where m.thread_id = x.id)
+                     and public._family_side(x) is not null
+                   order by x.last_at desc limit 300));
+end $$;
+
+-- One conversation, marked as seen (managers reading a reported one leave their name on it instead)
+create or replace function public.family_thread(p_thread uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare t public.family_threads; v_side text; v_other timestamptz;
+begin
+  select * into t from public.family_threads where id = p_thread;
+  v_side := public._family_side(t);
+  if v_side is null then raise exception 'You can’t see this conversation.'; end if;
+  if v_side = 'review' then
+    insert into public.family_views (thread_id, user_id) values (t.id, auth.uid()) on conflict do nothing;
+  else
+    insert into public.family_reads (thread_id, user_id, seen_at) values (t.id, auth.uid(), now())
+      on conflict (thread_id, user_id) do update set seen_at = now();
+    update public.notifications set read_at = now()
+     where user_id = auth.uid() and kind = 'family_message' and read_at is null and ref ->> 'thread_id' = t.id::text;
+  end if;
+  v_other := case when v_side = 'parent' then (select max(seen_at) from public.family_reads where thread_id = t.id and user_id <> auth.uid())
+                  else (select seen_at from public.family_reads where thread_id = t.id and user_id = t.parent_id) end;
+  return public._family_json(t) || jsonb_build_object(
+    'messages', (select coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'mine', m.author_id = auth.uid(),
+        'author', coalesce(a.display_name, 'A former member'),
+        'from_family', m.author_id is not distinct from t.parent_id,
+        'body', case when m.deleted_at is null or v_side = 'review' then m.body end, 'deleted', m.deleted_at is not null,
+        'at', m.created_at,
+        'seen', m.author_id = auth.uid() and v_other is not null and v_other >= m.created_at,
+        'can_delete', m.author_id = auth.uid() and m.deleted_at is null and m.created_at > now() - interval '15 minutes' and t.reported_at is null)
+        order by m.created_at), '[]')
+       from public.family_messages m left join public.profiles a on a.id = m.author_id where m.thread_id = t.id),
+    'views', (select coalesce(jsonb_agg(distinct p.display_name), '[]') from public.family_views v join public.profiles p on p.id = v.user_id where v.thread_id = t.id),
+    'report_reason', case when v_side in ('review', 'staff', 'office') or t.reported_by = auth.uid() then t.report_reason end);
+end $$;
+
+-- Who a parent can write to about a child: each place's teachers who teach them now, and a centre's or school's office
+create or replace function public.family_contacts(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_main uuid := (select tutor_id from public.profiles where id = p_learner);
+begin
+  if public.my_role() is distinct from 'parent' or not public._parent_of(p_learner) then raise exception 'You can’t message about this learner.'; end if;
+  return (select coalesce(jsonb_agg(z order by (z ->> 'main')::boolean desc, z ->> 'name'), '[]') from (
+    select jsonb_build_object('place_id', x, 'name', public._place_name(x),
+      'kind', coalesce((select kind from public.organisations where id = x), 'tutor'),
+      'mode', coalesce((select parents_message from public.organisations where id = x and kind in ('centre', 'school')), 'teachers'),
+      'office', public._is_centre(x),
+      'office_text', case when public._is_centre(x) then public._family_office_text(x, p_learner) end,
+      'paused', public._place_unpaid_at(x),
+      'blocked', exists (select 1 from public.family_blocks b where b.place_id = x and b.parent_id = auth.uid()),
+      'main', x = public._place_of(v_main),
+      'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.display_name, 'main', t.id = v_main,
+                     'classes', (select coalesce(jsonb_agg(distinct c.name), '[]') from public.class_teachers ct join public.classes c on c.id = ct.class_id
+                                   join public.class_members cm on cm.class_id = c.id where ct.teacher_id = t.id and cm.learner_id = p_learner and not c.archived),
+                     'can_start', public._family_can_start(x, t.id, p_learner)) order by t.id = v_main desc, t.display_name), '[]')
+                     from public.profiles t where t.id in (select public._teachers_now(p_learner)) and public._place_of(t.id) = x)) z
+      from public._places_of(p_learner) x) q);
+end $$;
+
+-- A learner's parents, for a teacher of theirs (to write to) or the office
+create or replace function public.family_parents(p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_teach boolean := public._teaches_now(auth.uid(), p_learner); v_office boolean := public._family_office(public._my_school(), p_learner);
+begin
+  if public.my_role() is distinct from 'tutor' or not (v_teach or v_office) then raise exception 'You can’t see this learner’s parents.'; end if;
+  return jsonb_build_object('teach', v_teach, 'office', v_office, 'office_place', case when v_office then public._my_school() end,
+    'parents', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name,
+      'thread', (select t.id from public.family_threads t where t.learner_id = p_learner and t.parent_id = p.id and not t.to_office
+                  and t.staff_id = auth.uid() and t.place_id = public._place_of(auth.uid())),
+      'office_thread', case when v_office then (select t.id from public.family_threads t where t.learner_id = p_learner and t.parent_id = p.id and t.to_office
+                                                  and t.place_id = public._my_school()) end) order by pl.created_at), '[]')
+      from public.parent_links pl join public.profiles p on p.id = pl.parent_id where pl.learner_id = p_learner));
+end $$;
+
+-- Tell the other side about a new message: the parent (in the app, and by email at most every 6 hours, never with what
+-- it says) or the teacher or office (in the app and phone alerts). Once until they've read it.
+create or replace function public._family_tell(t public.family_threads, p_side text) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  r uuid;
+  pa public.profiles;
+  v_me text := coalesce((select display_name from public.profiles where id = auth.uid()), 'Someone');
+  v_child text := coalesce((select display_name from public.profiles where id = t.learner_id), 'your child');
+  v_first text := public._first_name(t.learner_id);
+  v_ref jsonb := jsonb_build_object('thread_id', t.id, 'learner_id', t.learner_id);
+begin
+  if p_side = 'parent' then
+    for r in select x from (select t.staff_id as x where not t.to_office
+                            union select o from public._office_people(t.place_id, t.learner_id) o where t.to_office) z
+              where x is not null and x <> auth.uid() loop
+      continue when exists (select 1 from public.notifications n where n.user_id = r and n.kind = 'family_message' and n.read_at is null
+                             and n.ref ->> 'thread_id' = t.id::text);
+      perform public.notify_user(r, 'family_message',
+        case when t.to_office then 'For the office: ' else '' end || v_me || ', ' || v_child || '’s parent, sent a message',
+        'Open Messages to read it.', v_ref);
+    end loop;
+    return;
+  end if;
+  select * into pa from public.profiles where id = t.parent_id;
+  if pa.id is null then return; end if;
+  if not exists (select 1 from public.notifications n where n.user_id = pa.id and n.kind = 'family_message' and n.read_at is null
+                  and n.ref ->> 'thread_id' = t.id::text) then
+    perform public.notify_user(pa.id, 'family_message', v_me || ' sent you a message about ' || v_first,
+      case when t.to_office then 'From the office at ' || public._place_name(t.place_id) || '. ' else '' end || 'Open Messages to read it.', v_ref);
+  end if;
+  if coalesce(pa.email, '') <> '' and not coalesce(pa.demo, false) and (t.emailed_at is null or t.emailed_at < now() - interval '6 hours') then
+    insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+    values (pa.email, left(v_me || ' sent you a message about ' || v_first, 200),
+            left('Hello,' || E'\n\n' || v_me || case when t.to_office then ', from the office at ' else ' (' end || public._place_name(t.place_id)
+                 || case when t.to_office then ',' else ')' end || ' sent you a message about ' || v_child || ' on StudyBridge.'
+                 || E'\n\nOpen StudyBridge to read it and reply: ' || public._app_link()
+                 || E'\n\nPlease reply in StudyBridge rather than to this email.'
+                 || E'\n\nYou get this because you follow ' || v_first || ' on StudyBridge.' || E'\n\nThe StudyBridge team', 8000),
+            (select support_email from public.app_config where id = 1));
+    update public.family_threads set emailed_at = now() where id = t.id;
+    perform public._prof_kick();
+  end if;
+end $$;
+
+-- Send a message: in a conversation (p_thread), or starting one (p_to: {learner, staff} or {learner, office, place} from a
+-- parent; {learner, parent} or {learner, parent, office} from a teacher or the office)
+create or replace function public.family_send(p_thread uuid, p_body text, p_to jsonb default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.family_threads;
+  v_body text := btrim(coalesce(p_body, ''));
+  v_role text := public.my_role();
+  v_side text;
+  v_learner uuid;
+  v_parent uuid;
+  v_staff uuid;
+  v_place uuid;
+  v_office boolean;
+  v_why text;
+  v_msg uuid;
+begin
+  if length(v_body) = 0 then raise exception 'Write a message first.'; end if;
+  if length(v_body) > 4000 then raise exception 'That’s a long message. Keep it under 4,000 characters.'; end if;
+  if p_thread is not null then
+    select * into t from public.family_threads where id = p_thread for update;
+  else
+    begin
+      v_learner := (p_to ->> 'learner')::uuid;
+      v_office := coalesce((p_to ->> 'office')::boolean, false);
+      if v_role = 'parent' then
+        if v_learner is null or not public._parent_of(v_learner) then raise exception 'You can’t message about this learner.'; end if;
+        v_parent := auth.uid();
+        if v_office then
+          v_place := (p_to ->> 'place')::uuid;
+          if v_place is null or v_place not in (select public._places_of(v_learner)) or not public._is_centre(v_place) then raise exception 'Pick who to message.'; end if;
+        else
+          v_staff := (p_to ->> 'staff')::uuid;
+          if v_staff is null or not public._teaches_now(v_staff, v_learner) or public._place_of(v_staff) not in (select public._places_of(v_learner)) then
+            raise exception 'Pick one of their teachers.';
+          end if;
+          v_place := public._place_of(v_staff);
+        end if;
+      elsif v_role = 'tutor' and public._tutor_active() then
+        v_parent := (p_to ->> 'parent')::uuid;
+        if v_learner is null or v_parent is null or not exists (select 1 from public.parent_links where parent_id = v_parent and learner_id = v_learner) then
+          raise exception 'Pick one of their parents.';
+        end if;
+        if v_office then
+          v_place := public._my_school();
+          if v_place is null or not public._family_office(v_place, v_learner) then raise exception 'Only the office writes as the office.'; end if;
+        else
+          if not public._teaches_now(auth.uid(), v_learner) then raise exception 'You don’t teach this learner now.'; end if;
+          v_staff := auth.uid();
+          v_place := public._place_of(auth.uid());
+        end if;
+      else
+        raise exception 'You can’t send messages here.';
+      end if;
+    exception when invalid_text_representation then
+      raise exception 'Pick who to message.';
+    end;
+    select * into t from public.family_threads x
+     where x.learner_id = v_learner and x.parent_id = v_parent and x.place_id = v_place and x.to_office = v_office
+       and (v_office or x.staff_id = v_staff) for update;
+    if t.id is null then
+      if v_role = 'parent' and not v_office and not public._family_can_start(v_place, v_staff, v_learner) then
+        raise exception '%', case (select parents_message from public.organisations where id = v_place)
+          when 'homeroom' then public._place_name(v_place) || ' asks families to write to their child’s form tutor or the office first.'
+          else public._place_name(v_place) || ' asks families to write to the office first.' end;
+      end if;
+      if (select count(*) from public.family_threads where started_by = auth.uid() and created_at > now() - interval '1 day') >= 20 then
+        raise exception 'That’s a lot of new conversations for one day. Try again tomorrow.';
+      end if;
+      insert into public.family_threads (learner_id, parent_id, place_id, to_office, staff_id, started_by)
+      values (v_learner, v_parent, v_place, v_office, case when v_office then null else v_staff end, auth.uid())
+      on conflict do nothing returning * into t;
+      if t.id is null then
+        select * into t from public.family_threads x
+         where x.learner_id = v_learner and x.parent_id = v_parent and x.place_id = v_place and x.to_office = v_office
+           and (v_office or x.staff_id = v_staff) for update;
+      end if;
+    end if;
+  end if;
+  v_side := public._family_side(t);
+  if v_side is null then raise exception 'You can’t see this conversation.'; end if;
+  if v_side = 'review' then raise exception 'You can read this conversation because it was reported, but not write in it.'; end if;
+  v_why := public._family_closed(t);
+  if v_why is not null then raise exception '%', v_why; end if;
+  if (select count(*) from public.family_messages where author_id = auth.uid() and created_at > now() - interval '10 minutes') >= 30 then
+    raise exception 'That’s a lot of messages. Wait a few minutes, then try again.';
+  end if;
+  if (select count(*) from public.family_messages where author_id = auth.uid() and created_at > now() - interval '1 day') >= 200 then
+    raise exception 'That’s a lot of messages for one day. Try again tomorrow.';
+  end if;
+  insert into public.family_messages (thread_id, author_id, body) values (t.id, auth.uid(), v_body) returning id into v_msg;
+  update public.family_threads set last_at = now() where id = t.id;
+  insert into public.family_reads (thread_id, user_id, seen_at) values (t.id, auth.uid(), now())
+    on conflict (thread_id, user_id) do update set seen_at = now();
+  perform public._family_tell(t, v_side);
+  return jsonb_build_object('thread_id', t.id, 'message_id', v_msg);
+end $$;
+
+-- The writer hides a message in its first 15 minutes (kept with the conversation; never once it's reported)
+create or replace function public.family_delete(p_message uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.family_messages m set deleted_at = now()
+   where m.id = p_message and m.author_id = auth.uid() and m.deleted_at is null and m.created_at > now() - interval '15 minutes'
+     and not exists (select 1 from public.family_threads t where t.id = m.thread_id and t.reported_at is not null);
+  if not found then raise exception 'A message can only be deleted in its first 15 minutes, and not once the conversation is reported.'; end if;
+end $$;
+
+-- Staff close a conversation (and open it again)
+create or replace function public.family_close(p_thread uuid, p_closed boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+declare t public.family_threads;
+begin
+  select * into t from public.family_threads where id = p_thread;
+  if coalesce(public._family_side(t), '') not in ('staff', 'office', 'review') then raise exception 'Only staff close a conversation.'; end if;
+  if not p_closed and t.reported_at is not null and t.closed_by is distinct from auth.uid() and public._family_side(t) <> 'review' then
+    raise exception 'It was closed after it was reported, so a manager opens it again.';
+  end if;
+  update public.family_threads set closed_at = case when p_closed then now() end, closed_by = case when p_closed then auth.uid() end where id = t.id;
+end $$;
+
+-- Either side reports a conversation: the place's managers can then read it (their names show on it), and a tutor on
+-- their own's conversations go to StudyBridge
+create or replace function public.family_report(p_thread uuid, p_reason text) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.family_threads;
+  v_reason text := left(btrim(coalesce(p_reason, '')), 500);
+  r uuid;
+  v_who text := coalesce((select display_name from public.profiles where id = auth.uid()), 'Someone');
+begin
+  select * into t from public.family_threads where id = p_thread;
+  if coalesce(public._family_side(t), '') not in ('parent', 'staff', 'office') then raise exception 'You can’t see this conversation.'; end if;
+  if length(v_reason) < 3 then raise exception 'Say what’s wrong, in a few words.'; end if;
+  if t.reported_at is not null then raise exception 'This conversation was reported already.'; end if;
+  update public.family_threads set reported_at = now(), reported_by = auth.uid(), report_reason = v_reason where id = t.id;
+  if public._is_centre(t.place_id) then
+    for r in select m.user_id from public.org_members m join public.profiles p on p.id = m.user_id
+              where m.org_id = t.place_id and m.role = 'manager' and p.status = 'active' loop
+      perform public.notify_user(r, 'family_report', 'A conversation with a family was reported',
+        v_who || ' reported a conversation about ' || coalesce((select display_name from public.profiles where id = t.learner_id), 'a learner') || '. Open it to read it.',
+        jsonb_build_object('thread_id', t.id));
+    end loop;
+  else
+    perform public._email_us('support', 'A conversation with a family was reported',
+      v_who || ' reported a conversation between ' || coalesce((select display_name from public.profiles where id = t.parent_id), 'a parent')
+        || ' and ' || public._place_name(t.place_id) || ' about ' || coalesce((select display_name from public.profiles where id = t.learner_id), 'a learner')
+        || '.' || E'\n\nWhat they said: ' || v_reason || E'\n\nConversation: ' || t.id,
+      (select email from public.profiles where id = auth.uid()));
+  end if;
+end $$;
+
+-- A centre's or school's office or managers (or a tutor on their own) stop a parent contacting them, or let them again
+create or replace function public.family_block(p_parent uuid, p_on boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_place uuid := public._place_of(auth.uid()); b record;  -- (meeting_bookings is made further down)
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() or not (public._org_office(v_place) or v_place = auth.uid()) then
+    raise exception 'Only the office or a manager does this.';
+  end if;
+  if not exists (select 1 from public.parent_links pl where pl.parent_id = p_parent and v_place in (select public._places_of(pl.learner_id))) then
+    raise exception 'They don’t follow anyone here.';
+  end if;
+  if p_on then
+    insert into public.family_blocks (place_id, parent_id, by_id) values (v_place, p_parent, auth.uid()) on conflict do nothing;
+    for b in update public.meeting_bookings x set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(), cancel_reason = 'Cancelled by ' || public._place_name(v_place) || '.'
+              where x.parent_id = p_parent and x.status = 'booked' and x.starts_at > now()
+                and exists (select 1 from public.meeting_events e where e.id = x.event_id and e.place_id = v_place) returning x.* loop
+      perform public._meeting_cancelled((select x from public.meeting_bookings x where x.id = b.id), false);
+    end loop;
+  else
+    delete from public.family_blocks where place_id = v_place and parent_id = p_parent;
+  end if;
+end $$;
+
+-- A centre's or school's managers choose who parents can write to first
+create or replace function public.set_parents_message(p_mode text) returns text
+language plpgsql security definer set search_path = public as $$
+declare o public.organisations;
+begin
+  o := public._org_mine_to_change();
+  if o.kind not in ('centre', 'school') then raise exception 'This is for tuition centres and schools.'; end if;
+  if p_mode not in ('teachers', 'homeroom', 'office') then raise exception 'Pick one.'; end if;
+  update public.organisations set parents_message = p_mode where id = o.id;
+  return p_mode;
+end $$;
+
+-- =====================================================================
+-- Parents' meetings: a centre's or school's office or managers set up an evening (or a tutor on their own sets up
+-- theirs; any teacher can offer times to their own classes or learners); each teacher has their times; parents book a
+-- time with each of their child's teachers in it, in person or by video
+-- =====================================================================
+create table if not exists public.meeting_events (
+  id uuid primary key default gen_random_uuid(),
+  place_id uuid not null,
+  created_by uuid references public.profiles (id) on delete set null,
+  title text not null check (length(btrim(title)) between 1 and 120),
+  note text check (note is null or length(note) <= 2000),
+  how text not null default 'in_person' check (how in ('in_person', 'video', 'choice')),
+  location text check (location is null or length(location) <= 120),
+  slot_min int not null default 10 check (slot_min between 5 and 60),
+  gap_min int not null default 0 check (gap_min between 0 and 30),
+  audience jsonb not null default '{}',   -- {years: [grades], class_ids: [], learner_ids: []}; all empty = everyone there
+  closes_at timestamptz,                  -- booking closes (null: until the meetings start)
+  status text not null default 'draft' check (status in ('draft', 'open', 'closed', 'cancelled')),
+  told_at timestamptz,
+  nudged_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists meeting_events_place on public.meeting_events (place_id, created_at desc);
+create table if not exists public.meeting_times (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.meeting_events (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  starts_at timestamptz not null,
+  ends_at timestamptz not null,
+  room text check (room is null or length(room) <= 60),
+  late_min int not null default 0 check (late_min between 0 and 60),
+  reminded_day timestamptz,
+  reminded_soon timestamptz,
+  check (ends_at > starts_at and ends_at <= starts_at + interval '12 hours')
+);
+create index if not exists meeting_times_event on public.meeting_times (event_id, teacher_id, starts_at);
+create index if not exists meeting_times_teacher on public.meeting_times (teacher_id, starts_at);
+create table if not exists public.meeting_bookings (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.meeting_events (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  parent_id uuid not null references public.profiles (id) on delete cascade,
+  booked_by uuid references public.profiles (id) on delete set null,
+  starts_at timestamptz not null,
+  ends_at timestamptz not null,
+  how text not null check (how in ('in_person', 'video')),
+  status text not null default 'booked' check (status in ('booked', 'cancelled', 'met', 'missed')),
+  parent_note text check (parent_note is null or length(parent_note) <= 500),
+  staff_note text check (staff_note is null or length(staff_note) <= 2000),
+  cancelled_by uuid references public.profiles (id) on delete set null,
+  cancel_reason text check (cancel_reason is null or length(cancel_reason) <= 300),
+  cancelled_at timestamptz,
+  reminded_day timestamptz,
+  reminded_soon timestamptz,
+  created_at timestamptz not null default now(),
+  check (ends_at > starts_at)
+);
+create unique index if not exists meeting_bookings_slot on public.meeting_bookings (teacher_id, starts_at) where status <> 'cancelled';
+create unique index if not exists meeting_bookings_one on public.meeting_bookings (event_id, teacher_id, learner_id, parent_id) where status = 'booked';
+create index if not exists meeting_bookings_parent on public.meeting_bookings (parent_id, starts_at);
+create index if not exists meeting_bookings_event on public.meeting_bookings (event_id, teacher_id, starts_at);
+alter table public.meeting_events enable row level security;
+alter table public.meeting_times enable row level security;
+alter table public.meeting_bookings enable row level security;
+revoke all on public.meeting_events, public.meeting_times, public.meeting_bookings from public, anon, authenticated, service_role;
+
+-- Who sets up and changes a set of meetings: a centre's or school's office and managers, a tutor on their own, or the
+-- teacher who offered their own times
+create or replace function public._meeting_manager(e public.meeting_events) returns boolean
+language sql stable security definer set search_path = public as $$
+  select e.id is not null and public.my_role() = 'tutor' and public._tutor_active()
+     and (public._org_office(e.place_id) or e.place_id = auth.uid()
+          or (e.created_by = auth.uid() and public._place_of(auth.uid()) = e.place_id))
+$$;
+-- The signed-in teacher has times in these meetings (and is still at that place)
+create or replace function public._meeting_teacher(e public.meeting_events) returns boolean
+language sql stable security definer set search_path = public as $$
+  select e.id is not null and public._place_of(auth.uid()) = e.place_id
+     and exists (select 1 from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = auth.uid())
+$$;
+-- Learners a place's meetings can be for: everyone a centre or school counts, or a tutor on their own's learners
+create or replace function public._meeting_pool(p_place uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select x from public._org_learner_ids(p_place) x where public._is_centre(p_place)
+  union
+  select l from public._learners_of(p_place) l where not exists (select 1 from public.organisations where id = p_place) and public._teaches_now(p_place, l)
+$$;
+-- Who a set of meetings is for
+create or replace function public._meeting_learners(e public.meeting_events) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select l.id from public.profiles l
+   where l.id in (select public._meeting_pool(e.place_id))
+     and ((jsonb_array_length(coalesce(e.audience -> 'years', '[]')) = 0 and jsonb_array_length(coalesce(e.audience -> 'class_ids', '[]')) = 0
+           and jsonb_array_length(coalesce(e.audience -> 'learner_ids', '[]')) = 0)
+          or l.grade::text in (select jsonb_array_elements_text(coalesce(e.audience -> 'years', '[]')))
+          or exists (select 1 from public.class_members cm where cm.learner_id = l.id
+                      and cm.class_id::text in (select jsonb_array_elements_text(coalesce(e.audience -> 'class_ids', '[]'))))
+          or l.id::text in (select jsonb_array_elements_text(coalesce(e.audience -> 'learner_ids', '[]'))))
+$$;
+-- The teachers in a set of meetings a child's family can book: theirs now
+create or replace function public._meeting_teachers_for(e public.meeting_events, p_learner uuid) returns setof uuid
+language sql stable security definer set search_path = public as $$
+  select distinct mt.teacher_id from public.meeting_times mt where mt.event_id = e.id and public._teaches_now(mt.teacher_id, p_learner)
+$$;
+-- A family can book now
+create or replace function public._meeting_bookable(e public.meeting_events) returns boolean
+language sql stable security definer set search_path = public as $$
+  select e.status = 'open' and (e.closes_at is null or e.closes_at > now())
+     and exists (select 1 from public.meeting_times mt where mt.event_id = e.id and mt.ends_at > now())
+$$;
+-- The block of a teacher's time a booking sits in (its room, and how late they're running)
+create or replace function public._meeting_block(b public.meeting_bookings) returns public.meeting_times
+language sql stable security definer set search_path = public as $$
+  select mt.* from public.meeting_times mt where mt.event_id = b.event_id and mt.teacher_id = b.teacher_id
+     and mt.starts_at <= b.starts_at and mt.ends_at >= b.ends_at order by mt.starts_at limit 1
+$$;
+create or replace function public._meeting_when(p_at timestamptz, p_user uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select to_char(p_at at time zone public._tz_of(p_user), 'Dy DD Mon, HH24:MI')
+$$;
+-- The audience, checked: classes and learners at this place (a teacher offering their own times: only theirs)
+create or replace function public._meeting_audience(p_place uuid, p_aud jsonb, p_full boolean) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v jsonb;
+begin
+  v := jsonb_build_object(
+    'years', case when p_full then coalesce((select jsonb_agg(distinct y::int) from jsonb_array_elements_text(coalesce(p_aud -> 'years', '[]')) y
+                                              where y ~ '^\d{1,2}$' and y::int between 0 and 13), '[]') else '[]'::jsonb end,
+    'class_ids', coalesce((select jsonb_agg(distinct c.id) from public.classes c
+                            where c.id::text in (select jsonb_array_elements_text(coalesce(p_aud -> 'class_ids', '[]'))) and not c.archived
+                              and public._place_of(c.tutor_id) = p_place and (p_full or public._teaches_class(c.id))), '[]'),
+    'learner_ids', coalesce((select jsonb_agg(distinct l.id) from public.profiles l
+                              where l.id::text in (select jsonb_array_elements_text(coalesce(p_aud -> 'learner_ids', '[]')))
+                                and l.id in (select public._meeting_pool(p_place)) and (p_full or public._teaches_now(auth.uid(), l.id))), '[]'));
+  if jsonb_array_length(v -> 'years') + jsonb_array_length(v -> 'class_ids') + jsonb_array_length(v -> 'learner_ids') = 0 then
+    if not p_full then raise exception 'Pick who it’s for: your classes or learners.'; end if;
+    -- years, classes or learners asked for, but none of them count: never everyone instead
+    if exists (select 1 from jsonb_object_keys(coalesce(p_aud, '{}')) k where k in ('years', 'class_ids', 'learner_ids')) then
+      raise exception 'Pick who it’s for.';
+    end if;
+    return '{}';
+  end if;
+  return v;
+end $$;
+-- Add times (days with a start and end, in the place's clock) for some teachers; skips any that overlap their own
+create or replace function public._meeting_add_days(e public.meeting_events, p_teachers uuid[], p_days jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  d jsonb;
+  t uuid;
+  v_from timestamptz;
+  v_to timestamptz;
+  v_tz text := public._place_tz(e.place_id);
+  n int := 0;
+begin
+  if jsonb_typeof(coalesce(p_days, '[]')) <> 'array' or jsonb_array_length(coalesce(p_days, '[]')) = 0 then
+    raise exception 'Add at least one day, with a start and end time.';
+  end if;
+  if jsonb_array_length(p_days) > 14 then raise exception 'Up to 14 days at a time.'; end if;
+  for d in select x from jsonb_array_elements(p_days) x loop
+    begin
+      v_from := public._series_start((d ->> 'day')::date, (d ->> 'from')::time, v_tz);
+      v_to := public._series_start((d ->> 'day')::date, (d ->> 'to')::time, v_tz);
+    exception when others then
+      raise exception 'Each day needs a date, a start time and an end time.';
+    end;
+    if v_to <= v_from then raise exception 'Each day needs an end time after its start time.'; end if;
+    if v_to > v_from + interval '12 hours' then raise exception 'Up to 12 hours on one day.'; end if;
+    if v_to < now() then raise exception 'Pick days that haven’t passed.'; end if;
+    foreach t in array p_teachers loop
+      if not exists (select 1 from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = t
+                      and tstzrange(mt.starts_at, mt.ends_at) && tstzrange(v_from, v_to)) then
+        insert into public.meeting_times (event_id, teacher_id, starts_at, ends_at, room)
+        values (e.id, t, v_from, v_to, nullif(btrim(coalesce(d ->> 'room', '')), ''));
+        n := n + 1;
+      end if;
+    end loop;
+  end loop;
+  return n;
+end $$;
+-- Teachers who can take part: active, at the place, not the office
+create or replace function public._meeting_staff_ok(p_place uuid, p_teacher uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._tutor_active(p_teacher) and not coalesce((select is_studybridge from public.profiles where id = p_teacher), false)
+     and case when public._is_centre(p_place)
+              then exists (select 1 from public.org_members m where m.org_id = p_place and m.user_id = p_teacher and m.role <> 'office')
+              else p_teacher = p_place end
+$$;
+
+-- Set up meetings (p_id null) or change them. p_event: {title, note, how, location, slot_min, gap_min, audience, closes
+-- (a date: booking closes at the end of it), teachers (ids; left out: everyone who teaches someone it's for), days
+-- [{day, from, to}] (new meetings only)}
+create or replace function public.save_meeting_event(p_id uuid, p_event jsonb) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  e public.meeting_events;
+  v_place uuid := public._place_of(auth.uid());
+  v_full boolean;
+  v_aud jsonb;
+  v_teachers uuid[];
+  v_closes timestamptz;
+  v_title text := btrim(coalesce(p_event ->> 'title', ''));
+  v_how text := coalesce(p_event ->> 'how', 'in_person');
+  v_slot int;
+  v_gap int;
+begin
+  if public.my_role() is distinct from 'tutor' or not public._tutor_active() then raise exception 'Only teachers set up meetings.'; end if;
+  if v_title = '' then raise exception 'Give them a name, like “Year 10 parents’ evening”.'; end if;
+  if v_how not in ('in_person', 'video', 'choice') then raise exception 'Pick in person, by video, or the family chooses.'; end if;
+  begin
+    v_slot := coalesce((p_event ->> 'slot_min')::int, 10);
+    v_gap := coalesce((p_event ->> 'gap_min')::int, 0);
+    v_closes := case when nullif(p_event ->> 'closes', '') is not null
+                     then public._series_start((p_event ->> 'closes')::date + 1, '00:00'::time, public._place_tz(v_place)) end;
+  exception when others then
+    raise exception 'Check the meeting length and the closing date.';
+  end;
+  if v_slot not between 5 and 60 or v_gap not between 0 and 30 then raise exception 'Meetings are 5 to 60 minutes, with up to 30 minutes between.'; end if;
+  if p_id is null then
+    if public._place_unpaid_at(v_place) then raise exception '%’s StudyBridge is paused for now.', public._place_name(v_place); end if;
+    v_full := public._org_office(v_place) or v_place = auth.uid();
+    v_aud := public._meeting_audience(v_place, coalesce(p_event -> 'audience', '{}'), v_full);
+    if (select count(*) from public.meeting_events where created_by = auth.uid() and created_at > now() - interval '1 day') >= 20 then
+      raise exception 'That’s a lot of meetings for one day. Try again tomorrow.';
+    end if;
+    insert into public.meeting_events (place_id, created_by, title, note, how, location, slot_min, gap_min, audience, closes_at)
+    values (v_place, auth.uid(), left(v_title, 120), nullif(left(btrim(coalesce(p_event ->> 'note', '')), 2000), ''), v_how,
+            nullif(left(btrim(coalesce(p_event ->> 'location', '')), 120), ''), v_slot, v_gap, v_aud, v_closes)
+    returning * into e;
+    if not v_full then
+      v_teachers := array[auth.uid()];
+    elsif jsonb_typeof(p_event -> 'teachers') = 'array' then
+      v_teachers := array(select distinct x::uuid from jsonb_array_elements_text(p_event -> 'teachers') x
+                           where x ~ '^[0-9a-f-]{36}$' and public._meeting_staff_ok(v_place, x::uuid));
+    else
+      v_teachers := array(select distinct t from public._meeting_learners(e) l, public._teachers_now(l) t where public._meeting_staff_ok(v_place, t));
+    end if;
+    if coalesce(cardinality(v_teachers), 0) = 0 then raise exception 'Nobody here teaches the learners these meetings are for yet.'; end if;
+    perform public._meeting_add_days(e, v_teachers, p_event -> 'days');
+    return e.id;
+  end if;
+  select * into e from public.meeting_events where id = p_id for update;
+  if not public._meeting_manager(e) then raise exception 'You can’t change these meetings.'; end if;
+  if e.status = 'cancelled' then raise exception 'These meetings were cancelled.'; end if;
+  if (v_slot <> e.slot_min or v_gap <> e.gap_min)
+     and exists (select 1 from public.meeting_bookings where event_id = e.id and status <> 'cancelled') then
+    raise exception 'Families have booked already, so each meeting’s length stays as it is.';
+  end if;
+  v_full := public._org_office(e.place_id) or e.place_id = auth.uid();
+  v_aud := public._meeting_audience(e.place_id, coalesce(p_event -> 'audience', e.audience), v_full);
+  update public.meeting_events
+     set title = left(v_title, 120), note = nullif(left(btrim(coalesce(p_event ->> 'note', '')), 2000), ''), how = v_how,
+         location = nullif(left(btrim(coalesce(p_event ->> 'location', '')), 120), ''), slot_min = v_slot, gap_min = v_gap,
+         audience = v_aud, closes_at = v_closes
+   where id = e.id;
+  return e.id;
+end $$;
+
+-- Add teachers (or more days) to meetings: p_teachers null = everyone in them now
+create or replace function public.meeting_add(p_event uuid, p_teachers uuid[], p_days jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare e public.meeting_events; v_t uuid[];
+begin
+  select * into e from public.meeting_events where id = p_event for update;
+  if not public._meeting_manager(e) then raise exception 'You can’t change these meetings.'; end if;
+  if e.status = 'cancelled' then raise exception 'These meetings were cancelled.'; end if;
+  v_t := case when p_teachers is null then array(select distinct teacher_id from public.meeting_times where event_id = e.id)
+              else array(select distinct x from unnest(p_teachers) x where public._meeting_staff_ok(e.place_id, x)) end;
+  if coalesce(cardinality(v_t), 0) = 0 then raise exception 'Pick a teacher.'; end if;
+  return public._meeting_add_days(e, v_t, p_days);
+end $$;
+
+-- A family is told a booking was cancelled (by staff), or the teacher (by the family)
+create or replace function public._meeting_cancelled(b public.meeting_bookings, p_by_staff boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  pa public.profiles;
+  v_teacher text := coalesce((select display_name from public.profiles where id = b.teacher_id), 'Their teacher');
+  v_child text := public._first_name(b.learner_id);
+  v_ref jsonb := jsonb_build_object('event_id', b.event_id, 'booking_id', b.id, 'learner_id', b.learner_id);
+begin
+  if not p_by_staff then
+    perform public.notify_user(b.teacher_id, 'meeting', 'A meeting was cancelled',
+      coalesce((select display_name from public.profiles where id = b.parent_id), 'A parent') || ' (' || v_child || '), '
+        || public._meeting_when(b.starts_at, b.teacher_id) || '. ' || coalesce(b.cancel_reason || ' ', '') || 'That time is free again.',
+      jsonb_build_object('event_id', b.event_id));
+    return;
+  end if;
+  select * into pa from public.profiles where id = b.parent_id;
+  if pa.id is null then return; end if;
+  perform public.notify_user(pa.id, 'meeting', 'Your meeting with ' || v_teacher || ' was cancelled',
+    public._meeting_when(b.starts_at, pa.id) || coalesce('. ' || b.cancel_reason, '') || ' You can book another time if there’s one free.', v_ref);
+  if coalesce(pa.email, '') <> '' and not coalesce(pa.demo, false) then
+    insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+    values (pa.email, left('Your meeting with ' || v_teacher || ' was cancelled', 200),
+            left('Hello,' || E'\n\n' || 'Your meeting with ' || v_teacher || ' about ' || v_child || ' on ' || public._meeting_when(b.starts_at, pa.id)
+                 || ' was cancelled.' || coalesce(E'\n\n' || b.cancel_reason, '')
+                 || E'\n\nYou can book another time in StudyBridge if there’s one free: ' || public._app_link()
+                 || E'\n\nThe StudyBridge team', 8000),
+            (select support_email from public.app_config where id = 1));
+    perform public._prof_kick();
+  end if;
+end $$;
+
+-- A teacher's times in a set of meetings, replaced (days with a start, an end and a room, in the place's clock). Taking
+-- away booked times cancels those bookings, with a reason the families are told; no times takes the teacher out.
+create or replace function public.save_meeting_times(p_event uuid, p_teacher uuid, p_blocks jsonb, p_reason text default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  e public.meeting_events;
+  v_tz text;
+  d jsonb;
+  v_new jsonb := '[]';
+  v_from timestamptz;
+  v_to timestamptz;
+  b public.meeting_bookings;
+  v_out int;
+  v_reason text := nullif(left(btrim(coalesce(p_reason, '')), 300), '');
+begin
+  select * into e from public.meeting_events where id = p_event for update;
+  if not (public._meeting_manager(e) or (p_teacher = auth.uid() and public._meeting_teacher(e))) then raise exception 'You can’t change these times.'; end if;
+  if e.status = 'cancelled' then raise exception 'These meetings were cancelled.'; end if;
+  if jsonb_typeof(coalesce(p_blocks, '[]')) <> 'array' or jsonb_array_length(coalesce(p_blocks, '[]')) > 14 then raise exception 'Up to 14 sets of times.'; end if;
+  -- times only for this place's own teachers (anyone can be taken out)
+  if jsonb_array_length(coalesce(p_blocks, '[]')) > 0 and not public._meeting_staff_ok(e.place_id, p_teacher) then raise exception 'Pick one of the teachers here.'; end if;
+  perform pg_advisory_xact_lock(hashtext('meet:' || p_teacher::text));
+  v_tz := public._place_tz(e.place_id);
+  for d in select x from jsonb_array_elements(coalesce(p_blocks, '[]')) x loop
+    begin
+      v_from := public._series_start((d ->> 'day')::date, (d ->> 'from')::time, v_tz);
+      v_to := public._series_start((d ->> 'day')::date, (d ->> 'to')::time, v_tz);
+    exception when others then
+      raise exception 'Each set of times needs a date, a start and an end.';
+    end;
+    if v_to <= v_from then raise exception 'Each set of times needs an end after its start.'; end if;
+    if v_to > v_from + interval '12 hours' then raise exception 'Up to 12 hours on one day.'; end if;
+    if exists (select 1 from jsonb_array_elements(v_new) n where tstzrange((n ->> 'from')::timestamptz, (n ->> 'to')::timestamptz) && tstzrange(v_from, v_to)) then
+      raise exception 'Two sets of times overlap. Join them into one.';
+    end if;
+    v_new := v_new || jsonb_build_array(jsonb_build_object('from', v_from, 'to', v_to, 'room', nullif(left(btrim(coalesce(d ->> 'room', '')), 60), '')));
+  end loop;
+  -- bookings still to come that the new times leave out
+  select count(*) into v_out from public.meeting_bookings x
+   where x.event_id = e.id and x.teacher_id = p_teacher and x.status = 'booked' and x.starts_at > now()
+     and not exists (select 1 from jsonb_array_elements(v_new) n where (n ->> 'from')::timestamptz <= x.starts_at and (n ->> 'to')::timestamptz >= x.ends_at);
+  if v_out > 0 and v_reason is null then
+    raise exception '% booked % you’re taking away. Say why, and they’ll be told it’s cancelled.',
+      case when v_out = 1 then 'A family has' else v_out || ' families have' end, case when v_out = 1 then 'a time' else 'times' end;
+  end if;
+  for b in select x.* from public.meeting_bookings x
+            where x.event_id = e.id and x.teacher_id = p_teacher and x.status = 'booked' and x.starts_at > now()
+              and not exists (select 1 from jsonb_array_elements(v_new) n where (n ->> 'from')::timestamptz <= x.starts_at and (n ->> 'to')::timestamptz >= x.ends_at) loop
+    update public.meeting_bookings set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(), cancel_reason = v_reason
+     where id = b.id returning * into b;
+    perform public._meeting_cancelled(b, true);
+  end loop;
+  -- times already over stay as they were; the rest are replaced
+  delete from public.meeting_times where event_id = e.id and teacher_id = p_teacher and ends_at > now();
+  insert into public.meeting_times (event_id, teacher_id, starts_at, ends_at, room)
+  select e.id, p_teacher, (n ->> 'from')::timestamptz, (n ->> 'to')::timestamptz, n ->> 'room'
+    from jsonb_array_elements(v_new) n where (n ->> 'to')::timestamptz > now()
+     and not exists (select 1 from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = p_teacher
+                      and tstzrange(mt.starts_at, mt.ends_at) && tstzrange((n ->> 'from')::timestamptz, (n ->> 'to')::timestamptz));
+  return jsonb_array_length(v_new);
+end $$;
+
+-- Running late: families with a time in that block see it
+create or replace function public.meeting_late(p_time uuid, p_min int) returns void
+language plpgsql security definer set search_path = public as $$
+declare mt public.meeting_times; e public.meeting_events;
+begin
+  select * into mt from public.meeting_times where id = p_time;
+  select * into e from public.meeting_events where id = mt.event_id;
+  if mt.id is null or not ((mt.teacher_id = auth.uid() and public._meeting_teacher(e)) or public._meeting_manager(e)) then raise exception 'You can’t change these times.'; end if;
+  update public.meeting_times set late_min = greatest(0, least(60, coalesce(p_min, 0))) where id = mt.id;
+end $$;
+
+-- Families hear when booking opens (once): each child's parents, for a child with at least one of their teachers in it
+create or replace function public._meeting_tell_open(e public.meeting_events) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+  v_close text;
+begin
+  for r in select distinct pa.id, pa.email, pa.demo, l.id as learner_id, l.display_name as child
+             from public._meeting_learners(e) x join public.profiles l on l.id = x
+             join public.parent_links pl on pl.learner_id = l.id join public.profiles pa on pa.id = pl.parent_id
+            where exists (select 1 from public._meeting_teachers_for(e, l.id))
+              and not exists (select 1 from public.family_blocks b where b.place_id = e.place_id and b.parent_id = pa.id) loop
+    v_close := case when e.closes_at is not null then ' Book by ' || to_char((e.closes_at - interval '1 minute') at time zone public._tz_of(r.id), 'Dy DD Mon') || '.' else '' end;
+    perform public.notify_user(r.id, 'meeting', 'Book a time to meet ' || split_part(r.child, ' ', 1) || '’s teachers',
+      e.title || ', ' || public._place_name(e.place_id) || '.' || v_close, jsonb_build_object('event_id', e.id, 'learner_id', r.learner_id));
+    if coalesce(r.email, '') <> '' and not coalesce(r.demo, false) then
+      insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+      values (r.email, left('Book a time to meet ' || split_part(r.child, ' ', 1) || '’s teachers', 200),
+              left('Hello,' || E'\n\n' || public._place_name(e.place_id) || ' has set up ' || e.title || '.' || v_close
+                   || E'\n\nChoose a time with each of ' || r.child || '’s teachers in StudyBridge: ' || public._app_link()
+                   || coalesce(E'\n\n' || e.note, '') || E'\n\nThe StudyBridge team', 8000),
+              (select support_email from public.app_config where id = 1));
+    end if;
+    n := n + 1;
+  end loop;
+  update public.meeting_events set told_at = now() where id = e.id;
+  if n > 0 then perform public._prof_kick(); end if;
+  return n;
+end $$;
+
+-- Open booking, close it, cancel the meetings (every booking, with families told), or back to a draft (nobody booked)
+create or replace function public.meeting_status(p_event uuid, p_status text, p_reason text default null) returns text
+language plpgsql security definer set search_path = public as $$
+declare e public.meeting_events; b public.meeting_bookings; v_reason text := nullif(left(btrim(coalesce(p_reason, '')), 300), '');
+begin
+  select * into e from public.meeting_events where id = p_event for update;
+  if not public._meeting_manager(e) then raise exception 'You can’t change these meetings.'; end if;
+  if e.status = 'cancelled' then raise exception 'These meetings were cancelled.'; end if;
+  if p_status = 'open' then
+    if public._place_unpaid_at(e.place_id) then raise exception '%’s StudyBridge is paused for now.', public._place_name(e.place_id); end if;
+    if not exists (select 1 from public.meeting_times where event_id = e.id and ends_at > now()) then raise exception 'Add some times first.'; end if;
+    update public.meeting_events set status = 'open' where id = e.id returning * into e;
+    if e.told_at is null then perform public._meeting_tell_open(e); end if;
+  elsif p_status = 'closed' then
+    update public.meeting_events set status = 'closed' where id = e.id;
+  elsif p_status = 'draft' then
+    if exists (select 1 from public.meeting_bookings where event_id = e.id) then raise exception 'Families have booked, so close booking instead.'; end if;
+    update public.meeting_events set status = 'draft' where id = e.id;
+  elsif p_status = 'cancelled' then
+    for b in select * from public.meeting_bookings where event_id = e.id and status = 'booked' and starts_at > now() loop
+      update public.meeting_bookings set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(),
+             cancel_reason = coalesce(v_reason, e.title || ' was cancelled.') where id = b.id returning * into b;
+      perform public._meeting_cancelled(b, true);
+    end loop;
+    update public.meeting_events set status = 'cancelled' where id = e.id;
+  else
+    raise exception 'Pick open, closed or cancelled.';
+  end if;
+  return p_status;
+end $$;
+
+-- Delete meetings nobody has booked (otherwise cancel them)
+create or replace function public.delete_meeting_event(p_event uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare e public.meeting_events;
+begin
+  select * into e from public.meeting_events where id = p_event;
+  if not public._meeting_manager(e) then raise exception 'You can’t change these meetings.'; end if;
+  if exists (select 1 from public.meeting_bookings where event_id = e.id) then raise exception 'Families have booked, so cancel them instead.'; end if;
+  delete from public.meeting_events where id = e.id;
+end $$;
+
+-- A teacher's meetings, and every one the office and managers look after
+create or replace function public.meeting_list() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_place uuid := public._place_of(auth.uid()); v_tz text := public._tz_of(auth.uid());
+begin
+  if public.my_role() is distinct from 'tutor' then return '[]'; end if;
+  return (select coalesce(jsonb_agg(z order by z ->> 'sort'), '[]') from (
+    select jsonb_build_object('id', e.id, 'title', e.title, 'status', e.status, 'how', e.how, 'location', e.location, 'slot_min', e.slot_min,
+      'closes_at', e.closes_at, 'bookable', public._meeting_bookable(e), 'can_manage', public._meeting_manager(e),
+      'starts_at', (select min(starts_at) from public.meeting_times where event_id = e.id),
+      'ends_at', (select max(ends_at) from public.meeting_times where event_id = e.id),
+      'teachers', (select count(distinct teacher_id) from public.meeting_times where event_id = e.id),
+      'booked', (select count(*) from public.meeting_bookings where event_id = e.id and status <> 'cancelled'),
+      'mine', (select count(*) from public.meeting_bookings where event_id = e.id and teacher_id = auth.uid() and status <> 'cancelled'),
+      'me_in', exists (select 1 from public.meeting_times where event_id = e.id and teacher_id = auth.uid()),
+      -- the signed-in teacher's times today
+      'today', (select coalesce(jsonb_agg(jsonb_build_object('id', mt.id, 'starts_at', mt.starts_at, 'ends_at', mt.ends_at, 'room', mt.room, 'late_min', mt.late_min,
+                   'booked', (select count(*) from public.meeting_bookings b where b.event_id = e.id and b.teacher_id = auth.uid() and b.status <> 'cancelled'
+                               and b.starts_at >= mt.starts_at and b.ends_at <= mt.ends_at),
+                   'next', (select min(b.starts_at) from public.meeting_bookings b where b.event_id = e.id and b.teacher_id = auth.uid() and b.status = 'booked'
+                             and b.starts_at >= mt.starts_at and b.ends_at <= mt.ends_at and b.ends_at > now())) order by mt.starts_at), '[]')
+                  from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = auth.uid()
+                   and (mt.starts_at at time zone v_tz)::date = (now() at time zone v_tz)::date),
+      'sort', case when e.status = 'cancelled' or coalesce((select max(ends_at) from public.meeting_times where event_id = e.id), e.created_at) < now() then '2' else '1' end
+              || to_char(coalesce((select min(starts_at) from public.meeting_times where event_id = e.id), e.created_at), 'YYYYMMDDHH24MI')) z
+      from public.meeting_events e
+     where e.place_id = v_place
+       and (public._meeting_manager(e) or exists (select 1 from public.meeting_times where event_id = e.id and teacher_id = auth.uid()))
+       and coalesce((select max(ends_at) from public.meeting_times where event_id = e.id), e.created_at) > now() - interval '120 days') q);
+end $$;
+
+-- One set of meetings for its staff: every teacher's times and bookings (a teacher who doesn't run it: only theirs).
+-- What a family wrote, and the teacher's own notes, only for that teacher.
+create or replace function public.meeting_event(p_event uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare e public.meeting_events; v_mgr boolean; v_in boolean;
+begin
+  select * into e from public.meeting_events where id = p_event;
+  v_mgr := public._meeting_manager(e);
+  v_in := public._meeting_teacher(e);
+  if not (v_mgr or v_in) then raise exception 'You can’t see these meetings.'; end if;
+  return jsonb_build_object('id', e.id, 'title', e.title, 'note', e.note, 'how', e.how, 'location', e.location, 'slot_min', e.slot_min,
+    'gap_min', e.gap_min, 'audience', e.audience, 'closes_at', e.closes_at, 'status', e.status, 'bookable', public._meeting_bookable(e),
+    'closes_day', to_char((e.closes_at - interval '1 minute') at time zone public._place_tz(e.place_id), 'YYYY-MM-DD'),
+    'place', public._place_name(e.place_id), 'tz', public._place_tz(e.place_id), 'can_manage', v_mgr, 'me_in', v_in,
+    'booked_any', exists (select 1 from public.meeting_bookings where event_id = e.id),
+    'audience_text', concat_ws(', ',
+       (select string_agg('Grade ' || y, ', ' order by y::int) from jsonb_array_elements_text(coalesce(e.audience -> 'years', '[]')) y),
+       (select string_agg(c.name, ', ' order by c.name) from public.classes c where c.id::text in (select jsonb_array_elements_text(coalesce(e.audience -> 'class_ids', '[]')))),
+       (select string_agg(l.display_name, ', ' order by l.display_name) from public.profiles l where l.id::text in (select jsonb_array_elements_text(coalesce(e.audience -> 'learner_ids', '[]'))))),
+    'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.display_name, 'me', t.id = auth.uid(),
+        'blocks', (select coalesce(jsonb_agg(jsonb_build_object('id', mt.id, 'starts_at', mt.starts_at, 'ends_at', mt.ends_at, 'room', mt.room, 'late_min', mt.late_min,
+                     'day', to_char(mt.starts_at at time zone public._place_tz(e.place_id), 'YYYY-MM-DD'),
+                     'from', to_char(mt.starts_at at time zone public._place_tz(e.place_id), 'HH24:MI'),
+                     'to', to_char(mt.ends_at at time zone public._place_tz(e.place_id), 'HH24:MI')) order by mt.starts_at), '[]')
+                     from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = t.id),
+        'bookings', (select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'starts_at', b.starts_at, 'ends_at', b.ends_at, 'how', b.how, 'status', b.status,
+                       'learner', jsonb_build_object('id', l.id, 'name', l.display_name), 'parent', jsonb_build_object('id', pa.id, 'name', pa.display_name),
+                       'by_staff', b.booked_by is distinct from b.parent_id,
+                       'parent_note', case when b.teacher_id = auth.uid() then b.parent_note end,
+                       'staff_note', case when b.teacher_id = auth.uid() then b.staff_note end) order by b.starts_at), '[]')
+                       from public.meeting_bookings b join public.profiles l on l.id = b.learner_id join public.profiles pa on pa.id = b.parent_id
+                      where b.event_id = e.id and b.teacher_id = t.id and b.status <> 'cancelled'))
+        order by t.id = auth.uid() desc, t.display_name), '[]')
+      from public.profiles t where t.id in (select teacher_id from public.meeting_times where event_id = e.id) and (v_mgr or t.id = auth.uid())),
+    'families', case when v_mgr then (with who as (select x from public._meeting_learners(e) x)
+       select jsonb_build_object('learners', (select count(*) from who),
+         'with_parents', (select count(*) from who where exists (select 1 from public.parent_links pl where pl.learner_id = who.x)),
+         'booked', (select count(*) from who where exists (select 1 from public.meeting_bookings b where b.event_id = e.id and b.learner_id = who.x and b.status <> 'cancelled')),
+         'not_booked', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade,
+                           'parents', (select count(*) from public.parent_links pl where pl.learner_id = l.id)) order by l.display_name), '[]')
+                          from (select l.* from public.profiles l join who on who.x = l.id
+                                 where not exists (select 1 from public.meeting_bookings b where b.event_id = e.id and b.learner_id = l.id and b.status <> 'cancelled')
+                                 order by l.display_name limit 300) l))) end,
+    'pool', case when v_mgr then (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
+                                    from public.profiles p
+                                   where p.id not in (select teacher_id from public.meeting_times where event_id = e.id)
+                                     and public._meeting_staff_ok(e.place_id, p.id)
+                                     and (public._is_centre(e.place_id) or p.id = e.place_id)) end);
+end $$;
+
+-- What a family can book with each of a child's teachers in a set of meetings (also for staff booking for a family)
+create or replace function public.meeting_slots(p_event uuid, p_learner uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare e public.meeting_events; v_parent boolean; v_staff boolean;
+begin
+  select * into e from public.meeting_events where id = p_event;
+  v_parent := public.my_role() = 'parent' and public._parent_of(p_learner);
+  v_staff := public._meeting_manager(e) or (public._meeting_teacher(e) and public._teaches_now(auth.uid(), p_learner));
+  if e.id is null or not (v_parent or v_staff) or p_learner not in (select public._meeting_learners(e))
+     or (v_parent and (e.status <> 'open' or e.place_id not in (select public._places_of(p_learner)))) then
+    raise exception 'You can’t book these meetings.';
+  end if;
+  return jsonb_build_object('event', jsonb_build_object('id', e.id, 'title', e.title, 'note', e.note, 'how', e.how, 'location', e.location,
+      'slot_min', e.slot_min, 'closes_at', e.closes_at, 'bookable', public._meeting_bookable(e), 'place', public._place_name(e.place_id), 'tz', public._place_tz(e.place_id)),
+    'learner', jsonb_build_object('id', p_learner, 'name', (select display_name from public.profiles where id = p_learner)),
+    'parents', case when v_staff then (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name)), '[]')
+                                         from public.parent_links pl join public.profiles p on p.id = pl.parent_id where pl.learner_id = p_learner) end,
+    'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.display_name,
+        'classes', (select coalesce(jsonb_agg(distinct c.name), '[]') from public.class_teachers ct join public.classes c on c.id = ct.class_id
+                      join public.class_members cm on cm.class_id = c.id where ct.teacher_id = t.id and cm.learner_id = p_learner and not c.archived),
+        'booking', (select jsonb_build_object('id', b.id, 'starts_at', b.starts_at, 'ends_at', b.ends_at, 'how', b.how, 'parent', b.parent_id)
+                      from public.meeting_bookings b where b.event_id = e.id and b.teacher_id = t.id and b.learner_id = p_learner and b.status = 'booked'
+                       and (not v_parent or b.parent_id = auth.uid()) order by b.starts_at limit 1),
+        'blocks', (select coalesce(jsonb_agg(jsonb_build_object('starts_at', mt.starts_at, 'ends_at', mt.ends_at, 'room', mt.room, 'late_min', mt.late_min,
+                     'slots', (select coalesce(jsonb_agg(jsonb_build_object('at', s.at, 'free',
+                                 not exists (select 1 from public.meeting_bookings b where b.teacher_id = t.id and b.status <> 'cancelled'
+                                              and tstzrange(b.starts_at, b.ends_at) && tstzrange(s.at, s.at + make_interval(mins => e.slot_min)))) order by s.at), '[]')
+                                 from generate_series(mt.starts_at, mt.ends_at - make_interval(mins => e.slot_min), make_interval(mins => e.slot_min + e.gap_min)) s(at)
+                                where s.at > now())) order by mt.starts_at), '[]')
+                    from public.meeting_times mt where mt.event_id = e.id and mt.teacher_id = t.id and mt.ends_at > now()))
+        order by t.display_name), '[]')
+      from public.profiles t where t.id in (select public._meeting_teachers_for(e, p_learner)) and (v_parent or v_staff and (public._meeting_manager(e) or t.id = auth.uid()))),
+    -- the family's other times in these meetings (so they don't clash)
+    'mine', case when v_parent then (select coalesce(jsonb_agg(jsonb_build_object('starts_at', b.starts_at, 'ends_at', b.ends_at,
+                    'teacher', (select display_name from public.profiles where id = b.teacher_id), 'child', public._first_name(b.learner_id)) order by b.starts_at), '[]')
+                    from public.meeting_bookings b where b.parent_id = auth.uid() and b.status = 'booked' and b.ends_at > now()) end);
+end $$;
+
+-- Book (or move) a time with a teacher. Parents book for their own child while booking is open; staff book for a family
+-- (p_parent) any time before the meetings. A teacher never has two families at once, and a parent is never in two places.
+create or replace function public.book_meeting(p_event uuid, p_teacher uuid, p_learner uuid, p_at timestamptz, p_how text default null,
+                                               p_note text default null, p_parent uuid default null) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  e public.meeting_events;
+  v_parent uuid;
+  v_staff boolean;
+  v_how text;
+  v_end timestamptz;
+  v_old public.meeting_bookings;
+  v_clash public.meeting_bookings;
+  v_id uuid;
+begin
+  select * into e from public.meeting_events where id = p_event;
+  if e.id is null then raise exception 'You can’t book these meetings.'; end if;
+  v_staff := public.my_role() = 'tutor' and (public._meeting_manager(e) or (p_teacher = auth.uid() and public._meeting_teacher(e)));
+  if v_staff then
+    v_parent := p_parent;
+    if v_parent is null or not exists (select 1 from public.parent_links where parent_id = v_parent and learner_id = p_learner) then
+      raise exception 'Pick one of their parents.';
+    end if;
+    if e.status not in ('open', 'closed') then raise exception 'Open these meetings first.'; end if;
+  else
+    if public.my_role() is distinct from 'parent' or not public._parent_of(p_learner) then raise exception 'You can’t book these meetings.'; end if;
+    v_parent := auth.uid();
+    if not public._meeting_bookable(e) then raise exception 'Booking for these meetings has closed.'; end if;
+    if e.place_id not in (select public._places_of(p_learner)) then raise exception 'You can’t book these meetings.'; end if;
+    if exists (select 1 from public.family_blocks b where b.place_id = e.place_id and b.parent_id = v_parent) then
+      raise exception '% isn’t taking bookings from you.', public._place_name(e.place_id);
+    end if;
+    if (select count(*) from public.meeting_bookings where booked_by = auth.uid() and created_at > now() - interval '1 day') >= 40 then
+      raise exception 'That’s a lot of bookings for one day. Try again tomorrow.';
+    end if;
+  end if;
+  if p_learner not in (select public._meeting_learners(e)) then raise exception 'These meetings aren’t for %.', public._first_name(p_learner); end if;
+  if p_teacher not in (select public._meeting_teachers_for(e, p_learner)) then raise exception 'Pick one of their teachers.'; end if;
+  if public._place_unpaid_at(e.place_id) then raise exception '%’s StudyBridge is paused for now.', public._place_name(e.place_id); end if;
+  v_how := case when e.how = 'choice' then p_how else e.how end;
+  if v_how is null or v_how not in ('in_person', 'video') then raise exception 'Pick in person or by video.'; end if;
+  if p_at is null or p_at <= now() then raise exception 'Pick a time that hasn’t passed.'; end if;
+  v_end := p_at + make_interval(mins => e.slot_min);
+  -- the time must be one of that teacher's slots
+  if not exists (select 1 from public.meeting_times mt,
+                         generate_series(mt.starts_at, mt.ends_at - make_interval(mins => e.slot_min), make_interval(mins => e.slot_min + e.gap_min)) s(at)
+                  where mt.event_id = e.id and mt.teacher_id = p_teacher and s.at = p_at) then
+    raise exception 'Pick one of the times shown.';
+  end if;
+  -- one at a time: the teacher, then the parent
+  perform pg_advisory_xact_lock(hashtext('meet:' || p_teacher::text));
+  perform pg_advisory_xact_lock(hashtext('meet:' || v_parent::text));
+  select * into v_old from public.meeting_bookings
+   where event_id = e.id and teacher_id = p_teacher and learner_id = p_learner and parent_id = v_parent and status = 'booked';
+  if exists (select 1 from public.meeting_bookings b where b.teacher_id = p_teacher and b.status <> 'cancelled' and b.id is distinct from v_old.id
+              and tstzrange(b.starts_at, b.ends_at) && tstzrange(p_at, v_end)) then
+    raise exception 'That time has just gone. Pick another.';
+  end if;
+  select * into v_clash from public.meeting_bookings b where b.parent_id = v_parent and b.status = 'booked' and b.id is distinct from v_old.id
+     and tstzrange(b.starts_at, b.ends_at) && tstzrange(p_at, v_end) limit 1;
+  if v_clash.id is not null then
+    raise exception '% already % a meeting then, with %.', case when v_staff then 'This parent' else 'You' end, case when v_staff then 'has' else 'have' end,
+      coalesce((select display_name from public.profiles where id = v_clash.teacher_id), 'another teacher');
+  end if;
+  if v_old.id is not null then
+    update public.meeting_bookings set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(), cancel_reason = 'Moved to another time.' where id = v_old.id;
+  end if;
+  insert into public.meeting_bookings (event_id, teacher_id, learner_id, parent_id, booked_by, starts_at, ends_at, how, parent_note)
+  values (e.id, p_teacher, p_learner, v_parent, auth.uid(), p_at, v_end, v_how,
+          nullif(left(btrim(coalesce(p_note, case when v_old.id is not null then v_old.parent_note end, '')), 500), ''))
+  returning id into v_id;
+  if v_staff then
+    perform public.notify_user(v_parent, 'meeting', 'A meeting was booked for you',
+      'With ' || coalesce((select display_name from public.profiles where id = p_teacher), 'their teacher') || ' about ' || public._first_name(p_learner) || ', '
+        || public._meeting_when(p_at, v_parent) || case when v_how = 'video' then ', by video.' else ', in person.' end,
+      jsonb_build_object('event_id', e.id, 'booking_id', v_id, 'learner_id', p_learner));
+  end if;
+  return v_id;
+end $$;
+
+-- Cancel a booking: the family (theirs, before it starts) or the teacher and the meetings' organisers (with a reason)
+create or replace function public.cancel_meeting(p_booking uuid, p_reason text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare b public.meeting_bookings; e public.meeting_events; v_staff boolean;
+begin
+  select * into b from public.meeting_bookings where id = p_booking for update;
+  select * into e from public.meeting_events where id = b.event_id;
+  if b.id is null then raise exception 'Not found.'; end if;
+  v_staff := public.my_role() = 'tutor' and (public._meeting_manager(e) or (b.teacher_id = auth.uid() and public._meeting_teacher(e)));
+  if not v_staff and not (b.parent_id = auth.uid() and public.my_role() = 'parent') then raise exception 'Not found.'; end if;
+  if b.status <> 'booked' or b.starts_at <= now() then raise exception 'Only a meeting still to come can be cancelled.'; end if;
+  if v_staff and nullif(btrim(coalesce(p_reason, '')), '') is null then raise exception 'Say why, so the family knows.'; end if;
+  update public.meeting_bookings set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(),
+         cancel_reason = nullif(left(btrim(coalesce(p_reason, '')), 300), '')
+   where id = b.id returning * into b;
+  perform public._meeting_cancelled(b, v_staff);
+end $$;
+
+-- After a meeting: the teacher notes it (their own notes; families never see them) and whether the family came
+create or replace function public.meeting_note(p_booking uuid, p_status text, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare b public.meeting_bookings;
+begin
+  select * into b from public.meeting_bookings where id = p_booking for update;
+  if b.id is null or b.teacher_id <> auth.uid() or public.my_role() is distinct from 'tutor' then raise exception 'Not found.'; end if;
+  if b.status = 'cancelled' then raise exception 'This meeting was cancelled.'; end if;
+  if p_status not in ('booked', 'met', 'missed') then raise exception 'Pick met or didn’t come.'; end if;
+  if p_status in ('met', 'missed') and b.starts_at > now() then raise exception 'You can say how it went once it’s started.'; end if;
+  update public.meeting_bookings set status = p_status, staff_note = nullif(left(btrim(coalesce(p_note, '')), 2000), '') where id = b.id;
+end $$;
+
+-- A parent's meetings: sets open for booking for each of their children, and their times
+create or replace function public.my_meetings(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'parent' then return jsonb_build_object('events', '[]'::jsonb, 'bookings', '[]'::jsonb); end if;
+  return jsonb_build_object(
+    'events', (select coalesce(jsonb_agg(jsonb_build_object('id', e.id, 'title', e.title, 'note', e.note, 'how', e.how, 'location', e.location,
+                 'closes_at', e.closes_at, 'place', public._place_name(e.place_id), 'tz', public._place_tz(e.place_id),
+                 'starts_at', (select min(starts_at) from public.meeting_times where event_id = e.id),
+                 'ends_at', (select max(ends_at) from public.meeting_times where event_id = e.id),
+                 'child', jsonb_build_object('id', l.id, 'name', l.display_name),
+                 'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', t.id, 'name', t.display_name,
+                                'booked', exists (select 1 from public.meeting_bookings b where b.event_id = e.id and b.teacher_id = t.id
+                                                   and b.learner_id = l.id and b.parent_id = auth.uid() and b.status in ('booked', 'met', 'missed'))) order by t.display_name), '[]')
+                                from public.profiles t where t.id in (select public._meeting_teachers_for(e, l.id))))
+               order by (select min(starts_at) from public.meeting_times where event_id = e.id)), '[]')
+                 from public.parent_links pl join public.profiles l on l.id = pl.learner_id
+                 join public.meeting_events e on e.place_id in (select public._places_of(l.id))
+                where pl.parent_id = auth.uid() and (p_learner is null or l.id = p_learner) and public._meeting_bookable(e)
+                  and l.id in (select public._meeting_learners(e)) and exists (select 1 from public._meeting_teachers_for(e, l.id))
+                  and not exists (select 1 from public.family_blocks fb where fb.place_id = e.place_id and fb.parent_id = auth.uid())),
+    'bookings', (select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'event_id', b.event_id, 'event', e.title, 'place', public._place_name(e.place_id),
+                   'child', jsonb_build_object('id', l.id, 'name', l.display_name), 'teacher', jsonb_build_object('id', t.id, 'name', t.display_name),
+                   'starts_at', b.starts_at, 'ends_at', b.ends_at, 'how', b.how, 'status', b.status, 'parent_note', b.parent_note,
+                   'where', case when b.how = 'in_person' then coalesce((public._meeting_block(b)).room, e.location) end,
+                   'late_min', coalesce((public._meeting_block(b)).late_min, 0), 'tz', public._place_tz(e.place_id),
+                   'cancel_reason', case when b.status = 'cancelled' then b.cancel_reason end,
+                   'cancelled_by_them', b.status = 'cancelled' and b.cancelled_by is distinct from auth.uid(),
+                   'can_change', b.status = 'booked' and b.starts_at > now() and public._meeting_bookable(e)) order by b.starts_at), '[]')
+                   from public.meeting_bookings b join public.meeting_events e on e.id = b.event_id
+                   join public.profiles l on l.id = b.learner_id join public.profiles t on t.id = b.teacher_id
+                  where b.parent_id = auth.uid() and (p_learner is null or b.learner_id = p_learner)
+                    and ((b.status = 'booked' and b.ends_at > now() - interval '1 hour')
+                         or (b.status = 'cancelled' and b.cancelled_by is distinct from auth.uid() and b.cancel_reason is distinct from 'Moved to another time.'
+                             and b.starts_at > now() and b.cancelled_at > now() - interval '14 days'))));
+end $$;
+
+-- Reminders: families the day before (with an email of that day's times) and 15 minutes before; each teacher once per
+-- set of times; and families who haven't booked, 2 days before booking closes
+create or replace function public._meeting_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  bk public.meeting_bookings;
+  mt public.meeting_times;
+  e public.meeting_events;
+  n int := 0;
+  v_list text;
+begin
+  -- the day before: one notification and one email per family with all that day's times
+  for r in select b.parent_id, array_agg(b.id order by b.starts_at) as ids from public.meeting_bookings b join public.meeting_events ev on ev.id = b.event_id
+            where b.status = 'booked' and ev.status <> 'cancelled' and b.reminded_day is null
+              and b.starts_at > now() + interval '1 hour' and b.starts_at <= now() + interval '24 hours' and b.created_at < b.starts_at - interval '23 hours'
+            group by b.parent_id loop
+    v_list := (select string_agg(to_char(x.starts_at at time zone public._tz_of(r.parent_id), 'HH24:MI') || ' · '
+                                 || coalesce((select display_name from public.profiles where id = x.teacher_id), 'a teacher') || ' (' || public._first_name(x.learner_id) || ')'
+                                 || case when x.how = 'video' then ', by video' else coalesce(', ' || coalesce((public._meeting_block(x)).room, ev.location), ', in person') end,
+                                 E'\n' order by x.starts_at)
+                 from public.meeting_bookings x join public.meeting_events ev on ev.id = x.event_id where x.id = any (r.ids));
+    perform public.notify_user(r.parent_id, 'meeting', 'Your meetings tomorrow', v_list, jsonb_build_object('event_id', (select event_id from public.meeting_bookings where id = r.ids[1])));
+    if exists (select 1 from public.profiles where id = r.parent_id and coalesce(email, '') <> '' and not coalesce(demo, false)) then
+      insert into public.outgoing_emails (to_addr, subject, body, reply_to)
+      values ((select email from public.profiles where id = r.parent_id), 'Your meetings tomorrow',
+              left('Hello,' || E'\n\n' || 'Your meetings tomorrow (your time):' || E'\n\n' || v_list
+                   || E'\n\nVideo meetings open in StudyBridge, from 15 minutes before: ' || public._app_link() || E'\n\nThe StudyBridge team', 8000),
+              (select support_email from public.app_config where id = 1));
+    end if;
+    update public.meeting_bookings set reminded_day = now() where id = any (r.ids);
+    n := n + 1;
+  end loop;
+  -- 15 minutes before
+  for bk in select x.* from public.meeting_bookings x join public.meeting_events ev on ev.id = x.event_id
+            where x.status = 'booked' and ev.status <> 'cancelled' and x.reminded_soon is null
+              and x.starts_at > now() and x.starts_at <= now() + interval '15 minutes' and x.created_at < x.starts_at - interval '15 minutes'
+            for update of x skip locked loop
+    perform public.notify_user(bk.parent_id, 'meeting', 'Soon: your meeting with ' || coalesce((select display_name from public.profiles where id = bk.teacher_id), 'their teacher'),
+      to_char(bk.starts_at at time zone public._tz_of(bk.parent_id), 'HH24:MI') || case when bk.how = 'video' then '. Open StudyBridge to join the video.' else '.' end,
+      jsonb_build_object('event_id', bk.event_id, 'booking_id', bk.id, 'learner_id', bk.learner_id));
+    update public.meeting_bookings set reminded_soon = now(), reminded_day = coalesce(reminded_day, now()) where id = bk.id;
+    n := n + 1;
+  end loop;
+  -- teachers: once for each set of times the day before, and 15 minutes before (only with families booked)
+  for mt in select x.* from public.meeting_times x join public.meeting_events ev on ev.id = x.event_id
+             where ev.status in ('open', 'closed')
+               and ((x.reminded_soon is null and x.starts_at > now() and x.starts_at <= now() + interval '15 minutes')
+                 or (x.reminded_day is null and x.starts_at > now() + interval '1 hour' and x.starts_at <= now() + interval '24 hours'))
+               and exists (select 1 from public.meeting_bookings b where b.event_id = x.event_id and b.teacher_id = x.teacher_id and b.status = 'booked'
+                            and b.starts_at >= x.starts_at and b.ends_at <= x.ends_at)
+             for update of x skip locked loop
+    perform public.notify_user(mt.teacher_id, 'meeting',
+      case when mt.starts_at <= now() + interval '15 minutes' then 'Soon: ' else 'Tomorrow: ' end || (select title from public.meeting_events where id = mt.event_id),
+      to_char(mt.starts_at at time zone public._tz_of(mt.teacher_id), 'HH24:MI') || '–' || to_char(mt.ends_at at time zone public._tz_of(mt.teacher_id), 'HH24:MI') || ' · '
+        || (select count(*) from public.meeting_bookings b where b.event_id = mt.event_id and b.teacher_id = mt.teacher_id and b.status = 'booked'
+              and b.starts_at >= mt.starts_at and b.ends_at <= mt.ends_at) || ' booked, the first at '
+        || (select to_char(min(b.starts_at) at time zone public._tz_of(mt.teacher_id), 'HH24:MI') from public.meeting_bookings b
+             where b.event_id = mt.event_id and b.teacher_id = mt.teacher_id and b.status = 'booked' and b.starts_at >= mt.starts_at and b.ends_at <= mt.ends_at),
+      jsonb_build_object('event_id', mt.event_id));
+    if mt.starts_at <= now() + interval '15 minutes' then
+      update public.meeting_times set reminded_soon = now(), reminded_day = coalesce(reminded_day, now()) where id = mt.id;
+    else
+      update public.meeting_times set reminded_day = now() where id = mt.id;
+    end if;
+    n := n + 1;
+  end loop;
+  -- families who haven't booked anyone yet, 2 days before booking closes (once)
+  for e in select x.* from public.meeting_events x where x.status = 'open' and x.nudged_at is null and x.closes_at is not null
+              and x.closes_at > now() and x.closes_at <= now() + interval '2 days' for update skip locked loop
+    for r in select distinct pa.id as parent_id, l.id as learner_id, l.display_name as child
+               from public._meeting_learners(e) x join public.profiles l on l.id = x
+               join public.parent_links pl on pl.learner_id = l.id join public.profiles pa on pa.id = pl.parent_id
+              where exists (select 1 from public._meeting_teachers_for(e, l.id))
+                and not exists (select 1 from public.meeting_bookings b where b.event_id = e.id and b.learner_id = l.id and b.parent_id = pa.id and b.status <> 'cancelled')
+                and not exists (select 1 from public.family_blocks fb where fb.place_id = e.place_id and fb.parent_id = pa.id) loop
+      perform public.notify_user(r.parent_id, 'meeting', 'Booking closes soon: ' || e.title,
+        'Book a time with ' || split_part(r.child, ' ', 1) || '’s teachers by ' || to_char((e.closes_at - interval '1 minute') at time zone public._tz_of(r.parent_id), 'Dy DD Mon') || '.',
+        jsonb_build_object('event_id', e.id, 'learner_id', r.learner_id));
+    end loop;
+    update public.meeting_events set nudged_at = now() where id = e.id;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- A parent who stops following a child (or is taken off) loses their meetings about them; the teacher is told
+create or replace function public._parent_link_gone() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare b public.meeting_bookings;
+begin
+  for b in update public.meeting_bookings set status = 'cancelled', cancelled_at = now(), cancel_reason = 'The parent no longer follows this learner.'
+            where parent_id = old.parent_id and learner_id = old.learner_id and status = 'booked' and starts_at > now() returning * loop
+    perform public._meeting_cancelled(b, false);
+  end loop;
+  return old;
+end $$;
+drop trigger if exists parent_links_gone on public.parent_links;
+create trigger parent_links_gone after delete on public.parent_links for each row execute function public._parent_link_gone();
+
+-- =====================================================================
+-- Portfolios: pieces a learner chooses to show (photos, files, a few words about it, or a piece of marked work) and
+-- pieces their teachers add. A learner's piece goes to the places they pick ("Just me" keeps it to themselves); a piece
+-- of work only to the place that set it; a teacher's piece stays with their place. Parents see every piece except "Just
+-- me" ones. Comments belong to one place: the learner and that place's teachers see them, parents and other places don't.
+-- The office never sees portfolios (they're work).
+-- =====================================================================
+create table if not exists public.portfolio_items (
+  id uuid primary key default gen_random_uuid(),   -- the app makes it, so files can go up under it first
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  added_by uuid references public.profiles (id) on delete set null,
+  place_id uuid,                                   -- a teacher's piece: their place
+  title text not null check (length(btrim(title)) between 1 and 150),
+  body text check (body is null or length(body) <= 4000),
+  files jsonb not null default '[]',
+  attempt_id uuid references public.attempts (id) on delete set null,
+  snapshot jsonb,
+  class_id uuid references public.classes (id) on delete set null,
+  places uuid[] not null default '{}',             -- who besides the learner (and parents) sees it; '{}' = just me
+  by_teacher boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists portfolio_items_learner on public.portfolio_items (learner_id, created_at desc);
+create table if not exists public.portfolio_comments (
+  id uuid primary key default gen_random_uuid(),
+  item_id uuid not null references public.portfolio_items (id) on delete cascade,
+  place_id uuid not null,
+  author_id uuid references public.profiles (id) on delete set null,
+  body text not null check (length(btrim(body)) between 1 and 1000),
+  created_at timestamptz not null default now()
+);
+create index if not exists portfolio_comments_item on public.portfolio_comments (item_id, created_at);
+alter table public.portfolio_items enable row level security;
+alter table public.portfolio_comments enable row level security;
+revoke all on public.portfolio_items, public.portfolio_comments from public, anon, authenticated;
+revoke all on public.portfolio_items, public.portfolio_comments from service_role;
+
+-- How the signed-in person sees a piece: 'learner', 'parent', 'staff' (a teacher of theirs now, at a place it's shown
+-- to), or null
+create or replace function public._portfolio_side(i public.portfolio_items) returns text
+language sql stable security definer set search_path = public as $$
+  select case
+    when i.id is null then null
+    when i.learner_id = auth.uid() then 'learner'
+    when public.my_role() = 'parent' then case when public._parent_of(i.learner_id) and (i.by_teacher or cardinality(i.places) > 0) then 'parent' end
+    when public.my_role() = 'tutor' and public._place_of(auth.uid()) = any (i.places) and public._teaches_now(auth.uid(), i.learner_id) then 'staff'
+  end
+$$;
+-- Files: work/<learner>/portfolio/<piece>/…. The learner, or a teacher of theirs now (their place not paused), adds
+-- them to a new piece or to one they added; nobody changes a file once it's there.
+create or replace function public._portfolio_add_ok(p_learner text, p_item text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare i public.portfolio_items; v_l uuid; v_i uuid;
+begin
+  v_l := p_learner::uuid;
+  v_i := p_item::uuid;
+  select * into i from public.portfolio_items where id = v_i;
+  if i.id is not null then
+    return i.learner_id = v_l and i.added_by = auth.uid()
+       and (not i.by_teacher or (public._teaches_now(auth.uid(), v_l) and i.place_id = public._place_of(auth.uid())));
+  end if;
+  return (v_l = auth.uid() and public.my_role() = 'learner')
+      or (public.my_role() = 'tutor' and public._teaches_now(auth.uid(), v_l) and not public._place_unpaid_at(public._place_of(auth.uid())));
+exception when others then
+  return false;
+end $$;
+-- Who opens a piece's files: whoever sees the piece; before it's saved (or if it never was), only whoever uploaded them
+create or replace function public._portfolio_files_ok(p_learner text, p_item text, p_owner uuid) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare i public.portfolio_items;
+begin
+  select * into i from public.portfolio_items where id = p_item::uuid;
+  if i.id is null then return p_owner = auth.uid(); end if;
+  return i.learner_id = p_learner::uuid and public._portfolio_side(i) is not null;
+exception when others then
+  return false;
+end $$;
+-- Who removes a piece's files (to delete the piece): whoever added it; files of a piece never saved, whoever uploaded them
+create or replace function public._portfolio_files_mine(p_learner text, p_item text, p_owner uuid) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare i public.portfolio_items;
+begin
+  select * into i from public.portfolio_items where id = p_item::uuid;
+  if i.id is null then return p_owner = auth.uid(); end if;
+  return i.learner_id = p_learner::uuid and i.added_by = auth.uid();
+exception when others then
+  return false;
+end $$;
+
+create or replace function public._portfolio_json(i public.portfolio_items) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', i.id, 'learner_id', i.learner_id, 'title', i.title, 'body', i.body, 'files', i.files, 'snapshot', i.snapshot,
+    -- the work itself opens only for the learner and the teacher who set it
+    'attempt_id', case when i.learner_id = auth.uid() or exists (select 1 from public.attempts a where a.id = i.attempt_id and a.tutor_id = auth.uid()) then i.attempt_id end,
+    'class', (select jsonb_build_object('id', c.id, 'name', c.name) from public.classes c where c.id = i.class_id),
+    'places', case when public._portfolio_side(i) in ('learner', 'parent')
+                   then (select coalesce(jsonb_agg(jsonb_build_object('id', x, 'name', public._place_name(x)) order by public._place_name(x)), '[]') from unnest(i.places) x) end,
+    'just_me', not i.by_teacher and cardinality(i.places) = 0,
+    'by_teacher', i.by_teacher, 'added_by', coalesce((select display_name from public.profiles where id = i.added_by), 'A former teacher'),
+    'mine', i.added_by = auth.uid(), 'at', i.created_at, 'updated_at', i.updated_at,
+    'can_edit', i.added_by = auth.uid(),
+    'can_delete', i.added_by = auth.uid(),
+    'comments', (select count(*) from public.portfolio_comments pc where pc.item_id = i.id
+                   and (i.learner_id = auth.uid() or (public.my_role() = 'tutor' and pc.place_id = public._place_of(auth.uid())))))
+$$;
+
+-- A portfolio: the learner's own, a parent's child's, or (for a teacher) what's shown to their place
+create or replace function public.my_portfolio(p_learner uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_l uuid := coalesce(p_learner, auth.uid());
+  v_role text := public.my_role();
+  v_staff boolean := v_role = 'tutor' and public._teaches_now(auth.uid(), v_l);
+begin
+  if not (v_l = auth.uid() and v_role = 'learner') and not (v_role = 'parent' and public._parent_of(v_l)) and not v_staff then
+    raise exception 'You can’t see this portfolio.';
+  end if;
+  return jsonb_build_object(
+    'learner', jsonb_build_object('id', v_l, 'name', (select display_name from public.profiles where id = v_l)),
+    'items', (select coalesce(jsonb_agg(public._portfolio_json(i) order by i.created_at desc), '[]') from public.portfolio_items i
+               where i.learner_id = v_l and public._portfolio_side(i) is not null),
+    'can_add', (v_l = auth.uid() and v_role = 'learner') or (v_staff and not public._place_unpaid_at(public._place_of(auth.uid()))),
+    -- where a learner can show a piece: each of their places
+    'places', case when v_l = auth.uid() then (select coalesce(jsonb_agg(jsonb_build_object('id', x, 'name', public._place_name(x)) order by public._place_name(x)), '[]')
+                                                 from public._places_of(v_l) x) end,
+    'classes', (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name), '[]')
+                  from public.classes c join public.class_members cm on cm.class_id = c.id
+                 where cm.learner_id = v_l and not c.archived and (v_role <> 'tutor' or public._teaches_class(c.id))),
+    -- work they can add: marked and given back (for a teacher: set at their place)
+    'work', case when v_l = auth.uid() or v_staff then (select coalesce(jsonb_agg(w order by w ->> 'at' desc), '[]') from (
+               select jsonb_build_object('id', a.id, 'title', s.title, 'at', coalesce(a.submitted_at, a.started_at), 'from', public._place_name(public._place_of(s.tutor_id))) w
+                 from public.attempts a join public.assignments s on s.id = a.assignment_id
+                where a.learner_id = v_l and public._is_released(a) and (v_l = auth.uid() or public._place_of(s.tutor_id) = public._place_of(auth.uid()))
+                order by coalesce(a.submitted_at, a.started_at) desc limit 60) q) end,
+    -- photo permission their school or tutor has on record (teachers adding pictures see it)
+    'photos', case when v_staff then (select r.photos from public.student_records r where r.place_id = public._place_of(auth.uid()) and r.learner_id = v_l) end);
+end $$;
+
+-- One piece, with the comments the signed-in person can see
+create or replace function public.portfolio_item(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare i public.portfolio_items; v_side text;
+begin
+  select * into i from public.portfolio_items where id = p_id;
+  v_side := public._portfolio_side(i);
+  if v_side is null then raise exception 'You can’t see this.'; end if;
+  return public._portfolio_json(i) || jsonb_build_object('side', v_side,
+    'comments', case when v_side = 'parent' then '[]'::jsonb else (select coalesce(jsonb_agg(jsonb_build_object('id', pc.id, 'body', pc.body, 'at', pc.created_at,
+                   'author', coalesce(a.display_name, 'Someone'), 'mine', pc.author_id = auth.uid(), 'by_learner', pc.author_id = i.learner_id,
+                   'place_id', pc.place_id, 'place', public._place_name(pc.place_id),
+                   'can_delete', pc.author_id = auth.uid() or i.learner_id = auth.uid()) order by pc.created_at), '[]')
+                  from public.portfolio_comments pc left join public.profiles a on a.id = pc.author_id
+                 where pc.item_id = i.id and (v_side = 'learner' or pc.place_id = public._place_of(auth.uid()))) end);
+end $$;
+
+-- Add or change a piece. p_item: {title, body, files [{path, name, type, size}], class_id, places (the learner's choice),
+-- attempt_id (a piece of their marked work)}
+create or replace function public.save_portfolio_item(p_id uuid, p_learner uuid, p_item jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  i public.portfolio_items;
+  v_role text := public.my_role();
+  v_teacher boolean;
+  v_title text := btrim(coalesce(p_item ->> 'title', ''));
+  v_files jsonb := coalesce(p_item -> 'files', '[]');
+  v_places uuid[];
+  v_class uuid;
+  v_attempt uuid;
+  v_snap jsonb;
+  v_work_place uuid;
+  a public.attempts;
+  s public.assignments;
+  f jsonb;
+  pa record;
+begin
+  if p_id is null or p_learner is null then raise exception 'Something’s missing. Try again.'; end if;
+  select * into i from public.portfolio_items where id = p_id for update;
+  v_teacher := v_role = 'tutor' and p_learner <> auth.uid();
+  if i.id is not null then
+    if i.learner_id <> p_learner or i.added_by is distinct from auth.uid() then raise exception 'Only whoever added this piece changes it.'; end if;
+    if i.by_teacher and not (public._teaches_now(auth.uid(), p_learner) and i.place_id = public._place_of(auth.uid())) then
+      raise exception 'You don’t teach this learner now.';
+    end if;
+  elsif v_teacher then
+    if not public._teaches_now(auth.uid(), p_learner) then raise exception 'You don’t teach this learner now.'; end if;
+    if public._place_unpaid_at(public._place_of(auth.uid())) then raise exception 'Your StudyBridge is paused for now.'; end if;
+    if (select count(*) from public.portfolio_items where added_by = auth.uid() and created_at > now() - interval '1 day') >= 200 then
+      raise exception 'That’s a lot of pieces for one day. Try again tomorrow.';
+    end if;
+  else
+    if not (p_learner = auth.uid() and v_role = 'learner') then raise exception 'You can’t add to this portfolio.'; end if;
+    if (select count(*) from public.portfolio_items where added_by = auth.uid() and created_at > now() - interval '1 day') >= 30 then
+      raise exception 'That’s a lot of pieces for one day. Try again tomorrow.';
+    end if;
+  end if;
+  if v_title = '' then raise exception 'Give it a title.'; end if;
+  if jsonb_typeof(v_files) <> 'array' or jsonb_array_length(v_files) > 6 then raise exception 'Up to 6 pictures or files a piece.'; end if;
+  for f in select x from jsonb_array_elements(v_files) x loop
+    if coalesce(f ->> 'path', '') not like p_learner::text || '/portfolio/' || p_id::text || '/%' then raise exception 'Those files aren’t this piece’s.'; end if;
+  end loop;
+  v_files := coalesce((select jsonb_agg(jsonb_build_object('path', x ->> 'path', 'name', left(coalesce(x ->> 'name', 'file'), 120),
+                                                         'type', left(coalesce(x ->> 'type', ''), 80), 'size', (x ->> 'size')::bigint))
+                         from jsonb_array_elements(v_files) x), '[]');
+  -- a piece of marked work: theirs and given back (a teacher: set at their place); the snapshot is made here
+  v_attempt := nullif(p_item ->> 'attempt_id', '')::uuid;
+  if v_attempt is not null then
+    select * into a from public.attempts where id = v_attempt;
+    select * into s from public.assignments where id = a.assignment_id;
+    if a.id is null or a.learner_id <> p_learner or not public._is_released(a)
+       or (v_teacher and public._place_of(s.tutor_id) <> public._place_of(auth.uid())) then
+      raise exception 'Pick a piece of their work whose marks are back.';
+    end if;
+    v_work_place := public._place_of(s.tutor_id);
+    v_snap := jsonb_build_object('title', s.title, 'kind', s.kind, 'subject', (select name from public.subjects where id = s.subject_id),
+                                 'score', a.score, 'max', a.max_score, 'at', coalesce(a.submitted_at, a.started_at), 'from', public._place_name(v_work_place));
+  end if;
+  -- where it shows
+  if v_teacher then
+    v_places := case when i.id is not null then i.places else array[public._place_of(auth.uid())] end;
+  else
+    v_places := array(select distinct x::uuid from jsonb_array_elements_text(coalesce(p_item -> 'places', '[]')) x
+                       where x::uuid in (select public._places_of(p_learner)));
+    if v_work_place is not null then v_places := array(select x from unnest(v_places) x where x = v_work_place); end if;
+  end if;
+  v_class := nullif(p_item ->> 'class_id', '')::uuid;
+  if v_class is not null and not exists (select 1 from public.class_members where class_id = v_class and learner_id = p_learner) then v_class := null; end if;
+  if v_class is not null and v_teacher and not public._teaches_class(v_class) then v_class := null; end if;
+  if i.id is null then
+    insert into public.portfolio_items (id, learner_id, added_by, place_id, title, body, files, attempt_id, snapshot, class_id, places, by_teacher)
+    values (p_id, p_learner, auth.uid(), case when v_teacher then public._place_of(auth.uid()) end, left(v_title, 150),
+            nullif(left(btrim(coalesce(p_item ->> 'body', '')), 4000), ''), v_files, v_attempt, v_snap, v_class, coalesce(v_places, '{}'), v_teacher)
+    returning * into i;
+    if v_teacher then
+      perform public.notify_user(p_learner, 'portfolio', coalesce((select display_name from public.profiles where id = auth.uid()), 'Your teacher') || ' added to your portfolio',
+        i.title, jsonb_build_object('item_id', i.id));
+      for pa in select pl.parent_id from public.parent_links pl where pl.learner_id = p_learner loop
+        perform public.notify_user(pa.parent_id, 'portfolio',
+          coalesce((select display_name from public.profiles where id = auth.uid()), 'Their teacher') || ' added to ' || public._first_name(p_learner) || '’s portfolio',
+          i.title, jsonb_build_object('item_id', i.id, 'learner_id', p_learner));
+      end loop;
+    end if;
+  else
+    update public.portfolio_items set title = left(v_title, 150), body = nullif(left(btrim(coalesce(p_item ->> 'body', '')), 4000), ''), files = v_files,
+           attempt_id = v_attempt, snapshot = v_snap, class_id = v_class, places = coalesce(v_places, '{}'), updated_at = now()
+     where id = i.id returning * into i;
+  end if;
+  return public._portfolio_json(i);
+end $$;
+
+-- Whoever added a piece takes it out (the app removes its files first)
+create or replace function public.delete_portfolio_item(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.portfolio_items where id = p_id and added_by = auth.uid();
+  if not found then raise exception 'Only whoever added this piece can take it out.'; end if;
+end $$;
+
+-- A comment on a piece: a teacher (for their place) or the learner (to one of the places it's shown to)
+create or replace function public.comment_portfolio(p_item uuid, p_body text, p_place uuid default null) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  i public.portfolio_items;
+  v_side text;
+  v_place uuid;
+  v_body text := btrim(coalesce(p_body, ''));
+  v_id uuid;
+  r uuid;
+  v_me text := coalesce((select display_name from public.profiles where id = auth.uid()), 'Someone');
+begin
+  select * into i from public.portfolio_items where id = p_item;
+  v_side := public._portfolio_side(i);
+  if v_side is null then raise exception 'You can’t see this.'; end if;
+  if v_side = 'parent' then raise exception 'Comments are between % and their teachers.', public._first_name(i.learner_id); end if;
+  if length(v_body) = 0 then raise exception 'Write something first.'; end if;
+  if length(v_body) > 1000 then raise exception 'Keep it under 1,000 characters.'; end if;
+  if (select count(*) from public.portfolio_comments where author_id = auth.uid() and created_at > now() - interval '10 minutes') >= 30 then
+    raise exception 'That’s a lot of comments. Wait a few minutes, then try again.';
+  end if;
+  if v_side = 'staff' then
+    v_place := public._place_of(auth.uid());
+    if public._place_unpaid_at(v_place) then raise exception 'Your StudyBridge is paused for now.'; end if;
+  else
+    v_place := coalesce(p_place, case when cardinality(i.places) = 1 then i.places[1] end);
+    if v_place is null or not (v_place = any (i.places)) then raise exception 'Pick who it’s for.'; end if;
+  end if;
+  insert into public.portfolio_comments (item_id, place_id, author_id, body) values (i.id, v_place, auth.uid(), v_body) returning id into v_id;
+  if v_side = 'staff' then
+    if not exists (select 1 from public.notifications n where n.user_id = i.learner_id and n.kind = 'portfolio_comment' and n.read_at is null
+                    and n.ref ->> 'item_id' = i.id::text) then
+      perform public.notify_user(i.learner_id, 'portfolio_comment', v_me || ' commented on ' || i.title, left(v_body, 140), jsonb_build_object('item_id', i.id));
+    end if;
+  else
+    -- the learner answers: the teachers there who commented on it, or who added it
+    for r in select distinct x from (select pc.author_id x from public.portfolio_comments pc where pc.item_id = i.id and pc.place_id = v_place and pc.author_id <> auth.uid()
+                                     union select i.added_by where i.by_teacher and i.place_id = v_place) z
+              where x is not null and public._teaches_now(x, i.learner_id) and public._place_of(x) = v_place loop
+      continue when exists (select 1 from public.notifications n where n.user_id = r and n.kind = 'portfolio_comment' and n.read_at is null
+                             and n.ref ->> 'item_id' = i.id::text);
+      perform public.notify_user(r, 'portfolio_comment', v_me || ' commented on ' || i.title, left(v_body, 140),
+        jsonb_build_object('item_id', i.id, 'learner_id', i.learner_id));
+    end loop;
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.delete_portfolio_comment(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.portfolio_comments pc where pc.id = p_id
+     and (pc.author_id = auth.uid() or exists (select 1 from public.portfolio_items i where i.id = pc.item_id and i.learner_id = auth.uid()));
+  if not found then raise exception 'Not found.'; end if;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -16176,6 +18074,38 @@ revoke execute on function public._daily_counts(uuid, date, text) from public, a
 revoke execute on function public._absence_suggest(uuid, uuid, date, text, time) from public, anon, authenticated;
 revoke execute on function public._absence_tell(uuid) from public, anon, authenticated;
 revoke execute on function public._absence_json(public.absence_reports) from public, anon, authenticated;
+-- parents, more (6 Nov 2026); the portfolio's storage helpers stay callable (the storage policies use them)
+revoke execute on function public._teaches_now(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._teachers_now(uuid) from public, anon, authenticated;
+revoke execute on function public._staff_for(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._place_tz(uuid) from public, anon, authenticated;
+revoke execute on function public._place_unpaid_at(uuid) from public, anon, authenticated;
+revoke execute on function public._first_name(uuid) from public, anon, authenticated;
+revoke execute on function public._is_centre(uuid) from public, anon, authenticated;
+revoke execute on function public._family_office(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._family_side(public.family_threads) from public, anon, authenticated;
+revoke execute on function public._family_closed(public.family_threads) from public, anon, authenticated;
+revoke execute on function public._family_can_start(uuid, uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._family_office_text(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._family_json(public.family_threads) from public, anon, authenticated;
+revoke execute on function public._family_tell(public.family_threads, text) from public, anon, authenticated;
+revoke execute on function public._meeting_manager(public.meeting_events) from public, anon, authenticated;
+revoke execute on function public._meeting_teacher(public.meeting_events) from public, anon, authenticated;
+revoke execute on function public._meeting_pool(uuid) from public, anon, authenticated;
+revoke execute on function public._meeting_learners(public.meeting_events) from public, anon, authenticated;
+revoke execute on function public._meeting_teachers_for(public.meeting_events, uuid) from public, anon, authenticated;
+revoke execute on function public._meeting_bookable(public.meeting_events) from public, anon, authenticated;
+revoke execute on function public._meeting_block(public.meeting_bookings) from public, anon, authenticated;
+revoke execute on function public._meeting_when(timestamptz, uuid) from public, anon, authenticated;
+revoke execute on function public._meeting_audience(uuid, jsonb, boolean) from public, anon, authenticated;
+revoke execute on function public._meeting_add_days(public.meeting_events, uuid[], jsonb) from public, anon, authenticated;
+revoke execute on function public._meeting_staff_ok(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._meeting_cancelled(public.meeting_bookings, boolean) from public, anon, authenticated;
+revoke execute on function public._meeting_tell_open(public.meeting_events) from public, anon, authenticated;
+revoke execute on function public._meeting_tick() from public, anon, authenticated;
+revoke execute on function public._parent_link_gone() from public, anon, authenticated;
+revoke execute on function public._portfolio_side(public.portfolio_items) from public, anon, authenticated;
+revoke execute on function public._portfolio_json(public.portfolio_items) from public, anon, authenticated;
 revoke execute on function public._learner_profile() from public, anon, authenticated;
 revoke execute on function public._atl_skills() from public, anon, authenticated;
 revoke execute on function public._assignment_category() from public, anon, authenticated;
@@ -16235,8 +18165,8 @@ create policy sb_library_learner on storage.objects for select to authenticated
 
 -- Learner: their own work under work/<learner id>/...
 create policy sb_work_learner on storage.objects for all to authenticated
-  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and (storage.foldername(name))[2] is distinct from 'core')
-  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and (storage.foldername(name))[2] is distinct from 'core');
+  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'))
+  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'));
 -- (IB project files: a learner adds them but never changes or deletes one, so an approved final piece stays what was approved)
 drop policy if exists sb_work_core_add on storage.objects;
 create policy sb_work_core_add on storage.objects for insert to authenticated
@@ -16245,8 +18175,8 @@ create policy sb_work_core_add on storage.objects for insert to authenticated
 
 -- Tutor: read the work of learners they teach, and write marking annotations
 create policy sb_work_tutor on storage.objects for all to authenticated
-  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core')
-  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and (storage.foldername(name))[2] is distinct from 'core');
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'))
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'));
 
 -- Pictures and files in a class's stream (library/<author>/stream/<post group>/…): whoever can see the post
 drop policy if exists sb_library_stream on storage.objects;
@@ -16257,6 +18187,21 @@ create policy sb_library_stream on storage.objects for select to authenticated
 drop policy if exists sb_work_core on storage.objects;
 create policy sb_work_core on storage.objects for select to authenticated
   using (bucket_id = 'work' and (storage.foldername(name))[2] = 'core' and public._core_files_ok((storage.foldername(name))[3]));
+
+-- A learner's portfolio (work/<learner>/portfolio/<piece>/…, 6 Nov 2026): files are added by the learner or a teacher of
+-- theirs and never changed once there, read by whoever sees the piece, and removed by whoever added the piece
+drop policy if exists sb_work_portfolio_add on storage.objects;
+create policy sb_work_portfolio_add on storage.objects for insert to authenticated
+  with check (bucket_id = 'work' and (storage.foldername(name))[2] = 'portfolio'
+              and public._portfolio_add_ok((storage.foldername(name))[1], (storage.foldername(name))[3]));
+drop policy if exists sb_work_portfolio on storage.objects;
+create policy sb_work_portfolio on storage.objects for select to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'portfolio'
+         and public._portfolio_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], owner));
+drop policy if exists sb_work_portfolio_del on storage.objects;
+create policy sb_work_portfolio_del on storage.objects for delete to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'portfolio'
+         and public._portfolio_files_mine((storage.foldername(name))[1], (storage.foldername(name))[3], owner));
 
 -- ---------------------------------------------------------------------
 -- Live updates in the app
@@ -16286,6 +18231,7 @@ begin
   perform cron.schedule('studybridge-bills', '23 * * * *', 'select public._bill_tick()');
   perform cron.schedule('studybridge-stream', '*/5 * * * *', 'select public._stream_tick()');
   perform cron.schedule('studybridge-core', '41 * * * *', 'select public._core_tick()');
+  perform cron.schedule('studybridge-meetings', '*/5 * * * *', 'select public._meeting_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

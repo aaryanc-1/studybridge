@@ -307,7 +307,7 @@ function InviteStep({ parent = false, onBack, onDone }) {
   return (
     <form className="card" onSubmit={next}>
       <h2 style={{ fontFamily: 'var(--serif)', fontSize: 24 }}>{parent ? 'Follow your child’s progress' : 'Join your tutor'}</h2>
-      {parent && <div className="note small">A parent account is read-only: you see your child’s progress, reports, lessons, due dates and marks once they’re given back. Never their messages or working.</div>}
+      {parent && <div className="note small">A free parent account: you see your child’s progress, reports, lessons, due dates and marks once they’re given back, and what they share in their portfolio. You can write to their teachers and book parents’ meetings. Never your child’s own messages with their teachers, or their answers.</div>}
       {parent ? (
         <Field label="Your parent code" hint="Paste the code or the whole message from your child’s tutor, or from your child.">
           <textarea className="textarea code" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="P3A9F04C21B or SB1-eyJ1Ijoi…" spellCheck={false} />

@@ -1358,3 +1358,49 @@ button.rubric-level:hover { border-color: var(--accent); }
 .need-line { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 10px; background: var(--amber-tint); color: var(--amber-ink); border: 1px solid var(--amber-line); }
 .absence-item { flex-wrap: wrap; }
 .reg-told { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---------- Parents, more (6 Nov 2026): messages with families, parents' meetings, portfolios ---------- */
+.family-head { display: flex; align-items: flex-start; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.family-back { display: none; }
+.family-note { margin: 10px 16px 0; display: flex; gap: 6px; align-items: flex-start; }
+.family-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble.deleted { opacity: .75; }
+.bubble.mine .linkbtn { color: #fff; text-decoration: underline; }
+.family-pick { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.family-pick input { margin-top: 3px; }
+.family-pick.off { opacity: .6; cursor: default; }
+.family-pick:has(input:checked) { border-color: var(--accent); background: var(--accent-tint); }
+.meet-block { padding: 10px 0; border-top: 1px solid var(--line-soft); }
+.meet-block:first-of-type { border-top: 0; }
+.meet-booking { align-items: flex-start; }
+.meet-booking .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.meet-time { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 52px; }
+.meet-pick { padding: 10px 0; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 6px; }
+.meet-pick:first-of-type { border-top: 0; }
+.slot-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.slot-grid .chip { font-variant-numeric: tabular-nums; min-width: 64px; justify-content: center; }
+.meet-open { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.meet-nudge { align-items: center; border-color: var(--accent-line); background: var(--accent-tint); }
+.meet-day .field { margin: 0; }
+.folio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.folio-card { position: relative; display: flex; flex-direction: column; gap: 4px; padding: 0 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); text-align: left; cursor: pointer; overflow: hidden; color: inherit; font: inherit; }
+.folio-card:hover { border-color: var(--accent-line); }
+.folio-card > span { padding: 0 12px; }
+.folio-thumb { aspect-ratio: 4 / 3; background: var(--sunk); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.folio-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.folio-thumb .tap-image { width: 100%; height: 100%; }
+.folio-icon { color: var(--muted); }
+.folio-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folio-badge { position: absolute; top: 8px; left: 8px; }
+.folio-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.folio-work { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--accent-tint); border: 1px solid var(--accent-line); flex-wrap: wrap; }
+.folio-comment { padding: 8px 12px; border-radius: 10px; background: var(--sunk); }
+.folio-comment.mine { background: var(--accent-tint); }
+@media (max-width: 900px) {
+  .family-back { display: inline-flex; }
+  .folio-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media print {
+  .meet-teacher { break-inside: avoid; }
+  .no-print { display: none !important; }
+}

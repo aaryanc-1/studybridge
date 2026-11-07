@@ -6,8 +6,10 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
+import { FamilyInbox, useFamilyUnread } from './Families.jsx';
 
-export default function Messages({ learnerId }) {
+// (6 Nov 2026) Teachers have two kinds of messages: with their learners, and with their learners' families
+export default function Messages({ learnerId, tab = 'learners', threadId = null }) {
   const app = useApp();
   const lk = useLookups();
   const isTutor = app.me.role === 'tutor';
@@ -30,6 +32,25 @@ export default function Messages({ learnerId }) {
         .sort((a, b) => new Date(b.last?.created_at || 0) - new Date(a.last?.created_at || 0))
     : [];
 
+  const familyUnread = useFamilyUnread();
+  const tabs = isTutor ? (
+    <Seg
+      label="Messages"
+      value={tab}
+      onChange={(t) => go(t === 'families' ? '/messages/families' : '/messages', { replace: true })}
+      options={[
+        { value: 'learners', label: 'Learners' },
+        { value: 'families', label: familyUnread ? `Families (${familyUnread})` : 'Families' },
+      ]}
+    />
+  ) : null;
+  if (isTutor && tab === 'families')
+    return (
+      <Page title="Messages">
+        {tabs}
+        <FamilyInbox threadId={threadId} base="/messages/families" />
+      </Page>
+    );
   return (
     <Page
       title="Messages"
@@ -41,6 +62,7 @@ export default function Messages({ learnerId }) {
             : 'Ask your tutor anything. Notes you leave on questions show up here too.'
       }
     >
+      {tabs}
       {isTutor ? (
         lk.learners.length === 0 ? (
           <Empty>No learners yet.</Empty>

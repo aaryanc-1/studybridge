@@ -727,6 +727,7 @@ function People({ c }) {
   const [giving, setGiving] = useState(false);
   const [noting, setNoting] = useState(false);
   const [open, setOpen] = useState(false);
+  const [letters, setLetters] = useState(false);
   const [names, setNames] = useState('');
   const [made, setMade] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -764,6 +765,11 @@ function People({ c }) {
             <button className="btn" onClick={() => (setOpen(true), setMade(null))}>
               <Icon name="users" size={16} /> Add a class list
             </button>
+            {members.length > 0 && (
+              <button className="btn" onClick={() => setLetters(true)}>
+                <Icon name="send" size={16} /> Parent codes
+              </button>
+            )}
           </span>
         </div>
         {members.length === 0 ? (
@@ -782,6 +788,7 @@ function People({ c }) {
           </div>
         )}
       </div>
+      {letters && <ParentLetters c={c} onClose={() => setLetters(false)} />}
       {noting && (
         <GiveProfile
           learners={members.map((mid) => lk.learner(mid)).filter(Boolean).map((l) => ({ id: l.id, name: l.display_name }))}
@@ -839,4 +846,75 @@ function People({ c }) {
       )}
     </>
   );
+}
+
+// (6 Nov 2026) A parent code for every family in the class, to print as letters or copy: each parent makes their own
+// account with it and follows their child (messages, meetings, reports). Codes this teacher made and nobody used yet
+// are given again, not new ones.
+function ParentLetters({ c, onClose }) {
+  const q = useQuery(`parent-codes:${c.id}`, () => api.classParentCodes(c.id));
+  const toast = useToast();
+  const d = q.data;
+  const line = (x) => `${x.name}’s parent: open ${api.WEB_APP}, choose “I’m a parent” and type the code ${x.code}`;
+  return (
+    <Modal
+      title={`Parent codes for ${c.name}`}
+      wide
+      onClose={onClose}
+      foot={
+        d && (
+          <>
+            <button className="btn" onClick={() => (copyText(d.codes.filter((x) => x.code).map(line).join(String.fromCharCode(10))), toast('All codes copied'))}>
+              <Icon name="copy" size={15} /> Copy all
+            </button>
+            <button className="btn primary" onClick={() => printLetters(d)}>
+              Print letters
+            </button>
+          </>
+        )
+      }
+    >
+      {!d ? (
+        q.error ? <div className="error">{q.error.message}</div> : <Loading />
+      ) : (
+        <div className="stack sm">
+          <div className="small muted">One letter for each family. A code works once, for one parent; a second parent needs their own (make one on the learner’s page).</div>
+          <div className="list">
+            {d.codes.map((x) => (
+              <div key={x.learner_id} className="item">
+                <span className="grow">
+                  <span className="name">{x.name}</span>
+                  <span className="meta">{x.parents ? `${x.parents} parent${x.parents === 1 ? '' : 's'} already follow${x.parents === 1 ? 's' : ''} them` : 'No parent yet'}</span>
+                </span>
+                {x.code ? <b className="code-show">{x.code}</b> : <span className="small muted">5 codes waiting already</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// The letters on a page of their own (a hidden frame), so only they print
+function printLetters(d) {
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+  const f = document.createElement('iframe');
+  Object.assign(f.style, { position: 'fixed', right: '0', bottom: '0', width: '0', height: '0', border: '0' });
+  document.body.appendChild(f);
+  const doc = f.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>StudyBridge parent codes</title><style>
+body{font-family:Arial,sans-serif;margin:24px;color:#1C1F23}.letter{break-after:page;max-width:620px;line-height:1.5}.letter:last-child{break-after:auto}
+.code{font-size:26px;letter-spacing:.08em;font-weight:bold;margin:10px 0}.m{color:#555;font-size:13px}</style></head><body>${d.codes
+    .filter((x) => x.code)
+    .map(
+      (x) =>
+        `<div class="letter"><p>Dear parent or carer of <b>${esc(x.name)}</b>,</p><p>${esc(d.place)} uses StudyBridge. With a free parent account you can see ${esc(x.name.split(' ')[0])}’s reports, lessons, due dates and marks once they’re given back, write to their teachers and book parents’ meetings.</p><ol><li>On your phone or computer, open <b>${esc(api.WEB_APP.replace(/^https?:\/\//, ''))}</b></li><li>Choose “I’m a parent”, then type this code:</li></ol><div class="code">${esc(x.code)}</div><p class="m">The code works once, for one parent. Another parent or carer can ask the school for their own.</p></div>`,
+    )
+    .join('')}</body></html>`);
+  doc.close();
+  f.contentWindow.focus();
+  f.contentWindow.print();
+  setTimeout(() => f.remove(), 60000);
 }

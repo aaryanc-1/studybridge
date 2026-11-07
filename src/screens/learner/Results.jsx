@@ -12,6 +12,7 @@ import { MockResultCard } from '../shared/MockHistory.jsx';
 import { ReportProblem } from './SelfStudy.jsx';
 import { RubricGrid } from '../shared/Rubric.jsx';
 import { band } from '../../lib/myp.js';
+import { AddWorkToPortfolio } from '../shared/Portfolio.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -110,6 +111,11 @@ export default function Results({ id }) {
                 {p == null ? 'Marked' : p >= 90 ? 'Outstanding!' : p >= 80 ? 'Great work!' : p >= 60 ? 'Good effort!' : p >= 40 ? 'Getting there' : 'Let’s practise this together'}
               </div>
               <div className="muted">{p != null ? `You scored ${p}%.` : ''} {redo ? '' : 'Look through each question below to see what went well and what to fix.'}</div>
+              {t.status === 'marked' && (
+                <div>
+                  <AddWorkToPortfolio attemptId={t.id} />
+                </div>
+              )}
             </div>
           </div>
           {t.feedback_md && (

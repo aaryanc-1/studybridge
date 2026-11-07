@@ -343,6 +343,10 @@ function useAnnouncer(target) {
     if (fresh.some((n) => n.kind === 'org')) invalidate('org', 'org-overview');
     // the school office (5 Nov 2026): a family's absence note or a change to a learner's details, and the office's reply
     if (fresh.some((n) => ['absence_report', 'absence_reply', 'record'].includes(n.kind))) invalidate('absences', 'office-day', 'child-absences', 'record', 'student-records', 'register:');
+    // parents, more (6 Nov 2026): a family message, a parents' meeting booked or moved, a portfolio piece or comment
+    if (fresh.some((n) => ['family_message', 'family_report'].includes(n.kind))) invalidate('family-list', 'family-thread');
+    if (fresh.some((n) => n.kind === 'meeting')) invalidate('meetings', 'meeting', 'my-meetings', 'meeting-slots');
+    if (fresh.some((n) => ['portfolio', 'portfolio_comment'].includes(n.kind))) invalidate('portfolio', 'portfolio-item');
     // a payment came through (card or mobile money): the plan and what's open follow straight away
     if (fresh.some((n) => n.kind === 'plan')) {
       app.refreshMe?.().catch(() => {});
@@ -459,7 +463,8 @@ function NotificationBell({ target, inline }) {
 
 function iconFor(kind) {
   return (
-    { submitted: 'clipboard', note: 'message', message: 'message', marked: 'checkCircle', joined: 'user', lockdown: 'alert', session: 'video', assignment: 'clipboard', lesson: 'book', paused: 'pause' }[kind] || 'bell'
+    { submitted: 'clipboard', note: 'message', message: 'message', marked: 'checkCircle', joined: 'user', lockdown: 'alert', session: 'video', assignment: 'clipboard', lesson: 'book', paused: 'pause',
+      family_message: 'message', family_report: 'flag', meeting: 'calendar', portfolio: 'star', portfolio_comment: 'message' }[kind] || 'bell'
   );
 }
 

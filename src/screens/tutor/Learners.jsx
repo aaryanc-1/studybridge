@@ -12,6 +12,8 @@ import ProgressView from '../shared/Progress.jsx';
 import { AccessLine } from './Access.jsx';
 import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx';
 import { NeedToKnow, NeedToKnowLine } from '../shared/Office.jsx';
+import Portfolio from '../shared/Portfolio.jsx';
+import { FamilyThreadsFor, MessageFamily } from '../shared/Families.jsx';
 
 // When a learner is paused for me: by me as their main tutor (on their account), or on the link if they added me
 function pausedFor(l, me, links) {
@@ -583,7 +585,8 @@ function InviteForm({ onClose, onCreated }) {
   );
 }
 
-// Parent accounts for one learner: read-only access to approved reports, lessons, due dates, marks given back
+// Parent accounts for one learner: approved reports, lessons, due dates, marks given back, what's in their portfolio,
+// and messages and meetings with their teachers. Any of their teachers (and the office) gives a parent a code (6 Nov 2026).
 function ParentsPanel({ learner }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -596,9 +599,12 @@ function ParentsPanel({ learner }) {
   return (
     <div className="split even">
       <div className="card">
-        <h2>Parents who can see {first}’s progress</h2>
+        <div className="card-head">
+          <h2>Parents who follow {first}</h2>
+          {d?.parents?.length > 0 && <MessageFamily learnerId={learner.id} label="Message a parent" />}
+        </div>
         <div className="small muted">
-          Read-only. They see weekly reports you approve, upcoming lessons and due dates, marks once you give them back, topic strengths, mock grades and the exam countdown. Never messages, working, photos, the exam camera or anything from Prof. {first} sees who’s linked and can remove them.
+          They see weekly reports you approve, upcoming lessons and due dates, marks once you give them back, topic strengths, mock grades, the exam countdown and what’s in {first}’s portfolio. They can message you and book parents’ meetings. Never {first}’s own messages with you, their answers, the exam camera or anything from Prof. {first} sees who’s linked and can remove them.
         </div>
         {!d ? (
           q.error ? <div className="error">{q.error.message}</div> : <Empty>Loading…</Empty>
@@ -612,10 +618,10 @@ function ParentsPanel({ learner }) {
                 <span className="grow">
                   <span className="name">{p.name}</span>
                   <span className="meta">
-                    {p.email} · since {when(p.since)}
+                    {p.email ? `${p.email} · ` : ''}since {when(p.since)}
                   </span>
                 </span>
-                <button
+                {p.can_remove && <button
                   className="btn sm ghost"
                   onClick={async () => {
                     if (!(await confirm({ title: `Remove ${p.name}?`, body: `They stop seeing ${first}’s progress straight away.`, ok: 'Remove', danger: true }))) return;
@@ -628,13 +634,14 @@ function ParentsPanel({ learner }) {
                   }}
                 >
                   Remove
-                </button>
+                </button>}
               </div>
             ))}
           </div>
         )}
+        <FamilyThreadsFor learnerId={learner.id} base="/messages/families" />
       </div>
-      <div className="card">
+      {d?.can_invite !== false && <div className="card">
         <h2>Invite a parent</h2>
         <form
           className="row wrap"
@@ -686,7 +693,7 @@ function ParentsPanel({ learner }) {
             ))}
           </div>
         )}
-      </div>
+      </div>}
       {shown && <ParentInviteShow invite={shown} learner={learner} onClose={() => setShown(null)} />}
     </div>
   );
@@ -698,7 +705,7 @@ function ParentInviteShow({ invite, learner, onClose }) {
   const token = encodeInvite({ url: app.server.url, key: app.server.key, code: invite.code });
   const first = learner.display_name.split(' ')[0];
   const phone = api.WEB_APP;
-  const message = `Hi ${invite.name || 'there'}! You can now follow ${first}’s progress on StudyBridge: weekly reports, lessons, due dates and marks.
+  const message = `Hi ${invite.name || 'there'}! You can now follow ${first}’s progress on StudyBridge: weekly reports, lessons, due dates, marks and their portfolio. You can message their teachers there and book parents’ meetings too.
 
 1. On your phone, open ${phone}
 2. Choose “I’m a parent”, paste this invite and make your account:
@@ -799,7 +806,6 @@ export function LearnerDetail({ id, tab = 'progress' }) {
   const main = l.tutor_id === app.me.id;
   const own = main || links.some((x) => x.learner_id === id);
   const paused = pausedFor(l, app.me.id, links);
-  if (!main && tab === 'parents') tab = 'progress';
   const taught = lk.activeClasses.filter((c) => c.members.includes(id)).map((c) => c.name);
   const theirTutor = pool && (pool.find((p) => p.id === id)?.tutor || 'another tutor');
   // Pausing: they keep everything and can look, but start nothing new and don't count on the plan
@@ -913,10 +919,13 @@ export function LearnerDetail({ id, tab = 'progress' }) {
           { value: 'study', label: 'Study' },
           { value: 'school', label: 'Attendance & behaviour' },
           { value: 'details', label: 'Details' },
-          ...(main ? [{ value: 'parents', label: 'Parents' }] : []),
+          { value: 'portfolio', label: 'Portfolio' },
+          { value: 'parents', label: 'Parents' },
         ]}
       />
-      {tab === 'parents' ? (
+      {tab === 'portfolio' ? (
+        <Portfolio learnerId={id} />
+      ) : tab === 'parents' ? (
         <ParentsPanel learner={l} />
       ) : tab === 'details' ? (
         <NeedToKnow learnerId={id} name={l.display_name} />

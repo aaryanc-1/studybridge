@@ -15,6 +15,7 @@ import { GiveBehaviour, STATUS, Week, pctTone, useInSchool } from '../shared/Sch
 import { SessionForm } from '../shared/Live.jsx';
 import { AssessmentCalendar } from './Assessments.jsx';
 import { FamiliesToldUs, HomeroomRegisters } from '../shared/Office.jsx';
+import { MeetingsList } from '../shared/Meetings.jsx';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const USUAL_DAY = [
@@ -1126,6 +1127,7 @@ const TT_TABS = [
   { value: 'assessments', label: 'Assessments' },
   { value: 'attendance', label: 'Attendance' },
   { value: 'behaviour', label: 'Behaviour' },
+  { value: 'meetings', label: 'Parents’ meetings' },
 ];
 
 export function TutorTimetable({ tab }) {
@@ -1144,7 +1146,7 @@ export function TutorTimetable({ tab }) {
     location: '',
   });
   return (
-    <Page title="Timetable" subtitle="Your lessons week by week, each with its register; your learners’ tests and exams; their attendance and behaviour.">
+    <Page title="Timetable" subtitle="Your lessons week by week, each with its register; your learners’ tests and exams; their attendance and behaviour; parents’ meetings.">
       <Seg label="Timetable" value={shown} onChange={(t) => go(t === 'week' ? '/timetable' : `/timetable/${t}`, { replace: true })} options={TT_TABS} />
       {shown === 'assessments' ? (
         <AssessmentCalendar />
@@ -1152,6 +1154,8 @@ export function TutorTimetable({ tab }) {
         <TutorAttendance />
       ) : shown === 'behaviour' ? (
         <TutorBehaviour />
+      ) : shown === 'meetings' ? (
+        <MeetingsList />
       ) : (
         <>
         <HomeroomRegisters />

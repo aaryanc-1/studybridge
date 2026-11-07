@@ -1,7 +1,8 @@
-// The parent's StudyBridge (1.6): read-only. For each child: the weekly reports the tutor approved, upcoming
-// lessons and due dates, marks that were given back, topic strengths, mock grades and the exam countdown.
-// Never messages, working, photos, the exam camera or anything from Prof (the server only hands these out).
-// Four tabs, big on phones: This week (the report), Coming up, Marks and Settings.
+// The parent's StudyBridge (1.6). For each child: the weekly reports the tutor approved, upcoming lessons and due dates,
+// marks that were given back, topic strengths, mock grades and the exam countdown; since 6 Nov 2026 also what's in their
+// portfolio (never "Just me" pieces), messages with their teachers and the office, and parents' meetings to book.
+// Never the child's own messages with their teachers, their answers, the exam camera or anything from Prof (the server
+// only hands these out). Five tabs, big on phones: This week, Coming up, Marks, Messages and Settings.
 // A child studying on their own (launch 1): their plan, how much they study, their free week or plan and paying for
 // it; the parent can set such a child up with a code (needed below grade 8).
 import { useState } from 'react';
@@ -24,6 +25,10 @@ import { AttendanceCard, BehaviourCard, ProfileCard } from '../shared/School.jsx
 import { ParentProjects } from '../shared/Projects.jsx';
 import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { ChildAbsences, ChildRecords } from '../shared/Office.jsx';
+import { FamilyInbox, useFamilyUnread } from '../shared/Families.jsx';
+import { BookMeetings, MeetingNudge, ParentMeetings } from '../shared/Meetings.jsx';
+import { MeetingRoom } from '../shared/Live.jsx';
+import Portfolio, { PortfolioCard } from '../shared/Portfolio.jsx';
 
 // "Coming up": overdue work first, then lessons and due work in date order
 const overdue = (v) => v.due.filter((a) => !a.handed_in && new Date(a.due_at) < new Date());
@@ -34,6 +39,10 @@ const upcoming = (v) =>
 
 function notificationTarget(n) {
   const r = n.ref || {};
+  if (n.kind === 'family_message' && r.thread_id) return `/messages/${r.thread_id}`;
+  if (n.kind === 'meeting' && r.learner_id) return `/coming?child=${r.learner_id}`;
+  if (n.kind === 'meeting') return '/coming';
+  if (n.kind === 'portfolio' && r.learner_id) return `/portfolio?child=${r.learner_id}`;
   if (n.kind === 'term_report' && r.round_id) return `/report/${r.round_id}/${r.learner_id}`;
   if (n.kind === 'predicted' && r.learner_id) return `/marks?child=${r.learner_id}`;
   if (r.learner_id) return `/child/${r.learner_id}${r.report_id ? `?report=${r.report_id}` : ''}`;
@@ -61,14 +70,30 @@ export default function ParentApp() {
   const list = kids.data || [];
   const picked = (a === 'child' && b) || route.query.get('child') || savedChild();
   const current = list.find((k) => k.id === picked) || list[0];
+  const unread = useFamilyUnread();
   const nav = [
     { to: '/', label: 'This week', icon: 'home', also: ['/child'] },
-    { to: '/coming', label: 'Coming up', icon: 'calendar' },
-    { to: '/marks', label: 'Marks', icon: 'chart' },
+    { to: '/coming', label: 'Coming up', icon: 'calendar', also: ['/meetings', '/live'] },
+    { to: '/marks', label: 'Marks', icon: 'chart', also: ['/portfolio'] },
+    { to: '/messages', label: 'Messages', icon: 'message', count: unread },
     { to: '/settings', label: 'Settings', icon: 'settings' },
   ];
   let page;
   if (a === 'settings') page = <Settings />;
+  else if (a === 'messages')
+    page = (
+      <Page title="Messages">
+        <FamilyInbox threadId={b} base="/messages" />
+      </Page>
+    );
+  else if (a === 'meetings' && b) page = <BookMeetings eventId={b} />;
+  else if (a === 'live' && b === 'meeting' && route.parts[2]) page = <MeetingRoom bookingId={route.parts[2]} title="Parents’ meeting" onLeave={() => window.history.back()} />;
+  else if (a === 'portfolio' && current)
+    page = (
+      <Page title={`${current.name.split(' ')[0]}’s portfolio`}>
+        <Portfolio key={current.id} learnerId={current.id} />
+      </Page>
+    );
   else if (a === 'report' && b && route.parts[2]) page = <TermReportPage round={b} learner={route.parts[2]} />;
   else if (a === 'transcript' && b) page = <TranscriptPage learner={b} />;
   else if (!kids.data) page = <Loading />;
@@ -145,8 +170,8 @@ function OwnStudy({ v }) {
 
 const SUBTITLE = {
   week: 'The weekly report from their tutor, and how long until their exams.',
-  coming: 'Lessons and work due over the next three weeks.',
-  marks: 'Marks once the tutor gives them back, mock grades and how each topic is going.',
+  coming: 'Lessons, parents’ meetings and work due over the next three weeks.',
+  marks: 'Their portfolio, marks once they’re given back, mock grades and how each topic is going.',
 };
 
 function Child({ id, kids, section }) {
@@ -183,6 +208,7 @@ function Child({ id, kids, section }) {
       {section === 'week' && v.self && <OwnStudy v={v} />}
       {section === 'week' && !v.self && (
         <>
+          <MeetingNudge childId={id} name={v.learner.name} />
           {v.exam && (
             <div className="card row parent-exam">
               <span className="mock-grade">{v.exam.days}</span>
@@ -236,6 +262,7 @@ function Child({ id, kids, section }) {
         </>
       )}
 
+      {section === 'coming' && <ParentMeetings childId={id} name={v.learner.name} />}
       {section === 'coming' && (
         <div className="card">
           <h2>Coming up</h2>
@@ -294,6 +321,7 @@ function Child({ id, kids, section }) {
 
       {section === 'marks' && (
         <>
+          <PortfolioCard learnerId={id} name={v.learner.name} />
           <MyReports learnerId={id} />
           <PredictedGrades learnerId={id} />
           <div className="card">

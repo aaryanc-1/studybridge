@@ -1281,7 +1281,7 @@ test('parent accounts: a code from the tutor, read-only, only what was given bac
   assert.equal((await as('LW', `select * from notifications where kind = 'parent_joined'`)).length, 1, 'the learner is told');
 
   // nothing straight from the tables
-  for (const t of ['assignments', 'attempts', 'responses', 'comments', 'sessions', 'subjects', 'files', 'lessons', 'mocks', 'grade_boundaries', 'parent_reports', 'learner_reports', 'parent_links', 'parent_invites', 'prof_jobs']) {
+  for (const t of ['assignments', 'attempts', 'responses', 'comments', 'sessions', 'subjects', 'files', 'lessons', 'mocks', 'grade_boundaries', 'parent_reports', 'learner_reports', 'parent_links', 'parent_invites', 'prof_jobs', 'family_threads', 'family_messages', 'meeting_events', 'meeting_bookings', 'portfolio_items', 'portfolio_comments']) {
     const rows = await as('PW', `select * from ${t}`).catch(() => []);
     assert.equal(rows.length, 0, `a parent reads nothing from ${t}`);
   }
@@ -2548,6 +2548,15 @@ test('the demo StudyBridge: the Owner fills in fresh demo accounts as a pretend 
   const P = await open('parent');
   const kids = await val(P, `select parent_children()`);
   assert.deepEqual(kids.map((k) => k.name).sort(), ['Chipo Banda', 'Lina Haddad']);
+  // parents, more: Ruth's conversations (with Mercy, and the office), next week's meetings (her time with Mercy), Chipo's portfolio
+  assert.deepEqual((await val(P, `select family_list()`)).map((t) => (t.to_office ? 'office' : t.staff.name)).sort(), ['Mercy Tembo', 'office']);
+  const rm = await val(P, `select my_meetings()`);
+  assert.deepEqual([rm.events.length, rm.bookings.map((b) => [b.teacher.name, b.how, b.where])], [1, [['Mercy Tembo', 'in_person', 'Table 1']]]);
+  assert.deepEqual((await val(P, `select my_portfolio($1)`, [ids.learner1])).items.map((i) => i.title).sort(),
+    ['My fractions poster', 'Simultaneous equations', 'Teacher’s pick: explaining tree diagrams']);
+  assert.equal((await val(Mc, `select meeting_list()`))[0].mine, 1);
+  const poster = (await val(L1, `select my_portfolio()`)).items.find((i) => i.title === 'My fractions poster');
+  assert.equal((await val(L1, `select portfolio_item($1)`, [poster.id])).comments.length, 2);
   const S = await open('student');
   const me = await one(S, `select self_learner, test_student, setup_done from profiles where id = auth.uid()`);
   assert.deepEqual(me, { self_learner: true, test_student: true, setup_done: true });
@@ -2982,7 +2991,8 @@ test('one login, many places: a second tutor and a school, a wall between them, 
   assert.equal(Number((await val('TB', `select learner_summary($1, now() - interval '1 day', now() + interval '1 day')`, [U.ZO])).seconds), 300);
   // only her main tutor looks after her account
   await fails(as('TB', `select set_learner_password($1, 'secret99')`, [U.ZO]), /Not your learner/);
-  await fails(as('TB', `select create_parent_invite($1)`, [U.ZO]), /Not your learner/);
+  // (6 Nov 2026) any teacher of hers now can give a parent a code; only her main tutor changes her account
+  assert.ok((await one('TB', `select * from create_parent_invite($1)`, [U.ZO])).code.startsWith('P'));
   // a parent sees everything from every place
   const pcode = (await one('MA', `select * from create_parent_invite($1, 'Dad')`, [U.ZO])).code;
   await mk('ZD', 'zoedad@places.x', 'Dad');
@@ -4729,4 +4739,377 @@ test('school office basics: the office and heads of year, student records, daily
   assert.deepEqual(await val('OT2', `select my_reports($1)`, [U.OA]), []);
   await fails(as('OX', `select my_reports($1)`, [U.OA]), /can’t see these reports/);
   await fails(as('OT2', `select student_record($1)`, [U.OB]), /can’t see/);
+});
+
+// ---------------- Parents, more (6 Nov 2026): messages, meetings, portfolios ----------------
+// Hillside School: a manager (PFM), two teachers (PFT teaches Ana's and Ben's maths and is Ana's main teacher, PFU teaches
+// Ana's English), the office (PFO), Ana's private tutor (PFP) and a stranger (PFX). Ana's mum (PFD) and dad (PFE) have
+// their own accounts.
+const PF = {};
+test('parents, more: families and teachers message each other; the office, reports, closing and stopping; parent codes from any teacher', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['PFM', 'PFT', 'PFU', 'PFO', 'PFP', 'PFX']) {
+    await mk(k, k.toLowerCase() + '@family.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const join = async (tutor, k) => {
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  };
+  for (const k of ['PFA', 'PFB']) {
+    await mk(k, k.toLowerCase() + '@family.x');
+    await join('PFT', k);
+  }
+  await db.query(`update profiles set grade = 9 where id = any ($1)`, [[U.PFA, U.PFB]]);
+  await join('PFP', 'PFA'); // Ana has a private tutor too
+  const centre = await val('PFM', `select org_make_centre('Hillside School')`);
+  for (const k of ['PFT', 'PFU', 'PFO']) await val(k, `select org_join($1)`, [centre.code]);
+  PF.org = centre.id;
+  await as('PFM', `select set_school_timezone('UTC')`);
+  await val('PFM', `select org_set_role($1, 'office')`, [U.PFO]);
+  PF.maths = await val('PFM', `select save_class(null, 'Year 9 maths', null, $1, $2)`, [[U.PFA, U.PFB], [U.PFT]]);
+  PF.english = await val('PFM', `select save_class(null, 'Year 9 English', null, $1, $2)`, [[U.PFA], [U.PFU]]);
+
+  // parent codes from any of her teachers now, and the office; a whole class's codes to print; never from a stranger
+  await fails(as('PFX', `select create_parent_invite($1, 'Mum')`, [U.PFA]), /Not your learner/);
+  const mumCode = (await one('PFU', `select * from create_parent_invite($1, 'Mum')`, [U.PFA])).code;
+  const dadCode = (await one('PFO', `select * from create_parent_invite($1, 'Dad')`, [U.PFA])).code;
+  const letters = await val('PFT', `select class_parent_codes($1)`, [PF.maths]);
+  assert.deepEqual([letters.class, letters.codes.map((c) => c.name), letters.codes.every((c) => /^P[0-9A-F]{10}$/.test(c.code))], ['Year 9 maths', ['PFA', 'PFB'], true]);
+  assert.equal((await val('PFT', `select class_parent_codes($1)`, [PF.maths])).codes[0].code, letters.codes[0].code, 'the same code again, not a new one');
+  await fails(as('PFU', `select class_parent_codes($1)`, [PF.maths]), /can’t make parent codes/);
+  await mk('PFD', 'mum@family.x');
+  await mk('PFE', 'dad@family.x');
+  await one('PFD', `select * from accept_parent_invite($1, 'Mum', 'UTC')`, [mumCode]);
+  await one('PFE', `select * from accept_parent_invite($1, 'Dad', 'UTC')`, [dadCode]);
+  const lp = await val('PFU', `select learner_parents($1)`, [U.PFA]);
+  assert.deepEqual([lp.parents.map((p) => p.name), lp.parents.every((p) => p.email == null), lp.can_invite], [['Mum', 'Dad'], true, true]);
+  assert.ok((await val('PFO', `select learner_parents($1)`, [U.PFA])).parents.every((p) => p.email), 'the office sees their emails');
+  // a parent who joined with someone else's code: her main teacher and the office hear, and whose code it was
+  const joined = (await as('PFT', `select body from notifications where kind = 'parent_joined'`)).map((n) => n.body);
+  assert.ok(joined.some((b) => /With a parent code from PFU/.test(b)) && joined.some((b) => /With a parent code from PFO/.test(b)));
+  assert.ok((await as('PFO', `select body from notifications where kind = 'parent_joined'`)).some((n) => /With a parent code from PFU/.test(n.body)));
+
+  // who Mum can write to: Hillside's teachers who teach Ana now (and its office), and her private tutor
+  const contacts = await val('PFD', `select family_contacts($1)`, [U.PFA]);
+  const hill = contacts.find((c) => c.name === 'Hillside School');
+  assert.deepEqual([hill.office, hill.teachers.map((t) => t.name).sort(), contacts.find((c) => c.name === 'PFP').office], [true, ['PFT', 'PFU'], false]);
+  await fails(as('PFE', `select family_contacts($1)`, [U.PFB]), /can’t message/);
+  await fails(as('PFD', `select family_send(null, 'Hi', $1)`, [{ learner: U.PFA, staff: U.PFX }]), /Pick one of their teachers/);
+
+  // Mum writes to Ana's maths teacher; he's told who wrote, never what it says; Dad never sees it
+  const sent = await val('PFD', `select family_send(null, 'Is Ana keeping up with algebra?', $1)`, [{ learner: U.PFA, staff: U.PFT }]);
+  PF.thread = sent.thread_id;
+  const told = await as('PFT', `select title, body from notifications where kind = 'family_message'`);
+  assert.equal(told.length, 1);
+  assert.ok(!/algebra/.test(told[0].title + told[0].body), 'the message itself stays in StudyBridge');
+  assert.deepEqual(await val('PFE', `select family_list()`), []);
+  await fails(as('PFE', `select family_thread($1)`, [PF.thread]), /can’t see this conversation/);
+  for (const k of ['PFU', 'PFO', 'PFP', 'PFM', 'PFA']) await fails(as(k, `select family_thread($1)`, [PF.thread]), /can’t see this conversation/);
+  await fails(asService(`select * from family_messages`), /permission denied/);
+  await fails(as('PFD', `select * from family_threads`), /permission denied/);
+  // he reads it (his notification goes too) and answers; Mum is told and emailed, without the words
+  const th = await val('PFT', `select family_thread($1)`, [PF.thread]);
+  assert.deepEqual([th.side, th.messages.map((m) => m.body), th.learner.name, th.parent.name], ['staff', ['Is Ana keeping up with algebra?'], 'PFA', 'Mum']);
+  assert.equal(await val('PFT', `select count(*)::int from notifications where kind = 'family_message' and read_at is null`), 0);
+  await val('PFT', `select family_send($1, 'She is doing well. Ten minutes of practice a day would help.')`, [PF.thread]);
+  await val('PFT', `select family_send($1, 'And well done on the last test!')`, [PF.thread]);
+  assert.equal(await val('PFD', `select count(*)::int from notifications where kind = 'family_message'`), 1, 'once until she has read it');
+  const mail = (await db.query(`select subject, body, reply_to from outgoing_emails where to_addr = 'mum@family.x' order by created_at`)).rows;
+  assert.equal(mail.length, 1, 'one email, not one a message');
+  assert.ok(!/practice|test/.test(mail[0].body) && /reply in StudyBridge/i.test(mail[0].body));
+  assert.equal((await val('PFD', `select family_list()`))[0].unread, 2);
+  const mumView = await val('PFD', `select family_thread($1)`, [PF.thread]);
+  assert.deepEqual([mumView.messages.length, mumView.messages[0].seen], [3, true]);
+  assert.equal((await val('PFD', `select family_list()`))[0].unread, 0, 'read now');
+
+  // a teacher writes first: any parent of a learner she teaches; never to someone else's child
+  await fails(as('PFU', `select family_send(null, 'Hello', $1)`, [{ learner: U.PFB, parent: U.PFD }]), /Pick one of their parents|don’t teach/);
+  const fromU = await val('PFU', `select family_send(null, 'Ana wrote a wonderful story this week.', $1)`, [{ learner: U.PFA, parent: U.PFE }]);
+  assert.equal((await val('PFE', `select family_list()`)).length, 1);
+  assert.deepEqual((await val('PFU', `select family_parents($1)`, [U.PFA])).parents.map((p) => [p.name, !!p.thread]), [['Mum', false], ['Dad', true]]);
+
+  // the office: Mum writes to it; the office (not the managers, who aren't told while there's an office) hears
+  const off = await val('PFD', `select family_send(null, 'Ana has a dentist appointment on Friday.', $1)`, [{ learner: U.PFA, office: true, place: PF.org }]);
+  assert.equal(await val('PFO', `select count(*)::int from notifications where kind = 'family_message'`), 1);
+  assert.equal(await val('PFM', `select count(*)::int from notifications where kind = 'family_message'`), 0);
+  assert.equal((await val('PFO', `select family_thread($1)`, [off.thread_id])).side, 'office');
+  assert.match((await val('PFD', `select family_thread($1)`, [off.thread_id])).office_text, /Read by the office/);
+  await fails(as('PFO', `select family_thread($1)`, [PF.thread]), /can’t see/);
+  await fails(as('PFT', `select family_thread($1)`, [off.thread_id]), /can’t see/);
+  await val('PFO', `select family_send($1, 'Thank you, we’ve noted it.')`, [off.thread_id]);
+  await fails(as('PFT', `select family_send(null, 'x', $1)`, [{ learner: U.PFA, parent: U.PFD, office: true }]), /Only the office/);
+
+  // the school's rule: parents write to the office first (teachers can still write, and parents can answer)
+  await fails(as('PFT', `select set_parents_message('office')`), /manager/i);
+  assert.equal(await val('PFM', `select set_parents_message('office')`), 'office');
+  assert.equal((await val('PFD', `select family_contacts($1)`, [U.PFA])).find((c) => c.name === 'Hillside School').teachers.every((t) => !t.can_start), true);
+  await fails(as('PFD', `select family_send(null, 'Hello', $1)`, [{ learner: U.PFA, staff: U.PFU }]), /write to the office first/);
+  await val('PFD', `select family_send($1, 'Thanks!')`, [PF.thread]);
+  await val('PFE', `select family_send($1, 'Thank you!')`, [fromU.thread_id]);
+  await val('PFM', `select set_parents_message('homeroom')`);
+  await as('PFO', `select set_homeroom($1, true)`, [PF.english]);
+  assert.deepEqual((await val('PFD', `select family_contacts($1)`, [U.PFA])).find((c) => c.name === 'Hillside School').teachers.filter((t) => t.can_start).map((t) => t.name), ['PFU']);
+  await val('PFM', `select set_parents_message('teachers')`);
+
+  // deleting: the writer, in the first 15 minutes, and it's kept with the conversation
+  const oops = await val('PFD', `select family_send($1, 'Sorry, wrong child!')`, [PF.thread]);
+  await val('PFD', `select family_delete($1)`, [oops.message_id]);
+  const afterDel = await val('PFT', `select family_thread($1)`, [PF.thread]);
+  assert.deepEqual([afterDel.messages.at(-1).deleted, afterDel.messages.at(-1).body], [true, null]);
+  await fails(as('PFT', `select family_delete($1)`, [sent.message_id]), /first 15 minutes/);
+  // reporting: Mum reports it; Hillside's manager can read it (deleted words too), can't write, and her name shows on it
+  await fails(as('PFD', `select family_report($1, '')`, [PF.thread]), /what’s wrong/);
+  await val('PFD', `select family_report($1, 'Please check this conversation.')`, [PF.thread]);
+  assert.equal(await val('PFM', `select count(*)::int from notifications where kind = 'family_report'`), 1);
+  assert.ok((await val('PFM', `select family_list()`)).some((t) => t.id === PF.thread));
+  const rev = await val('PFM', `select family_thread($1)`, [PF.thread]);
+  assert.deepEqual([rev.side, rev.messages.at(-1).body, rev.report_reason], ['review', 'Sorry, wrong child!', 'Please check this conversation.']);
+  await fails(as('PFM', `select family_send($1, 'Hello')`, [PF.thread]), /not write in it/);
+  assert.deepEqual((await val('PFD', `select family_thread($1)`, [PF.thread])).views, ['PFM']);
+  const late = await val('PFD', `select family_send($1, 'One more thing.')`, [PF.thread]);
+  await fails(as('PFD', `select family_delete($1)`, [late.message_id]), /reported/);
+  // closing, and stopping a parent contacting the school
+  await val('PFT', `select family_close($1)`, [PF.thread]);
+  await fails(as('PFD', `select family_send($1, 'Hello?')`, [PF.thread]), /was closed/);
+  await val('PFT', `select family_close($1, false)`, [PF.thread]);
+  // a manager closes it after the report: only a manager opens it again
+  await val('PFM', `select family_close($1)`, [PF.thread]);
+  await fails(as('PFT', `select family_close($1, false)`, [PF.thread]), /a manager opens it again/);
+  await val('PFM', `select family_close($1, false)`, [PF.thread]);
+  await fails(as('PFT', `select family_block($1)`, [U.PFD]), /Only the office or a manager/);
+  await val('PFO', `select family_block($1)`, [U.PFD]);
+  await fails(as('PFD', `select family_send($1, 'Hello?')`, [off.thread_id]), /isn’t taking messages/);
+  assert.equal((await val('PFO', `select family_thread($1)`, [off.thread_id])).blocked, true);
+  await val('PFO', `select family_block($1, false)`, [U.PFD]);
+  // a teacher who stops teaching her: the conversation stays, closed
+  await as('PFM', `select archive_class($1)`, [PF.english]);
+  assert.match((await val('PFE', `select family_thread($1)`, [fromU.thread_id])).closed, /doesn’t teach PFA now/);
+  await fails(as('PFE', `select family_send($1, 'Hi')`, [fromU.thread_id]), /doesn’t teach/);
+  assert.ok(!(await val('PFD', `select family_contacts($1)`, [U.PFA])).find((c) => c.name === 'Hillside School').teachers.some((t) => t.name === 'PFU'));
+  await as('PFM', `select archive_class($1, false)`, [PF.english]);
+  // rate limits
+  await db.query(`insert into family_messages (thread_id, author_id, body) select $1, $2, 'x' from generate_series(1, 30)`, [fromU.thread_id, U.PFE]);
+  await fails(as('PFE', `select family_send($1, 'Hi')`, [fromU.thread_id]), /a lot of messages/);
+  await db.query(`delete from family_messages where thread_id = $1 and body = 'x'`, [fromU.thread_id]);
+
+  // what each keeps: Mum's export has her conversations; his has his; Ana's has none of them
+  assert.deepEqual((await val('PFD', `select export_my_data()`)).messages_with_teachers.map((t) => t.with).sort(), ['PFT', 'The office']);
+  assert.equal((await val('PFT', `select export_my_data()`)).family_messages[0].messages.length, 6);
+  assert.equal('messages_with_teachers' in (await val('PFA', `select export_my_data()`)), false);
+});
+
+test('parents, more: parents’ meetings booked online, in person or by video; never two families at once or a parent in two places', async () => {
+  // the office sets up Year 9's evening the day after tomorrow, 16:00 to 17:00, 10 minutes each; everyone teaching them takes part
+  const day = (await db.query(`select (current_date + 2)::text d`)).rows[0].d;
+  await fails(as('PFD', `select save_meeting_event(null, $1)`, [{ title: 'x' }]), /Only teachers/);
+  PF.event = await val('PFO', `select save_meeting_event(null, $1)`, [{ title: 'Year 9 parents’ evening', how: 'choice', slot_min: 10, audience: { years: [9] },
+    location: 'The hall', days: [{ day, from: '16:00', to: '17:00' }] }]);
+  let ev = await val('PFO', `select meeting_event($1)`, [PF.event]);
+  assert.deepEqual([ev.status, ev.teachers.map((t) => t.name).sort(), ev.teachers[0].blocks[0].from, ev.families.learners], ['draft', ['PFT', 'PFU'], '16:00', 2]);
+  assert.equal((await val('PFU', `select meeting_event($1)`, [PF.event])).teachers.length, 1, 'a teacher sees only their own times');
+  await fails(as('PFP', `select meeting_event($1)`, [PF.event]), /can’t see these meetings/);
+  // only Hillside's own teachers get times in Hillside's meetings; a group with nobody in it is never everyone
+  await fails(as('PFO', `select save_meeting_times($1, $2, $3)`, [PF.event, U.PFP, [{ day, from: '16:00', to: '17:00' }]]), /teachers here/);
+  await fails(as('PFO', `select save_meeting_event(null, $1)`, [{ title: 'Nobody', audience: { class_ids: [] }, days: [{ day, from: '16:00', to: '17:00' }] }]), /Pick who it’s for/);
+  // a draft is nobody's to book; opening it tells both of Ana's parents (and Ben has none)
+  assert.deepEqual((await val('PFD', `select my_meetings()`)).events, []);
+  await fails(as('PFD', `select meeting_slots($1, $2)`, [PF.event, U.PFA]), /can’t book/);
+  await fails(as('PFT', `select meeting_status($1, 'open')`, [PF.event]), /can’t change/);
+  await val('PFO', `select meeting_status($1, 'open')`, [PF.event]);
+  assert.equal(await val('PFD', `select count(*)::int from notifications where kind = 'meeting'`), 1);
+  assert.equal((await db.query(`select count(*)::int n from outgoing_emails where to_addr in ('mum@family.x', 'dad@family.x') and subject like 'Book a time%'`)).rows[0].n, 2);
+  const mine = await val('PFD', `select my_meetings()`);
+  assert.deepEqual([mine.events.length, mine.events[0].teachers.map((t) => t.name).sort()], [1, ['PFT', 'PFU']]);
+  await fails(as('PFD', `select meeting_slots($1, $2)`, [PF.event, U.PFB]), /can’t book/);
+  const slots = await val('PFD', `select meeting_slots($1, $2)`, [PF.event, U.PFA]);
+  const t1 = slots.teachers.find((t) => t.name === 'PFT');
+  const times = t1.blocks[0].slots.map((s) => s.at);
+  assert.equal(times.length, 6);
+  // Mum books maths at 16:00 in person; English at 16:00 too is her in two places; 16:10 is fine
+  const b1 = await val('PFD', `select book_meeting($1, $2, $3, $4, 'in_person', 'Algebra, please')`, [PF.event, U.PFT, U.PFA, times[0]]);
+  await fails(as('PFD', `select book_meeting($1, $2, $3, $4, 'video')`, [PF.event, U.PFU, U.PFA, times[0]]), /already have a meeting then, with PFT/);
+  await fails(as('PFD', `select book_meeting($1, $2, $3, $4)`, [PF.event, U.PFU, U.PFA, times[1]]), /in person or by video/);
+  const b2 = await val('PFD', `select book_meeting($1, $2, $3, $4, 'video')`, [PF.event, U.PFU, U.PFA, times[1]]);
+  // Dad books his own time (separate parents), never Mum's; he never sees hers
+  await fails(as('PFE', `select book_meeting($1, $2, $3, $4, 'in_person')`, [PF.event, U.PFT, U.PFA, times[0]]), /just gone/);
+  await fails(as('PFE', `select book_meeting($1, $2, $3, $4::timestamptz + interval '3 minutes', 'in_person')`, [PF.event, U.PFT, U.PFA, times[2]]), /times shown/);
+  await val('PFE', `select book_meeting($1, $2, $3, $4, 'in_person')`, [PF.event, U.PFT, U.PFA, times[2]]);
+  assert.deepEqual((await val('PFE', `select my_meetings()`)).bookings.map((b) => b.teacher.name), ['PFT']);
+  assert.equal((await val('PFE', `select meeting_slots($1, $2)`, [PF.event, U.PFA])).teachers.find((t) => t.name === 'PFT').booking.parent, U.PFE);
+  // moving a time: the old one is let go
+  const moved = await val('PFD', `select book_meeting($1, $2, $3, $4, 'in_person')`, [PF.event, U.PFT, U.PFA, times[4]]);
+  assert.deepEqual((await val('PFD', `select my_meetings()`)).bookings.map((b) => [b.teacher.name, b.where, b.parent_note]), [['PFU', null, null], ['PFT', 'The hall', 'Algebra, please']]);
+  // the teacher sees what the family wrote; the office doesn't
+  const tv = await val('PFT', `select meeting_event($1)`, [PF.event]);
+  assert.deepEqual(tv.teachers[0].bookings.map((b) => [b.parent.name, b.parent_note]), [['Dad', null], ['Mum', 'Algebra, please']]);
+  assert.equal((await val('PFO', `select meeting_event($1)`, [PF.event])).teachers.find((t) => t.name === 'PFT').bookings[1].parent_note, null);
+  assert.equal((await val('PFO', `select meeting_event($1)`, [PF.event])).families.booked, 1);
+
+  // by video: only the parent who booked and the teacher, from 15 minutes before
+  await fails(as('PFD', `select live_pass($1)`, [`meeting-${b2}`]), /from 15 minutes before/);
+  await db.query(`update meeting_bookings set starts_at = now() + interval '5 minutes', ends_at = now() + interval '15 minutes' where id = $1`, [b2]);
+  const pass = await val('PFD', `select live_pass($1)`, [`meeting-${b2}`]);
+  const claims = JSON.parse(Buffer.from(pass.token.split('.')[1], 'base64url').toString());
+  assert.equal(claims.video.room, `meeting-${b2}`);
+  assert.ok(claims.exp <= Date.now() / 1000 + 50 * 60, 'the pass lasts until 30 minutes after the meeting');
+  await val('PFU', `select live_pass($1)`, [`meeting-${b2}`]);
+  for (const k of ['PFE', 'PFT', 'PFO']) await fails(as(k, `select live_pass($1)`, [`meeting-${b2}`]), /not part/);
+  await fails(as('PFD', `select live_pass($1)`, [`meeting-${moved}`]), /not part/);
+  await fails(as('PFD', `select live_pass($1)`, [`session-${b2}`]), /not part/);
+
+  // reminders: Dad's time with Mr T is tomorrow (Mr T has an extra set of times then), Ms U's video with Mum is in 5 minutes
+  const dadB = (await db.query(`select id from meeting_bookings where parent_id = $1 and status = 'booked'`, [U.PFE])).rows[0].id;
+  await db.query(`insert into meeting_times (event_id, teacher_id, starts_at, ends_at) values ($1, $2, now() + interval '20 hours', now() + interval '21 hours')`, [PF.event, U.PFT]);
+  await db.query(`update meeting_bookings set starts_at = now() + interval '20 hours', ends_at = now() + interval '20 hours 10 minutes' where id = $1`, [dadB]);
+  await db.query(`update meeting_times set starts_at = now() + interval '4 minutes', ends_at = now() + interval '64 minutes' where event_id = $1 and teacher_id = $2`, [PF.event, U.PFU]);
+  await db.query(`update meeting_bookings set created_at = now() - interval '3 days' where event_id = $1`, [PF.event]);
+  await db.query(`select public._meeting_tick()`);
+  assert.deepEqual((await as('PFD', `select title from notifications where kind = 'meeting' and title like 'Soon%'`)).map((n) => n.title), ['Soon: your meeting with PFU']);
+  assert.equal(await val('PFE', `select count(*)::int from notifications where title = 'Your meetings tomorrow'`), 1);
+  assert.equal((await db.query(`select count(*)::int n from outgoing_emails where to_addr = 'dad@family.x' and subject = 'Your meetings tomorrow'`)).rows[0].n, 1);
+  assert.equal((await as('PFT', `select title from notifications where kind = 'meeting' and title like 'Tomorrow:%'`)).length, 1, 'once for his times, not once a family');
+  assert.equal((await as('PFU', `select title from notifications where kind = 'meeting' and title like 'Soon:%'`)).length, 1);
+  await db.query(`select public._meeting_tick()`);
+  assert.equal(await val('PFE', `select count(*)::int from notifications where title = 'Your meetings tomorrow'`), 1, 'only once');
+  await fails(as('PFD', `select public._meeting_tick()`), /permission denied/);
+
+  // the teacher can't come for the first half hour: the family booked then is told why; nobody else is touched
+  const blocks = [{ day, from: '16:30', to: '17:00' }];
+  await fails(as('PFT', `select save_meeting_times($1, $2, $3)`, [PF.event, U.PFT, blocks]), /taking away/);
+  await fails(as('PFU', `select save_meeting_times($1, $2, $3, 'x')`, [PF.event, U.PFT, blocks]), /can’t change these times/);
+  await val('PFT', `select save_meeting_times($1, $2, $3, 'Mr T has a meeting he can’t move. Please book another time.')`, [PF.event, U.PFT, blocks]);
+  const dadNote = await as('PFE', `select body from notifications where title = 'Your meeting with PFT was cancelled'`);
+  assert.match(dadNote[0].body, /can’t move/);
+  assert.equal((await val('PFD', `select my_meetings()`)).bookings.find((b) => b.teacher.name === 'PFT').status, 'booked', '16:40 still stands');
+  await val('PFT', `select meeting_late($1, 10)`, [(await val('PFT', `select meeting_event($1)`, [PF.event])).teachers[0].blocks[0].id]);
+  assert.equal((await val('PFD', `select my_meetings()`)).bookings.find((b) => b.teacher.name === 'PFT').late_min, 10);
+  // the office books for a family that phoned (Dad again), and the teacher notes how it went once it's started
+  const t2 = (await val('PFO', `select meeting_slots($1, $2)`, [PF.event, U.PFA])).teachers.find((t) => t.name === 'PFT').blocks[0].slots.find((s) => s.free);
+  await fails(as('PFO', `select book_meeting($1, $2, $3, $4, 'in_person')`, [PF.event, U.PFT, U.PFA, t2.at]), /Pick one of their parents/);
+  const byOffice = await val('PFO', `select book_meeting($1, $2, $3, $4, 'in_person', null, $5)`, [PF.event, U.PFT, U.PFA, t2.at, U.PFE]);
+  assert.equal(await val('PFE', `select count(*)::int from notifications where title = 'A meeting was booked for you'`), 1);
+  await fails(as('PFT', `select meeting_note($1, 'met', 'Went well')`, [byOffice]), /once it’s started/);
+  await db.query(`update meeting_bookings set starts_at = now() - interval '20 minutes', ends_at = now() - interval '10 minutes' where id = $1`, [byOffice]);
+  await val('PFT', `select meeting_note($1, 'met', 'Talked about practice at home.')`, [byOffice]);
+  // after a meeting that happened, the family can still have another time with that teacher
+  const again = (await val('PFO', `select meeting_slots($1, $2)`, [PF.event, U.PFA])).teachers.find((t) => t.name === 'PFT').blocks[0].slots.find((s) => s.free);
+  await val('PFO', `select book_meeting($1, $2, $3, $4, 'in_person', null, $5)`, [PF.event, U.PFT, U.PFA, again.at, U.PFE]);
+  await fails(as('PFU', `select meeting_slots($1, $2)`, [PF.event, U.PFB]), /can’t book/);
+  assert.equal((await val('PFE', `select export_my_data()`)).meetings.some((m) => 'my_note' in m && m.my_note === 'Talked about practice at home.'), false, 'his notes are his');
+  // the calendar link has the teacher's meetings, with the child's name and nothing the family wrote
+  const tok = await val('PFT', `select my_calendar_token()`);
+  const feed = await asService(`select calendar_feed($1) f`, [tok]);
+  const ev2 = feed[0].f.events.filter((e) => e.uid.startsWith('m-'));
+  assert.ok(ev2.length >= 1 && ev2.every((e) => e.title === 'Parents’ meeting: PFA' && !/Algebra/.test(JSON.stringify(e))));
+
+  // a teacher offers times to their own class; never to a whole year
+  await fails(as('PFT', `select save_meeting_event(null, $1)`, [{ title: 'Maths chats', audience: { years: [9] }, days: [{ day, from: '12:00', to: '13:00' }] }]), /your classes or learners/);
+  const own = await val('PFT', `select save_meeting_event(null, $1)`, [{ title: 'Maths chats', audience: { class_ids: [PF.maths] }, days: [{ day, from: '12:00', to: '13:00' }] }]);
+  assert.deepEqual((await val('PFT', `select meeting_event($1)`, [own])).teachers.map((t) => t.name), ['PFT']);
+  await val('PFT', `select delete_meeting_event($1)`, [own]);
+  // a tutor on their own: their own clock
+  await db.query(`update profiles set timezone = 'America/New_York' where id = $1`, [U.PFP]);
+  const tutorOwn = await val('PFP', `select save_meeting_event(null, $1)`, [{ title: 'Catch-up with families', days: [{ day, from: '16:00', to: '17:00' }] }]);
+  assert.equal((await db.query(`select to_char(starts_at at time zone 'America/New_York', 'HH24:MI') t from meeting_times where event_id = $1`, [tutorOwn])).rows[0].t, '16:00');
+  assert.deepEqual((await val('PFP', `select meeting_event($1)`, [tutorOwn])).teachers.map((t) => t.name), ['PFP']);
+
+  // Dad stops following Ana: his meetings about her go, and the teacher is told
+  const dadLeft = (await val('PFE', `select my_meetings()`)).bookings.filter((b) => b.status === 'booked' && new Date(b.starts_at) > new Date()).length;
+  await val('PFE', `select parent_unlink($1)`, [U.PFA]);
+  assert.equal(await db.query(`select count(*)::int n from meeting_bookings where parent_id = $1 and status = 'booked' and starts_at > now()`, [U.PFE]).then((r) => r.rows[0].n), 0);
+  assert.ok(dadLeft >= 0);
+  // cancelling the evening cancels every time still to come, and tells each family
+  await fails(as('PFO', `select delete_meeting_event($1)`, [PF.event]), /cancel them instead/);
+  await val('PFO', `select meeting_status($1, 'cancelled', 'The hall is flooded.')`, [PF.event]);
+  assert.equal(await val('PFD', `select count(*)::int from notifications where title like 'Your meeting with % was cancelled' and body like '%flooded%'`), 2, 'both of hers still to come');
+  await fails(as('PFD', `select book_meeting($1, $2, $3, $4, 'in_person')`, [PF.event, U.PFT, U.PFA, times[5]]), /closed/);
+  await fails(as('PFD', `select * from meeting_bookings`), /permission denied/);
+});
+
+test('parents, more: portfolios the learner chooses to show, pieces teachers add, comments that stay with each place, and files only those who see them open', async () => {
+  // Ana's poster, shown to Hillside: her teachers there see it, her private tutor and the office don't; Mum does
+  const poster = (await db.query(`select gen_random_uuid() id`)).rows[0].id;
+  const file = `${U.PFA}/portfolio/${poster}/a1b2c3d4-poster.png`;
+  await as('PFA', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [file]);
+  await fails(as('PFA', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [`${U.PFB}/portfolio/${poster}/x.png`]), /row-level security/);
+  await fails(as('PFA', `select save_portfolio_item($1, $2, $3)`, [poster, U.PFA, { title: 'x', files: [{ path: `${U.PFA}/core/x/y.png` }] }]), /aren’t this piece’s/);
+  const saved = await val('PFA', `select save_portfolio_item($1, $2, $3)`, [poster, U.PFA,
+    { title: 'My fractions poster', body: 'I explain adding fractions.', files: [{ path: file, name: 'poster.png', type: 'image/png', size: 1000 }],
+      places: [PF.org, U.PFX], class_id: PF.maths }]);
+  assert.deepEqual(saved.places.map((p) => p.name), ['Hillside School'], 'only places she belongs to');
+  const sees = async (k) => (await val(k, `select my_portfolio($1)`, [U.PFA])).items.map((i) => i.title);
+  assert.deepEqual(await sees('PFT'), ['My fractions poster']);
+  assert.deepEqual(await sees('PFU'), ['My fractions poster']);
+  assert.deepEqual(await sees('PFP'), []);
+  assert.deepEqual(await sees('PFD'), ['My fractions poster']);
+  await fails(as('PFO', `select my_portfolio($1)`, [U.PFA]), /can’t see this portfolio/);
+  await fails(as('PFX', `select my_portfolio($1)`, [U.PFA]), /can’t see this portfolio/);
+  const canOpen = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'work' and name = $1`, [file])).length === 1;
+  assert.deepEqual([await canOpen('PFA'), await canOpen('PFT'), await canOpen('PFD'), await canOpen('PFP'), await canOpen('PFO')], [true, true, true, false, false]);
+  // nobody changes a file once it's there; a teacher can't take it away
+  await as('PFT', `delete from storage.objects where bucket_id = 'work' and name = $1`, [file]);
+  assert.equal(await canOpen('PFA'), true);
+  // files for a piece never saved: only whoever uploaded them opens or removes them
+  const orphan = `${U.PFA}/portfolio/${(await db.query(`select gen_random_uuid() id`)).rows[0].id}/a1b2c3d4-cancelled.png`;
+  await as('PFA', `insert into storage.objects (bucket_id, name, owner) values ('work', $1, auth.uid())`, [orphan]);
+  const sees2 = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'work' and name = $1`, [orphan])).length;
+  assert.deepEqual([await sees2('PFA'), await sees2('PFT'), await sees2('PFP'), await sees2('PFD')], [1, 0, 0, 0]);
+  await as('PFT', `delete from storage.objects where bucket_id = 'work' and name = $1`, [orphan]);
+  assert.equal(await sees2('PFA'), 1, 'a teacher can’t remove it');
+  await as('PFA', `delete from storage.objects where bucket_id = 'work' and name = $1`, [orphan]);
+  assert.equal(await sees2('PFA'), 0, 'she can');
+  // "Just me": nobody else, not even Mum
+  const diary = (await db.query(`select gen_random_uuid() id`)).rows[0].id;
+  await val('PFA', `select save_portfolio_item($1, $2, $3)`, [diary, U.PFA, { title: 'My first try', places: [] }]);
+  assert.deepEqual([await sees('PFD'), (await val('PFA', `select my_portfolio()`)).items.length], [['My fractions poster'], 2]);
+
+  // comments belong to one place: Mr T comments, Ana answers; Mum and her private tutor never see them
+  await val('PFT', `select comment_portfolio($1, 'Lovely poster, Ana!')`, [poster]);
+  assert.equal(await val('PFA', `select count(*)::int from notifications where kind = 'portfolio_comment'`), 1);
+  await fails(as('PFD', `select comment_portfolio($1, 'Proud of you!')`, [poster]), /between PFA and their teachers/);
+  await val('PFA', `select comment_portfolio($1, 'Thank you!')`, [poster]);
+  assert.equal(await val('PFT', `select count(*)::int from notifications where kind = 'portfolio_comment'`), 1);
+  assert.deepEqual((await val('PFD', `select portfolio_item($1)`, [poster])).comments, []);
+  // she shows it to her private tutor too: he sees it, but not Hillside's comments
+  await val('PFA', `select save_portfolio_item($1, $2, $3)`, [poster, U.PFA,
+    { title: 'My fractions poster', body: 'I explain adding fractions.', files: [{ path: file, name: 'poster.png', type: 'image/png', size: 1000 }], places: [PF.org, U.PFP] }]);
+  assert.deepEqual([await sees('PFP'), (await val('PFP', `select portfolio_item($1)`, [poster])).comments], [['My fractions poster'], []]);
+  assert.equal((await val('PFA', `select portfolio_item($1)`, [poster])).comments.length, 2);
+  await fails(as('PFP', `select save_portfolio_item($1, $2, $3)`, [poster, U.PFA, { title: 'Mine now' }]), /Only whoever added/);
+
+  // a piece of marked work: hers, given back; shown only to the place that set it; the score comes from StudyBridge
+  const asg = await val('PFT', `insert into assignments (kind, title, visibility, class_id) values ('homework', 'Fractions homework', 'visible', $1) returning id`, [PF.maths]);
+  const att = (await db.query(`insert into attempts (assignment_id, learner_id, tutor_id, status, started_at, submitted_at, score, max_score, released, released_at)
+    values ($1, $2, $3, 'returned', now() - interval '2 days', now() - interval '2 days', 9, 10, true, now()) returning id`, [asg, U.PFA, U.PFT])).rows[0].id;
+  const fromWork = (await db.query(`select gen_random_uuid() id`)).rows[0].id;
+  const w = await val('PFA', `select save_portfolio_item($1, $2, $3)`, [fromWork, U.PFA, { title: 'Fractions homework', attempt_id: att, places: [PF.org, U.PFP], snapshot: { score: 10 } }]);
+  assert.deepEqual([w.snapshot.score, w.snapshot.max, w.places.map((p) => p.name), w.attempt_id], [9, 10, ['Hillside School'], att]);
+  assert.equal((await val('PFU', `select portfolio_item($1)`, [fromWork])).attempt_id, null, 'the work itself opens only for whoever set it');
+  assert.equal((await val('PFT', `select portfolio_item($1)`, [fromWork])).attempt_id, att);
+  await fails(as('PFB', `select save_portfolio_item(gen_random_uuid(), $1, $2)`, [U.PFB, { title: 'Not mine', attempt_id: att }]), /marks are back/);
+
+  // a teacher's piece: Ana and both her parents are told; it stays at Hillside; Ana can't take it out, he can
+  const pick = (await db.query(`select gen_random_uuid() id`)).rows[0].id;
+  await val('PFU', `select save_portfolio_item($1, $2, $3)`, [pick, U.PFA, { title: 'Teacher’s pick: her story', body: 'A wonderful opening paragraph.', places: [U.PFP] }]);
+  assert.deepEqual((await val('PFU', `select portfolio_item($1)`, [pick])).by_teacher, true);
+  assert.equal(await val('PFA', `select count(*)::int from notifications where kind = 'portfolio'`), 1);
+  assert.equal(await val('PFD', `select count(*)::int from notifications where kind = 'portfolio'`), 1);
+  assert.deepEqual(await sees('PFP'), ['My fractions poster'], 'a teacher’s piece stays with their place');
+  await fails(as('PFA', `select delete_portfolio_item($1)`, [pick]), /Only whoever added/);
+  await fails(as('PFA', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [`${U.PFA}/portfolio/${pick}/x.png`]), /row-level security/);
+  await val('PFU', `select delete_portfolio_item($1)`, [pick]);
+  // she takes her diary out (its files first)
+  await val('PFA', `select delete_portfolio_item($1)`, [diary]);
+  // a stranger, the office and the Prof server get nothing
+  await fails(as('PFX', `select save_portfolio_item(gen_random_uuid(), $1, $2)`, [U.PFA, { title: 'x' }]), /don’t teach/);
+  await fails(as('PFO', `select portfolio_item($1)`, [poster]), /can’t see/);
+  await fails(asService(`select * from portfolio_items`), /permission denied/);
+  await fails(asService(`select * from portfolio_comments`), /permission denied/);
+  // her export has her portfolio, with its comments
+  const ex = (await val('PFA', `select export_my_data()`)).portfolio;
+  assert.deepEqual(ex.map((p) => [p.title, p.comments.length]).sort(), [['Fractions homework', 0], ['My fractions poster', 2]]);
 });

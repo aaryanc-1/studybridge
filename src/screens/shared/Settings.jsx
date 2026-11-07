@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { useApp } from '../../App.jsx';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Field, Modal, Page, Toggle, copyText, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
+import { Avatar, Field, Modal, Page, Seg, Toggle, copyText, useConfirm, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import * as store from '../../lib/store.js';
@@ -129,7 +129,7 @@ function Account() {
         <Avatar person={{ ...app.me, display_name: name, avatar_color: color }} size="lg" />
         <div>
           <div className="strong">{app.me.email}</div>
-          <div className="muted small">{{ tutor: 'Tutor', learner: 'Learner', admin: 'StudyBridge admin', parent: 'Parent (read-only)' }[app.me.role]}</div>
+          <div className="muted small">{{ tutor: 'Tutor', learner: 'Learner', admin: 'StudyBridge admin', parent: 'Parent' }[app.me.role]}</div>
         </div>
       </div>
       <div className="grid g2" style={{ gap: 12 }}>
@@ -399,6 +399,24 @@ function YourOrganisation() {
           )}
 
           {centre && <CentrePays manager={manager} kind={o.kind} />}
+
+          {centre && manager && (
+            <div className="stack xs">
+              <h3>Messages from families</h3>
+              <div className="small muted">Who parents can write to first. Teachers can always write to a family, and families can always answer.</div>
+              <Seg
+                label="Who parents can write to first"
+                value={o.parents_message || 'teachers'}
+                onChange={(m) => act(() => api.setParentsMessage(m).then(() => api.myOrg()), 'Saved')}
+                options={[
+                  { value: 'teachers', label: 'Any of their child’s teachers' },
+                  { value: 'homeroom', label: 'Their form tutor' },
+                  { value: 'office', label: 'The office' },
+                ]}
+              />
+              <div className="tiny muted">The office can always be written to.</div>
+            </div>
+          )}
 
           {centre && (
             <>
@@ -1955,7 +1973,7 @@ function Appearance() {
 // Learners and parents: where to get help
 function Help({ learner }) {
   return (
-    <Section id="help" icon="info" title="Help" sub={learner ? 'Stuck on your work? Ask your tutor in Messages.' : 'Questions about your child’s work? Ask their tutor.'}>
+    <Section id="help" icon="info" title="Help" sub={learner ? 'Stuck on your work? Ask your tutor in Messages.' : 'Questions about your child’s work? Write to their teachers in Messages.'}>
       <div className="small">
         A problem with the app itself? Email <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Help with StudyBridge')}`}>{SUPPORT_EMAIL}</a> and we’ll help.
       </div>

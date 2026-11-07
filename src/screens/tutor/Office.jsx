@@ -4,7 +4,7 @@
 // brings one learner's record, attendance, behaviour, absences and reports together.
 import { useMemo, useState } from 'react';
 import Icon from '../../ui/Icon.jsx';
-import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Stat, Toggle, go, useToast } from '../../ui/kit.jsx';
+import { Avatar, Empty, Field, Link, Loading, Modal, Page, Seg, Stat, Toggle, go, useRoute, useToast } from '../../ui/kit.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { day, ymd } from '../../lib/format.js';
@@ -13,6 +13,8 @@ import { AbsenceItem, Decide, RecordEditor, RecordView, ReportAbsence } from '..
 import { AttendanceCard, BehaviourCard, GiveBehaviour, ProfileCard } from '../shared/School.jsx';
 import { AttendanceReport, BehaviourReport } from './SchoolSetup.jsx';
 import { AccessLine } from './Access.jsx';
+import { FamilyInbox, MessageFamily, FamilyThreadsFor, useFamilyUnread } from '../shared/Families.jsx';
+import { MeetingsList } from '../shared/Meetings.jsx';
 
 const first = (name) => String(name || '').split(' ')[0];
 const addDays = (d, n) => {
@@ -31,6 +33,8 @@ export function officeAccess(org) {
 export default function Office({ tab = 'today' }) {
   const org = useQuery('org', api.myOrg).data;
   const access = officeAccess(org);
+  const route = useRoute();
+  const unread = useFamilyUnread();
   const tabs = [
     { value: 'today', label: 'Today' },
     { value: 'absences', label: 'Absences' },
@@ -38,6 +42,9 @@ export default function Office({ tab = 'today' }) {
     { value: 'attendance', label: 'Attendance' },
     { value: 'behaviour', label: 'Behaviour' },
     ...(access === 'all' ? [{ value: 'homerooms', label: 'Homerooms' }] : []),
+    // parents, more (6 Nov 2026): messages families send the office, and parents' meetings
+    { value: 'messages', label: unread ? `Messages (${unread})` : 'Messages' },
+    ...(access === 'all' ? [{ value: 'meetings', label: 'Parents’ meetings' }] : []),
   ];
   const shown = tabs.some((t) => t.value === tab) ? tab : 'today';
   if (!org) return <Page title="Office"><Loading /></Page>;
@@ -57,6 +64,10 @@ export default function Office({ tab = 'today' }) {
         <BehaviourReport />
       ) : shown === 'homerooms' ? (
         <Homerooms />
+      ) : shown === 'messages' ? (
+        <FamilyInbox threadId={route.parts[2]} base="/office/messages" officeOnly />
+      ) : shown === 'meetings' ? (
+        <MeetingsList />
       ) : (
         <Today />
       )}
@@ -513,10 +524,12 @@ export function StudentPage({ id }) {
           <button className="btn" onClick={() => go(`/transcript/${id}`)}>
             <Icon name="file" size={16} /> Transcript
           </button>
+          {office && <MessageFamily learnerId={id} office label="Message the family" />}
         </>
       }
     >
       <AccessLine id={id} first={first(l.name)} />
+      {office && <FamilyThreadsFor learnerId={id} base="/office/messages" />}
       <div className="split">
         <div className="stack">
           <section className="card">

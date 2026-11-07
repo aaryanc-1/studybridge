@@ -31,7 +31,7 @@
   "audiences": [
     { "id": "student", "name": "Students", "status": "7 days free", "line": "A plan to your exam, short lessons, practice papers in the real format and timed mocks, with hints and worked solutions.", "href": "students.html", "go": "For students" },
     { "id": "tutor", "name": "Tutors", "status": "Available now", "line": "Set work, mark with Prof, teach live and send weekly reports, all in one calm place.", "href": "tutors.html", "go": "For tutors" },
-    { "id": "parent", "name": "Parents", "status": "Free", "line": "See how they’re really doing, with weekly reports, due dates and marks.", "href": "parents.html", "go": "For parents" },
+    { "id": "parent", "name": "Parents", "status": "Free", "line": "See how they’re really doing, write to their teachers and book parents’ meetings.", "href": "parents.html", "go": "For parents" },
     { "id": "school", "name": "Schools and tuition centres", "status": "Set up with you", "line": "Teachers, classes, learners and parents in one place, with exam prep built in.", "href": "schools.html", "go": "For schools" }
   ],
   "boards": [

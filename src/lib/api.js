@@ -194,6 +194,52 @@ export const decideAbsence = (id, status, reply = null) => run(sb().rpc('decide_
 export const absenceList = (which = 'open') => run(sb().rpc('absence_list', { p_which: which }));
 export const childAbsences = (learnerId = null) => run(sb().rpc('child_absences', { p_learner: learnerId }));
 export const officeDay = (day = null) => run(sb().rpc('office_day', { p_day: day }));
+// Parents, more (6 Nov 2026): families and teachers message each other; parents' meetings; portfolios
+export const familyList = (learnerId = null) => run(sb().rpc('family_list', { p_learner: learnerId }));
+export const familyThread = (id) => run(sb().rpc('family_thread', { p_thread: id }));
+export const familyContacts = (learnerId) => run(sb().rpc('family_contacts', { p_learner: learnerId }));
+export const familyParents = (learnerId) => run(sb().rpc('family_parents', { p_learner: learnerId }));
+// to: {learner, staff} or {learner, office: true, place} (a parent); {learner, parent} or {learner, parent, office: true} (staff)
+export const familySend = (threadId, body, to = null) => run(sb().rpc('family_send', { p_thread: threadId, p_body: body, p_to: to }));
+export const familyDelete = (messageId) => run(sb().rpc('family_delete', { p_message: messageId }));
+export const familyClose = (threadId, closed = true) => run(sb().rpc('family_close', { p_thread: threadId, p_closed: closed }));
+export const familyReport = (threadId, reason) => run(sb().rpc('family_report', { p_thread: threadId, p_reason: reason }));
+export const familyBlock = (parentId, on = true) => run(sb().rpc('family_block', { p_parent: parentId, p_on: on }));
+export const setParentsMessage = (mode) => run(sb().rpc('set_parents_message', { p_mode: mode }));
+export const classParentCodes = (classId) => run(sb().rpc('class_parent_codes', { p_class: classId }));
+export const meetingList = () => run(sb().rpc('meeting_list'));
+export const meetingEvent = (id) => run(sb().rpc('meeting_event', { p_event: id }));
+export const saveMeetingEvent = (id, event) => run(sb().rpc('save_meeting_event', { p_id: id, p_event: event }));
+export const meetingAdd = (id, teacherIds, days) => run(sb().rpc('meeting_add', { p_event: id, p_teachers: teacherIds, p_days: days }));
+export const saveMeetingTimes = (id, teacherId, blocks, reason = null) =>
+  run(sb().rpc('save_meeting_times', { p_event: id, p_teacher: teacherId, p_blocks: blocks, p_reason: reason }));
+export const meetingLate = (timeId, minutes) => run(sb().rpc('meeting_late', { p_time: timeId, p_min: minutes }));
+export const meetingStatus = (id, status, reason = null) => run(sb().rpc('meeting_status', { p_event: id, p_status: status, p_reason: reason }));
+export const deleteMeetingEvent = (id) => run(sb().rpc('delete_meeting_event', { p_event: id }));
+export const myMeetings = (learnerId = null) => run(sb().rpc('my_meetings', { p_learner: learnerId }));
+export const meetingSlots = (id, learnerId) => run(sb().rpc('meeting_slots', { p_event: id, p_learner: learnerId }));
+export const bookMeeting = (id, teacherId, learnerId, at, how = null, note = null, parentId = null) =>
+  run(sb().rpc('book_meeting', { p_event: id, p_teacher: teacherId, p_learner: learnerId, p_at: at, p_how: how, p_note: note, p_parent: parentId }));
+export const cancelMeeting = (bookingId, reason = null) => run(sb().rpc('cancel_meeting', { p_booking: bookingId, p_reason: reason }));
+export const meetingNote = (bookingId, status, note = null) => run(sb().rpc('meeting_note', { p_booking: bookingId, p_status: status, p_note: note }));
+export const myPortfolio = (learnerId = null) => run(sb().rpc('my_portfolio', { p_learner: learnerId }));
+export const portfolioItem = (id) => run(sb().rpc('portfolio_item', { p_id: id }));
+export const savePortfolioItem = (id, learnerId, item) => run(sb().rpc('save_portfolio_item', { p_id: id, p_learner: learnerId, p_item: item }));
+export const deletePortfolioItem = (id) => run(sb().rpc('delete_portfolio_item', { p_id: id }));
+export const commentPortfolio = (itemId, body, placeId = null) => run(sb().rpc('comment_portfolio', { p_item: itemId, p_body: body, p_place: placeId }));
+export const deletePortfolioComment = (id) => run(sb().rpc('delete_portfolio_comment', { p_id: id }));
+export const newId = () => uuid();
+// A portfolio piece's pictures and files go in the learner's own work folder, under the piece: work/<learner>/portfolio/<piece>/…
+// (straight up, never through the outbox: a file in a portfolio is never replaced)
+export async function uploadPortfolioFile(learnerId, itemId, file) {
+  const safe = (file.name || 'file').replace(/[^\w.() -]+/g, '_').slice(-80) || 'file';
+  const path = `${learnerId}/portfolio/${itemId}/${uuid().slice(0, 8)}-${safe}`;
+  const bytes = await file.arrayBuffer();
+  await run(sb().storage.from('work').upload(path, bytes, { contentType: file.type || 'application/octet-stream' }));
+  await store.blobs.set(`work/${path}`, new Blob([bytes], { type: file.type || 'application/octet-stream' }));
+  return { path, name: file.name || safe, type: file.type || '', size: file.size || bytes.byteLength };
+}
+export const removePortfolioFiles = (paths) => (paths.length ? sb().storage.from('work').remove(paths).catch(() => {}) : Promise.resolve());
 // IB core (CAS, the Extended Essay, TOK, MYP projects, the PYP Exhibition) and the PYP
 export const coreOn = () => run(sb().rpc('core_on')).catch((e) => (e.offline ? Promise.reject(e) : false));
 export const coreCohorts = () => run(sb().rpc('core_cohorts'));

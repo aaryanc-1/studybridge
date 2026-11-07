@@ -19,7 +19,9 @@ import { useDraftCounts } from './ClaudeInbox.jsx';
 import Prof, { useProfJobs, ProfHistory } from './Prof.jsx';
 import { MoveAdmin } from './MoveAdmin.jsx';
 import Messages from '../shared/Messages.jsx';
-import Live, { Watch } from '../shared/Live.jsx';
+import Live, { MeetingRoom, Watch } from '../shared/Live.jsx';
+import { useFamilyUnread } from '../shared/Families.jsx';
+import { MeetingPage } from '../shared/Meetings.jsx';
 import Settings from '../shared/Settings.jsx';
 import FileView from '../shared/FileView.jsx';
 import { OfficialView } from './PastPapers.jsx';
@@ -35,8 +37,12 @@ import { TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 import Office, { StudentPage, officeAccess } from './Office.jsx';
 
-function notificationTarget(n, office) {
+function notificationTarget(n, office, officeOnly) {
   const r = n.ref || {};
+  // parents, more (6 Nov 2026): messages with families, parents' meetings, and comments on a learner's portfolio
+  if ((n.kind === 'family_message' || n.kind === 'family_report') && r.thread_id) return officeOnly ? `/office/messages/${r.thread_id}` : `/messages/families/${r.thread_id}`;
+  if (n.kind === 'meeting' && r.event_id) return `/meetings/${r.event_id}`;
+  if (n.kind === 'portfolio_comment' && r.learner_id) return `/learners/${r.learner_id}/portfolio`;
   // the school office (5 Nov 2026): absences families report, and changes to a learner's details
   if (n.kind === 'absence_report') return office ? '/office/absences' : '/timetable/attendance';
   if (n.kind === 'record' && r.learner_id) return office ? `/student/${r.learner_id}` : `/learners/${r.learner_id}/details`;
@@ -67,7 +73,7 @@ export default function TutorApp() {
   const attempts = useQuery('attempts', api.listAttempts);
   const comments = useQuery('comments', api.listComments);
   const toMark = (attempts.data || []).filter((a) => a.status === 'submitted').length;
-  const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length;
+  const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length + useFamilyUnread();
   const draftCount = useDraftCounts();
   useProfJobs(); // keeps Prof's requests moving (e.g. sending book pages) on every page
   const reportsToSend = useWeeklyReports(); // drafts last week's parent reports
@@ -83,11 +89,11 @@ export default function TutorApp() {
 
   // every tutor has Timetable: their week with each lesson's register, and their learners' attendance and behaviour
   const nav = officeOnly ? [
-    { to: '/', label: 'Office', icon: 'clipboard', also: ['/office', '/student', '/register', '/report', '/transcript'] },
+    { to: '/', label: 'Office', icon: 'clipboard', also: ['/office', '/student', '/register', '/report', '/transcript', '/meetings', '/live'] },
     { to: '/centre', label: 'Centre', icon: 'chart' },
   ] : [
     { to: '/', label: 'Home', icon: 'home' },
-    { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register', '/plan'] },
+    { to: '/timetable', label: 'Timetable', icon: 'calendar', also: ['/register', '/plan', '/meetings'] },
     { to: '/learners', label: 'Learners', icon: 'users', count: reportsToSend, also: ['/see', '/reports'] },
     { to: '/assignments', label: 'Assignments', icon: 'clipboard', also: ['/mocks'] },
     { to: '/marking', label: 'Marking', icon: 'checkCircle', count: toMark },
@@ -133,7 +139,10 @@ export default function TutorApp() {
   else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;
   else if (a === 'admin' && app.me.admin_to_move) page = <MoveAdmin />;
+  else if (a === 'messages' && b === 'families') page = <Messages tab="families" threadId={c} />;
   else if (a === 'messages') page = <Messages learnerId={b} />;
+  else if (a === 'meetings' && b) page = <MeetingPage id={b} />;
+  else if (a === 'live' && b === 'meeting' && c) page = <MeetingRoom bookingId={c} title="Parents’ meeting" onLeave={() => window.history.back()} />;
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'watch' && b) page = <Watch attemptId={b} />;
   else if (a === 'settings') page = <Settings />;
@@ -166,7 +175,7 @@ export default function TutorApp() {
 
   return (
     <LookupsProvider tutor>
-      <Shell nav={nav} tabs={tabs} roleLabel={officeOnly ? 'Office' : 'Tutor'} notificationTarget={(n) => notificationTarget(n, !!office)}>
+      <Shell nav={nav} tabs={tabs} roleLabel={officeOnly ? 'Office' : 'Tutor'} notificationTarget={(n) => notificationTarget(n, !!office, officeOnly)}>
         {page}
       </Shell>
     </LookupsProvider>

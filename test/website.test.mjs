@@ -75,6 +75,16 @@ test('website: every page builds with nothing left unfilled', async () => {
       assert.ok(!read(f).includes('support@'), `${f}: support@ stays inside the app`);
     }
     assert.match(read('privacy.html'), /Cloudflare Web Analytics/);
+    // parents, more (6 Nov 2026): parents write to teachers, book meetings and see the portfolio, on the website and in
+    // the app alike; the old "read-only, never messages" promise is gone everywhere; video goes through LiveKit
+    for (const f of pages) assert.doesNotMatch(read(f), /read-only parent account|parent account is read-only|Never messages or working/i, `${f}: parents aren’t read-only now`);
+    assert.match(read('parents.html'), /Can I message their teachers here\?<\/summary><p>Yes\./);
+    assert.match(read('privacy.html'), /LiveKit/);
+    assert.match(read('schools.html'), /Families in touch/);
+    for (const f of ['../src/screens/tutor/Learners.jsx', '../src/screens/Welcome.jsx', '../src/screens/parent/ParentApp.jsx', '../src/screens/shared/Settings.jsx']) {
+      const app = readFileSync(new URL(f, import.meta.url), 'utf8');
+      assert.doesNotMatch(app, /Read-only\. They see|parent account is read-only|Parent \(read-only\)/, `${f} says the same as the website`);
+    }
     // the subjects page lists every subject in the config, searchable
     const subjects = readFileSync(join(out, 'subjects.html'), 'utf8');
     assert.equal((subjects.match(/<li data-s=/g) || []).length, subjectCount(c));

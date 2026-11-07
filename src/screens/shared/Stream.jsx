@@ -203,7 +203,8 @@ function PostCard({ p, d, learner }) {
 }
 
 // Pictures (shown, tap to enlarge) and files (to download) in a post
-export function StreamFiles({ files }) {
+// (bucket: 'work' for a portfolio's pictures and files)
+export function StreamFiles({ files, bucket = 'library' }) {
   const [big, setBig] = useState(null);
   if (!files?.length) return null;
   const pics = files.filter((f) => String(f.type || '').startsWith('image/'));
@@ -213,14 +214,14 @@ export function StreamFiles({ files }) {
       {pics.length > 0 && (
         <div className="stream-pics">
           {pics.map((f) => (
-            <StreamPicture key={f.path} f={f} onOpen={setBig} />
+            <StreamPicture key={f.path} f={f} onOpen={setBig} bucket={bucket} />
           ))}
         </div>
       )}
       {others.length > 0 && (
         <div className="row wrap" style={{ gap: 8 }}>
           {others.map((f) => (
-            <StreamFile key={f.path} f={f} />
+            <StreamFile key={f.path} f={f} bucket={bucket} />
           ))}
         </div>
       )}
@@ -228,25 +229,25 @@ export function StreamFiles({ files }) {
     </>
   );
 }
-function StreamPicture({ f, onOpen }) {
+function StreamPicture({ f, onOpen, bucket }) {
   const open = () =>
-    api.getBlob('library', f.path).then(
+    api.getBlob(bucket, f.path).then(
       (b) => onOpen(URL.createObjectURL(b)),
       () => {},
     );
   return (
     <div className="stream-pic" title="Tap to see it bigger">
-      <StoredImage path={f.path} alt={f.name} onClick={open} />
+      <StoredImage bucket={bucket} path={f.path} alt={f.name} onClick={open} />
     </div>
   );
 }
-function StreamFile({ f }) {
+function StreamFile({ f, bucket }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   async function download() {
     setBusy(true);
     try {
-      const blob = await api.getBlob('library', f.path);
+      const blob = await api.getBlob(bucket, f.path);
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = f.name;

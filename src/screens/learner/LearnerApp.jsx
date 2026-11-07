@@ -24,6 +24,7 @@ import { studentAccess } from '../../lib/students.js';
 import { AttendanceCard, BehaviourCard, ProfileCard, TimetablePage, useTimetableOn } from '../shared/School.jsx';
 import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
+import Portfolio from '../shared/Portfolio.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -43,6 +44,7 @@ function notificationTarget(n) {
   if (n.kind === 'core') return r.project_id ? `/projects/p/${r.project_id}` : '/projects';
   if (n.kind === 'profile') return '/progress';
   if (n.kind === 'predicted') return '/progress';
+  if (n.kind === 'portfolio' || n.kind === 'portfolio_comment') return '/portfolio';
   return '/';
 }
 
@@ -108,6 +110,7 @@ export default function LearnerApp() {
         { to: '/work', label: 'Practice', icon: 'clipboard', also: ['/results'] },
         { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
         { to: '/progress', label: 'Progress', icon: 'chart' },
+        { to: '/portfolio', label: 'Portfolio', icon: 'star' },
       ]
     : [
         { to: '/', label: 'Today', icon: 'home' },
@@ -118,11 +121,12 @@ export default function LearnerApp() {
         { to: '/study', label: 'Study', icon: 'flame' },
         { to: '/library', label: 'Library', icon: 'book', also: ['/lesson', '/file'] },
         { to: '/progress', label: 'Progress', icon: 'chart' },
+        { to: '/portfolio', label: 'Portfolio', icon: 'star' },
         { to: '/messages', label: 'Messages', icon: 'message', count: unread },
         { to: '/live', label: 'Live', icon: 'video' },
       ];
   const byTo = (to) => nav.find((x) => x.to === to);
-  const tabs = self || waiting ? nav : [byTo('/'), byTo('/work'), byTo('/study'), byTo('/messages'), byTo('/library')];
+  const tabs = waiting ? nav : self ? nav.slice(0, 5) : [byTo('/'), byTo('/work'), byTo('/study'), byTo('/messages'), byTo('/library')];
 
   let page;
   if (!a) page = <Today />;
@@ -145,6 +149,12 @@ export default function LearnerApp() {
       </Page>
     );
   else if (a === 'messages') page = <Messages />;
+  else if (a === 'portfolio')
+    page = (
+      <Page title="My portfolio">
+        <Portfolio />
+      </Page>
+    );
   else if (a === 'live') page = <Live sessionId={b} />;
   else if (a === 'settings') page = <Settings />;
   else if (a === 'classes' && b) page = <ClassView id={b} />;

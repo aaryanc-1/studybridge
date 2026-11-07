@@ -10,6 +10,7 @@ import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { useDueFor } from './Access.jsx';
 import { TodayLessons } from '../shared/School.jsx';
 import { HomeroomRegisters } from '../shared/Office.jsx';
+import { MeetingsToday } from '../shared/Meetings.jsx';
 
 function greeting() {
   const h = new Date().getHours();
@@ -433,6 +434,7 @@ export default function Home() {
       </div>
 
       <HomeroomRegisters />
+      <MeetingsToday />
       <TodayLessons staff />
 
       {manager && (
