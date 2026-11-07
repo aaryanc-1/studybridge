@@ -791,6 +791,69 @@ waiting teachers. The data export has `school_records` and `absences_reported`. 
 registers, Daniel head of Grade 10, records for Chipo, Amara and Kofi, Ruth's accepted "ill" and a waiting dentist note. Website:
 schools.html "The school office", parents.html and features.html (say they'll be away), privacy.html (records, absences, the office).
 
+Parents, more (6 Nov 2026, app 1.1.113; Aaryan: "go", step 5 of the order for schools). Design reviewed first for privacy, schools and
+code fit. Helpers: `_teaches_now(t, l)` (active, never the content account, main tutor / link / a class not put away while still in its
+org), `_teachers_now`, `_staff_for(staff, learner)`, `_place_tz(place)` (a school's clock or a tutor's own), `_place_unpaid_at(place)` (an
+org asks its first manager), `_first_name`, `_is_centre`. Parent codes: `create_parent_invite` for any teacher now or the office
+(`_looks_after`); `accept_parent_invite` takes a code from the main tutor or anyone `_staff_for` the child; `learner_parents` for those staff
+(emails only for the main tutor and the office; `can_remove`); when a code from someone else is used, the main tutor and the office
+(`_office_people`) are told whose code it was; `remove_parent` also the office; `class_parent_codes(class)` (class teachers or
+the office: one unused code per learner, reused) → ClassPage People → Parent codes (`ParentLetters`, printed letters in a hidden frame).
+Messages: `family_threads` (learner, parent, place, `to_office`, staff, last_at, emailed_at, closed_*, reported_*; FKs set null so the other
+side keeps it; unique per learner+parent+place+staff, or +office), `family_messages` (deleted_at hides; the body is kept for a report),
+`family_reads`, `family_blocks` (place stops a parent), `family_views` (managers who read a reported one); all revoked from authenticated
+AND service_role (Prof never reads them). `_family_side(t)` parent|staff (staff_id = me and place in (_place_of(me), me))|office
+(`_family_office`: the school's office, managers, head of the child's year)|review (a manager, once reported); `_family_closed(t)` (closed,
+parent unlinked, child left the place, teacher doesn't `_teaches_now`, parent blocked, place unpaid). `organisations.parents_message`
+teachers|homeroom|office (`_family_can_start`; `set_parents_message`, Settings → Your organisation → Messages from families). RPCs:
+`family_list`, `family_thread` (marks read and the 'family_message' notifications too; review leaves a family_views row), `family_contacts`
+(parent), `family_parents` (staff), `family_send(thread, body, to)` (starts a thread on the first message; 30 per 10 min, 200 a day, 20 new
+a day), `family_delete` (15 minutes, never once reported), `family_close`, `family_report` (managers told; a tutor on their own → support@),
+`family_block` (cancels their meetings there; the teacher is told). A conversation a manager closed after a report reopens only by a
+manager. `_family_tell`: 'family_message' once until read, never the text; parents also get an email (at most every 6 hours, reply-to
+support, never demo accounts). Meetings: `meeting_events` (place, title, note, how in_person|video|choice, location, slot_min, gap_min,
+audience {years, class_ids, learner_ids}, closes_at, status draft|open|closed|cancelled, told_at, nudged_at), `meeting_times` (a teacher's
+blocks, room, late_min, reminded_*), `meeting_bookings` (teacher, learner, parent, booked_by, how, status booked|cancelled|met|missed,
+parent_note for the teacher only, staff_note the teacher's own; unique teacher+start and event+teacher+learner+parent while not cancelled).
+`_meeting_manager` (office/managers of a centre, a tutor on their own, or the teacher who offered their own), `_meeting_pool`,
+`_meeting_learners(e)`, `_meeting_teachers_for(e, child)`, `_meeting_audience` (a plain teacher: only their classes/learners),
+`_meeting_add_days` (days in the place's clock via `_series_start`). RPCs: `save_meeting_event(id, {…, days})` (default teachers: everyone
+who teaches someone it's for at the place), `meeting_add`, `save_meeting_times(event, teacher, blocks, reason)` (only the place's teachers, `_meeting_staff_ok`; a group with nobody
+in it is refused, never everyone; booked times taken away
+need a reason; families told), `meeting_late`, `meeting_status` (open tells families once: in-app + email; cancelled cancels every time to
+come), `delete_meeting_event` (nobody booked), `meeting_list`, `meeting_event`, `meeting_slots`, `book_meeting` (advisory locks on teacher and
+parent; the time must be a generated slot; no overlap for the teacher in any event or for the parent; staff book for a linked parent),
+`cancel_meeting`, `meeting_note`, `my_meetings` (parent). `_meeting_tick` (pg_cron `studybridge-meetings` every 5 min): families the day
+before (one notification + one email listing that day's times) and 15 minutes before; teachers once per block; a nudge 2 days before booking
+closes. Trigger `parent_links_gone` cancels a parent's future meetings about that child. `live_pass` 'meeting-<booking>' rooms: the
+booking's teacher and parent only, video, from 15 minutes before to 30 after, token exp capped. `calendar_feed` adds a teacher's bookings
+('m-' uid, the child's name only). Portfolios: `portfolio_items` (id made by the app, learner, added_by set null, place_id, title, body, files
+≤6 under work/<learner>/portfolio/<item>/, attempt_id + server-made snapshot, class_id, places uuid[] ('{}' = just me), by_teacher) and
+`portfolio_comments` (place_id: each place has its own strand). `_portfolio_side(i)` learner|parent (not "just me")|staff
+(`_teaches_now` at a place in `places`; never the office). Storage: `sb_work_learner`/`sb_work_tutor` exclude 'core' and 'portfolio'
+(`coalesce(...) not in (...)`); `sb_work_portfolio_add` (`_portfolio_add_ok(learner, item)`), `sb_work_portfolio` (`_portfolio_files_ok`),
+`sb_work_portfolio_del` (`_portfolio_files_mine`): these three helpers are NOT revoked; `_files_ok`/`_files_mine` take
+`storage.objects.owner`, so files of a piece never saved are only their uploader's. A teacher who has left can't change their pieces. RPCs: `my_portfolio(learner)` (items, can_add, places,
+classes, work = released attempts (a teacher: set at their place), photos permission), `portfolio_item`, `save_portfolio_item(id, learner,
+item)` (marked work only to the place that set it; a teacher's piece stays with their place and tells the learner and parents),
+`delete_portfolio_item` (whoever added it; the app removes its files first), `comment_portfolio` (staff for their place; the learner to one of
+the piece's places; parents can't), `delete_portfolio_comment`. Exports: tutors `family_messages`, `parents_meetings`,
+`portfolio_pieces_added`; learners `portfolio`; parents `messages_with_teachers`, `meetings`. UI: src/screens/shared/Families.jsx (FamilyInbox,
+FamilyThread, NewFamilyMessage, MessageFamily, FamilyThreadsFor, `useFamilyUnread` from the notifications cache), Meetings.jsx (MeetingsList
+on Timetable → Parents’ meetings and Office → Parents’ meetings, MeetingPage `/meetings/:id`, MeetingsToday on Home, SlotPicker, BookMeetings
+`/meetings/:event?child=` for parents, ParentMeetings on Coming up, MeetingNudge on This week), Portfolio.jsx (Portfolio, PieceEditor,
+AddWorkToPortfolio on Results, PortfolioCard on the parent's Marks), `MeetingRoom` in Live.jsx (LiveRoom with a room name, no study time) at
+`/live/meeting/:booking`. Tutor Messages has Learners | Families tabs (`/messages/families/:thread`); office-only staff get Office → Messages
+(`/office/messages/:thread`); the parent app has five tabs (Messages added; `/portfolio?child=`); learners have Portfolio in the menu; learner
+pages have Portfolio and Parents tabs for every teacher. `StreamFiles` takes a `bucket`. Demo: Ruth ↔ Mercy and Ruth ↔ the office, "Term 1
+parents’ meetings" next Thursday 16:00–18:00 (Ruth booked Mercy at 16:20), Chipo's poster (with Mercy's comment and her reply), her
+Simultaneous equations and Mercy's teacher's pick; `admin_demo_remove` deletes meeting_events and family_blocks of the demo centre. Website:
+parents.html (no longer "read-only"; FAQ "Can I message their teachers here? Yes"), features.html, tutors.html, schools.html "Families in
+touch", pricing.html, terms.html, privacy.html (messages, meetings, portfolio, LiveKit); website.test.mjs checks the old promise is gone from
+the website and the app. A code review before shipping found the
+parent "New message" crash (no LookupsProvider in the parent app), orphan portfolio files readable by teachers, meeting times for teachers
+of another place, empty groups meaning everyone, re-booking after "met", and reopening after a report; all fixed with db tests.
+
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
   Reviewer until he adds a team.
