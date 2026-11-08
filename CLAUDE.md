@@ -853,6 +853,49 @@ touch", pricing.html, terms.html, privacy.html (messages, meetings, portfolio, L
 the website and the app. A code review before shipping found the
 parent "New message" crash (no LookupsProvider in the parent app), orphan portfolio files readable by teachers, meeting times for teachers
 of another place, empty groups meaning everyone, re-booking after "met", and reopening after a report; all fixed with db tests.
+Classroom gaps (7 Nov 2026, app 1.1.115; Aaryan: "go", step 6 of the order for schools). Design reviewed first (privacy, schools, code fit).
+Question types: `questions`/`bank_questions` type checks add cloze (fill in the blanks), match (matching, or sorting into groups), order
+(put in order), label (label a picture), record (record an answer), file (hand in a file or links). Learners read only the public part in
+`options` (cloze `{gaps:[{choices?}]}` with `[[1]]` gaps in prompt_md; match `{left, right}`; order `{items}` shuffled; label `{spots:[{x,y}],
+labels}`; record `{media audio|video|screen|any, max}`); keys stay in question_keys (`{gaps:[{accept}|{choice}]}`, `{pairs}`, `{order}`,
+`{spots}`). src/lib/qkinds.js builds/reads them (clozeBuild/clozeSource, matchBuild, orderBuild, labelBuild, editModel, buildQuestion keeps
+the order learners saw when nothing changed, kindProblem, answeredKind, rightText, gapRight = the server's `_same_answer`). `_auto_mark` marks
+the four part by part: all right = full marks, else the share right rounded down to the half mark. Trigger `questions_text_ok` refuses a
+cloze whose text still holds answers. True or false is an mcq preset; a written answer can show a word guide (`options.words`). Editors in
+src/screens/tutor/KindEditors.jsx, inputs and displays in src/screens/shared/Kinds.jsx (GappedText portals inputs into the rendered text).
+Mistake cards skip the new types; practice still uses mcq/numeric only. Prof never gets record/file questions, and only picture files.
+`save_response` cleans answers (`_answer_clean`: files only under `<learner>/<attempt>/`, links https only). Recordings: src/ui/Recorder.jsx
+(MediaRecorder: voice ≤10 min, video/screen ≤5 min, low bitrate on data saver; played from short-lived signed links, never kept on the
+device). Answer files go up straight away (`api.saveWorkFile`, not the outbox). Teachers' recorded feedback: `responses.feedback_files`,
+`attempts.feedback_files` (≤3, {path,name,type,size,sec,words}), `set_feedback_files`, files in `work/<learner>/marking/<attempt>/` (storage
+`sb_work_marking*` via `_marking_files_ok`: the marker writes, the learner reads once released); attempt_detail gives them when released.
+Notes and messages carry one recording: `comments.attachment_path` = `work/<learner>/notes/<tutor>/a-…` or `v-…` (trigger `comments_file`,
+storage `sb_work_notes*` via `_note_files_ok`); class posts and portfolio pieces have Record buttons. The wall for files: `sb_work_tutor`
+now also needs `_work_staff_ok` (an attempt's folder only for whoever set the work or teaches its class), and learner/tutor rules leave out
+marking/ and notes/. Locked-down, watched and camera work: no screen recording, files or links. Google Drive and OneDrive:
+`app_config.drive_google` {client_id, api_key, app_id} and `drive_microsoft` {client_id} (public ids; Admin → StudyBridge settings →
+`admin_set_drive`, `admin_drive`; `public_settings().drive`). src/lib/drive.js runs in the teacher's browser with their own sign-in (Google
+Identity Services + Picker + Drive API, drive.file scope; Microsoft PKCE popup → public/drive-auth.html → Graph Files.ReadWrite + User.Read;
+tokens in memory only); the desktop app opens the web app for it. `links jsonb` on assignments, lessons and class_posts (`_links_clean`:
+https only, ≤10, share link|view|copy; `set_post_links`): view = anyone with the link (no emails), copy = a copy for each learner in the
+teacher's Drive shared with that learner alone (`drive_copies`, `drive_people` with each learner's email: their own Google/Microsoft email
+from `drive_emails`/Settings, else the login email only for their main tutor or own school; schools with email domains need the teacher's
+school account; `drive_copies_save`, `drive_copy_set` locked/unlocked/gone, `my_drive_copies`, `drive_copy_ask`). UI: src/screens/shared/
+DriveUI.jsx (LinksEditor, MsPicker, ShareCopies, CopiesCard, MyCopies, TheirCopy, LockAllCopies, DriveEmailCard). Peer review:
+`assignments.peer` (`_peer_clean`: count 1–3, anonymous, prompts, rubric, start due|hand, days; class work only) and `peer_started_at`;
+`peer_reviews` (todo|done|shared|returned|removed); `_peer_give_out` (each who handed in reviews `count` classmates and gets `count`, late
+hand-ins added), `peer_give_out`, `_peer_tick` (pg_cron `studybridge-peer` every 15 min: starts at the due date, tops up, reminds a day
+before), trigger `attempts_peer` (a reviewer can't start the work again), `peer_overview`, `peer_check` share|return|remove,
+`my_peer_reviews`, `peer_review_open` (anonymous: short/steps/drawing only, no files), `save_peer_review`, `peer_received`, `peer_report`
+(hides it from the author; teacher, class teachers and managers told), storage `sb_work_peer` (`_peer_file_ok`: exact paths, named reviews
+only). The teacher always reads a review first. UI: src/screens/shared/Peer.jsx (PeerPage `/peer/:id`, ReviewPage `/review/:id`, MyReviews,
+PeerReceived), the editor's Peer review card. Similar answers (a plagiarism check that stays in StudyBridge): `similarity_docs` and
+`similarity_hashes` (5-word fingerprints of written answers of 30+ words, per place, made on hand-in by `attempts_similarity`; last year's
+backfilled), `similarity(attempt)`, `similarity_pair`, `similarity_overview`; words from the question don't count; the model answer's share is
+shown apart; names and words only for work the teacher could open; teachers only, never across places, never the internet.
+src/screens/tutor/MarkingExtras.jsx (FeedbackRecorder, SimilarLine with Compare, SimilarOverview, PeerCard). Exports: `peer_reviews_written`,
+`peer_reviews_received`, `drive_email`. Website: features.html, tutors.html, schools.html "Classroom, complete", privacy.html (recordings,
+peer review, similar answers, Google and Microsoft); website.test.mjs checks nothing promises an internet or AI-writing check.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and
