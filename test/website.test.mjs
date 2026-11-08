@@ -81,6 +81,19 @@ test('website: every page builds with nothing left unfilled', async () => {
     assert.match(read('parents.html'), /Can I message their teachers here\?<\/summary><p>Yes\./);
     assert.match(read('privacy.html'), /LiveKit/);
     assert.match(read('schools.html'), /Families in touch/);
+    // classroom gaps (7 Nov 2026): the similarity check is "similar answers" within a school, never a promise of an
+    // internet or AI-writing check; recordings, Drive and peer review are on the website and in the privacy page
+    for (const f of pages) assert.doesNotMatch(read(f), /plagiarism|Turnitin|AI[- ]writing detect|detects? AI|checks? the (whole )?(internet|web)/i, `${f}: promises only what similar answers does`);
+    assert.match(read('schools.html'), /Classroom, complete/);
+    assert.match(read('schools.html'), /never the internet/);
+    assert.match(read('privacy.html'), /doesn’t search the internet/);
+    assert.match(read('privacy.html'), /Google and Microsoft:/);
+    assert.match(read('features.html'), /Peer review/);
+    for (const f of ['../src/screens/tutor/MarkingExtras.jsx']) {
+      const app = readFileSync(new URL(f, import.meta.url), 'utf8');
+      assert.match(app, /doesn’t search the internet/, 'the app says it too');
+      assert.doesNotMatch(app, /plagiarism/i);
+    }
     for (const f of ['../src/screens/tutor/Learners.jsx', '../src/screens/Welcome.jsx', '../src/screens/parent/ParentApp.jsx', '../src/screens/shared/Settings.jsx']) {
       const app = readFileSync(new URL(f, import.meta.url), 'utf8');
       assert.doesNotMatch(app, /Read-only\. They see|parent account is read-only|Parent \(read-only\)/, `${f} says the same as the website`);

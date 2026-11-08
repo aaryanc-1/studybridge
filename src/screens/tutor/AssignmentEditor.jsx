@@ -15,6 +15,9 @@ import { useDiscardDraft } from './ClaudeInbox.jsx';
 import { items, multi } from '../../lib/questions.js';
 import { LETTERS, MYP_GROUPS } from '../../lib/myp.js';
 import { ASSESSMENT, assessmentOf, pctText } from '../../lib/grading.js';
+import { PARTS, buildQuestion, byHand, editModel, kindProblem } from '../../lib/qkinds.js';
+import { KindEditor } from './KindEditors.jsx';
+import { CopiesCard, LinksEditor } from '../shared/DriveUI.jsx';
 
 let seq = 0;
 const k = () => 'q' + ++seq;
@@ -26,28 +29,48 @@ const TYPES = [
   { type: 'short', icon: 'text', hint: 'A written answer.' },
   { type: 'upload', icon: 'camera', hint: 'A photo or scan of work on paper.' },
   { type: 'drawing', icon: 'highlighter', hint: 'Drawn on screen: graphs, diagrams, geometry.' },
+  { type: 'tf', icon: 'checkCircle', hint: 'True or false. Marked automatically.', label: 'True or false' },
+  { type: 'cloze', icon: 'square', hint: 'Gaps to type in or choose from a list. Marked automatically.' },
+  { type: 'match', icon: 'link', hint: 'Match each item, or sort them into groups. Marked automatically.' },
+  { type: 'order', icon: 'menu', hint: 'Put steps or events in the right order. Marked automatically.' },
+  { type: 'label', icon: 'pin', hint: 'Label the numbered places on a picture. Marked automatically.' },
+  { type: 'record', icon: 'mic', hint: 'They record their voice, camera or screen.' },
+  { type: 'file', icon: 'upload', hint: 'A document, a recording or a link (Google Docs, OneDrive).' },
 ];
+const REAL_TYPES = TYPES.filter((t) => t.type !== 'tf');
+const DEFAULT_MARKS = { steps: 3, upload: 4, drawing: 4, cloze: 2, match: 3, order: 2, label: 3, record: 4, file: 4 };
 
 function blankQuestion(type) {
+  // True or false is multiple choice with two options
+  if (type === 'tf') return { ...blankQuestion('mcq'), options: ['True', 'False'] };
   return {
     _k: k(),
     type,
     prompt_md: '',
     image_path: null,
-    options: type === 'mcq' ? ['', '', '', ''] : [],
-    marks: type === 'steps' ? 3 : type === 'upload' || type === 'drawing' ? 4 : 1,
+    options: type === 'mcq' ? ['', '', '', ''] : type === 'record' ? { media: 'audio', max: 180 } : [],
+    marks: DEFAULT_MARKS[type] || 1,
     topic_id: null,
     key: { answer: type === 'mcq' ? { choice: '0' } : type === 'numeric' ? { value: '', tolerance: '0' } : {}, solution_md: '', mark_scheme_md: '' },
+    ...(type === 'match' ? { edit: { rows: [{ item: '', match: '' }, { item: '', match: '' }, { item: '', match: '' }], extras: [] } } : {}),
+    ...(type === 'order' ? { edit: { items: ['', '', ''] } } : {}),
+    ...(type === 'label' ? { edit: { spots: [], extras: [] } } : {}),
+    ...(type === 'cloze' ? { edit: { src: '' } } : {}),
   };
 }
+// The editor's model for the newer types (what the teacher edits), from a saved question
+const withEdit = (q) => (PARTS.includes(q.type) && !q.edit ? { ...q, edit: editModel(q, q.key?.answer) } : q);
 
 // Anything that would confuse a learner if posted as it is
 export function checkReady(a, qs) {
   if (!a.title.trim()) return 'Give it a title.';
   if (!qs.length) return 'Add at least one question.';
-  for (const [i, q] of qs.entries()) {
+  for (const [i, q0] of qs.entries()) {
     const n = `Question ${i + 1}`;
-    if (!q.prompt_md.trim() && !q.image_path) return `${n} has no question text.`;
+    const q = withEdit(q0);
+    const kp = kindProblem(q, n);
+    if (kp) return kp;
+    if (q.type !== 'cloze' && !q.prompt_md.trim() && !q.image_path) return `${n} has no question text.`;
     if (q.type === 'mcq') {
       const opts = items(q.options);
       if (opts.filter((o) => o.trim()).length < 2) return `${n} needs at least two options.`;
@@ -100,7 +123,7 @@ export default function AssignmentEditor({ id }) {
       const keys = await api.listKeys(q.map((x) => x.id));
       savedCamera.current = !!row.camera;
       setA(row);
-      setQs(q.map((x) => ({ ...x, _k: k(), key: keys.find((y) => y.question_id === x.id) || { answer: {}, solution_md: '', mark_scheme_md: '' } })));
+      setQs(q.map((x) => withEdit({ ...x, _k: k(), key: keys.find((y) => y.question_id === x.id) || { answer: {}, solution_md: '', mark_scheme_md: '' } })));
       setRemoved([]);
       setDirty(false);
     } catch (e) {
@@ -140,6 +163,8 @@ export default function AssignmentEditor({ id }) {
           subject_id: a.subject_id || null,
           topic_id: a.topic_id || null,
           file_refs: a.file_refs || [],
+          links: a.links || [], // Google Drive, OneDrive and web links
+          peer: a.class_id ? a.peer || null : null, // peer review (work set for a class)
           due_at: a.due_at || null,
           visibility,
           visible_from: visibility === 'scheduled' ? a.visible_from : null,
@@ -169,20 +194,21 @@ export default function AssignmentEditor({ id }) {
         const next = [];
         for (let i = 0; i < qs.length; i++) {
           const q = qs[i];
+          const b = buildQuestion(q); // the newer types: the text learners see, the public options and the key
           const saved = await api.save('questions', {
             ...(q.id ? { id: q.id } : {}),
             assignment_id: a.id,
             position: i,
             type: q.type,
-            prompt_md: q.prompt_md || '',
+            prompt_md: b.prompt_md || '',
             image_path: q.image_path || null,
-            options: q.type === 'mcq' ? q.options : [],
+            options: b.options || [],
             marks: Number(q.marks) || 0,
             topic_id: q.topic_id || null,
             rubric_id: q.rubric_id || null,
           });
-          await api.saveKey({ question_id: saved.id, answer: q.key.answer || {}, solution_md: q.key.solution_md || null, mark_scheme_md: q.key.mark_scheme_md || null });
-          next.push({ ...q, id: saved.id });
+          await api.saveKey({ question_id: saved.id, answer: b.answer || {}, solution_md: q.key.solution_md || null, mark_scheme_md: q.key.mark_scheme_md || null });
+          next.push({ ...q, id: saved.id, prompt_md: q.type === 'cloze' ? b.prompt_md : q.prompt_md, options: b.options, key: { ...q.key, answer: b.answer } });
         }
         const s = await api.save('assignments', row);
         savedCamera.current = !!s.camera;
@@ -322,7 +348,7 @@ export default function AssignmentEditor({ id }) {
             {previewIntro ? (
               <Markdown src={a.instructions_md || '*No instructions.*'} />
             ) : (
-              <textarea className="textarea" value={a.instructions_md || ''} onChange={(e) => setField({ instructions_md: e.target.value })} placeholder="What should the learner do? e.g. Show all your working. Use the textbook pages attached if you get stuck." />
+              <textarea className="textarea" aria-label="Instructions" value={a.instructions_md || ''} onChange={(e) => setField({ instructions_md: e.target.value })} placeholder="What should the learner do? e.g. Show all your working. Use the textbook pages attached if you get stuck." />
             )}
           </div>
 
@@ -331,7 +357,7 @@ export default function AssignmentEditor({ id }) {
             <BankPicker
               onClose={() => setPicking(false)}
               onPick={(rows) => {
-                setQs((list) => [...list, ...rows.map((b) => ({ ...api.bankToQuestion(b), topic_id: a.topic_id || null, _k: k() }))]);
+                setQs((list) => [...list, ...rows.map((b) => withEdit({ ...api.bankToQuestion(b), topic_id: a.topic_id || null, _k: k() }))]);
                 api.bankUsed(rows.map((b) => b.id));
                 setDirty(true);
                 setPicking(false);
@@ -415,7 +441,7 @@ export default function AssignmentEditor({ id }) {
                     <Icon name={t.icon} />
                   </span>
                   <span className="grow">
-                    <div className="strong small">{typeLabel[t.type]}</div>
+                    <div className="strong small">{t.label || typeLabel[t.type]}</div>
                     <div className="tiny muted">{t.hint}</div>
                   </span>
                 </button>
@@ -558,6 +584,13 @@ export default function AssignmentEditor({ id }) {
               </div>
             )}
           </div>
+          <div className="card">
+            <h3>Links, Google Drive and OneDrive</h3>
+            <div className="muted tiny">They open in the browser. A Drive or OneDrive file can be for everyone to view, or a copy for each learner to work in.</div>
+            <LinksEditor links={a.links || []} onChange={(links) => setField({ links })} allowCopy dirty={dirty} />
+          </div>
+          <CopiesCard assignment={a} />
+          <PeerFields a={a} setField={setField} live={live} />
           <div className="row">
             <button
               className="btn"
@@ -579,6 +612,14 @@ export default function AssignmentEditor({ id }) {
   );
 }
 
+const PLACEHOLDER = {
+  match: 'e.g. Match each country to its capital.',
+  order: 'e.g. Put the stages of mitosis in order.',
+  label: 'e.g. Label the parts of the heart.',
+  record: 'e.g. Read the poem aloud, then say what it means to you.',
+  file: 'e.g. Hand in your essay as a document or a link.',
+};
+
 function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, onAskProf }) {
   const lk = useLookups();
   const toast = useToast();
@@ -598,8 +639,8 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
     <div className="qcard">
       <div className="qhead">
         <span className="qnum">{n}</span>
-        <select className="select" style={{ width: 'auto', minHeight: 36 }} value={q.type} aria-label="Question type" onChange={(e) => onChange({ ...blankQuestion(e.target.value), _k: q._k, id: q.id, prompt_md: q.prompt_md, image_path: q.image_path, topic_id: q.topic_id })}>
-          {TYPES.map((t) => (
+        <select className="select" style={{ width: 'auto', minHeight: 36 }} value={q.type} aria-label="Question type" onChange={(e) => onChange({ ...blankQuestion(e.target.value), _k: q._k, id: q.id, prompt_md: q.type === 'cloze' ? '' : q.prompt_md, image_path: q.image_path, topic_id: q.topic_id })}>
+          {REAL_TYPES.map((t) => (
             <option key={t.type} value={t.type}>
               {typeLabel[t.type]}
             </option>
@@ -628,8 +669,17 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
           <Icon name="trash" size={16} />
         </button>
       </div>
-      <textarea className="textarea" style={{ minHeight: 80 }} value={q.prompt_md} onChange={(e) => onChange({ prompt_md: e.target.value })} placeholder="Question. Maths in $…$, e.g. Solve $2x + 3 = 11$." aria-label={`Question ${n}`} />
-      {q.prompt_md && /\$|\*\*|\n/.test(q.prompt_md) && (
+      {q.type !== 'cloze' && (
+        <textarea
+          className="textarea"
+          style={{ minHeight: 80 }}
+          value={q.prompt_md}
+          onChange={(e) => onChange({ prompt_md: e.target.value })}
+          placeholder={PLACEHOLDER[q.type] || 'Question. Maths in $…$, e.g. Solve $2x + 3 = 11$.'}
+          aria-label={`Question ${n}`}
+        />
+      )}
+      {q.type !== 'cloze' && q.prompt_md && /\$|\*\*|\n/.test(q.prompt_md) && (
         <div className="note">
           <Markdown src={q.prompt_md} />
         </div>
@@ -718,6 +768,8 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
         </div>
       )}
 
+      <KindEditor q={q} onChange={onChange} />
+
       {q.type === 'numeric' && (
         <div className="grid g3" style={{ gap: 10 }}>
           <Field label="Correct answer">
@@ -742,7 +794,7 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
               <MathField value={q.key.answer?.final || ''} onChange={(v) => setAns({ final: v })} placeholder="x = 4" label="Final answer" />
             </Field>
           )}
-          {q.type === 'short' && (
+          {['short', 'record', 'file'].includes(q.type) && (
             <Field label="Model answer">
               <textarea className="textarea" style={{ minHeight: 60 }} value={q.key.answer?.text || ''} onChange={(e) => setAns({ text: e.target.value })} />
             </Field>
@@ -750,8 +802,8 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
           <Field label="Worked solution" hint="Shown to the learner only if you turn on “Show answers & solutions”.">
             <MathText value={q.key.solution_md || ''} onChange={(v) => setKey({ solution_md: v })} label="Worked solution" placeholder="e.g. 2x + 3 = 11, so 2x = 8, so x = 4" minHeight={60} />
           </Field>
-          {!['mcq', 'numeric'].includes(q.type) && <RubricPicker q={q} onChange={onChange} />}
-          {!['mcq', 'numeric'].includes(q.type) && (
+          {byHand(q.type) && <RubricPicker q={q} onChange={onChange} />}
+          {byHand(q.type) && (
             <Field label="Mark scheme (for you)">
               <MathText value={q.key.mark_scheme_md || ''} onChange={(v) => setKey({ mark_scheme_md: v })} label="Mark scheme" placeholder="M1 for subtracting 3, A1 for x = 4" minHeight={50} />
             </Field>
@@ -911,6 +963,77 @@ function MypCriteria({ a, setField }) {
 
 // Gradebook depth: formative (practice and feedback) or summative (it counts for grades; tests and exams are summative
 // unless the teacher says otherwise), and, for work set to a class with categories, which category it goes in
+// Peer review (step 6): classmates review each other's hand-ins; the teacher reads every review before it's passed on
+const PEER_DEFAULT = { count: 2, anonymous: true, prompts: ['What went well?', 'One thing that would make it better'], rubric: true, start: 'due', days: 3 };
+function PeerFields({ a, setField, live }) {
+  const p = a.peer;
+  const set = (patch) => setField({ peer: { ...PEER_DEFAULT, ...(p || {}), ...patch } });
+  return (
+    <div className="card">
+      <h3>Peer review</h3>
+      {!a.class_id ? (
+        <div className="small muted">Set it for a class (Who sees it → A class) to let classmates review each other’s work.</div>
+      ) : (
+        <>
+          <Toggle checked={!!p} onChange={(v) => setField({ peer: v ? { ...PEER_DEFAULT } : null })} icon="users" title="Classmates review each other’s work" sub="After handing in, each reviews a few classmates’ answers. You read every review before its author sees it, and reviews never change marks." />
+          {p && (
+            <div className="stack sm">
+              <div className="grid g2" style={{ gap: 10 }}>
+                <Field label="Reviews each">
+                  <select className="select" value={p.count ?? 2} onChange={(e) => set({ count: Number(e.target.value) })}>
+                    {[1, 2, 3].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Days to review">
+                  <select className="select" value={p.days ?? 3} onChange={(e) => set({ days: Number(e.target.value) })}>
+                    {[1, 2, 3, 5, 7, 14].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Reviews start">
+                <select className="select" value={p.start || 'due'} onChange={(e) => set({ start: e.target.value })}>
+                  <option value="due">At the due date</option>
+                  <option value="hand">When I give them out</option>
+                </select>
+              </Field>
+              <Toggle
+                checked={p.anonymous !== false}
+                onChange={(v) => set({ anonymous: v })}
+                icon="eyeOff"
+                title="Don’t show names"
+                sub={p.anonymous !== false ? 'They review typed answers, maths working and drawings (photos, recordings and files could give a name away).' : 'They see whose work it is, and photos, recordings and files too.'}
+              />
+              <Toggle checked={p.rubric !== false} onChange={(v) => set({ rubric: v })} icon="layers" title="Show the question’s rubric" sub="Reviewers can pick a level on it. It never sets the mark." />
+              <Field label="What reviewers answer (one per line, up to 4)">
+                <textarea
+                  className="textarea"
+                  style={{ minHeight: 60 }}
+                  value={(p.prompts || []).join('\n')}
+                  onChange={(e) => set({ prompts: e.target.value.split('\n').slice(0, 4) })}
+                  aria-label="What reviewers answer"
+                />
+              </Field>
+              {live && a.id && (
+                <button className="btn sm" onClick={() => go(`/peer/${a.id}`)}>
+                  <Icon name="users" size={16} /> Peer review page
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function GradingFields({ a, setField }) {
   const cats = useQuery(a.class_id ? `class-cats:${a.class_id}` : null, () => api.classCategories(a.class_id)).data || [];
   const kind = assessmentOf(a.kind, a.assessment);

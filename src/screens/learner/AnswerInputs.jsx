@@ -9,9 +9,13 @@ import { items, multi } from '../../lib/questions.js';
 import { compressImage } from '../../lib/image.js';
 import { addSaved, dataSaver } from '../../lib/device.js';
 import * as api from '../../lib/api.js';
+import { KindInput, WordGuide } from '../shared/Kinds.jsx';
 
 // One answer box for any question type
-export default function AnswerInput({ q, value = {}, onChange, attemptId, keyUnit, disabled }) {
+// locked: a locked-down, watched or camera test (no screen recording, files or links there)
+export default function AnswerInput({ q, value = {}, onChange, attemptId, keyUnit, disabled, locked }) {
+  const kind = KindInput({ q, value, onChange, attemptId, disabled, locked });
+  if (kind) return kind;
   if (q.type === 'mcq') return <Choice q={q} value={value} onChange={onChange} disabled={disabled} />;
   if (q.type === 'numeric')
     return (
@@ -33,6 +37,7 @@ export default function AnswerInput({ q, value = {}, onChange, attemptId, keyUni
     return (
       <div className="stack sm">
         <textarea className="textarea" value={value.text || ''} disabled={disabled} onChange={(e) => onChange({ ...value, text: e.target.value })} placeholder="Write your answer. For maths use $…$, e.g. $x^2$." aria-label="Your answer" />
+        <WordGuide q={q} text={value.text} />
         {value.text && /\$/.test(value.text) && (
           <div className="note">
             <Markdown src={value.text} />

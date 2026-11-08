@@ -5,6 +5,7 @@ import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { bytes, ago, day, when } from '../../lib/format.js';
 import { useLookups, SubjectTag } from '../shared/lookups.jsx';
+import { LinksEditor } from '../shared/DriveUI.jsx';
 import PastPapers, { OpenBooks } from './PastPapers.jsx';
 import QuestionBank from './QuestionBank.jsx';
 import Syllabus from './Syllabus.jsx';
@@ -491,6 +492,7 @@ export function LessonEditor({ id }) {
         subject_id: l.subject_id || null,
         topic_id: l.topic_id || null,
         file_ids: l.file_ids || [],
+        links: l.links || [], // Google Drive, OneDrive and web links
         visibility,
         visible_from: visibility === 'scheduled' ? l.visible_from : null,
         learner_ids: l.learner_ids?.length ? l.learner_ids : null,
@@ -676,6 +678,10 @@ export function LessonEditor({ id }) {
                 ))}
               </div>
             )}
+          </div>
+          <div className="card">
+            <h3>Links, Google Drive and OneDrive</h3>
+            <LinksEditor links={l.links || []} onChange={(links) => set({ links })} />
           </div>
         </div>
       </div>

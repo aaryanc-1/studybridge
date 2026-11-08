@@ -1404,7 +1404,8 @@ test('teaching plans: the tutor’s own, per subject; learners and other tutors 
 test('selling basics: plan limits only once switched on; download my data; delete my own account', async () => {
   // what the app may know, even before signing in; no secrets
   const pub = await val(null, `select public_settings()`);
-  assert.deepEqual(Object.keys(pub).sort(), ['card_prices', 'currencies', 'email_on', 'enforce_plans', 'google_on', 'mobile_on', 'payments_on', 'rates', 'students_open']);
+  assert.deepEqual(Object.keys(pub).sort(), ['card_prices', 'currencies', 'drive', 'email_on', 'enforce_plans', 'google_on', 'mobile_on', 'payments_on', 'rates', 'students_open']);
+  assert.deepEqual(pub.drive, { google: null, microsoft: null }); // Google Drive and OneDrive: off until the Owner adds their (public) ids
   assert.equal(pub.enforce_plans, false);
   await fails(as('TW', `select admin_set_selling(p_enforce => true)`), /admins only/);
   await fails(as('TW', `select _set_paid_plan($1, 'pro', 'month', 'cus_1', null)`, [U.TW]), /permission denied/);
@@ -5112,4 +5113,269 @@ test('parents, more: portfolios the learner chooses to show, pieces teachers add
   // her export has her portfolio, with its comments
   const ex = (await val('PFA', `select export_my_data()`)).portfolio;
   assert.deepEqual(ex.map((p) => [p.title, p.comments.length]).sort(), [['Fractions homework', 0], ['My fractions poster', 2]]);
+});
+
+// ---------------- classroom gaps (7 Nov 2026) ----------------
+const CG = {};
+async function cgSetup() {
+  if (CG.cls) return;
+  const mk = async (k, email) => {
+    const r = await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }]);
+    U[k] = r.rows[0].id;
+  };
+  for (const k of ['CM', 'CT', 'CO', 'CP', 'C1', 'C2', 'C3']) await mk(k, k.toLowerCase() + '@lakeside.x');
+  for (const [k, n] of [['CM', 'Ms Mulenga'], ['CT', 'Mr Tembo'], ['CO', 'Ms Other'], ['CP', 'Private Phiri']]) {
+    await one(k, `select * from become_tutor($1, 'Africa/Lusaka')`, [n]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  CG.code = (await val('CM', `select org_make_centre('Lakeside School')`)).code;
+  await val('CT', `select org_join($1)`, [CG.code]);
+  await val('CO', `select org_join($1)`, [CG.code]);
+  const join = async (tutor, learner, name) => {
+    const c = await val(tutor, `insert into invites (name) values ($1) returning code`, [name]);
+    await one(learner, `select * from accept_invite($1, $2)`, [c, name]);
+  };
+  await join('CT', 'C2', 'Bwalya');
+  await join('CT', 'C3', 'Chanda');
+  await join('CP', 'C1', 'Amara'); // Amara's own tutor is a private tutor; she's also in Mr Tembo's class
+  CG.cls = await val('CM', `select save_class(null, 'Year 9 English', null, $1, $2)`, [[U.C2, U.C3], [U.CT]]);
+  const cc = await val('CT', `select class_code($1)`, [CG.cls]);
+  await val('C1', `select join_class($1)`, [cc]);
+}
+
+test('classroom gaps: new question types marked part by part, answers that hold only their own files and https links, recorded feedback and notes', async () => {
+  await cgSetup();
+  // fill in the blanks keeps its answers out of the text learners read
+  const asg = await val('CT', `insert into assignments (title, kind, class_id, visibility, release_mode, show_answers) values ('New kinds', 'quiz', $1, 'visible', 'manual', true) returning id`, [CG.cls]);
+  await fails(as('CT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'cloze', 'The capital is [[Paris]].', 2)`, [asg]), /question editor/);
+  const q = {};
+  const add = async (k, type, prompt, options, answer, marks) => {
+    q[k] = await val('CT', `insert into questions (assignment_id, position, type, prompt_md, options, marks) values ($1, $2, $3, $4, $5, $6) returning id`,
+      [asg, Object.keys(q).length, type, prompt, options, marks]);
+    await as('CT', `insert into question_keys (question_id, answer) values ($1, $2)`, [q[k], answer]);
+  };
+  await add('cloze', 'cloze', 'The capital of France is [[1]] and a half is [[2]]; it is [[3]].', { gaps: [{}, {}, { choices: ['cold', 'hot'] }] },
+    { gaps: [{ accept: ['Paris'] }, { accept: ['0.5'] }, { choice: '1' }] }, 3);
+  await add('match', 'match', 'Match the animals to their groups.', { left: ['Lion', 'Shark', 'Whale'], right: ['Fish', 'Mammal'] }, { pairs: ['1', '0', '1'] }, 3);
+  await add('order', 'order', 'Put these in order.', { items: ['b', 'c', 'a'] }, { order: ['2', '0', '1'] }, 2);
+  await add('label', 'label', 'Label it.', { spots: [{ x: 0.2, y: 0.3 }, { x: 0.6, y: 0.5 }], labels: ['Heart', 'Lung'] }, { spots: ['1', '0'] }, 2);
+  await add('rec', 'record', 'Read it aloud.', { media: 'audio', max: 120 }, {}, 4);
+  await add('file', 'file', 'Hand in your essay.', [], {}, 4);
+  assert.equal(await val(null, `select _same_answer(' .50 ', '0.5')`), true);
+  assert.equal(await val(null, `select _same_answer('PARIS  ', 'paris')`), true);
+
+  const t = await one('C2', `select * from start_attempt($1)`, [asg]);
+  const save = (k, ans) => as('C2', `select save_response($1, $2, $3)`, [t.id, q[k], ans]);
+  await save('cloze', { gaps: ['  paris', '.5', '1'] });
+  await save('match', { pairs: ['1', '1', '1'] });
+  await save('order', { order: ['2', '1', '0'] });
+  await save('label', { spots: ['1', null] });
+  // answers hold only this learner's own files for this attempt, and https links
+  await fails(save('file', { files: [{ path: `${U.C3}/${t.id}/x.pdf` }] }), /isn’t part of this answer/);
+  await fails(save('file', { links: [{ url: 'javascript:alert(1)' }] }), /https/);
+  await save('file', { files: [{ path: `${U.C2}/${t.id}/${q.file}-a.pdf`, name: 'essay.pdf', type: 'application/pdf', size: 1234 }], links: [{ url: 'https://docs.google.com/document/d/abc', title: 'Google Doc' }] });
+  await save('rec', { files: [{ path: `${U.C2}/${t.id}/${q.rec}-b.webm`, name: 'Voice 1.webm', type: 'audio/webm', sec: 42 }] });
+  await as('C2', `select submit_attempt($1)`, [t.id]);
+  const marks = Object.fromEntries((await as('CT', `select question_id, auto_marks from responses where attempt_id = $1`, [t.id])).map((r) => [r.question_id, r.auto_marks === null ? null : Number(r.auto_marks)]));
+  assert.deepEqual([marks[q.cloze], marks[q.match], marks[q.order], marks[q.label], marks[q.rec], marks[q.file]], [3, 2, 0.5, 1, null, null],
+    'all right = full marks; otherwise the share right, rounded down to the half mark; recordings and files by the teacher');
+  assert.equal(await val('CT', `select status from attempts where id = $1`, [t.id]), 'submitted');
+
+  // recorded feedback lives in the marking folder: only the teacher who marks it adds it; the learner hears it once marks are back
+  const fb = `${U.C2}/marking/${t.id}/fb-1.webm`;
+  await fails(as('C2', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [fb]), /row-level security/);
+  await fails(as('CO', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [fb]), /row-level security/);
+  await as('CT', `insert into storage.objects (bucket_id, name, owner) values ('work', $1, auth.uid())`, [fb]);
+  await fails(as('CT', `select set_feedback_files($1, $2, $3)`, [t.id, q.rec, [{ path: `${U.C2}/${t.id}/fb.webm` }]]), /goes with this piece of work/);
+  await fails(as('CO', `select set_feedback_files($1, $2, $3)`, [t.id, q.rec, [{ path: fb }]]), /Not found/);
+  const set = await val('CT', `select set_feedback_files($1, $2, $3)`, [t.id, q.rec, [{ path: fb, name: 'Feedback', type: 'audio/webm', sec: 30, words: 'Lovely reading.' }]]);
+  assert.deepEqual([set[0].sec, set[0].words], [30, 'Lovely reading.']);
+  await val('CT', `select set_feedback_files($1, null, $2)`, [t.id, [{ path: fb, name: 'Overall', type: 'audio/webm' }]]);
+  await fails(as('CT', `update responses set feedback_files = $2 where attempt_id = $1 and question_id = $3`, [t.id, [{ path: `${U.C3}/x/y.webm` }], q.rec]), /goes with this piece of work/);
+  const canHear = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'work' and name = $1`, [fb])).length === 1;
+  let d = await val('C2', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual([d.attempt.feedback_files, d.responses.find((r) => r.question_id === q.rec).feedback_files, await canHear('C2')], [[], [], false], 'not before marks are back');
+  await one('CT', `select * from finish_marking($1, true, 'Good work')`, [t.id]);
+  d = await val('C2', `select attempt_detail($1)`, [t.id]);
+  assert.deepEqual([d.attempt.feedback_files.length, d.responses.find((r) => r.question_id === q.rec).feedback_files[0].words, await canHear('C2')], [1, 'Lovely reading.', true]);
+  await as('C2', `delete from storage.objects where bucket_id = 'work' and name = $1`, [fb]);
+  assert.equal(await canHear('CT'), true, 'the learner can’t remove it');
+
+  // the wall: Amara's private tutor can't open her school work's files (or its attempt folder), her school teacher can
+  const ta = await one('C1', `select * from start_attempt($1)`, [asg]);
+  const her = `${U.C1}/${ta.id}/${q.file}-c.pdf`;
+  await as('C1', `insert into storage.objects (bucket_id, name, owner) values ('work', $1, auth.uid())`, [her]);
+  const opens = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'work' and name = $1`, [her])).length === 1;
+  assert.deepEqual([await opens('C1'), await opens('CT'), await opens('CP'), await opens('CO')], [true, true, false, false]);
+
+  // a recorded note goes in the learner's notes folder for that tutor only
+  const note = `${U.C2}/notes/${U.CT}/n1.webm`;
+  await fails(as('C2', `insert into comments (tutor_id, learner_id, body, attachment_path) values ($1, $2, '', $3)`, [U.CT, U.C2, `${U.C2}/${t.id}/x.webm`]), /its own note/);
+  await as('C2', `insert into storage.objects (bucket_id, name, owner) values ('work', $1, auth.uid())`, [note]);
+  await fails(as('C2', `insert into storage.objects (bucket_id, name) values ('work', $1)`, [`${U.C2}/notes/${U.CP}/n2.webm`]), /row-level security/);
+  await as('C2', `insert into comments (tutor_id, learner_id, body, attachment_path) values ($1, $2, '', $3)`, [U.CT, U.C2, note]);
+  assert.equal(await val('CT', `select body from notifications where user_id = auth.uid() and kind = 'note' order by created_at desc limit 1`), 'Sent a recording');
+  const hears = async (k) => (await as(k, `select name from storage.objects where bucket_id = 'work' and name = $1`, [note])).length === 1;
+  assert.deepEqual([await hears('C2'), await hears('CT'), await hears('CO'), await hears('CM')], [true, true, false, false]);
+});
+
+test('classroom gaps: Google Drive and OneDrive, set up by the Owner; links checked; a copy for each learner, shared from the teacher’s browser', async () => {
+  await cgSetup();
+  await fails(as('CT', `select admin_set_drive($1, null)`, [{ client_id: 'x.apps.googleusercontent.com', api_key: 'k'.repeat(30), app_id: '123456' }]), /admins only/);
+  await fails(as('A', `select admin_set_drive($1, null)`, [{ client_id: 'nope', api_key: 'k'.repeat(30), app_id: '1' }]), /Google OAuth client ID/);
+  await as('A', `select admin_set_drive($1, $2)`, [{ client_id: '123-abc.apps.googleusercontent.com', api_key: 'AIza' + 'k'.repeat(30), app_id: '1234567' },
+    { client_id: '11111111-2222-3333-4444-555555555555' }]);
+  const pub = await val(null, `select public_settings()`);
+  assert.deepEqual([pub.drive.google.app_id, pub.drive.microsoft.client_id], ['1234567', '11111111-2222-3333-4444-555555555555']);
+
+  // links are https only, everywhere
+  await fails(as('CT', `insert into assignments (title, class_id, links) values ('x', $1, $2)`, [CG.cls, [{ url: 'javascript:alert(1)' }]]), /https/);
+  const key = '1AbC-dEf_ghi';
+  const asg = await val('CT', `insert into assignments (title, kind, class_id, visibility, links) values ('Essay draft', 'homework', $1, 'visible', $2) returning id`,
+    [CG.cls, [{ url: 'https://docs.google.com/document/d/' + key, title: 'Essay template', provider: 'google', id: key, share: 'copy' },
+              { url: 'https://example.org/reading', title: 'Reading' }]]);
+  assert.deepEqual((await val('CT', `select links from assignments where id = $1`, [asg])).map((l) => l.share), ['copy', 'link']);
+
+  // who gets copies, and the email to share each with: their own Google/Microsoft email, else their login email only
+  // for their main tutor or their own school; never for a teacher at another place
+  let p = await val('CT', `select drive_people($1)`, [asg]);
+  const byName = (x) => Object.fromEntries(x.learners.map((l) => [l.name, l.email]));
+  assert.deepEqual(byName(p), { Amara: null, Bwalya: 'c2@lakeside.x', Chanda: 'c3@lakeside.x' });
+  await val('C1', `select set_drive_email('Amara.Home@Gmail.com')`);
+  assert.equal(await val('C1', `select my_drive_email()`), 'amara.home@gmail.com');
+  await fails(as('C1', `select set_drive_email('not an email')`), /email address/);
+  p = await val('CT', `select drive_people($1)`, [asg]);
+  assert.equal(byName(p).Amara, 'amara.home@gmail.com');
+  await fails(as('CO', `select drive_people($1)`, [asg]), /Not found/);
+  await fails(as('C2', `select * from drive_emails`), /permission denied/);
+
+  // the teacher's browser made a copy for Bwalya; she sees hers, Chanda is still waiting and can ask
+  await fails(as('CT', `select drive_copies_save($1, $2)`, [asg, [{ learner: U.C2, key: 'other', provider: 'google', file_id: 'c1', url: 'https://docs.google.com/document/d/c1' }]]), /copy for each learner/);
+  await fails(as('CT', `select drive_copies_save($1, $2)`, [asg, [{ learner: U.CP, key, provider: 'google', file_id: 'c1', url: 'https://docs.google.com/document/d/c1' }]]), /Not one of the learners/);
+  await val('CT', `select drive_copies_save($1, $2)`, [asg, [{ learner: U.C2, key, provider: 'google', file_id: 'copyB', url: 'https://docs.google.com/document/d/copyB', name: 'Essay template – Bwalya', permission_id: 'perm1' }]]);
+  assert.deepEqual((await val('C2', `select my_drive_copies($1)`, [asg])).map((c) => [c.url, c.locked]), [['https://docs.google.com/document/d/copyB', false]]);
+  assert.deepEqual((await val('C3', `select my_drive_copies($1)`, [asg])).map((c) => c.url), [null]);
+  await val('C3', `select drive_copy_ask($1)`, [asg]);
+  await val('C3', `select drive_copy_ask($1)`, [asg]);
+  assert.equal(await val('CT', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'drive_ask'`), 1, 'once every 12 hours');
+  // lock it once handed in
+  const copyId = (await val('CT', `select drive_people($1)`, [asg])).learners.find((l) => l.name === 'Bwalya').copies[0].id;
+  assert.equal(await val('CT', `select drive_copy_set($1, 'locked')`, [[copyId]]), 1);
+  assert.equal(await val('CO', `select drive_copy_set($1, 'unlocked')`, [[copyId]]), 0, 'not hers');
+  assert.equal((await val('C2', `select my_drive_copies($1)`, [asg]))[0].locked, true);
+  // Bwalya leaves the class: her copy is listed to take her access away
+  await db.query(`delete from class_members where class_id = $1 and learner_id = $2`, [CG.cls, U.C2]);
+  p = await val('CT', `select drive_people($1)`, [asg]);
+  assert.deepEqual(p.gone.map((g) => g.name), ['Bwalya']);
+  await val('CT', `select drive_copy_set($1, 'gone')`, [[copyId]]);
+  assert.equal((await val('CT', `select drive_people($1)`, [asg])).gone.length, 0);
+  await db.query(`insert into class_members (class_id, learner_id) values ($1, $2)`, [CG.cls, U.C2]);
+  await fails(asService(`select * from drive_copies`), /permission denied/);
+});
+
+test('classroom gaps: peer review in a class, checked by the teacher, anonymous by default; and similar answers, within one place only', async () => {
+  await cgSetup();
+  // peer review is for work set for a class: without one it just isn't on
+  assert.equal(await val('CT', `insert into assignments (title, peer) values ('No class', '{"count": 1}') returning peer`), null);
+  const asg = await val('CT', `insert into assignments (title, kind, class_id, visibility, max_attempts, peer) values ('Persuasive essay', 'homework', $1, 'visible', 3, $2) returning id`,
+    [CG.cls, { count: 2, start: 'hand' }]);
+  const peer = await val('CT', `select peer from assignments where id = $1`, [asg]);
+  assert.deepEqual([peer.count, peer.anonymous, peer.prompts.length, peer.days], [2, true, 2, 3]);
+  const qe = await val('CT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Should school start later? Explain your view.', 10) returning id`, [asg]);
+  const qp = await val('CT', `insert into questions (assignment_id, position, type, prompt_md, marks) values ($1, 1, 'upload', 'A photo of your plan.', 2) returning id`, [asg]);
+  await as('CT', `insert into question_keys (question_id, answer) values ($1, $2)`, [qe, { text: 'Teenagers need more sleep and their body clocks shift later in the evening, so a later start helps them.' }]);
+  const essay = 'I think school should start later because teenagers need more sleep and their body clocks shift later in the evening so a later start would help them concentrate learn more and feel healthier during the long school day ahead of them every week';
+  const other = 'Starting at eight is fine for me because I wake early anyway and I like having the afternoon free for sport music and time with my family which matters to me more than a little extra sleep in the morning before the bus comes';
+  const att = {};
+  const handIn = async (k, text) => {
+    const t = await one(k, `select * from start_attempt($1)`, [asg]);
+    await as(k, `select save_response($1, $2, $3)`, [t.id, qe, { text }]);
+    await as(k, `select save_response($1, $2, $3)`, [t.id, qp, { files: [{ path: `${U[k]}/${t.id}/${qp}-p.jpg`, name: `${k}-plan.jpg`, type: 'image/jpeg' }] }]);
+    await as(k, `insert into storage.objects (bucket_id, name, owner) values ('work', $1, auth.uid())`, [`${U[k]}/${t.id}/${qp}-p.jpg`]);
+    await as(k, `select submit_attempt($1)`, [t.id]);
+    att[k] = t.id;
+  };
+  await handIn('C1', essay);
+  await fails(as('CT', `select peer_give_out($1)`, [asg]), /at least two learners/);
+  await handIn('C2', essay.replace('I think', 'In my view'));
+  await handIn('C3', other);
+  await fails(as('CO', `select peer_give_out($1)`, [asg]), /Not found/);
+  assert.equal(await val('CT', `select peer_give_out($1)`, [asg]), 6);
+  assert.equal(await val('CT', `select peer_give_out($1)`, [asg]), 0, 'nobody new');
+  const all = (await val('CT', `select peer_overview($1)`, [asg])).reviews;
+  assert.ok(all.every((r) => r.author.id !== r.reviewer.id));
+  for (const k of ['C1', 'C2', 'C3']) {
+    assert.equal(all.filter((r) => r.reviewer.id === U[k]).length, 2);
+    assert.equal(all.filter((r) => r.author.id === U[k]).length, 2);
+  }
+  // Bwalya opens one: no name, typed answers only (anonymous reviews leave out photos), no marks
+  const mine = await val('C2', `select my_peer_reviews()`);
+  assert.equal(mine.length, 2);
+  const open = await val('C2', `select peer_review_open($1)`, [mine[0].id]);
+  assert.deepEqual([open.author, open.anonymous, open.questions.map((x) => x.id)], [null, true, [qe]]);
+  assert.equal(open.questions[0].answer.files, undefined);
+  const photo = `${all.find((r) => r.reviewer.id === U.C2).author.id}/`;
+  assert.equal((await as('C2', `select name from storage.objects where bucket_id = 'work' and name like $1 || '%' and name not like $2 || '%'`, [photo, U.C2])).length, 0, 'no photos for anonymous reviews');
+  await fails(as('C3', `select peer_review_open($1)`, [mine[0].id]), /Not found/);
+  // she can't start it again once she's reviewing
+  await fails(one('C2', `select * from start_attempt($1)`, [asg]), /reviewed classmates’ work/);
+  await fails(as('C2', `select save_peer_review($1, '{}', '[]', '{}', true)`, [mine[0].id]), /Write something helpful/);
+  assert.equal(await val('C2', `select save_peer_review($1, $2, $3, '{}', true)`, [mine[0].id, { [qe]: 'Clear opening.', [qp]: 'not reviewable' }, ['Good reasons', 'Add a source']]), 'done');
+  await fails(as('C2', `select save_peer_review($1, '{}', '["x"]', '{}', true)`, [mine[0].id]), /sent this review already/);
+  assert.equal(await val('CT', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'peer_done'`), 1);
+  // nothing reaches its author until the teacher passes it on
+  const rv = (await val('CT', `select peer_overview($1)`, [asg])).reviews.find((r) => r.id === mine[0].id);
+  assert.deepEqual(rv.comments, { [qe]: 'Clear opening.' }, 'comments only on questions it covers');
+  const author = rv.author.id === U.C1 ? 'C1' : 'C3';
+  assert.equal((await val(author, `select peer_received($1)`, [att[author]])).reviews.length, 0);
+  await fails(as('CT', `select peer_check($1, 'return', '')`, [rv.id]), /what to look at again/);
+  await as('CT', `select peer_check($1, 'share')`, [rv.id]);
+  let got = await val(author, `select peer_received($1)`, [att[author]]);
+  assert.deepEqual([got.reviews.length, got.reviews[0].by, got.reviews[0].answers], [1, null, ['Good reasons', 'Add a source']]);
+  // the author reports it: hidden from them at once; the teacher, the class's teachers and the managers are told
+  await val(author, `select peer_report($1, 'It was unkind')`, [rv.id]);
+  assert.equal((await val(author, `select peer_received($1)`, [att[author]])).reviews.length, 0);
+  assert.equal(await val('CM', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'peer_report'`), 1);
+  assert.equal((await val('CM', `select peer_overview($1)`, [asg])).reviews.find((r) => r.id === rv.id).report_reason, 'It was unkind', 'the manager told can open it');
+  await as('CT', `select peer_check($1, 'share')`, [rv.id]);
+  assert.equal((await val(author, `select peer_received($1)`, [att[author]])).reviews.length, 1, 'the teacher can show it again');
+  // with names on, a reviewer opens exactly the photos in the answers they review, nothing else
+  await as('CT', `update assignments set peer = $2 where id = $1`, [asg, { ...peer, anonymous: false }]);
+  const named = await val('C2', `select peer_review_open($1)`, [mine[1].id]);
+  assert.ok(named.author && named.questions.some((x) => x.id === qp));
+  const theirPhoto = named.questions.find((x) => x.id === qp).answer.files[0].path;
+  assert.equal((await as('C2', `select name from storage.objects where bucket_id = 'work' and name = $1`, [theirPhoto])).length, 1);
+  await as('CT', `update assignments set peer = $2 where id = $1`, [asg, peer]);
+  assert.equal((await as('C2', `select name from storage.objects where bucket_id = 'work' and name = $1`, [theirPhoto])).length, 0);
+
+  // similar answers: Amara's and Bwalya's essays share most of their wording; Chanda's doesn't
+  const sim = await val('CT', `select similarity($1)`, [att.C1]);
+  assert.equal(sim.length, 1);
+  const top = sim[0].matches[0];
+  assert.ok(top.pct >= 80 && top.name === 'Bwalya' && top.same_work, JSON.stringify(top));
+  assert.ok(!sim[0].matches.some((m) => m.name === 'Chanda'));
+  assert.ok(sim[0].model > 0 && sim[0].model < 50, 'some of the model answer’s wording');
+  await fails(as('CO', `select similarity($1)`, [att.C1]), /Not found/);
+  await fails(as('C1', `select similarity($1)`, [att.C1]), /Not found/);
+  const pair = await val('CT', `select similarity_pair($1, $2)`, [sim[0].response_id, top.response_id]);
+  assert.ok(pair.mine.length > 30 && pair.theirs.length > 30 && pair.other_name === 'Bwalya');
+  const ov = await val('CT', `select similarity_overview($1)`, [asg]);
+  assert.deepEqual(ov.map((x) => [x.a.name, x.b.name].sort()), [['Amara', 'Bwalya']]);
+  // never across the wall: the same essay handed to her private tutor doesn't match the school's
+  const pa = await val('CP', `insert into assignments (title, kind, visibility) values ('Essay at home', 'homework', 'visible') returning id`);
+  const pq = await val('CP', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Write about sleep.', 5) returning id`, [pa]);
+  const pt = await one('C1', `select * from start_attempt($1)`, [pa]);
+  await as('C1', `select save_response($1, $2, $3)`, [pt.id, pq, { text: essay }]);
+  await as('C1', `select submit_attempt($1)`, [pt.id]);
+  assert.equal((await val('CP', `select similarity($1)`, [pt.id]))[0].matches.length, 0, 'her school’s answers are another place’s');
+  await fails(as('CP', `select similarity_pair($1, $2)`, [(await val('CP', `select similarity($1)`, [pt.id]))[0].response_id, sim[0].response_id]), /Not found/);
+  await fails(asService(`select * from similarity_hashes`), /permission denied/);
+  // the export has the reviews a learner wrote and received
+  const ex = await val('C2', `select export_my_data()`);
+  assert.equal(ex.peer_reviews_written.filter((r) => r.status === 'done' || r.status === 'shared').length, 1);
+  // a class whose work has peer review can still be deleted (the work keeps going, without peer review)
+  const spare = await val('CM', `select save_class(null, 'Debate club', null, $1, $2)`, [[U.C2, U.C3], [U.CT]]);
+  const deb = await val('CT', `insert into assignments (title, kind, class_id, visibility, peer) values ('Debate notes', 'homework', $1, 'visible', '{"count": 1}') returning id`, [spare]);
+  await as('CM', `select delete_class($1)`, [spare]);
+  assert.deepEqual(await one('CT', `select class_id, peer from assignments where id = $1`, [deb]), { class_id: null, peer: null });
 });

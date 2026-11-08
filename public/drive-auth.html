@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StudyBridge</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; padding: 24px; color: #12324a">
+    <p>Signed in. This window closes by itself.</p>
+    <script>
+      // Microsoft sends the sign-in back here (OneDrive in StudyBridge); hand it to the StudyBridge page that opened this window
+      try {
+        if (window.opener) window.opener.postMessage({ type: 'sb-drive-auth', search: location.search }, location.origin);
+      } catch (e) {}
+      setTimeout(function () {
+        window.close();
+      }, 400);
+    </script>
+  </body>
+</html>

@@ -160,6 +160,8 @@ const watch = (page, label) => {
   });
 };
 
+let mediaBrowser = null; // a second browser with a pretend microphone and camera (classroom gaps), closed at the end whatever happens
+let mediaPage = null; // its teacher's page, pictured if the run fails
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined) });
 const A = await (await browser.newContext({ viewport: { width: 1400, height: 900 }, timezoneId: 'America/New_York' })).newPage();
 const B = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'Europe/London' })).newPage();
@@ -1960,6 +1962,209 @@ try {
   await TM.close();
   await AF.close();
 
+  step('Classroom gaps: the teacher writes fill-in-the-blanks, matching, ordering, a written and a recorded question, adds a Google Doc as a copy for each learner and switches on peer review; Anaya answers and records her voice; marking shows similar answers and takes recorded feedback; classmates review each other and the teacher passes it on');
+  // a second browser with a pretend microphone and camera, for recordings
+  mediaBrowser = await chromium.launch({
+    executablePath: process.env.CHROMIUM || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined),
+    args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+  });
+  const signInMedia = async (page, email) => (await import('./sweep.mjs')).signIn(page, web.url, email);
+  // Google Drive is set up (public ids only). Google's sign-in, its picker and Drive itself are stand-ins here.
+  await srv.db.query(`update public.app_config set drive_google = $1 where id = 1`, [{ client_id: 'test.apps.googleusercontent.com', api_key: 'AIzaTESTKEY', app_id: '1234567' }]);
+  const driveCalls = [];
+  const fakeGoogle = async (page) => {
+    await page.route('https://accounts.google.com/gsi/client', (r) =>
+      r.fulfill({ contentType: 'text/javascript', body: `window.google = window.google || {}; google.accounts = { oauth2: { initTokenClient: (c) => ({ requestAccessToken: () => setTimeout(() => c.callback({ access_token: 'test-token', expires_in: 3600 }), 20) }) } };` }),
+    );
+    await page.route('https://apis.google.com/js/api.js', (r) =>
+      r.fulfill({
+        contentType: 'text/javascript',
+        body: `window.gapi = { load: (n, cb) => cb() }; window.google = window.google || {};
+          class B { addView() { return this; } setOAuthToken() { return this; } setDeveloperKey() { return this; } setAppId() { return this; } enableFeature() { return this; } setTitle() { return this; }
+            setCallback(cb) { this.cb = cb; return this; }
+            build() { const cb = this.cb; return { setVisible: () => setTimeout(() => cb({ action: 'picked', docs: [{ id: 'doc123', name: 'Essay template', url: 'https://docs.google.com/document/d/doc123/edit', mimeType: 'application/vnd.google-apps.document' }] }), 20) }; } }
+          class V { setIncludeFolders() { return this; } setSelectFolderEnabled() { return this; } }
+          google.picker = { PickerBuilder: B, DocsView: V, ViewId: { DOCS: 'all' }, Feature: { MULTISELECT_ENABLED: 'multi' }, Response: { ACTION: 'action', DOCUMENTS: 'docs' }, Action: { PICKED: 'picked', CANCEL: 'cancel' }, Document: { ID: 'id', NAME: 'name', URL: 'url', MIME_TYPE: 'mimeType' } };`,
+      }),
+    );
+    let copies = 0;
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS' };
+    await page.route('https://www.googleapis.com/drive/v3/**', async (r) => {
+      const req = r.request();
+      const m = req.method();
+      if (m === 'OPTIONS') return r.fulfill({ status: 204, headers: cors });
+      const path = new URL(req.url()).pathname.replace('/drive/v3/', '');
+      driveCalls.push(`${m} ${path}`);
+      const json = (o) => r.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(o) });
+      // signed in with the centre's own Google account (a school with email domains needs it)
+      if (path === 'about') return json({ user: { emailAddress: 'aaryan@brightminds.test' } });
+      if (m === 'POST' && path.endsWith('/copy')) {
+        copies++;
+        return json({ id: `copy${copies}`, name: JSON.parse(req.postData() || '{}').name, webViewLink: `https://docs.google.com/document/d/copy${copies}/edit` });
+      }
+      if (m === 'POST' && path.endsWith('/permissions')) return json({ id: `perm-${path.split('/')[1]}` });
+      if (m === 'PATCH') return json({});
+      return json({ webViewLink: `https://docs.google.com/document/d/${path.split('/')[1]}/edit?usp=sharing` });
+    });
+  };
+  const MA = await (await mediaBrowser.newContext({ viewport: { width: 1400, height: 900 }, timezoneId: 'America/New_York' })).newPage();
+  watch(MA, 'teacher (classroom gaps)');
+  mediaPage = MA;
+  await fakeGoogle(MA);
+  await signInMedia(MA, 'aaryan@example.com');
+  const k10c = (await tc.from('classes').select('id').eq('name', 'Year 10 maths').single()).data;
+  const cw = (await tc.from('assignments').insert({ title: 'Persuasive writing', kind: 'homework', class_id: k10c.id, visibility: 'hidden', release_mode: 'manual' }).select().single()).data;
+  await MA.goto(web.url + '#/assignments/' + cw.id);
+  await MA.getByRole('button', { name: /^Fill in the blanks/ }).click();
+  await MA.getByLabel('Text with blanks').fill('The capital of France is [[Paris]] and water boils at [[100]] °C. A noun is a [[thing|doing word|describing word]].');
+  await MA.getByRole('button', { name: /^Matching/ }).click();
+  await MA.getByLabel('Question 2', { exact: true }).fill('Match each animal to its group.');
+  for (const [i, [item, m]] of [['Lion', 'Mammal'], ['Shark', 'Fish'], ['Whale', 'Mammal']].entries()) {
+    await MA.getByLabel(`Item ${i + 1}`, { exact: true }).fill(item);
+    await MA.getByLabel(`Match for item ${i + 1}`, { exact: true }).fill(m);
+  }
+  await MA.getByRole('button', { name: /^Put in order/ }).click();
+  await MA.getByLabel('Question 3', { exact: true }).fill('Put these in order, smallest first.');
+  for (const [i, x] of ['ant', 'cat', 'horse'].entries()) await MA.getByLabel(`Line ${i + 1}`, { exact: true }).fill(x);
+  await MA.getByRole('button', { name: /^Written answer/ }).click();
+  await MA.getByLabel('Question 4', { exact: true }).fill('Should school start later? Explain your view.');
+  await MA.getByRole('button', { name: /^Record an answer/ }).click();
+  await MA.getByLabel('Question 5', { exact: true }).fill('Read your first sentence aloud.');
+  // a Google Doc, a copy for each learner (sharing by link happens straight away; the copies once it's posted)
+  await MA.getByRole('button', { name: 'Add from Google Drive' }).click();
+  await MA.locator('.link-row', { hasText: 'Essay template' }).waitFor();
+  await MA.getByLabel('Who gets Essay template').selectOption('copy');
+  // peer review: one review each, given out by the teacher
+  await MA.getByRole('switch', { name: 'Classmates review each other’s work' }).click();
+  await MA.getByLabel('Reviews each').selectOption('1');
+  await MA.getByLabel('Reviews start').selectOption('hand');
+  await shot(MA, 'editor-new-question-types');
+  await a11y(MA, 'Writing new kinds of question');
+  await MA.getByRole('button', { name: 'Post', exact: true }).click();
+  await MA.getByRole('heading', { name: 'Assignments', level: 1 }).waitFor();
+  const cwQs = (await tc.from('questions').select('id,type,prompt_md,options,position').eq('assignment_id', cw.id).order('position')).data;
+  assert.deepEqual(cwQs.map((q) => q.type), ['cloze', 'match', 'order', 'short', 'record']);
+  assert.ok(!/Paris/.test(cwQs[0].prompt_md) && /\[\[1\]\]/.test(cwQs[0].prompt_md), 'the answers stay out of what learners read');
+  // the copies: one for everyone in Year 10 maths (Anaya, Zara and the school's learners), from the teacher's browser
+  await MA.goto(web.url + '#/assignments/' + cw.id);
+  await MA.getByRole('button', { name: 'Share with learners' }).click();
+  const shareDlg = MA.getByRole('dialog', { name: 'Copies for each learner' });
+  const makeBtn = shareDlg.getByRole('button', { name: /^Make \d+ cop/ });
+  await makeBtn.waitFor();
+  const nCopies = Number((await makeBtn.innerText()).match(/\d+/)[0]);
+  assert.ok(nCopies >= 2, `copies for ${nCopies}`);
+  await makeBtn.click();
+  await shareDlg.getByText('Has a copy').nth(nCopies - 1).waitFor();
+  await shot(MA, 'drive-copies');
+  await a11y(MA, 'Making each learner’s copy');
+  await shareDlg.locator('.foot').getByRole('button', { name: 'Close' }).click();
+  assert.equal(driveCalls.filter((c) => c.endsWith('/copy')).length, nCopies);
+  // Anaya: her own copy, then the new kinds of question, and a recording of her voice
+  const ML = await (await mediaBrowser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/New_York' })).newPage();
+  watch(ML, 'learner (classroom gaps)');
+  await signInMedia(ML, 'anaya@example.com');
+  await ML.goto(web.url + '#/work/' + cw.id);
+  await ML.getByRole('link', { name: /Your copy: Essay template/ }).waitFor();
+  await ML.getByRole('button', { name: 'Start', exact: true }).click();
+  await ML.getByLabel('Blank 1', { exact: true }).fill('paris');
+  await ML.getByLabel('Blank 2', { exact: true }).fill('100');
+  await ML.getByLabel('Blank 3', { exact: true }).selectOption({ label: 'thing' });
+  await ML.getByLabel('Match for Lion').selectOption({ label: 'Mammal' });
+  await ML.getByLabel('Match for Shark').selectOption({ label: 'Fish' });
+  await ML.getByLabel('Match for Whale').selectOption({ label: 'Fish' }); // one wrong
+  const orderQ = ML.locator('.qcard').filter({ hasText: 'Put these in order' });
+  for (const [i, x] of ['ant', 'cat', 'horse'].entries()) {
+    let pos = (await orderQ.locator('.order-row').allInnerTexts()).findIndex((t) => t.includes(x));
+    while (pos > i) {
+      await orderQ.getByRole('button', { name: `Move “${x}” up` }).click();
+      pos--;
+    }
+  }
+  if (await orderQ.getByRole('button', { name: 'This order is my answer' }).count()) await orderQ.getByRole('button', { name: 'This order is my answer' }).click();
+  const essay6 = 'I think school should start later because teenagers need more sleep and their body clocks shift later in the evening so a later start would help them concentrate learn more and feel healthier during the long school day ahead of them every week';
+  await ML.getByLabel('Your answer').fill(essay6);
+  await shot(ML, 'attempt-new-question-types');
+  await a11y(ML, 'Answering new kinds of question');
+  await ML.getByRole('button', { name: 'Record voice' }).click();
+  const recDlg = ML.getByRole('dialog', { name: 'Record voice' });
+  await recDlg.getByRole('button', { name: 'Start recording' }).click();
+  await recDlg.getByText(/^Recording 0:0[1-9]/).waitFor();
+  await recDlg.getByRole('button', { name: 'Stop' }).click();
+  await recDlg.getByRole('button', { name: 'Use this recording' }).click();
+  await ML.locator('.qcard', { hasText: 'Read your first sentence aloud' }).locator('.rec-row audio').waitFor();
+  await ML.getByRole('button', { name: 'Hand in', exact: true }).first().click();
+  await ML.getByRole('dialog', { name: 'Hand in now?' }).getByRole('button', { name: 'Hand in' }).click();
+  await ML.getByText('Handed in. Well done!').waitFor();
+  const anayaCw = (await lc.from('attempts').select('id').eq('assignment_id', cw.id)).data?.[0]?.id || (await srv.db.query(`select t.id from public.attempts t join public.profiles p on p.id = t.learner_id where t.assignment_id = $1 and p.email = 'anaya@example.com'`, [cw.id])).rows[0].id;
+  const autoMarks = (await srv.db.query(`select q.type, r.auto_marks::float m from public.responses r join public.questions q on q.id = r.question_id where r.attempt_id = $1`, [anayaCw])).rows;
+  assert.deepEqual(Object.fromEntries(autoMarks.filter((x) => x.m != null).map((x) => [x.type, x.m])), { cloze: 2, match: 2, order: 2 }, 'marked part by part');
+  // Zara hands in almost the same essay
+  const zc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
+  await zc.auth.signInWithPassword({ email: 'zara@example.com', password: 'secret123' });
+  const zt = (await zc.rpc('start_attempt', { p_assignment: cw.id, p_client: 'browser' })).data;
+  await zc.rpc('save_response', { p_attempt: zt.id, p_question: cwQs[3].id, p_answer: { text: essay6.replace('I think', 'In my view') } });
+  await zc.rpc('submit_attempt', { p_attempt: zt.id });
+  // marking: similar answers under her essay, and recorded feedback
+  await MA.goto(web.url + '#/marking/' + anayaCw);
+  const simLine = MA.locator('.sim-line', { hasText: 'Zara’s answer' });
+  await simLine.waitFor();
+  await simLine.getByRole('button', { name: 'Compare' }).click();
+  const cmp = MA.getByRole('dialog', { name: 'Similar answers' });
+  await cmp.locator('.sim-text mark').first().waitFor();
+  await shot(MA, 'similar-answers');
+  await a11y(MA, 'Similar answers');
+  await cmp.getByRole('button', { name: 'Close' }).click();
+  await MA.locator('.mark-total').getByRole('button', { name: 'Record voice' }).click();
+  const fbDlg = MA.getByRole('dialog', { name: 'Record voice' });
+  await fbDlg.getByRole('button', { name: 'Start recording' }).click();
+  await fbDlg.getByText(/^Recording 0:0[1-9]/).waitFor();
+  await fbDlg.getByRole('button', { name: 'Stop' }).click();
+  await fbDlg.getByRole('button', { name: 'Use this recording' }).click();
+  await MA.locator('.mark-total .rec-row audio').waitFor();
+  await MA.getByLabel('Mark for question 4', { exact: true }).fill('1');
+  await MA.getByLabel('Mark for question 5', { exact: true }).fill('4');
+  await shot(MA, 'marking-recorded-feedback');
+  await MA.getByRole('button', { name: 'Return marks' }).click();
+  await MA.waitForFunction((zid) => location.hash.includes(zid), zt.id); // on to Zara's, the next to mark
+  await ML.goto(web.url + '#/results/' + anayaCw);
+  await ML.locator('.feedback .rec-row audio').waitFor();
+  await shot(ML, 'results-recorded-feedback');
+  // once handed in, the copies stop changing (they can still comment)
+  await MA.goto(web.url + '#/marking?a=' + cw.id);
+  await MA.getByRole('button', { name: /^Stop 2 handed-in copies changing/ }).click();
+  await MA.getByRole('button', { name: /^Stop .* handed-in cop/ }).waitFor({ state: 'detached' });
+  assert.equal(driveCalls.filter((c) => c.startsWith('PATCH')).length, 2);
+  // peer review: the teacher gives them out, Anaya reviews Zara's essay (no names), the teacher passes it on
+  await MA.goto(web.url + '#/peer/' + cw.id);
+  await MA.getByRole('button', { name: 'Give out reviews now' }).click();
+  await MA.locator('table tbody tr').nth(1).waitFor();
+  await ML.goto(web.url + '#/work');
+  await ML.getByRole('button', { name: /Review a classmate’s work: Persuasive writing/ }).click();
+  await ML.getByText('A classmate’s work (no names)').waitFor();
+  assert.equal(await ML.getByText('Zara').count(), 0, 'no names');
+  await ML.getByLabel('Your comment on question 4').fill('Your reasons are clear and the opening is strong.');
+  await ML.getByLabel('What went well?').fill('Good reasons about sleep.');
+  await ML.getByLabel('One thing that would make it better').fill('Add a fact or a source.');
+  await shot(ML, 'peer-review-write');
+  await a11y(ML, 'Writing a peer review');
+  await ML.getByRole('button', { name: 'Send my review' }).click();
+  await ML.getByRole('dialog', { name: 'Send your review?' }).getByRole('button', { name: 'Send it' }).click();
+  await ML.getByRole('heading', { name: 'My work', level: 1 }).waitFor();
+  await MA.reload();
+  await MA.getByRole('heading', { name: 'To check (1)' }).waitFor();
+  await shot(MA, 'peer-review-check');
+  await a11y(MA, 'Checking peer reviews');
+  await MA.getByRole('button', { name: 'Pass it on' }).click();
+  await MA.getByRole('heading', { name: 'To check (0)' }).waitFor();
+  const zr = (await zc.rpc('peer_received', { p_attempt: zt.id })).data;
+  assert.deepEqual([zr.reviews.length, zr.reviews[0].by, zr.reviews[0].answers[1]], [1, null, 'Add a fact or a source.']);
+  await MA.close();
+  await ML.close();
+  await mediaBrowser.close();
+  mediaBrowser = null;
+  // the rest of the run (and the button sweep) has no Google Drive: its stand-ins live only in that browser
+  await srv.db.query(`update public.app_config set drive_google = null where id = 1`);
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });
@@ -2582,10 +2787,12 @@ try {
   await A.screenshot({ path: join(SHOTS, 'product-fail-tutor.png') }).catch(() => {});
   await ADM.screenshot({ path: join(SHOTS, 'product-fail-admin.png') }).catch(() => {});
   await B.screenshot({ path: join(SHOTS, 'product-fail-tutor2.png') }).catch(() => {});
+  await mediaPage?.screenshot({ path: join(SHOTS, 'product-fail-media.png') }).catch(() => {});
   console.error('\nProduct walkthrough FAILED:', e.message);
   if (errors.length) console.error(errors.join('\n'));
   process.exitCode = 1;
 } finally {
+  await mediaBrowser?.close().catch(() => {});
   await browser.close();
   web.close();
   await srv.close();

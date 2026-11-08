@@ -1378,6 +1378,9 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
     const mc = await rpc('prof_mark_context', { p_attempt: job.attempt_id });
     if (!mc || !mc.questions) throw new Error('That submission no longer exists.');
     await save(job, 'running', { p_progress: `Marking ${mc.learner}’s work…`, p_input: 0 });
+    // Recordings and handed-in files are for the teacher to mark: Prof never gets them (or their links)
+    mc.questions = mc.questions.filter((q) => q.type !== 'record' && q.type !== 'file');
+    const isPicture = (f) => /^image\//.test(String(f?.type || '')) || (!f?.type && /\.(png|jpe?g|gif|webp)$/i.test(String(f?.path || '')));
     const qs = mc.questions.map((q) => {
       const a = q.learner_answer || {};
       const shown =
@@ -1392,7 +1395,7 @@ Give each part an exam-board style mark scheme and a worked solution. Double-che
       {
         type: 'text',
         text: `Mark this submission by ${mc.learner}: “${mc.assignment.title}” (${mc.assignment.kind}).
-Questions of type mcq and numeric were marked automatically (auto_marks); include them only if the automatic mark looks wrong.
+Questions of type mcq, numeric, cloze (fill in the blanks), match, order and label were marked automatically (auto_marks); include them only if the automatic mark looks wrong.
 Include every short, steps, upload and drawing question. Follow the mark scheme. Give partial credit the way an examiner would. Feedback goes to the learner: kind, clear, specific.
 Drawings and photos are handwriting: read them carefully, give read_as for each, and mark what is written. If part is unreadable, mark what you can and say what you couldn't read in tutor_note (never in the learner's feedback).
 A question with no answer (nothing drawn, nothing written) gets 0 marks: say nothing about whether it saved or could be seen.
@@ -1409,7 +1412,7 @@ ${JSON.stringify({ assignment: mc.assignment, questions: qs, learner_notes: mc.l
         n++;
       }
       for (const f of q.learner_answer?.files || []) {
-        if (n >= 16 || !f.path) continue;
+        if (n >= 16 || !f.path || !isPicture(f)) continue;
         content.push({ type: 'text', text: `Photo of the learner’s work for question ${q.number}:` });
         content.push({ type: 'sb_image', bucket: 'work', path: f.path });
         n++;

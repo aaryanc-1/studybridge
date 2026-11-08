@@ -22,6 +22,7 @@ import { SetUpChild, AddWithCode } from '../parent/ChildCodes.jsx';
 import site from '../../../website/site.config.json';
 import { ROLES, yearName } from '../../lib/office.js';
 import { MyRecords, YearPicker } from './Office.jsx';
+import { DriveEmailCard } from './DriveUI.jsx';
 
 export default function Settings() {
   const app = useApp();
@@ -54,6 +55,11 @@ export default function Settings() {
       {isLearner && !isStudent && (
         <Section id="details" icon="user" title="Your details" sub="Contacts, health, learning support and photos, as your schools and tutors have them.">
           <MyRecords />
+        </Section>
+      )}
+      {isLearner && !isStudent && (
+        <Section id="drive" icon="file" title="Your Google or Microsoft email" sub="For files your teachers share from Google Drive or OneDrive, when it isn’t the email you sign in with.">
+          <DriveEmailCard />
         </Section>
       )}
       {isLearner && !isStudent && <ParentReportsSetting />}

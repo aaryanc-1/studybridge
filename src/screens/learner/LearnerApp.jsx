@@ -25,6 +25,7 @@ import { AttendanceCard, BehaviourCard, ProfileCard, TimetablePage, useTimetable
 import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
 import Portfolio from '../shared/Portfolio.jsx';
+import { ReviewPage } from '../shared/Peer.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -45,6 +46,10 @@ function notificationTarget(n) {
   if (n.kind === 'profile') return '/progress';
   if (n.kind === 'predicted') return '/progress';
   if (n.kind === 'portfolio' || n.kind === 'portfolio_comment') return '/portfolio';
+  // peer review (7 Nov 2026)
+  if (n.kind === 'peer_review') return '/work';
+  if (n.kind === 'peer_returned' && r.review_id) return `/review/${r.review_id}`;
+  if (n.kind === 'peer_shared' && r.attempt_id) return `/results/${r.attempt_id}`;
   return '/';
 }
 
@@ -133,6 +138,7 @@ export default function LearnerApp() {
   else if (a === 'work' && b) page = <WorkDetail id={b} />;
   else if (a === 'work') page = <Work />;
   else if (a === 'results' && b) page = <Results id={b} />;
+  else if (a === 'review' && b) page = <ReviewPage id={b} />;
   else if (a === 'study') page = <Study />;
   else if (a === 'library') page = <LearnerLibrary />;
   else if (a === 'lesson' && b) page = <LessonView id={b} />;

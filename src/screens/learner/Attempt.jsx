@@ -17,6 +17,7 @@ import AnswerInput from './AnswerInputs.jsx';
 import { Hint, ReportProblem } from './SelfStudy.jsx';
 import { strokesPicture } from '../../ui/DrawingPad.jsx';
 import { confetti } from '../../ui/confetti.js';
+import { LearnerLinks, MyCopies, learnerLinks } from '../shared/DriveUI.jsx';
 
 // Watched attempts this page has open right now (a reloaded page starts again with none)
 const openHere = new Set();
@@ -630,13 +631,20 @@ export default function Attempt({ id }) {
           </button>
         </div>
       )}
-      <div className="content" style={{ paddingTop: 20 }}>
+      <main className="content" id="main-content" style={{ paddingTop: 20 }}>
         <div className={panel ? 'split even' : ''} style={{ maxWidth: panel ? 1600 : 860, margin: '0 auto' }}>
           <div className="stack lg">
             {redoOnly && <div className="card warn small">Your tutor asked you to redo the highlighted questions. The others are already marked.</div>}
             {a.instructions_md && (
               <div className="card">
                 <Markdown src={a.instructions_md} />
+              </div>
+            )}
+            {/* links and their own Drive copy open in the browser: not during a locked-down or watched test */}
+            {!locked && !watching && (learnerLinks(a.links).length > 0 || (a.links || []).some((l) => l.share === 'copy')) && (
+              <div className="card stack sm">
+                <MyCopies assignment={a} />
+                <LearnerLinks links={a.links} />
               </div>
             )}
             <div className="qnav" aria-label="Questions">
@@ -671,7 +679,7 @@ export default function Attempt({ id }) {
                   </div>
                   <QuestionPrompt q={q} />
                   {a.practice && <Hint md={q.hint_md} />}
-                  <AnswerInput q={q} value={answers[q.id] || {}} onChange={(v) => change(q.id, v)} attemptId={id} disabled={!can} />
+                  <AnswerInput q={q} value={answers[q.id] || {}} onChange={(v) => change(q.id, v)} attemptId={id} disabled={!can} locked={locked || watching || !!a?.camera} />
                   {app.me.self_learner ? (
                     <div>
                       <ReportProblem kind="question" id={q.id} />
@@ -719,7 +727,7 @@ export default function Attempt({ id }) {
             </div>
           )}
         </div>
-      </div>
+      </main>
       {confirmSubmit && (
         <Modal
           title="Hand in now?"

@@ -104,6 +104,12 @@ export const typeLabel = {
   steps: 'Maths with working',
   upload: 'Photo of work',
   drawing: 'Drawing',
+  cloze: 'Fill in the blanks',
+  match: 'Matching',
+  order: 'Put in order',
+  label: 'Label a picture',
+  record: 'Record an answer',
+  file: 'Hand in a file',
 };
 
 export function pct(score, max) {

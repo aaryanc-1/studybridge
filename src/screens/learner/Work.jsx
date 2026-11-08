@@ -11,6 +11,8 @@ import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { workState, needsAction } from './workState.js';
 import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
 import { FromPlace } from '../shared/places.jsx';
+import { LearnerLinks, MyCopies, learnerLinks } from '../shared/DriveUI.jsx';
+import { MyReviews } from '../shared/Peer.jsx';
 
 export default function Work() {
   const app = useApp();
@@ -58,6 +60,7 @@ export default function Work() {
           {app.me.self_learner ? 'Practice you started from Study.' : 'Extra practice from your tutor.'} Do it as often as you like: it’s marked straight away and shows you the answers.
         </div>
       )}
+      {tab === 'todo' && <MyReviews compact />}
       {!assignments.data ? (
         <Loading />
       ) : list.length === 0 ? (
@@ -260,9 +263,11 @@ export function WorkDetail({ id }) {
           </label>
         </div>
       )}
-      {attached.length > 0 && (
+      {(attached.length > 0 || learnerLinks(a.links).length > 0 || (a.links || []).some((l) => l.share === 'copy')) && (
         <div className="card">
           <h3>Resources</h3>
+          <MyCopies assignment={a} />
+          <LearnerLinks links={a.links} />
           <div className="list">
             {attached.map((f) => (
               <Link key={f.id} to={`/file/${f.id}`} className="item">

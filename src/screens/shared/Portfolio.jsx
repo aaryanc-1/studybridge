@@ -13,6 +13,7 @@ import { compressImage } from '../../lib/image.js';
 import { dataSaver } from '../../lib/device.js';
 import { ago, day, kindLabel } from '../../lib/format.js';
 import { StreamFiles } from './Stream.jsx';
+import { RecordButtons } from '../../ui/Recorder.jsx';
 
 const MAX_FILES = 6;
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -354,10 +355,19 @@ export function PieceEditor({ learnerId, d, initial = null, attemptId = null, on
           </div>
         )}
         {files.length < MAX_FILES && (
-          <label className="btn sm" style={{ alignSelf: 'flex-start' }}>
-            <Icon name="upload" size={14} /> {uploading ? 'Adding…' : 'Add pictures or files'}
-            <input type="file" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} aria-label="Add pictures or files" />
-          </label>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <label className="btn sm" style={{ alignSelf: 'flex-start' }}>
+              <Icon name="upload" size={14} /> {uploading ? 'Adding…' : 'Add pictures or files'}
+              <input type="file" multiple hidden onChange={(e) => (addFiles(e.target.files), (e.target.value = ''))} aria-label="Add pictures or files" />
+            </label>
+            <RecordButtons
+              modes={['audio', 'video']}
+              max={300}
+              disabled={uploading}
+              label={(m) => (m === 'audio' ? 'Record your voice' : 'Record a video')}
+              onDone={(blob, info) => addFiles([new File([blob], `${info.kind === 'audio' ? 'Voice' : 'Video'} recording.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`, { type: blob.type })])}
+            />
+          </div>
         )}
       </div>
       {(d?.classes || []).length > 0 && (

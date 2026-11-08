@@ -660,6 +660,79 @@ function PlatformSettings({ s }) {
           Save live video
         </button>
       </div>
+      <hr />
+      <DriveSetup />
+    </div>
+  );
+}
+
+// Google Drive and OneDrive (step 6): only public browser values here, never a secret. Teachers sign in with their own
+// Google or Microsoft account in their browser; StudyBridge keeps links only.
+function DriveSetup() {
+  const toast = useToast();
+  const cur = useQuery('admin-drive', api.adminDrive).data;
+  const [g, setG] = useState(null);
+  const [m, setM] = useState(null);
+  const gv = g ?? { client_id: cur?.google?.client_id || '', api_key: cur?.google?.api_key || '', app_id: cur?.google?.app_id || '' };
+  const mv = m ?? { client_id: cur?.microsoft?.client_id || '' };
+  const code = (t) => <code>{t}</code>;
+  async function save() {
+    try {
+      await api.adminSetDrive(gv.client_id.trim() ? { ...gv, client_id: gv.client_id.trim(), api_key: gv.api_key.trim(), app_id: gv.app_id.trim() } : null, mv.client_id.trim() ? { client_id: mv.client_id.trim() } : null);
+      invalidate('admin-drive', 'public-settings');
+      setG(null);
+      setM(null);
+      toast('Saved. The buttons show for teachers now.');
+    } catch (e) {
+      toast({ title: 'Couldn’t save', body: e.message, tone: 'bad', ms: 8000 });
+    }
+  }
+  return (
+    <div className="stack">
+      <h3 className="row">
+        <Icon name="file" style={{ color: 'var(--accent)' }} /> Google Drive and OneDrive
+      </h3>
+      <div className="small muted">
+        Lets teachers add files from their own Google Drive or OneDrive and give each learner a copy. Teachers sign in with their own account, in their browser. These are public ids, not secrets. {cur?.google ? 'Google: on.' : 'Google: off.'} {cur?.microsoft ? 'OneDrive: on.' : 'OneDrive: off.'}
+      </div>
+      <details className="small">
+        <summary className="linkbtn">How to get the Google ones</summary>
+        <ol className="steps-list">
+          <li>Google Cloud console → your project → APIs &amp; Services → Library: switch on the {code('Google Drive API')} and the {code('Google Picker API')}.</li>
+          <li>OAuth consent screen: add the scope {code('…/auth/drive.file')} (files StudyBridge opens or makes only), and publish the app.</li>
+          <li>Credentials → Create OAuth client ID → Web application. Authorised JavaScript origins: {code('https://gostudybridge.com')}. Copy the client ID.</li>
+          <li>Credentials → Create API key. Restrict it to the Google Picker API, and to the website {code('https://gostudybridge.com/*')}. Copy the key.</li>
+          <li>Project settings (or the dashboard): copy the project number.</li>
+        </ol>
+      </details>
+      <div className="grid g3" style={{ gap: 12 }}>
+        <Field label="Google OAuth client ID">
+          <input className="input" value={gv.client_id} onChange={(e) => setG({ ...gv, client_id: e.target.value })} placeholder="….apps.googleusercontent.com" autoComplete="off" />
+        </Field>
+        <Field label="Google API key">
+          <input className="input" value={gv.api_key} onChange={(e) => setG({ ...gv, api_key: e.target.value })} placeholder="AIza…" autoComplete="off" />
+        </Field>
+        <Field label="Google project number">
+          <input className="input" value={gv.app_id} onChange={(e) => setG({ ...gv, app_id: e.target.value })} placeholder="123456789012" inputMode="numeric" autoComplete="off" />
+        </Field>
+      </div>
+      <details className="small">
+        <summary className="linkbtn">How to get the Microsoft one</summary>
+        <ol className="steps-list">
+          <li>portal.azure.com → Microsoft Entra ID → App registrations → New registration. Who can use it: accounts in any organisation and personal Microsoft accounts.</li>
+          <li>Redirect URI: platform {code('Single-page application')}, address {code('https://gostudybridge.com/app/drive-auth.html')}.</li>
+          <li>API permissions → Microsoft Graph → Delegated: {code('Files.ReadWrite')} and {code('User.Read')}. Some schools let only their IT approve new apps: send them the app’s name if a teacher is asked for an admin’s approval.</li>
+          <li>Copy the Application (client) ID from the Overview page.</li>
+        </ol>
+      </details>
+      <Field label="Microsoft application (client) ID">
+        <input className="input" value={mv.client_id} onChange={(e) => setM({ client_id: e.target.value })} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autoComplete="off" />
+      </Field>
+      <div>
+        <button className="btn" onClick={save} disabled={g === null && m === null}>
+          Save Google Drive and OneDrive
+        </button>
+      </div>
     </div>
   );
 }

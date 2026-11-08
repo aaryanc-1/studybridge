@@ -22,8 +22,12 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put('./', copy));
+          // only the app's own page is kept for offline (never another page, like OneDrive's sign-in return page)
+          const last = url.pathname.split('/').pop();
+          if (res.ok && (last === '' || last === 'index.html')) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put('./', copy));
+          }
           return res;
         })
         .catch(() => caches.match('./').then((r) => r || caches.match(req))),

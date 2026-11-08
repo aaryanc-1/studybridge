@@ -6,6 +6,7 @@ import { mainScript } from '../src/lib/autoupdate.js';
 import { parseTable, parseTimetable, weekdayOf } from '../src/lib/roster.js';
 import { SCALES, assessmentOf, scaleGrade, scaleProblem, pctText } from '../src/lib/grading.js';
 import { BRAND_COLOURS, proofIssues, tidyComment } from '../src/lib/proof.js';
+import { clozeBuild, clozeSource, clozePieces, gapRight, matchBuild, matchEdit, orderBuild, orderEdit, labelBuild, labelEdit, kindProblem, answeredKind, rightText } from '../src/lib/qkinds.js';
 
 test('plain maths: no dollar signs, stars or LaTeX left', () => {
   const fb = 'Good start: taking out the common factor 3 to get $3(x^2-25)$ is right. Factorise **fully**: $a^2-b^2=(a+b)(a-b)$ gives $3(x+5)(x-5)$.';
@@ -90,4 +91,49 @@ test('report polish: plain checks on a report comment, tidying the safe ones, an
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
   };
   for (const c of BRAND_COLOURS) assert.ok(1.05 / (lum(c.hex) + 0.05) >= 4.5, `${c.name} ${c.hex}`);
+});
+
+test('question types: fill in the blanks keeps its answers out of the text, and keeps the order learners saw', () => {
+  const src = 'The capital of France is [[Paris]]. Spell it [[colour; color]]. It is [[hot|cold|warm]] today.';
+  const b = clozeBuild(src);
+  assert.equal(b.prompt_md, 'The capital of France is [[1]]. Spell it [[2]]. It is [[3]] today.');
+  assert.ok(!/Paris|colour/.test(JSON.stringify(b.options)), 'learners never read the typed answers');
+  assert.deepEqual(b.answer.gaps[0], { accept: ['Paris'] });
+  assert.deepEqual(b.answer.gaps[1], { accept: ['colour', 'color'] });
+  assert.equal(b.options.gaps[2].choices[Number(b.answer.gaps[2].choice)], 'hot');
+  // back to what the teacher wrote, and saving again keeps the same order of choices
+  const q = { type: 'cloze', prompt_md: b.prompt_md, options: b.options };
+  const again = clozeSource(q, b.answer);
+  assert.match(again, /\[\[Paris\]\]/);
+  assert.match(again, /\[\[hot\|/);
+  assert.deepEqual(clozeBuild(again, { options: b.options }).options, b.options);
+  assert.deepEqual(clozePieces('a [[1]] b [[2]]'), ['a ', { gap: 0 }, ' b ', { gap: 1 }]);
+  assert.equal(gapRight('  PARIS ', { accept: ['Paris'] }), true);
+  assert.equal(gapRight('.50', { accept: ['0.5'] }), true);
+  assert.equal(gapRight('1', { choice: '1' }), true);
+  assert.equal(gapRight('', { accept: ['x'] }), false);
+});
+
+test('question types: matching, ordering and labels build public options and a key, and come back for editing', () => {
+  const m = matchBuild({ rows: [{ item: 'Lion', match: 'Mammal' }, { item: 'Shark', match: 'Fish' }, { item: 'Whale', match: 'Mammal' }], extras: ['Bird'] });
+  assert.deepEqual([...m.options.right].sort(), ['Bird', 'Fish', 'Mammal']);
+  assert.equal(m.options.right[Number(m.answer.pairs[0])], 'Mammal');
+  assert.equal(m.answer.pairs[0], m.answer.pairs[2], 'sorting into groups');
+  assert.deepEqual(matchEdit({ options: m.options }, m.answer).extras, ['Bird']);
+  const o = orderBuild({ items: ['first', 'second', 'third'] });
+  assert.notDeepEqual(o.options.items, ['first', 'second', 'third'], 'never left in the right order');
+  assert.deepEqual(orderEdit({ options: o.options }, o.answer).items, ['first', 'second', 'third']);
+  const l = labelBuild({ spots: [{ x: 0.25, y: 0.5, label: 'Heart' }, { x: 0.7, y: 0.2, label: 'Lung' }], extras: [] });
+  assert.deepEqual(l.options.spots, [{ x: 0.25, y: 0.5 }, { x: 0.7, y: 0.2 }]);
+  assert.deepEqual(labelEdit({ options: l.options }, l.answer).spots.map((s) => s.label), ['Heart', 'Lung']);
+  assert.equal(rightText({ type: 'order', options: o.options }, o.answer), 'first → second → third');
+  // what stops a question being posted, and what counts as answered
+  assert.match(kindProblem({ type: 'cloze', edit: { src: 'No gaps here' } }, 'Question 1'), /double square brackets/);
+  assert.match(kindProblem({ type: 'match', edit: { rows: [{ item: 'a', match: '' }, { item: 'b', match: 'c' }] } }, 'Question 2'), /its match/);
+  assert.match(kindProblem({ type: 'label', image_path: null, edit: { spots: [] } }, 'Question 3'), /picture/);
+  assert.equal(kindProblem({ type: 'order', edit: { items: ['a', 'b'] } }, 'Question 4'), null);
+  assert.equal(answeredKind({ type: 'cloze' }, { gaps: ['', ' '] }), false);
+  assert.equal(answeredKind({ type: 'order' }, { order: ['1', '0'] }), true);
+  assert.equal(answeredKind({ type: 'file' }, { links: [{ url: 'https://x' }] }), true);
+  assert.equal(answeredKind({ type: 'mcq' }, {}), null);
 });

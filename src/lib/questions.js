@@ -5,9 +5,13 @@ export const multi = (o) => !Array.isArray(o) && !!o?.multi;
 // Is there a real drawing? (not blank, not rubbed out: `blank` is set when the picture came out empty)
 export const drawn = (a) => !!a && !a.blank && (a.strokes || []).some((s) => !s.e && s.p?.length);
 
+import { answeredKind } from './qkinds.js';
+
 // Has the learner answered this question?
 export function answered(q, a) {
   if (!a) return false;
+  const k = answeredKind(q, a);
+  if (k != null) return k;
   if (q.type === 'drawing') return drawn(a) || (a.files || []).length > 0;
   if (q.type === 'mcq') return multi(q.options) ? (a.choices || []).length > 0 : a.choice != null;
   if (q.type === 'numeric') return !!String(a.value ?? '').trim();

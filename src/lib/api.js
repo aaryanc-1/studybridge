@@ -6,6 +6,7 @@ import { sendOrQueue } from './outbox.js';
 import * as store from './store.js';
 import { timezone, getServer, desktop } from './config.js';
 import { parseOfficialPage, officialPage } from './exams.js';
+import { buildQuestion } from './qkinds.js';
 
 let me = null;
 export const setMe = (p) => (me = p);
@@ -482,6 +483,7 @@ export async function uploadStreamFile(file, group) {
   await store.blobs.set(`library/${path}`, new Blob([bytes], { type: file.type || 'application/octet-stream' }));
   return { path, name: file.name || safe, type: file.type || '', size: file.size || bytes.byteLength };
 }
+export const setPostLinks = (group, links) => run(sb().rpc('set_post_links', { p_group: group, p_links: links || [] }));
 export const removeStreamFiles = (paths) => (paths.length ? sb().storage.from('library').remove(paths).catch(() => {}) : Promise.resolve());
 // Rubrics (a teacher's own; a learner reads the ones on their questions)
 export const listRubrics = () => run(sb().from('rubrics').select('*').order('title'));
@@ -636,7 +638,7 @@ export const bankToQuestion = (b) => ({
 export async function addQuestionsToAssignment(assignmentId, questions, start = 0) {
   let i = start;
   for (const q of questions) {
-    const saved = await save('questions', { assignment_id: assignmentId, position: i++, type: q.type, prompt_md: q.prompt_md || '', image_path: q.image_path || null, options: q.type === 'mcq' ? q.options : [], marks: Number(q.marks) || 0, topic_id: q.topic_id || null });
+    const saved = await save('questions', { assignment_id: assignmentId, position: i++, type: q.type, prompt_md: q.prompt_md || '', image_path: q.image_path || null, options: q.options || [], marks: Number(q.marks) || 0, topic_id: q.topic_id || null });
     await saveKey({ question_id: saved.id, answer: q.key?.answer || {}, solution_md: q.key?.solution_md || null, mark_scheme_md: q.key?.mark_scheme_md || null });
   }
 }
@@ -660,7 +662,10 @@ export async function practiceFromBank(rows, { learnerId, title, subject_id = nu
   return save('assignments', { id: a.id, visibility: 'visible' });
 }
 export async function saveQuestionsToBank(qs, { subject_id = null, topicName = () => null, ref = null } = {}) {
-  const rows = qs.map((q) => ({
+  const rows = qs.map((q0) => {
+    const b = buildQuestion(q0); // the editor's newest options and key (fill in the blanks, matching…)
+    const q = { ...q0, prompt_md: b.prompt_md, options: b.options, key: { ...q0.key, answer: b.answer } };
+    return {
     owner_id: uid(),
     status: 'approved',
     subject_id,
@@ -668,14 +673,15 @@ export async function saveQuestionsToBank(qs, { subject_id = null, topicName = (
     type: q.type,
     prompt_md: q.prompt_md || '',
     image_path: q.image_path || null,
-    options: q.type === 'mcq' ? q.options : [],
+    options: q.options || [],
     marks: Number(q.marks) || 0,
     answer: q.key?.answer || {},
     mark_scheme_md: q.key?.mark_scheme_md || null,
     solution_md: q.key?.solution_md || null,
     source: 'tutor',
     source_ref: ref,
-  }));
+    };
+  });
   return run(sb().from('bank_questions').insert(rows).select());
 }
 
@@ -835,7 +841,7 @@ export const saveKey = (key) => run(sb().from('question_keys').upsert(key, { onC
 
 export async function duplicateAssignment(a) {
   // a copy never joins the original's mock exam
-  const { id, created_at, updated_at, mock_id, mock_position, ...rest } = a;
+  const { id, created_at, updated_at, mock_id, mock_position, peer_started_at, ...rest } = a; // a copy's peer reviews start afresh
   const copy = await save('assignments', { ...rest, title: a.title + ' (copy)', visibility: 'hidden', draft: false });
   const qs = await listQuestions(id);
   const keys = await listKeys(qs.map((q) => q.id));
@@ -945,6 +951,45 @@ export async function saveWorkImage(attemptId, questionId, blob, name = 'work.pn
   await sendOrQueue({ kind: 'upload', bucket: 'work', path, blobKey: `work/${path}`, contentType: blob.type || 'image/png' });
   return { path, name, type: blob.type };
 }
+
+// Any file in an answer (a recording, a document): it goes up straight away (not through the offline queue), so an
+// answer never points at a file that didn't arrive
+const extOf = (blob, name) => {
+  const fromName = /\.([a-z0-9]{1,8})$/i.exec(name || '')?.[1];
+  return (fromName || (blob.type.split('/')[1] || 'bin').split(';')[0]).toLowerCase().replace('jpeg', 'jpg').replace('x-m4a', 'm4a');
+};
+const named = (name, ext) => (/\.[a-z0-9]{1,8}$/i.test(name || '') ? name : `${name || 'file'}.${ext}`);
+async function putWork(path, blob) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('You’re offline. Recordings and files go up when you’re back online, so try again then.');
+  const type = (blob.type || 'application/octet-stream').split(';')[0];
+  await run(sb().storage.from('work').upload(path, await blob.arrayBuffer(), { contentType: type }));
+  return type;
+}
+export async function saveWorkFile(attemptId, questionId, blob, name = 'file') {
+  const ext = extOf(blob, name);
+  const path = `${uid()}/${attemptId}/${questionId}-${uuid()}.${ext}`;
+  const type = await putWork(path, blob);
+  return { path, name: named(name, ext), type, size: blob.size };
+}
+// A teacher's recorded feedback: work/<learner>/marking/<attempt>/… (questionId null = on the whole piece)
+export async function uploadFeedbackRecording(learnerId, attemptId, blob, name = 'Feedback') {
+  const ext = extOf(blob, name);
+  const path = `${learnerId}/marking/${attemptId}/${uuid().slice(0, 8)}.${ext}`;
+  const type = await putWork(path, blob);
+  return { path, name: named(name, ext), type, size: blob.size };
+}
+export const setFeedbackFiles = (attemptId, questionId, files) =>
+  run(sb().rpc('set_feedback_files', { p_attempt: attemptId, p_question: questionId || null, p_files: files || [] }));
+export const removeWorkFiles = (paths) => (paths.length ? sb().storage.from('work').remove(paths).catch(() => {}) : Promise.resolve());
+// A recording in a note or message: work/<learner>/notes/<tutor>/…
+export async function uploadNoteRecording(learnerId, tutorId, blob) {
+  const ext = extOf(blob, '');
+  const path = `${learnerId}/notes/${tutorId}/${blob.type.startsWith('audio') ? 'a' : 'v'}-${uuid().slice(0, 8)}.${ext}`; // a- voice, v- video
+  await putWork(path, blob);
+  return path;
+}
+// Recordings play from a short-lived link (they aren't kept on the device like pictures)
+export const mediaUrl = (bucket, path) => signedUrl(bucket, path);
 
 export async function submitAttempt(attemptId) {
   const r = await sendOrQueue({ kind: 'rpc', fn: 'submit_attempt', args: { p_attempt: attemptId } });
@@ -1090,6 +1135,9 @@ export const markSeen = () => run(sb().rpc('seen', { p_version: appVersion() || 
 export const adminSetSignups = (open) => run(sb().rpc('admin_set_signups', { p_open: open }));
 export const adminSetProf = ({ key, model, defaultLimitCents }) =>
   run(sb().rpc('admin_set_prof', { p_key: key || null, p_model: model || null, p_default_limit_cents: defaultLimitCents ?? null }));
+// Google Drive and OneDrive (public browser values only)
+export const adminDrive = () => run(sb().rpc('admin_drive'));
+export const adminSetDrive = (google, microsoft) => run(sb().rpc('admin_set_drive', { p_google: google, p_microsoft: microsoft }));
 export const adminSetLivekit = (url, key, secret) => run(sb().rpc('admin_set_livekit', { p_url: url, p_key: key, p_secret: secret }));
 export const adminLog = () => run(sb().from('admin_log').select('*').order('at', { ascending: false }).limit(200));
 
@@ -1262,3 +1310,27 @@ export async function profRetry(id) {
   await run(sb().rpc('prof_retry', { p_job: id }));
   callProf().catch(() => {});
 }
+
+// ---------------- classroom gaps (7 Nov 2026) ----------------
+// Google Drive and OneDrive: copies for each learner, made in the teacher's browser
+export const drivePeople = (assignmentId) => run(sb().rpc('drive_people', { p_assignment: assignmentId }));
+export const driveCopiesSave = (assignmentId, rows) => run(sb().rpc('drive_copies_save', { p_assignment: assignmentId, p_rows: rows }));
+export const driveCopySet = (ids, what) => run(sb().rpc('drive_copy_set', { p_ids: ids, p_what: what }));
+export const myDriveCopies = (assignmentId) => (asLearner() ? Promise.resolve([]) : run(sb().rpc('my_drive_copies', { p_assignment: assignmentId })));
+export const driveCopyAsk = (assignmentId) => run(sb().rpc('drive_copy_ask', { p_assignment: assignmentId }));
+export const myDriveEmail = () => run(sb().rpc('my_drive_email'));
+export const setDriveEmail = (email) => run(sb().rpc('set_drive_email', { p_email: email || null }));
+// Peer review
+export const peerGiveOut = (assignmentId) => run(sb().rpc('peer_give_out', { p_assignment: assignmentId }));
+export const peerOverview = (assignmentId) => run(sb().rpc('peer_overview', { p_assignment: assignmentId }));
+export const peerCheck = (id, action, note = null) => run(sb().rpc('peer_check', { p_id: id, p_action: action, p_note: note }));
+export const myPeerReviews = () => (asLearner() ? Promise.resolve([]) : run(sb().rpc('my_peer_reviews')));
+export const peerReviewOpen = (id) => run(sb().rpc('peer_review_open', { p_id: id }));
+export const savePeerReview = (id, { comments = {}, answers = [], rubric = {} }, submit = false) =>
+  run(sb().rpc('save_peer_review', { p_id: id, p_comments: comments, p_answers: answers, p_rubric: rubric, p_submit: !!submit }));
+export const peerReceived = (attemptId) => (asLearner() ? Promise.resolve(null) : run(sb().rpc('peer_received', { p_attempt: attemptId })));
+export const peerReport = (id, reason) => run(sb().rpc('peer_report', { p_id: id, p_reason: reason }));
+// Similar answers (for teachers marking)
+export const similarity = (attemptId) => run(sb().rpc('similarity', { p_attempt: attemptId }));
+export const similarityPair = (responseId, otherId) => run(sb().rpc('similarity_pair', { p_response: responseId, p_other: otherId || null }));
+export const similarityOverview = (assignmentId) => run(sb().rpc('similarity_overview', { p_assignment: assignmentId }));

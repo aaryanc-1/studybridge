@@ -36,12 +36,16 @@ import TermReports from './TermReports.jsx';
 import { TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 import Office, { StudentPage, officeAccess } from './Office.jsx';
+import { PeerPage } from '../shared/Peer.jsx';
 
 function notificationTarget(n, office, officeOnly) {
   const r = n.ref || {};
   // parents, more (6 Nov 2026): messages with families, parents' meetings, and comments on a learner's portfolio
   if ((n.kind === 'family_message' || n.kind === 'family_report') && r.thread_id) return officeOnly ? `/office/messages/${r.thread_id}` : `/messages/families/${r.thread_id}`;
   if (n.kind === 'meeting' && r.event_id) return `/meetings/${r.event_id}`;
+  // classroom gaps (7 Nov 2026): peer reviews to check or reported, and a learner waiting for their Drive copy
+  if ((n.kind === 'peer_done' || n.kind === 'peer_report') && r.assignment_id) return `/peer/${r.assignment_id}`;
+  if (n.kind === 'drive_ask' && r.assignment_id) return `/assignments/${r.assignment_id}`;
   if (n.kind === 'portfolio_comment' && r.learner_id) return `/learners/${r.learner_id}/portfolio`;
   // the school office (5 Nov 2026): absences families report, and changes to a learner's details
   if (n.kind === 'absence_report') return office ? '/office/absences' : '/timetable/attendance';
@@ -135,6 +139,7 @@ export default function TutorApp() {
   else if (a === 'assignments') page = <Assignments />;
   else if (a === 'mocks' && b) page = <MockPage id={b} />;
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;
+  else if (a === 'peer' && b) page = <PeerPage id={b} />;
   else if (a === 'marking') page = <Marking />;
   else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;

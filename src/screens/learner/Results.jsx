@@ -13,6 +13,8 @@ import { ReportProblem } from './SelfStudy.jsx';
 import { RubricGrid } from '../shared/Rubric.jsx';
 import { band } from '../../lib/myp.js';
 import { AddWorkToPortfolio } from '../shared/Portfolio.jsx';
+import { Recordings } from '../../ui/Recorder.jsx';
+import { PeerReceived } from '../shared/Peer.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -118,10 +120,11 @@ export default function Results({ id }) {
               )}
             </div>
           </div>
-          {t.feedback_md && (
+          {(t.feedback_md || (t.feedback_files || []).length > 0) && (
             <div className="feedback">
               <div className="tiny strong" style={{ marginBottom: 4 }}>From your tutor</div>
-              <Markdown src={t.feedback_md} />
+              {t.feedback_md && <Markdown src={t.feedback_md} />}
+              <Recordings files={t.feedback_files} />
             </div>
           )}
           {d.myp && t.criteria && (
@@ -162,9 +165,10 @@ export default function Results({ id }) {
             <QuestionPrompt q={q} />
             <div className="label">Your answer</div>
             <AnswerDisplay q={q} mine answer={r.answer || {}} keyAns={k?.answer} stepMarks={rel ? r.step_marks || [] : []} annotation={rel ? r.annotation_path : null} />
-            {rel && r.feedback_md && (
+            {rel && (r.feedback_md || (r.feedback_files || []).length > 0) && (
               <div className={'feedback' + (Number(got) < Number(q.marks) ? ' bad' : '')}>
-                <Markdown src={r.feedback_md} />
+                {r.feedback_md && <Markdown src={r.feedback_md} />}
+                <Recordings files={r.feedback_files} />
               </div>
             )}
             {rel && q.rubric_id && r.rubric && <RubricGrid rubric={(d.rubrics || []).find((x) => x.id === q.rubric_id)} picked={r.rubric} />}
@@ -186,6 +190,7 @@ export default function Results({ id }) {
         );
       })}
       {questions.length === 0 && <Empty>No questions.</Empty>}
+      {t.status !== 'in_progress' && <PeerReceived attemptId={t.id} questions={questions} />}
       {!app.me.self_learner && (
         <div className="card">
           <h3>Questions about this?</h3>

@@ -16,6 +16,8 @@ import { ExtendWork, useDueFor } from './Access.jsx';
 import { StatusPill } from './Learners.jsx';
 import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 import { band } from '../../lib/myp.js';
+import { FeedbackRecorder, PeerCard, SimilarLine, SimilarOverview } from './MarkingExtras.jsx';
+import { LockAllCopies, TheirCopy } from '../shared/DriveUI.jsx';
 
 export default function Marking() {
   const lk = useLookups();
@@ -54,9 +56,12 @@ export default function Marking() {
       subtitle={only && aById[only] ? `Submissions for “${aById[only].title}”` : 'Everything learners have handed in.'}
       actions={
         only ? (
-          <button className="btn" onClick={() => go('/marking')}>
-            Show all assignments
-          </button>
+          <>
+            {aById[only] && <LockAllCopies assignment={aById[only]} handedIn={all.filter((t) => t.submitted_at).map((t) => t.learner_id)} />}
+            <button className="btn" onClick={() => go('/marking')}>
+              Show all assignments
+            </button>
+          </>
         ) : null
       }
     >
@@ -72,6 +77,12 @@ export default function Marking() {
         ]}
       />
       {extending && <ExtendWork a={extending.a} l={extending.l} onClose={() => setExtending(null)} />}
+      {only && aById[only] && (
+        <>
+          <SimilarOverview assignmentId={only} />
+          <PeerCard assignment={aById[only]} />
+        </>
+      )}
       {tab === 'missing' ? (
         missing.length === 0 ? (
           <Empty>Everyone has handed in{only ? ' this one' : ' everything that’s posted'}.</Empty>
@@ -357,6 +368,7 @@ export function MarkAttempt({ id }) {
                 r={r}
                 keyRow={key}
                 notes={notes}
+                attemptId={id}
                 learnerId={d.attempt.learner_id}
                 onEdit={(patch) => r && edit(r, patch)}
                 onAnnotate={(x) => setAnnotating(typeof x === 'string' ? { path: x, r, q } : { strokes: x.strokes, r, q })}
@@ -388,6 +400,7 @@ export function MarkAttempt({ id }) {
             <Field label="Overall feedback">
               <MathText value={feedback || ''} onChange={setFeedback} label="Overall feedback" placeholder="What went well, and what to focus on next." minHeight={80} />
             </Field>
+            <FeedbackRecorder attemptId={id} learnerId={d.attempt.learner_id} files={d.attempt.feedback_files || []} label="Or say it, on the whole piece:" />
             <button className="btn primary big" onClick={() => finish(true, false)}>
               <Icon name="send" size={18} /> Return marks
             </button>
@@ -405,6 +418,8 @@ export function MarkAttempt({ id }) {
             {others.length > 0 && <div className="muted small">{others.length} more submission{others.length > 1 ? 's' : ''} of this to mark.</div>}
           </div>
           <CriteriaCard id={id} d={d} />
+          <TheirCopy assignment={a} learnerId={d.attempt.learner_id} />
+          <PeerCard assignment={a} />
           <ProfMarkCard
             attemptId={id}
             onApplied={async () => {
@@ -436,7 +451,7 @@ export function MarkAttempt({ id }) {
   );
 }
 
-function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate }) {
+function MarkQuestion({ n, q, r, keyRow, notes, attemptId, learnerId, onEdit, onAnnotate }) {
   const [hints, setHints] = useState(null);
   const rubric = (useQuery(q.rubric_id ? 'rubrics' : null, api.listRubrics).data || []).find((x) => x.id === q.rubric_id);
   const lines = useMemo(() => (r?.answer?.steps || []).filter((s) => s && s.trim()), [r?.answer?.steps]);
@@ -492,6 +507,7 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
           onEdit({ step_marks: next });
         }}
       />
+      {q.type === 'short' && r.answer?.text && <SimilarLine attemptId={attemptId} questionId={q.id} text={r.answer.text} />}
       {keyRow?.mark_scheme_md && (
         <details className="small">
           <summary className="linkbtn">Your mark scheme</summary>
@@ -549,6 +565,7 @@ function MarkQuestion({ n, q, r, keyRow, notes, learnerId, onEdit, onAnnotate })
       <Field label="Feedback on this question">
         <MathText value={r.feedback_md || ''} onChange={(v) => onEdit({ feedback_md: v })} label={`Feedback on question ${n}`} placeholder="What was wrong, and how to fix it." />
       </Field>
+      <FeedbackRecorder attemptId={attemptId} learnerId={learnerId} questionId={q.id} files={r.feedback_files || []} />
       <div className="grid g2" style={{ gap: 10, alignItems: 'end' }}>
         <Field label="Mistake (collects on their progress page)">
           <input className="input" value={r.mistake || ''} onChange={(e) => onEdit({ mistake: e.target.value || null })} placeholder="e.g. Sign error when expanding brackets" />

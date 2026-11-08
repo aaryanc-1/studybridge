@@ -7,6 +7,7 @@ import * as api from '../../lib/api.js';
 import { ago } from '../../lib/format.js';
 import { useLookups } from './lookups.jsx';
 import { FamilyInbox, useFamilyUnread } from './Families.jsx';
+import { MediaPlay, RecordButtons } from '../../ui/Recorder.jsx';
 
 // (6 Nov 2026) Teachers have two kinds of messages: with their learners, and with their learners' families
 export default function Messages({ learnerId, tab = 'learners', threadId = null }) {
@@ -149,15 +150,26 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
     end.current?.scrollIntoView({ block: 'end' });
   }, [list.length, pending.length]);
 
-  async function send(e) {
+  // recording: a voice or video note, uploaded first (work/<learner>/notes/<tutor>/…), sent with any text typed
+  async function send(e, recording = null) {
     e?.preventDefault();
     const body = text.trim();
-    if (!body) return;
+    if (!body && !recording) return;
     setSending(true);
+    let attachment_path = null;
+    if (recording) {
+      try {
+        attachment_path = await api.uploadNoteRecording(learnerId, tutorId, recording);
+      } catch (x) {
+        setSending(false);
+        return toast({ title: 'Couldn’t send the recording', body: x.message, tone: 'bad' });
+      }
+    }
     const row = {
       tutor_id: tutorId,
       learner_id: learnerId,
       body,
+      ...(attachment_path ? { attachment_path } : {}),
       ...(assignmentId ? { assignment_id: assignmentId } : {}),
       ...(questionId ? { question_id: questionId } : {}),
     };
@@ -204,7 +216,8 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
                     {c.question_id ? ' · a question' : ''}
                   </div>
                 )}
-                <Markdown src={c.body} />
+                {c.body && <Markdown src={c.body} />}
+                {c.attachment_path && <MediaPlay bucket="work" file={{ path: c.attachment_path, type: /\/a-[^/]*$/.test(c.attachment_path) ? 'audio/webm' : 'video/webm', name: 'Recording' }} />}
                 <div className="w">
                   {c.pending ? 'Waiting to send…' : ago(c.created_at)}
                   {mine && c.read_at && ' · Seen'}
@@ -248,6 +261,7 @@ export function Thread({ learnerId, all, assignments, assignmentId, questionId, 
           }
           aria-label="Message"
         />
+        {tutorId && <RecordButtons modes={['audio', 'video']} max={180} disabled={sending} label={(m) => (m === 'audio' ? 'Voice' : 'Video')} onDone={(blob) => send(null, blob)} />}
         <button className="btn primary icon" disabled={sending || !text.trim()} aria-label="Send">
           <Icon name="send" size={18} />
         </button>

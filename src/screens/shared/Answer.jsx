@@ -5,13 +5,16 @@ import { StoredImage, WorkThumb, Lightbox } from '../../ui/media.jsx';
 import { MathStatic } from '../../ui/MathField.jsx';
 import DrawingPad from '../../ui/DrawingPad.jsx';
 import { drawn, items, multi } from '../../lib/questions.js';
+import { KindShow, WorkFiles } from './Kinds.jsx';
 
 export function QuestionPrompt({ q }) {
   const [zoom, setZoom] = useState(false);
+  // Fill in the blanks: the text (with its gaps) is the answer box; a picture to label is part of its answer box
+  if (q.type === 'cloze') return <div className="muted small">Fill in the blanks.</div>;
   return (
     <>
       {q.prompt_md ? <Markdown src={q.prompt_md} className="qprompt" /> : <div className="muted">(No question text)</div>}
-      {q.image_path && <StoredImage path={q.image_path} className="qimg" alt="Question diagram" onClick={() => setZoom(true)} style={{ cursor: 'zoom-in' }} />}
+      {q.image_path && q.type !== 'label' && <StoredImage path={q.image_path} className="qimg" alt="Question diagram" onClick={() => setZoom(true)} style={{ cursor: 'zoom-in' }} />}
       {zoom && <ZoomStored path={q.image_path} onClose={() => setZoom(false)} />}
     </>
   );
@@ -29,6 +32,8 @@ function ZoomStored({ path, onClose }) {
 export function AnswerDisplay({ q, answer = {}, mine: isMine = false, keyAns, stepMarks = [], onToggleStep, hints, annotation, onAnnotate }) {
   const [light, setLight] = useState(null);
   const empty = !answer || !(answer.files || []).length;
+  const kind = KindShow({ q, answer: answer || {}, keyAns });
+  if (kind) return kind;
 
   if (q.type === 'mcq') {
     const opts = items(q.options);
@@ -163,21 +168,7 @@ export function AnswerDisplay({ q, answer = {}, mine: isMine = false, keyAns, st
   );
 }
 
+// Photos (and any other files) in an answer
 function Files({ answer, onOpen, onAnnotate }) {
-  const files = answer?.files || [];
-  if (!files.length) return null;
-  return (
-    <div className="thumbs">
-      {files.map((f) => (
-        <div key={f.path} className="stack sm" style={{ gap: 4 }}>
-          <WorkThumb path={f.path} onOpen={onOpen} />
-          {onAnnotate && (
-            <button className="btn sm" onClick={() => onAnnotate(f.path)}>
-              <Icon name="pen" size={14} /> Mark on it
-            </button>
-          )}
-        </div>
-      ))}
-    </div>
-  );
+  return <WorkFiles files={answer?.files} onOpen={onOpen} onAnnotate={onAnnotate} />;
 }

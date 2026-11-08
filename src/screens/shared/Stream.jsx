@@ -10,6 +10,9 @@ import { Lightbox, StoredImage } from '../../ui/media.jsx';
 import { useQuery, invalidate } from '../../lib/data.js';
 import * as api from '../../lib/api.js';
 import { ago, bytes, day, fromLocalInput, toLocalInput, when } from '../../lib/format.js';
+import { MediaPlay, RecordButtons, isMedia } from '../../ui/Recorder.jsx';
+import { LinksEditor } from './DriveUI.jsx';
+import { LinkList } from './Kinds.jsx';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const REPLIES = [
@@ -158,6 +161,7 @@ function PostCard({ p, d, learner }) {
       </div>
       {p.body_md && <Markdown src={p.body_md} className="stream-body" />}
       <StreamFiles files={p.files} />
+      <LinkList links={p.links} />
       {d.staff && (
         <div className="row wrap stream-actions">
           <button className="btn sm ghost" onClick={pin}>
@@ -208,7 +212,8 @@ export function StreamFiles({ files, bucket = 'library' }) {
   const [big, setBig] = useState(null);
   if (!files?.length) return null;
   const pics = files.filter((f) => String(f.type || '').startsWith('image/'));
-  const others = files.filter((f) => !String(f.type || '').startsWith('image/'));
+  const media = files.filter((f) => !pics.includes(f) && isMedia(f)); // recordings play right there
+  const others = files.filter((f) => !pics.includes(f) && !media.includes(f));
   return (
     <>
       {pics.length > 0 && (
@@ -218,6 +223,9 @@ export function StreamFiles({ files, bucket = 'library' }) {
           ))}
         </div>
       )}
+      {media.map((f) => (
+        <MediaPlay key={f.path} bucket={bucket} file={f} />
+      ))}
       {others.length > 0 && (
         <div className="row wrap" style={{ gap: 8 }}>
           {others.map((f) => (
@@ -409,6 +417,7 @@ export function PostEditor({ classId, className = '', post = null, onClose }) {
   const [group] = useState(() => post?.group_id || crypto.randomUUID());
   const [body, setBody] = useState(post?.body_md || '');
   const [files, setFiles] = useState(post?.files || []);
+  const [links, setLinks] = useState(post?.links || []);
   const [uploading, setUploading] = useState(0);
   const [replies, setReplies] = useState(post?.replies_mode || 'off');
   const [pinned, setPinned] = useState(false);
@@ -459,11 +468,13 @@ export function PostEditor({ classId, className = '', post = null, onClose }) {
       const goesUp = later ? fromLocalInput(at) : editing && post.scheduled ? new Date().toISOString() : null;
       if (editing) {
         await api.editClassPost(post.id, { body, files, replies, at: goesUp });
+        if (JSON.stringify(links) !== JSON.stringify(post.links || [])) await api.setPostLinks(group, links);
         const gone = (post.files || []).filter((f) => !files.some((g) => g.path === f.path));
         api.removeStreamFiles(gone.map((f) => f.path));
         toast(post.scheduled && !later ? 'Posted' : 'Post changed');
       } else {
         await api.postToClasses({ classes: picked, body, files, replies, pinned, at: goesUp, group });
+        if (links.length) await api.setPostLinks(group, links);
         toast(later ? `Scheduled for ${when(goesUp)}` : picked.length > 1 ? `Posted to ${picked.length} classes` : `Posted to ${choices.find((c) => c.id === picked[0])?.name || className || 'the class'}`);
       }
       streamChanged();
@@ -483,6 +494,13 @@ export function PostEditor({ classId, className = '', post = null, onClose }) {
           <button type="button" className="btn sm" onClick={() => pick.current?.click()} disabled={files.length >= MAX_FILES}>
             <Icon name="image" size={15} /> Add a picture or file
           </button>
+          <RecordButtons
+            modes={['audio', 'video', 'screen']}
+            max={300}
+            disabled={files.length >= MAX_FILES}
+            label={(m) => (m === 'audio' ? 'Record your voice' : m === 'video' ? 'Record a video' : 'Record your screen')}
+            onDone={(blob, info) => addFiles([new File([blob], `${info.kind === 'audio' ? 'Voice' : info.kind === 'video' ? 'Video' : 'Screen'} recording.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`, { type: blob.type })])}
+          />
           {uploading > 0 && <span className="small muted">Adding {uploading}…</span>}
           <input
             ref={pick}
@@ -507,6 +525,8 @@ export function PostEditor({ classId, className = '', post = null, onClose }) {
             ))}
           </div>
         )}
+        <LinksEditor links={links} onChange={setLinks} />
+        <div className="tiny muted">Parents see posts too: film learners only if their families agree to photos and video.</div>
         {!editing && choices.length > 1 && (
           <fieldset className="stream-fieldset">
             <legend className="label">Post to</legend>

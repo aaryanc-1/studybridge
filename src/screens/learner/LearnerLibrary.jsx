@@ -9,6 +9,7 @@ import { useLookups, SubjectTag } from '../shared/lookups.jsx';
 import { LessonBody } from '../tutor/Library.jsx';
 import { useReadingTime } from '../shared/FileView.jsx';
 import { ReportProblem } from './SelfStudy.jsx';
+import { LearnerLinks, learnerLinks } from '../shared/DriveUI.jsx';
 
 export default function LearnerLibrary() {
   const app = useApp();
@@ -126,7 +127,7 @@ export function LessonView({ id }) {
       <div>
         <ReportProblem kind="lesson" id={x.id} label="Report a problem with this lesson" />
       </div>
-      {attached.length > 0 && (
+      {(attached.length > 0 || learnerLinks(x.links).length > 0) && (
         <div className="card">
           <h3>With this lesson</h3>
           <div className="list">
@@ -139,6 +140,7 @@ export function LessonView({ id }) {
               </Link>
             ))}
           </div>
+          <LearnerLinks links={x.links} />
         </div>
       )}
     </Page>

@@ -5085,7 +5085,16 @@ begin
                       'comments', (select coalesce(jsonb_agg(jsonb_build_object('at', c.created_at, 'from', (select display_name from public.profiles where id = c.author_id),
                                      'where', public._place_name(c.place_id), 'text', c.body) order by c.created_at), '[]')
                                      from public.portfolio_comments c where c.item_id = i.id)) order by i.created_at), '[]')
-                     from public.portfolio_items i where i.learner_id = me.id));
+                     from public.portfolio_items i where i.learner_id = me.id),
+      -- peer reviews they wrote, and the ones about their work their teacher passed on (classmates unnamed)
+      'peer_reviews_written', (select coalesce(jsonb_agg(jsonb_build_object('work', a.title, 'status', pr.status, 'comments', pr.comments,
+                                 'answers', pr.answers, 'sent_at', pr.submitted_at) order by pr.created_at), '[]')
+                                 from public.peer_reviews pr join public.assignments a on a.id = pr.assignment_id where pr.reviewer_id = me.id),
+      'peer_reviews_received', (select coalesce(jsonb_agg(jsonb_build_object('work', a.title, 'comments', pr.comments, 'answers', pr.answers,
+                                  'at', pr.checked_at) order by pr.checked_at), '[]')
+                                  from public.peer_reviews pr join public.assignments a on a.id = pr.assignment_id
+                                 where pr.author_id = me.id and pr.status = 'shared'),
+      'drive_email', (select email from public.drive_emails where user_id = me.id));
   elsif me.role = 'parent' then
     v := v || jsonb_build_object('children', public.parent_children(),
       'absences_reported', (select coalesce(jsonb_agg(jsonb_build_object('child', (select display_name from public.profiles where id = x.learner_id),
@@ -17924,6 +17933,1316 @@ begin
   if not found then raise exception 'Not found.'; end if;
 end $$;
 
+-- =====================================================================
+-- Classroom gaps (7 Nov 2026): more question types, recordings (voice, video, screen) in answers, feedback, notes and
+-- posts, Google Drive and OneDrive (with a copy for each learner), peer review, and a similarity check.
+-- No AI anywhere here, and nothing goes to Google or Microsoft from the server: files are shared from the
+-- teacher's own browser with their own sign-in, and StudyBridge keeps only links.
+-- =====================================================================
+
+-- ---------------- more question types ----------------
+-- cloze (fill in the blanks), match (matching, or sorting into groups), order (put in order), label (label a picture):
+-- learners read the public parts in options; the answers stay in question_keys and are marked part by part.
+-- record (record an answer) and file (hand in a file or a link): marked by the teacher.
+alter table public.questions drop constraint if exists questions_type_check;
+alter table public.questions add constraint questions_type_check
+  check (type in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing', 'cloze', 'match', 'order', 'label', 'record', 'file'));
+alter table public.bank_questions drop constraint if exists bank_questions_type_check;
+alter table public.bank_questions add constraint bank_questions_type_check
+  check (type in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing', 'cloze', 'match', 'order', 'label', 'record', 'file'));
+
+-- A typed gap is right when it's one of the accepted answers: capitals, spaces and how a number is written don't matter
+-- (the app checks the same way, src/lib/qkinds.js gapRight)
+create or replace function public._same_answer(p_a text, p_b text) returns boolean
+language plpgsql immutable as $$
+declare
+  a text := lower(regexp_replace(btrim(coalesce(p_a, '')), '\s+', ' ', 'g'));
+  b text := lower(regexp_replace(btrim(coalesce(p_b, '')), '\s+', ' ', 'g'));
+  num text := '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)$';
+begin
+  if a = '' or b = '' then return false; end if;
+  if a = b then return true; end if;
+  if replace(a, ' ', '') ~ num and replace(b, ' ', '') ~ num then
+    return replace(a, ' ', '')::numeric = replace(b, ' ', '')::numeric;
+  end if;
+  return false;
+end $$;
+
+create or replace function public._auto_mark(p_type text, p_answer jsonb, p_key jsonb, p_marks numeric)
+returns numeric language plpgsql immutable as $$
+declare
+  v numeric;
+  k numeric;
+  tol numeric;
+  n int := 0;
+  c int := 0;
+  i int;
+  g jsonb;
+  x text;
+  f text;
+begin
+  if p_key is null or p_key = '{}'::jsonb then return null; end if;
+  if p_type in ('cloze', 'match', 'order', 'label') then
+    -- marked part by part: all right gets full marks, otherwise the share right, rounded down to the half mark
+    p_answer := coalesce(p_answer, '{}'::jsonb);
+    f := case p_type when 'cloze' then 'gaps' when 'match' then 'pairs' when 'order' then 'order' else 'spots' end;
+    if jsonb_typeof(p_key -> f) = 'array' then n := jsonb_array_length(p_key -> f); end if;
+    if n = 0 then return null; end if;
+    for i in 0 .. n - 1 loop
+      x := case when jsonb_typeof(p_answer -> f) = 'array' then p_answer -> f ->> i end;
+      if p_type = 'cloze' then
+        g := p_key -> f -> i;
+        if g ? 'choice' then
+          if x is not null and x = g ->> 'choice' then c := c + 1; end if;
+        elsif exists (select 1 from jsonb_array_elements_text(case when jsonb_typeof(g -> 'accept') = 'array' then g -> 'accept' else '[]'::jsonb end) y
+                       where public._same_answer(x, y)) then
+          c := c + 1;
+        end if;
+      elsif x is not null and x <> '' and x = p_key -> f ->> i then
+        c := c + 1;
+      end if;
+    end loop;
+    return case when c = n then p_marks else floor(p_marks * c / n * 2) / 2 end;
+  end if;
+  if p_type = 'mcq' then
+    if p_key ? 'choices' then
+      return case when (select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(p_answer -> 'choices') x)
+                     = (select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(p_key -> 'choices') x)
+                  then p_marks else 0 end;
+    end if;
+    return case when p_answer ->> 'choice' = p_key ->> 'choice' then p_marks else 0 end;
+  elsif p_type = 'numeric' then
+    begin
+      v := replace(trim(p_answer ->> 'value'), ',', '')::numeric;
+      k := (p_key ->> 'value')::numeric;
+    exception when others then
+      return 0;
+    end;
+    if v is null or k is null then return 0; end if;
+    tol := coalesce((p_key ->> 'tolerance')::numeric, 0);
+    return case when abs(v - k) <= tol then p_marks else 0 end;
+  end if;
+  return null; -- short / steps / upload / drawing / record / file are marked by the teacher
+end $$;
+
+-- Cards from mistakes: not for the newer types yet (their text and parts don't make a flashcard on their own)
+create or replace function public.sync_mistake_cards()
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  if public.my_role() is distinct from 'learner' then return 0; end if;
+  insert into public.cards (tutor_id, learner_id, subject_id, topic_id, front_md, back_md, source, question_id, created_by)
+  select distinct on (q.id) a.tutor_id, auth.uid(), a.subject_id, coalesce(q.topic_id, a.topic_id),
+         left(coalesce(nullif(q.prompt_md, ''), '(question)'), 4000),
+         left(case when a.show_answers then
+                trim(both E'\n' from concat_ws(E'\n\n',
+                  case when q.type = 'mcq' then 'Answer: ' || (select string_agg(chr(65 + c::int) || ': ' || coalesce(
+                      case when jsonb_typeof(q.options) = 'array' then q.options ->> c::int else q.options -> 'items' ->> c::int end, '?'), ', ')
+                    from jsonb_array_elements_text(coalesce(k.answer -> 'choices', case when k.answer ? 'choice' then jsonb_build_array(k.answer -> 'choice') end)) c) end,
+                  case when k.answer ? 'value' then 'Answer: ' || (k.answer ->> 'value') || coalesce(' ' || (k.answer ->> 'unit'), '') end,
+                  case when k.answer ? 'final' then 'Answer: $' || (k.answer ->> 'final') || '$' end,
+                  case when k.answer ? 'text' then 'Answer: ' || (k.answer ->> 'text') end,
+                  nullif(k.solution_md, ''), case when nullif(r.feedback_md, '') is not null then 'Your tutor said: ' || r.feedback_md end))
+              else coalesce('Your tutor said: ' || nullif(r.feedback_md, ''), 'Look back at this question in your marked work, or ask your tutor.') end, 8000),
+         'mistake', q.id, auth.uid()
+    from public.responses r
+    join public.attempts t on t.id = r.attempt_id
+    join public.questions q on q.id = r.question_id
+    join public.assignments a on a.id = t.assignment_id
+    left join public.question_keys k on k.question_id = q.id
+   where r.learner_id = auth.uid() and r.marks is not null and r.marks < q.marks and q.marks > 0
+     and t.status in ('marked', 'returned') and public._is_released(t)
+     and q.image_path is null and q.type in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing')
+     and not exists (select 1 from public.cards c where c.learner_id = auth.uid() and c.question_id = q.id and c.source = 'mistake')
+   order by q.id, t.submitted_at desc
+  on conflict do nothing;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- ---------------- recordings ----------------
+-- A teacher's recorded feedback: on a question (responses.feedback_files) or on the whole piece (attempts.feedback_files).
+-- Up to 3 each: {path, name, type, size, sec, words}. The files sit in the learner's folder for that attempt
+-- (work/<learner>/marking/<attempt>/…, which the learner can't change); learners see them once marks are back.
+alter table public.responses add column if not exists feedback_files jsonb not null default '[]';
+alter table public.attempts add column if not exists feedback_files jsonb not null default '[]';
+
+create or replace function public._feedback_files(p_files jsonb, p_learner uuid, p_attempt uuid) returns jsonb
+language plpgsql immutable as $$
+declare
+  f jsonb;
+  v_out jsonb := '[]';
+begin
+  if p_files is null or jsonb_typeof(p_files) <> 'array' then return '[]'::jsonb; end if;
+  if jsonb_array_length(p_files) > 3 then raise exception 'Up to 3 recordings here.'; end if;
+  for f in select * from jsonb_array_elements(p_files) loop
+    if jsonb_typeof(f) <> 'object' or coalesce(f ->> 'path', '') not like p_learner::text || '/marking/' || p_attempt::text || '/%'
+       or (f ->> 'path') like '%..%' then
+      raise exception 'A recording goes with this piece of work.';
+    end if;
+    v_out := v_out || jsonb_strip_nulls(jsonb_build_object(
+      'path', f ->> 'path', 'name', left(coalesce(nullif(btrim(f ->> 'name'), ''), 'Recording'), 120),
+      'type', left(coalesce(f ->> 'type', ''), 80),
+      'size', case when coalesce(f ->> 'size', '') ~ '^[0-9]{1,12}$' then (f ->> 'size')::bigint end,
+      'sec', case when coalesce(f ->> 'sec', '') ~ '^[0-9]{1,6}$' then least((f ->> 'sec')::int, 3600) end,
+      'words', nullif(left(btrim(coalesce(f ->> 'words', '')), 4000), '')));
+  end loop;
+  return v_out;
+end $$;
+
+-- p_question null = the whole piece
+create or replace function public.set_feedback_files(p_attempt uuid, p_question uuid, p_files jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  v jsonb;
+begin
+  select * into t from public.attempts where id = p_attempt;
+  if t.id is null or t.tutor_id <> auth.uid() then raise exception 'Not found.'; end if;
+  v := public._feedback_files(p_files, t.learner_id, t.id);
+  if p_question is null then
+    update public.attempts set feedback_files = v where id = t.id;
+  else
+    if not exists (select 1 from public.questions q where q.id = p_question and q.assignment_id = t.assignment_id) then raise exception 'Not found.'; end if;
+    insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, feedback_files)
+    values (t.id, p_question, t.learner_id, t.tutor_id, '{}', v)
+    on conflict (attempt_id, question_id) do update set feedback_files = excluded.feedback_files, updated_at = now();
+  end if;
+  return v;
+end $$;
+
+-- Notes and messages can carry one recording: work/<learner>/notes/<tutor>/… (that learner and that tutor only)
+create or replace function public._comment_file_ok() returns trigger
+language plpgsql as $$
+begin
+  if new.attachment_path is not null
+     and (new.attachment_path not like new.learner_id::text || '/notes/' || new.tutor_id::text || '/%' or new.attachment_path like '%..%') then
+    raise exception 'A recording goes with its own note.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists comments_file on public.comments;
+create trigger comments_file before insert or update of attachment_path on public.comments for each row execute function public._comment_file_ok();
+
+create or replace function public.on_comment_created() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  v_name text;
+  v_title text;
+  v_body text := coalesce(nullif(left(new.body, 240), ''), case when new.attachment_path is not null then 'Sent a recording' else '' end);
+begin
+  select display_name into v_name from public.profiles where id = new.author_id;
+  if new.assignment_id is not null then
+    select title into v_title from public.assignments where id = new.assignment_id;
+  end if;
+  if new.author_id = new.learner_id then
+    perform public.notify_user(new.tutor_id, 'note',
+      coalesce(v_name, 'Your learner') || case when v_title is not null then ' · ' || v_title else '' end,
+      v_body, jsonb_build_object('learner_id', new.learner_id, 'assignment_id', new.assignment_id, 'comment_id', new.id));
+  else
+    perform public.notify_user(new.learner_id, 'message', coalesce(v_name, 'Your tutor') || ' sent you a message',
+      v_body, jsonb_build_object('assignment_id', new.assignment_id, 'comment_id', new.id));
+  end if;
+  return new;
+end $$;
+
+-- What a learner or their teacher sees of an attempt: as before, plus recorded feedback once marks are back
+create or replace function public.attempt_detail(p_attempt uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  rel boolean;
+  is_tutor boolean;
+begin
+  select * into t from public.attempts where id = p_attempt;
+  if t.id is null or (t.learner_id <> auth.uid() and t.tutor_id <> auth.uid()) then raise exception 'Attempt not found.'; end if;
+  is_tutor := t.tutor_id = auth.uid();
+  select * into a from public.assignments where id = t.assignment_id;
+  rel := public._is_released(t);
+  return jsonb_build_object(
+    'attempt', jsonb_build_object('id', t.id, 'assignment_id', t.assignment_id, 'learner_id', t.learner_id, 'number', t.number,
+      'client', case when is_tutor then to_jsonb(t) ->> 'client' end,
+      'seen_at', case when is_tutor then to_jsonb(t) ->> 'seen_at' end,
+      'extra_min', coalesce((to_jsonb(t) ->> 'extra_min')::int, 0),
+      'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
+      'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
+      'feedback_md', case when rel or is_tutor then t.feedback_md end,
+      'feedback_files', case when rel or is_tutor then t.feedback_files else '[]'::jsonb end,
+      'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end,
+      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at, 'self_mark_open', public._self_mark_open(t, a),
+      'strikes', t.strikes, 'auto_reason', t.auto_reason,
+      'criteria', case when rel or is_tutor then to_jsonb(t) -> 'criteria' end),
+    'myp', case when jsonb_array_length(coalesce(to_jsonb(a) -> 'criteria', '[]')) > 0 then
+             jsonb_build_object('on', to_jsonb(a) -> 'criteria',
+                                'names', public._myp_criteria((select to_jsonb(s) ->> 'myp_group' from public.subjects s where s.id = a.subject_id))) end,
+    'responses', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
+        'prof_note', case when is_tutor then r.prof_note end,
+        'marks', case when rel or is_tutor then r.marks end,
+        'auto_marks', case when rel or is_tutor then r.auto_marks end,
+        'feedback_md', case when rel or is_tutor then r.feedback_md end,
+        'feedback_files', case when rel or is_tutor then r.feedback_files else '[]'::jsonb end,
+        'step_marks', case when rel or is_tutor then r.step_marks else '[]'::jsonb end,
+        'annotation_path', case when rel or is_tutor then r.annotation_path end,
+        'mistake', case when rel or is_tutor then r.mistake end,
+        'rubric', case when rel or is_tutor then to_jsonb(r) -> 'rubric' end,
+        'self_marks', r.self_marks))
+      from public.responses r where r.attempt_id = t.id), '[]'),
+    'rubrics', coalesce((select jsonb_agg(jsonb_build_object('id', ru.id, 'title', ru.title, 'criteria', ru.criteria))
+      from public.rubrics ru where ru.id in (select (to_jsonb(q) ->> 'rubric_id')::uuid from public.questions q where q.assignment_id = t.assignment_id)), '[]'),
+    'keys', case when is_tutor or (rel and a.show_answers) or public._self_mark_open(t, a) then coalesce((select jsonb_agg(jsonb_build_object(
+        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
+      from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
+      else '[]'::jsonb end
+  );
+end $$;
+
+-- Read-only after an unpaid free week (the same words as _paid_guard), for functions that change things
+create or replace function public._locked_check() returns void
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public._tutor_locked() then
+    raise exception 'Your free week has ended, so StudyBridge is read-only. Pay in Settings → Your plan to carry on. Nothing is deleted.';
+  end if;
+end $$;
+
+-- ---------------- answers: only the learner's own files, and only https links ----------------
+create or replace function public._answer_clean(p_answer jsonb, p_learner uuid, p_attempt uuid) returns jsonb
+language plpgsql immutable as $$
+declare
+  v jsonb := coalesce(p_answer, '{}'::jsonb);
+  f jsonb;
+  l jsonb;
+  files jsonb := '[]';
+  links jsonb := '[]';
+  pre text := p_learner::text || '/' || p_attempt::text || '/';
+begin
+  if jsonb_typeof(v) <> 'object' then return '{}'::jsonb; end if;
+  if v ? 'files' then
+    if jsonb_typeof(v -> 'files') <> 'array' or jsonb_array_length(v -> 'files') > 10 then raise exception 'Up to 10 files in an answer.'; end if;
+    for f in select * from jsonb_array_elements(v -> 'files') loop
+      if jsonb_typeof(f) <> 'object' or coalesce(f ->> 'path', '') not like pre || '%' or (f ->> 'path') like '%..%' then
+        raise exception 'That file isn’t part of this answer.';
+      end if;
+      files := files || jsonb_strip_nulls(jsonb_build_object('path', f ->> 'path', 'name', left(coalesce(f ->> 'name', 'file'), 160),
+        'type', left(coalesce(f ->> 'type', ''), 100),
+        'size', case when coalesce(f ->> 'size', '') ~ '^[0-9]{1,12}$' then (f ->> 'size')::bigint end,
+        'sec', case when coalesce(f ->> 'sec', '') ~ '^[0-9]{1,6}$' then (f ->> 'sec')::int end));
+    end loop;
+    v := jsonb_set(v, '{files}', files);
+  end if;
+  if v ? 'image' and v ->> 'image' is not null and ((v ->> 'image') not like pre || '%' or (v ->> 'image') like '%..%') then
+    raise exception 'That picture isn’t part of this answer.';
+  end if;
+  if v ? 'links' then
+    if jsonb_typeof(v -> 'links') <> 'array' or jsonb_array_length(v -> 'links') > 5 then raise exception 'Up to 5 links in an answer.'; end if;
+    for l in select * from jsonb_array_elements(v -> 'links') loop
+      if jsonb_typeof(l) <> 'object' or btrim(coalesce(l ->> 'url', '')) !~* '^https://[^\s<>"]+$' or length(l ->> 'url') > 2000 then
+        raise exception 'Links must start with https://';
+      end if;
+      links := links || jsonb_build_object('url', btrim(l ->> 'url'), 'title', left(coalesce(nullif(btrim(l ->> 'title'), ''), 'Link'), 200));
+    end loop;
+    v := jsonb_set(v, '{links}', links);
+  end if;
+  return v;
+end $$;
+
+create or replace function public.save_response(p_attempt uuid, p_question uuid, p_answer jsonb)
+returns timestamptz language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  r public.responses;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  if not exists (select 1 from public.questions where id = p_question and assignment_id = t.assignment_id) then
+    raise exception 'Question not in this assignment.';
+  end if;
+  select * into r from public.responses where attempt_id = p_attempt and question_id = p_question;
+  if t.status <> 'in_progress' then raise exception 'This attempt has already been submitted.'; end if;
+  if t.number > 0 and exists (select 1 from public.responses where attempt_id = p_attempt and redo)
+     and r.id is not null and not r.redo then
+    raise exception 'Only the questions marked for redo can be changed.';
+  end if;
+  if public._attempt_timed_out(t) then raise exception 'Time is up for this attempt.'; end if;
+  insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer)
+  values (p_attempt, p_question, auth.uid(), t.tutor_id, public._answer_clean(p_answer, auth.uid(), p_attempt))
+  on conflict (attempt_id, question_id) do update set answer = excluded.answer, updated_at = now();
+  return now();
+end $$;
+
+-- A teacher can't slip a file from somewhere else into recorded feedback by writing the column directly either
+create or replace function public._feedback_files_ok() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare t public.attempts;
+begin
+  if tg_table_name = 'attempts' then
+    new.feedback_files := public._feedback_files(new.feedback_files, new.learner_id, new.id);
+  else
+    select * into t from public.attempts where id = new.attempt_id;
+    new.feedback_files := public._feedback_files(new.feedback_files, t.learner_id, t.id);
+  end if;
+  return new;
+end $$;
+drop trigger if exists responses_feedback_files on public.responses;
+create trigger responses_feedback_files before insert or update of feedback_files on public.responses
+  for each row when (new.feedback_files <> '[]'::jsonb) execute function public._feedback_files_ok();
+drop trigger if exists attempts_feedback_files on public.attempts;
+create trigger attempts_feedback_files before update of feedback_files on public.attempts
+  for each row when (new.feedback_files <> '[]'::jsonb) execute function public._feedback_files_ok();
+
+
+
+-- Storage helpers (used by the storage rules, so they stay callable; each catches its own errors)
+-- A teacher reaches the files in an attempt's folder only if they set the work or teach its class (not every
+-- teacher the learner has: a private tutor doesn't open school work, and the other way round)
+create or replace function public._work_staff_ok(p_learner text, p_folder text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare t record;
+begin
+  if coalesce(p_folder, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return true; end if;
+  select a.tutor_id, a.assignment_id, a.learner_id into t from public.attempts a where a.id = p_folder::uuid;
+  if not found then return true; end if;
+  return t.learner_id::text = p_learner and (t.tutor_id = auth.uid() or public._exam_staff(t.assignment_id));
+exception when others then return false;
+end $$;
+create or replace function public._marking_files_ok(p_learner text, p_attempt text, p_write boolean) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare t public.attempts;
+begin
+  select * into t from public.attempts where id = p_attempt::uuid and learner_id::text = p_learner;
+  if t.id is null then return false; end if;
+  if p_write then return t.tutor_id = auth.uid(); end if;
+  return t.tutor_id = auth.uid() or public._exam_staff(t.assignment_id) or (t.learner_id = auth.uid() and public._is_released(t));
+exception when others then return false;
+end $$;
+create or replace function public._note_files_ok(p_learner text, p_tutor text, p_write boolean) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if p_learner = auth.uid()::text then
+    return not p_write or p_tutor::uuid in (select public._my_teachers());
+  end if;
+  return p_tutor = auth.uid()::text and public._teaches(auth.uid(), p_learner::uuid);
+exception when others then return false;
+end $$;
+
+-- ---------------- links: Google Drive, OneDrive or any https page ----------------
+-- [{url, title, provider google|microsoft, id (the file's id there), mime, share link|view|copy}]
+-- view = anyone with the link can view (shared from the teacher's browser); copy = a copy for each learner.
+alter table public.assignments add column if not exists links jsonb not null default '[]';
+alter table public.lessons add column if not exists links jsonb not null default '[]';
+alter table public.class_posts add column if not exists links jsonb not null default '[]';
+create or replace function public._links_clean(p jsonb) returns jsonb
+language plpgsql immutable as $$
+declare
+  l jsonb;
+  v_url text;
+  v_out jsonb := '[]';
+begin
+  if p is null or jsonb_typeof(p) <> 'array' then return '[]'::jsonb; end if;
+  if jsonb_array_length(p) > 10 then raise exception 'Up to 10 links here.'; end if;
+  for l in select * from jsonb_array_elements(p) loop
+    v_url := btrim(coalesce(l ->> 'url', ''));
+    if jsonb_typeof(l) <> 'object' or v_url !~* '^https://[^\s<>"]+$' or length(v_url) > 2000 then
+      raise exception 'Links must start with https://';
+    end if;
+    v_out := v_out || jsonb_strip_nulls(jsonb_build_object('url', v_url,
+      'title', left(coalesce(nullif(btrim(l ->> 'title'), ''), 'Link'), 200),
+      'provider', case when l ->> 'provider' in ('google', 'microsoft') then l ->> 'provider' end,
+      'id', case when coalesce(l ->> 'id', '') ~ '^[A-Za-z0-9_!.-]{1,200}$' then l ->> 'id' end,
+      'mime', left(nullif(l ->> 'mime', ''), 120),
+      'share', case when l ->> 'share' in ('view', 'copy') and l ->> 'provider' in ('google', 'microsoft') then l ->> 'share' else 'link' end));
+  end loop;
+  return v_out;
+end $$;
+create or replace function public._links_trigger() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  new.links := public._links_clean(new.links);
+  return new;
+end $$;
+drop trigger if exists assignments_links on public.assignments;
+create trigger assignments_links before insert or update of links on public.assignments for each row execute function public._links_trigger();
+drop trigger if exists lessons_links on public.lessons;
+create trigger lessons_links before insert or update of links on public.lessons for each row execute function public._links_trigger();
+
+-- Fill in the blanks keeps its answers out of the text learners read (the editor writes [[1]], [[2]]…)
+create or replace function public._question_text_ok() returns trigger
+language plpgsql as $$
+begin
+  if new.type = 'cloze' and new.prompt_md ~ '\[\[[^\]]*[^0-9\]][^\]]*\]\]' then
+    raise exception 'Save fill-in-the-blanks questions from the question editor, so the answers stay hidden.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists questions_text_ok on public.questions;
+create trigger questions_text_ok before insert or update of prompt_md, type on public.questions for each row execute function public._question_text_ok();
+
+-- A post's links (the author changes them for every class it went to)
+create or replace function public.set_post_links(p_group uuid, p_links jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v jsonb := public._links_clean(p_links);
+begin
+  update public.class_posts set links = v where group_id = p_group and author_id = auth.uid();
+  if not found then raise exception 'Not found.'; end if;
+  return v;
+end $$;
+
+create or replace function public._post_json(p public.class_posts, p_staff boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', p.id, 'group_id', p.group_id, 'class_id', p.class_id,
+    'author', jsonb_build_object('id', a.id, 'name', a.display_name), 'mine', p.author_id = auth.uid(),
+    'body_md', p.body_md, 'files', p.files, 'links', p.links, 'replies_mode', p.replies, 'pinned', p.pinned,
+    'visible_from', p.visible_from, 'scheduled', p.visible_from > now(), 'created_at', p.created_at, 'edited_at', p.edited_at,
+    'classes', case when p_staff then (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name), '[]')
+                                         from public.class_posts o join public.classes c on c.id = o.class_id where o.group_id = p.group_id) end,
+    'replies', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', r.id, 'reply_to', r.reply_to, 'body', case when r.removed_at is null or p_staff then r.body end,
+        'removed', r.removed_at is not null, 'removed_by_author', r.removed_by = r.author_id,
+        'author', jsonb_build_object('id', u.id, 'name', u.display_name), 'teacher', u.role <> 'learner', 'mine', r.author_id = auth.uid(),
+        'created_at', r.created_at) order by r.created_at)
+      from public.class_post_replies r join public.profiles u on u.id = r.author_id
+     where r.post_id = p.id
+       and (p_staff or (r.removed_at is null and (
+              p.replies = 'class'
+              or r.author_id = auth.uid()
+              or (u.role <> 'learner' and (r.reply_to is null
+                    or exists (select 1 from public.class_post_replies q where q.id = r.reply_to and q.author_id = auth.uid()))))))), '[]'))
+  from public.profiles a where a.id = p.author_id
+$$;
+
+-- ---------------- Google Drive and OneDrive ----------------
+-- Set up by the Owner in Admin → StudyBridge settings. All public browser values (no secrets): Google's OAuth client
+-- id, browser API key and project number; Microsoft's application (client) id.
+alter table public.app_config add column if not exists drive_google jsonb;
+alter table public.app_config add column if not exists drive_microsoft jsonb;
+create or replace function public.admin_set_drive(p_google jsonb, p_microsoft jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  g jsonb := case when jsonb_typeof(p_google) = 'object' then p_google end;
+  m jsonb := case when jsonb_typeof(p_microsoft) = 'object' then p_microsoft end;
+begin
+  perform public._admin();
+  if g is not null and coalesce(g ->> 'client_id', '') <> '' then
+    if (g ->> 'client_id') !~ '^[0-9A-Za-z._-]+\.apps\.googleusercontent\.com$' then raise exception 'That isn’t a Google OAuth client ID (it ends in .apps.googleusercontent.com).'; end if;
+    if coalesce(g ->> 'api_key', '') !~ '^[0-9A-Za-z_-]{20,80}$' then raise exception 'Add the Google API key too.'; end if;
+    if coalesce(g ->> 'app_id', '') !~ '^[0-9]{4,20}$' then raise exception 'Add the Google Cloud project number (digits only).'; end if;
+    g := jsonb_build_object('client_id', g ->> 'client_id', 'api_key', g ->> 'api_key', 'app_id', g ->> 'app_id');
+  else
+    g := null;
+  end if;
+  if m is not null and coalesce(m ->> 'client_id', '') <> '' then
+    if (m ->> 'client_id') !~ '^[0-9a-fA-F-]{36}$' then raise exception 'That isn’t a Microsoft application (client) ID.'; end if;
+    m := jsonb_build_object('client_id', lower(m ->> 'client_id'));
+  else
+    m := null;
+  end if;
+  update public.app_config set drive_google = g, drive_microsoft = m where id = 1;
+end $$;
+create or replace function public.admin_drive() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._admin();
+  return (select jsonb_build_object('google', c.drive_google, 'microsoft', c.drive_microsoft) from public.app_config c where c.id = 1);
+end $$;
+
+create or replace function public.public_settings() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'enforce_plans', c.enforce_plans,
+    'google_on', c.google_on,
+    'payments_on', s.stripe_secret is not null and c.stripe_prices <> '{}'::jsonb,
+    'card_prices', case when s.stripe_secret is null then '[]'::jsonb
+                        else coalesce((select jsonb_agg(k) from jsonb_object_keys(c.stripe_prices) k where coalesce(c.stripe_prices ->> k, '') <> ''), '[]') end,
+    'mobile_on', s.flw_secret is not null and s.flw_hash is not null,
+    'currencies', coalesce((select jsonb_agg(k order by k = 'USD' desc, k) from jsonb_object_keys(c.pricing -> 'rates') k), '["USD"]'),
+    'rates', coalesce(c.pricing -> 'rates', '{"USD": 1}'),
+    'email_on', s.resend_key is not null and c.email_from is not null,
+    'students_open', not c.students_paused and public._studybridge_account() is not null
+                     and exists (select 1 from public.subjects s where s.tutor_id = public._studybridge_account() and s.live),
+    -- Google Drive and OneDrive (public browser values; the buttons show only once set)
+    'drive', jsonb_build_object('google', c.drive_google, 'microsoft', c.drive_microsoft))
+    from public.app_config c, public.platform_secrets s where c.id = 1 and s.id = 1
+$$;
+grant execute on function public.public_settings() to anon;
+
+-- A learner's Google or Microsoft email, when it isn't the one they sign in with. Only used to share their copies
+-- (never shown to anyone else; their teachers' browsers get it only to share a copy with them).
+create table if not exists public.drive_emails (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  email text not null check (email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$' and length(email) <= 254),
+  updated_at timestamptz not null default now()
+);
+alter table public.drive_emails enable row level security;
+revoke all on public.drive_emails from public, anon, authenticated, service_role;
+create or replace function public.my_drive_email() returns text
+language sql stable security definer set search_path = public as $$
+  select email from public.drive_emails where user_id = auth.uid()
+$$;
+create or replace function public.set_drive_email(p_email text) returns void
+language plpgsql security definer set search_path = public as $$
+declare v text := lower(btrim(coalesce(p_email, '')));
+begin
+  if v = '' then
+    delete from public.drive_emails where user_id = auth.uid();
+    return;
+  end if;
+  if v !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' or length(v) > 254 then raise exception 'That doesn’t look like an email address.'; end if;
+  insert into public.drive_emails (user_id, email) values (auth.uid(), v)
+  on conflict (user_id) do update set email = excluded.email, updated_at = now();
+end $$;
+
+-- Each learner's own copy of a Drive or OneDrive file on a piece of work. The copy is the teacher's (in their
+-- Drive), shared with that learner alone to edit. Kept when a learner leaves (learner_id goes null) so the teacher
+-- can take their access away.
+create table if not exists public.drive_copies (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  link_key text not null,
+  learner_id uuid references public.profiles (id) on delete set null,
+  learner_name text,
+  provider text not null check (provider in ('google', 'microsoft')),
+  file_id text not null check (length(file_id) <= 200),
+  url text not null check (url ~* '^https://' and length(url) <= 2000),
+  name text check (length(name) <= 300),
+  permission_id text check (length(permission_id) <= 300),
+  made_by uuid references public.profiles (id) on delete set null,
+  made_at timestamptz not null default now(),
+  locked_at timestamptz,
+  gone_at timestamptz
+);
+create unique index if not exists drive_copies_one on public.drive_copies (assignment_id, link_key, learner_id) where learner_id is not null;
+alter table public.drive_copies enable row level security;
+revoke all on public.drive_copies from public, anon, authenticated, service_role;
+
+-- Who a piece of work's copies are for, with the email to share each one with: their own Google/Microsoft email if
+-- they added one; their login email only to their main tutor or their own school or centre; else none (they're asked
+-- to add one in Settings). Learners the teacher no longer teaches, or who are paused, aren't listed.
+create or replace function public.drive_people(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  a public.assignments;
+  v_place uuid := public._place_of(auth.uid());
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(a.id) then raise exception 'Not found.'; end if;
+  return jsonb_build_object(
+    'links', a.links,
+    'domains', coalesce((select to_jsonb(o.email_domains) from public.organisations o where o.id = v_place and o.kind in ('school', 'centre')), '[]'),
+    'learners', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', l.id, 'name', l.display_name,
+        'email', coalesce(de.email, case when l.tutor_id = auth.uid() or (v_place <> auth.uid() and (l.school_id = v_place or public._place_of(l.tutor_id) = v_place)) then l.email end),
+        'own_email', de.email is not null,
+        'copies', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'key', c.link_key, 'file_id', c.file_id, 'url', c.url, 'name', c.name,
+                                                               'permission_id', c.permission_id, 'provider', c.provider, 'locked', c.locked_at is not null))
+                             from public.drive_copies c where c.assignment_id = a.id and c.learner_id = l.id and c.gone_at is null), '[]'))
+        order by l.display_name)
+      from public.profiles l left join public.drive_emails de on de.user_id = l.id
+     where l.id in (select public._work_learners(a))
+       and public._teaches_now(auth.uid(), l.id) and not public._paused_for(l.id, a.tutor_id)), '[]'),
+    -- copies of people no longer in it: their access can be taken away
+    'gone', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'key', c.link_key, 'file_id', c.file_id, 'permission_id', c.permission_id,
+                                                          'provider', c.provider, 'name', coalesce(c.learner_name, 'Someone who left')))
+                        from public.drive_copies c
+                       where c.assignment_id = a.id and c.gone_at is null
+                         and (c.learner_id is null or c.learner_id not in (select public._work_learners(a)))), '[]'));
+end $$;
+
+-- The teacher's browser made copies (or took one's access away): p_rows [{learner, key, provider, file_id, url, name, permission_id}]
+create or replace function public.drive_copies_save(p_assignment uuid, p_rows jsonb) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  r jsonb;
+  n int := 0;
+begin
+  perform public._locked_check();
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(a.id) then raise exception 'Not found.'; end if;
+  if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 500 then raise exception 'Too many at once.'; end if;
+  for r in select * from jsonb_array_elements(p_rows) loop
+    if not exists (select 1 from jsonb_array_elements(a.links) l where l ->> 'share' = 'copy' and l ->> 'id' = r ->> 'key') then
+      raise exception 'That file isn’t on this work as a copy for each learner.';
+    end if;
+    if (r ->> 'learner')::uuid not in (select public._work_learners(a)) or not public._teaches_now(auth.uid(), (r ->> 'learner')::uuid) then
+      raise exception 'Not one of the learners this work is for.';
+    end if;
+    if coalesce(r ->> 'url', '') !~* '^https://' then raise exception 'Links must start with https://'; end if;
+    insert into public.drive_copies (assignment_id, link_key, learner_id, learner_name, provider, file_id, url, name, permission_id, made_by)
+    values (a.id, r ->> 'key', (r ->> 'learner')::uuid, (select display_name from public.profiles where id = (r ->> 'learner')::uuid),
+            r ->> 'provider', left(r ->> 'file_id', 200), left(r ->> 'url', 2000), left(r ->> 'name', 300), left(r ->> 'permission_id', 300), auth.uid())
+    on conflict (assignment_id, link_key, learner_id) where learner_id is not null do update
+      set file_id = excluded.file_id, url = excluded.url, name = excluded.name, permission_id = excluded.permission_id,
+          provider = excluded.provider, made_by = excluded.made_by, made_at = now(), locked_at = null, gone_at = null;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- 'locked' (they can only comment or read now), 'unlocked', or 'gone' (their access was taken away)
+create or replace function public.drive_copy_set(p_ids uuid[], p_what text) returns int
+language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  perform public._locked_check();
+  if p_what not in ('locked', 'unlocked', 'gone') then raise exception 'Not a change.'; end if;
+  update public.drive_copies c set locked_at = case when p_what = 'locked' then now() when p_what = 'unlocked' then null else c.locked_at end,
+                                   gone_at = case when p_what = 'gone' then now() else c.gone_at end
+   where c.id = any (p_ids) and public._exam_staff(c.assignment_id);
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+-- A learner's own copies on a piece of work, and which ones they're still waiting for
+create or replace function public.my_drive_copies(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.draft or not public.can_learner_see(a.tutor_id, a.learner_ids, a.subject_id, a.visibility, a.visible_from) then return '[]'::jsonb; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('key', l ->> 'id', 'title', l ->> 'title', 'provider', l ->> 'provider',
+                     'url', c.url, 'name', c.name, 'locked', c.locked_at is not null))
+                     from jsonb_array_elements(a.links) l
+                     left join public.drive_copies c on c.assignment_id = a.id and c.link_key = l ->> 'id' and c.learner_id = auth.uid() and c.gone_at is null
+                    where l ->> 'share' = 'copy'), '[]');
+end $$;
+
+-- "Ask for my copy": tells whoever set the work (once every 12 hours)
+create or replace function public.drive_copy_ask(p_assignment uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  v_name text;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.draft or not public.can_learner_see(a.tutor_id, a.learner_ids, a.subject_id, a.visibility, a.visible_from) then raise exception 'Not found.'; end if;
+  if exists (select 1 from public.notifications n where n.user_id = a.tutor_id and n.kind = 'drive_ask' and n.ref ->> 'assignment_id' = a.id::text
+              and n.ref ->> 'learner_id' = auth.uid()::text and n.created_at > now() - interval '12 hours') then
+    return;
+  end if;
+  select display_name into v_name from public.profiles where id = auth.uid();
+  perform public.notify_user(a.tutor_id, 'drive_ask', coalesce(v_name, 'A learner') || ' is waiting for their copy',
+    'For “' || a.title || '”. Open it and press Share with learners.', jsonb_build_object('assignment_id', a.id, 'learner_id', auth.uid()));
+end $$;
+
+-- ---------------- peer review ----------------
+-- Learners in a class review classmates' hand-ins. The teacher checks every review before its author sees it.
+-- assignments.peer (null = off): {count 1–3 reviews each, anonymous (default yes), questions [ids] (default: every
+-- question that can be reviewed), prompts [up to 4], rubric (show the question's rubric), start 'due'|'hand', days 1–14}.
+-- Anonymous reviews show only typed answers, maths working and drawings (photos, recordings and files can give a name
+-- away); with names on, photos, recordings and files too. Reviews never change marks.
+alter table public.assignments add column if not exists peer jsonb;
+alter table public.assignments add column if not exists peer_started_at timestamptz;
+
+create or replace function public._peer_clean(p jsonb) returns jsonb
+language plpgsql immutable as $$
+declare
+  v_prompts jsonb := '[]';
+  x text;
+begin
+  if p is null or jsonb_typeof(p) <> 'object' then return null; end if;
+  for x in select btrim(e) from jsonb_array_elements_text(case when jsonb_typeof(p -> 'prompts') = 'array' then p -> 'prompts' else '[]'::jsonb end) e loop
+    if x <> '' and jsonb_array_length(v_prompts) < 4 then v_prompts := v_prompts || to_jsonb(left(x, 200)); end if;
+  end loop;
+  if jsonb_array_length(v_prompts) = 0 and not (p ? 'prompts') then
+    v_prompts := '["What went well?", "One thing that would make it better"]'::jsonb;
+  end if;
+  return jsonb_build_object(
+    'count', greatest(1, least(3, coalesce(case when (p ->> 'count') ~ '^[0-9]+$' then (p ->> 'count')::int end, 2))),
+    'anonymous', coalesce((p ->> 'anonymous')::boolean, true),
+    'questions', coalesce((select jsonb_agg(q) from (select distinct q from jsonb_array_elements_text(case when jsonb_typeof(p -> 'questions') = 'array' then p -> 'questions' else '[]'::jsonb end) q
+                                                     where q ~ '^[0-9a-f-]{36}$' limit 60) z), '[]'),
+    'prompts', v_prompts,
+    'rubric', coalesce((p ->> 'rubric')::boolean, true),
+    'start', case when p ->> 'start' = 'hand' then 'hand' else 'due' end,
+    'days', greatest(1, least(14, coalesce(case when (p ->> 'days') ~ '^[0-9]+$' then (p ->> 'days')::int end, 3))));
+end $$;
+create or replace function public._peer_trigger() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  new.peer := public._peer_clean(new.peer);
+  -- peer review is for work set for a class: work that isn't (or whose class was deleted) just doesn't have it
+  if new.class_id is null then new.peer := null; end if;
+  if new.peer is not null and (coalesce((to_jsonb(new) ->> 'practice')::boolean, false) or new.source = 'self') then
+    raise exception 'Peer review is for work set for a class.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists assignments_peer on public.assignments;
+create trigger assignments_peer before insert or update of peer, class_id on public.assignments for each row execute function public._peer_trigger();
+
+create table if not exists public.peer_reviews (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  attempt_id uuid not null references public.attempts (id) on delete cascade,  -- the author's hand-in
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  reviewer_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'todo' check (status in ('todo', 'done', 'shared', 'returned', 'removed')),
+  comments jsonb not null default '{}',   -- {question id: text}
+  answers jsonb not null default '[]',    -- what they wrote for each prompt
+  rubric jsonb not null default '{}',     -- {question id: {criterion: level}}
+  due_at timestamptz,
+  submitted_at timestamptz,
+  checked_by uuid references public.profiles (id) on delete set null,
+  checked_at timestamptz,
+  teacher_note text,
+  reported_at timestamptz,
+  reported_by uuid references public.profiles (id) on delete set null,
+  report_reason text,
+  reminded_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (assignment_id, author_id, reviewer_id)
+);
+create index if not exists peer_reviews_reviewer on public.peer_reviews (reviewer_id);
+create index if not exists peer_reviews_author on public.peer_reviews (author_id);
+alter table public.peer_reviews enable row level security;
+revoke all on public.peer_reviews from public, anon, authenticated, service_role;
+
+-- The questions a review covers
+create or replace function public._peer_questions(a public.assignments) returns uuid[]
+language sql stable security definer set search_path = public as $$
+  select coalesce(array_agg(q.id order by q.position), '{}') from public.questions q
+   where q.assignment_id = a.id
+     and q.type = any (case when coalesce((a.peer ->> 'anonymous')::boolean, true) then array['short', 'steps', 'drawing']
+                            else array['short', 'steps', 'drawing', 'upload', 'record', 'file'] end)
+     and (jsonb_array_length(coalesce(a.peer -> 'questions', '[]')) = 0 or q.id::text in (select jsonb_array_elements_text(a.peer -> 'questions')))
+$$;
+
+-- Learners who can take part: in the class, handed in (their latest try is with the teacher, not being redone), not paused
+create or replace function public._peer_authors(a public.assignments) returns table (learner_id uuid, attempt_id uuid)
+language sql stable security definer set search_path = public as $$
+  select z.learner_id, z.id from (
+    select distinct on (t.learner_id) t.learner_id, t.id, t.status from public.attempts t
+     where t.assignment_id = a.id order by t.learner_id, t.number desc) z
+   where z.status in ('submitted', 'marked')
+     and exists (select 1 from public.class_members cm where cm.class_id = a.class_id and cm.learner_id = z.learner_id)
+     and not public._paused_for(z.learner_id, a.tutor_id)
+$$;
+
+-- Give out reviews: each learner who handed in reviews `count` classmates and gets `count` reviews; anyone who hands in
+-- later is added the next time this runs (a classmate may get one review more than the rest)
+-- Who looks after a piece of work's peer review: whoever set it, the class's teachers, and its centre's or school's managers
+create or replace function public._peer_staff(a public.assignments) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public._exam_staff(a.id) or (a.class_id is not null and public._class_org_manager(a.class_id))
+$$;
+
+create or replace function public._peer_give_out(p_assignment uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  n int;
+  v_due timestamptz;
+  added int := 0;
+  v_l uuid[];
+  v_t uuid[];
+  i int;
+  r uuid;
+  v_need int;
+  x uuid;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.peer is null or a.class_id is null or a.draft then return 0; end if;
+  n := (a.peer ->> 'count')::int;
+  v_due := now() + make_interval(days => (a.peer ->> 'days')::int);
+  select array_agg(z.learner_id), array_agg(z.attempt_id) into v_l, v_t from public._peer_authors(a) z;
+  if coalesce(cardinality(v_l), 0) < 2 then return 0; end if;
+  -- everyone gets reviewers…
+  for i in select g from generate_series(1, cardinality(v_l)) g order by random() loop
+    v_need := n - (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = v_l[i] and pr.status <> 'removed');
+    while v_need > 0 loop
+      r := null;
+      select c into r from unnest(v_l) c
+       where c <> v_l[i]
+         and not exists (select 1 from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = v_l[i] and pr.reviewer_id = c)
+         and (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.reviewer_id = c and pr.status <> 'removed') < n + 1
+       order by (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.reviewer_id = c and pr.status <> 'removed'), random()
+       limit 1;
+      exit when r is null;
+      insert into public.peer_reviews (assignment_id, attempt_id, author_id, reviewer_id, due_at) values (a.id, v_t[i], v_l[i], r, v_due);
+      added := added + 1;
+      v_need := v_need - 1;
+    end loop;
+  end loop;
+  -- …and everyone reviews (late hand-ins review whoever has fewest reviews so far)
+  for i in select g from generate_series(1, cardinality(v_l)) g order by random() loop
+    v_need := n - (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.reviewer_id = v_l[i] and pr.status <> 'removed');
+    while v_need > 0 loop
+      r := null;
+      select c into r from unnest(v_l) c
+       where c <> v_l[i]
+         and not exists (select 1 from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = c and pr.reviewer_id = v_l[i])
+         and (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = c and pr.status <> 'removed') < n + 1
+       order by (select count(*) from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = c and pr.status <> 'removed'), random()
+       limit 1;
+      exit when r is null;
+      insert into public.peer_reviews (assignment_id, attempt_id, author_id, reviewer_id, due_at)
+      values (a.id, v_t[array_position(v_l, r)], r, v_l[i], v_due);
+      added := added + 1;
+      v_need := v_need - 1;
+    end loop;
+  end loop;
+  -- tell each new reviewer once
+  for x in select distinct pr.reviewer_id from public.peer_reviews pr
+            where pr.assignment_id = a.id and pr.status = 'todo' and pr.created_at >= now() loop
+    continue when exists (select 1 from public.notifications nn where nn.user_id = x and nn.kind = 'peer_review' and nn.read_at is null
+                           and nn.ref ->> 'assignment_id' = a.id::text);
+    perform public.notify_user(x, 'peer_review', 'Review a classmate’s work', '“' || a.title || '”: your teacher reads your review before it’s passed on.',
+      jsonb_build_object('assignment_id', a.id));
+  end loop;
+  return added;
+end $$;
+
+-- A learner who's reviewing classmates' work can't start it again (they'd have seen others' answers)
+create or replace function public._peer_no_retry() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.peer_reviews pr where pr.reviewer_id = new.learner_id and pr.assignment_id = new.assignment_id and pr.status <> 'removed') then
+    raise exception 'You’ve reviewed classmates’ work on this, so it can’t be started again.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists attempts_peer on public.attempts;
+create trigger attempts_peer before insert on public.attempts for each row execute function public._peer_no_retry();
+
+-- Teacher: give out the reviews now (and again for late hand-ins)
+create or replace function public.peer_give_out(p_assignment uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  perform public._locked_check();
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._peer_staff(a) then raise exception 'Not found.'; end if;
+  if a.peer is null then raise exception 'Switch peer review on for this work first.'; end if;
+  if (select count(*) from public._peer_authors(a)) < 2 then raise exception 'Reviews start once at least two learners in the class have handed in.'; end if;
+  update public.assignments set peer_started_at = coalesce(peer_started_at, now()) where id = a.id;
+  return public._peer_give_out(a.id);
+end $$;
+
+create or replace function public._peer_review_json(pr public.peer_reviews, p_staff boolean) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', pr.id, 'status', pr.status, 'due_at', pr.due_at, 'submitted_at', pr.submitted_at,
+    'comments', pr.comments, 'answers', pr.answers, 'rubric', pr.rubric, 'teacher_note', pr.teacher_note,
+    'author', case when p_staff then jsonb_build_object('id', pr.author_id, 'name', (select display_name from public.profiles where id = pr.author_id)) end,
+    'reviewer', case when p_staff then jsonb_build_object('id', pr.reviewer_id, 'name', (select display_name from public.profiles where id = pr.reviewer_id)) end,
+    'reported_at', case when p_staff then pr.reported_at end, 'report_reason', case when p_staff then pr.report_reason end,
+    'reported_by', case when p_staff then case when pr.reported_by = pr.author_id then 'author' when pr.reported_by = pr.reviewer_id then 'reviewer' end end,
+    'checked_at', pr.checked_at)
+$$;
+
+-- Teacher's page: settings, who reviews whom, and the reviews to check
+create or replace function public.peer_overview(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._peer_staff(a) then raise exception 'Not found.'; end if;
+  return jsonb_build_object('assignment', jsonb_build_object('id', a.id, 'title', a.title, 'due_at', a.due_at, 'class_id', a.class_id,
+      'peer', a.peer, 'started_at', a.peer_started_at),
+    'handed_in', (select count(*) from public._peer_authors(a)),
+    'questions', (select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'n', q.position + 1, 'type', q.type) order by q.position), '[]')
+                    from public.questions q where q.id = any (public._peer_questions(a))),
+    'reviews', coalesce((select jsonb_agg(public._peer_review_json(pr, true) order by pr.status = 'done' desc, pr.reported_at is not null desc, pr.created_at)
+                           from public.peer_reviews pr where pr.assignment_id = a.id), '[]'));
+end $$;
+
+-- Teacher: 'share' a finished review with its author, 'return' it to the reviewer with a note, 'remove' it, or 'restore'
+-- one its author reported (show it to them again)
+create or replace function public.peer_check(p_id uuid, p_action text, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  pr public.peer_reviews;
+  a public.assignments;
+  v_note text := nullif(left(btrim(coalesce(p_note, '')), 1000), '');
+begin
+  perform public._locked_check();
+  select * into pr from public.peer_reviews where id = p_id;
+  select * into a from public.assignments where id = pr.assignment_id;
+  if pr.id is null or not public._peer_staff(a) then raise exception 'Not found.'; end if;
+  if p_action = 'share' then
+    if pr.status not in ('done', 'shared') then raise exception 'It isn’t finished yet.'; end if;
+    update public.peer_reviews set status = 'shared', checked_by = auth.uid(), checked_at = now(), reported_at = null, report_reason = null, reported_by = null where id = pr.id;
+    if not exists (select 1 from public.notifications nn where nn.user_id = pr.author_id and nn.kind = 'peer_shared' and nn.read_at is null
+                    and nn.ref ->> 'assignment_id' = a.id::text) then
+      perform public.notify_user(pr.author_id, 'peer_shared', 'A classmate reviewed your work', '“' || a.title || '”',
+        jsonb_build_object('assignment_id', a.id, 'attempt_id', pr.attempt_id));
+    end if;
+  elsif p_action = 'return' then
+    if v_note is null then raise exception 'Say what to look at again.'; end if;
+    update public.peer_reviews set status = 'returned', teacher_note = v_note, checked_by = auth.uid(), checked_at = now() where id = pr.id;
+    perform public.notify_user(pr.reviewer_id, 'peer_returned', 'Have another look at your review', v_note, jsonb_build_object('review_id', pr.id, 'assignment_id', a.id));
+  elsif p_action = 'remove' then
+    update public.peer_reviews set status = 'removed', checked_by = auth.uid(), checked_at = now(), teacher_note = coalesce(v_note, teacher_note) where id = pr.id;
+  else
+    raise exception 'Not a change.';
+  end if;
+end $$;
+
+-- A learner's reviews to write (and ones they wrote)
+create or replace function public.my_peer_reviews() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', pr.id, 'assignment_id', a.id, 'title', a.title, 'status', pr.status,
+      'due_at', pr.due_at, 'teacher_note', case when pr.status = 'returned' then pr.teacher_note end)
+      order by pr.status in ('todo', 'returned') desc, pr.due_at), '[]')
+    from public.peer_reviews pr join public.assignments a on a.id = pr.assignment_id
+   where pr.reviewer_id = auth.uid() and pr.status <> 'removed' and a.peer is not null and not a.draft
+$$;
+
+-- What a reviewer sees: the chosen questions and the classmate's answers to them (no marks, no feedback; no name
+-- when it's anonymous, and then no photos, recordings or files either)
+create or replace function public.peer_review_open(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  pr public.peer_reviews;
+  a public.assignments;
+  v_anon boolean;
+begin
+  select * into pr from public.peer_reviews where id = p_id and reviewer_id = auth.uid() and status <> 'removed';
+  select * into a from public.assignments where id = pr.assignment_id;
+  if pr.id is null or a.peer is null then raise exception 'Not found.'; end if;
+  v_anon := coalesce((a.peer ->> 'anonymous')::boolean, true);
+  return jsonb_build_object('id', pr.id, 'status', pr.status, 'due_at', pr.due_at, 'teacher_note', pr.teacher_note,
+    'title', a.title, 'anonymous', v_anon,
+    'author', case when not v_anon then (select display_name from public.profiles where id = pr.author_id) end,
+    'prompts', a.peer -> 'prompts', 'can_edit', pr.status in ('todo', 'returned'),
+    'comments', pr.comments, 'answers', pr.answers, 'rubric', pr.rubric,
+    'questions', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'n', q.position + 1, 'type', q.type, 'prompt_md', q.prompt_md,
+        'image_path', q.image_path, 'options', q.options,
+        'rubric', case when coalesce((a.peer ->> 'rubric')::boolean, true) then
+                         (select jsonb_build_object('id', ru.id, 'title', ru.title, 'criteria', ru.criteria) from public.rubrics ru where ru.id = (to_jsonb(q) ->> 'rubric_id')::uuid) end,
+        'answer', case when v_anon then coalesce(s.answer, '{}'::jsonb) - 'files' - 'image' - 'links' else coalesce(s.answer, '{}'::jsonb) - 'image' end)
+        order by q.position)
+      from public.questions q left join public.responses s on s.attempt_id = pr.attempt_id and s.question_id = q.id
+     where q.id = any (public._peer_questions(a))), '[]'));
+end $$;
+
+create or replace function public.save_peer_review(p_id uuid, p_comments jsonb, p_answers jsonb, p_rubric jsonb, p_submit boolean default false) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  pr public.peer_reviews;
+  a public.assignments;
+  v_comments jsonb := '{}';
+  v_answers jsonb := '[]';
+  v_rubric jsonb := '{}';
+  k text;
+  x text;
+  v_status text;
+  v_qs uuid[];
+begin
+  select * into pr from public.peer_reviews where id = p_id and reviewer_id = auth.uid();
+  select * into a from public.assignments where id = pr.assignment_id;
+  if pr.id is null or a.peer is null or pr.status = 'removed' then raise exception 'Not found.'; end if;
+  if pr.status not in ('todo', 'returned') then raise exception 'You’ve sent this review already.'; end if;
+  if public._place_unpaid(a.tutor_id) then raise exception 'This school’s StudyBridge is paused for now.'; end if;
+  v_qs := public._peer_questions(a);
+  for k, x in select key, value from jsonb_each_text(case when jsonb_typeof(p_comments) = 'object' then p_comments else '{}'::jsonb end) loop
+    if k ~ '^[0-9a-f-]{36}$' and k::uuid = any (v_qs) and btrim(x) <> '' then v_comments := v_comments || jsonb_build_object(k, left(btrim(x), 2000)); end if;
+  end loop;
+  for x in select e from jsonb_array_elements_text(case when jsonb_typeof(p_answers) = 'array' then p_answers else '[]'::jsonb end) e limit 4 loop
+    v_answers := v_answers || to_jsonb(left(btrim(x), 2000));
+  end loop;
+  for k in select key from jsonb_each(case when jsonb_typeof(p_rubric) = 'object' then p_rubric else '{}'::jsonb end) loop
+    if k ~ '^[0-9a-f-]{36}$' and k::uuid = any (v_qs) and jsonb_typeof(p_rubric -> k) = 'object' then v_rubric := v_rubric || jsonb_build_object(k, p_rubric -> k); end if;
+  end loop;
+  v_status := pr.status;
+  if p_submit then
+    if v_comments = '{}'::jsonb and not exists (select 1 from jsonb_array_elements_text(v_answers) e where length(e) >= 3) then
+      raise exception 'Write something helpful first.';
+    end if;
+    v_status := 'done';
+  end if;
+  update public.peer_reviews set comments = v_comments, answers = v_answers, rubric = v_rubric, status = v_status,
+         submitted_at = case when p_submit then now() else submitted_at end where id = pr.id;
+  if p_submit and not exists (select 1 from public.notifications nn where nn.user_id = a.tutor_id and nn.kind = 'peer_done' and nn.read_at is null
+                               and nn.ref ->> 'assignment_id' = a.id::text) then
+    perform public.notify_user(a.tutor_id, 'peer_done', 'Peer reviews to check', '“' || a.title || '”: they reach their authors once you’ve checked them.',
+      jsonb_build_object('assignment_id', a.id));
+  end if;
+  return v_status;
+end $$;
+
+-- What a learner's classmates said about their work (only reviews the teacher passed on and nobody reported)
+create or replace function public.peer_received(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  v_anon boolean;
+begin
+  select * into t from public.attempts where id = p_attempt and learner_id = auth.uid();
+  select * into a from public.assignments where id = t.assignment_id;
+  if t.id is null or a.peer is null then return null; end if;
+  v_anon := coalesce((a.peer ->> 'anonymous')::boolean, true);
+  return jsonb_build_object('prompts', a.peer -> 'prompts',
+    'questions', (select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'n', q.position + 1) order by q.position), '[]')
+                    from public.questions q where q.id = any (public._peer_questions(a))),
+    'reviews', coalesce((select jsonb_agg(jsonb_build_object('id', pr.id, 'by', case when v_anon then null else (select display_name from public.profiles where id = pr.reviewer_id) end,
+        'comments', pr.comments, 'answers', pr.answers, 'rubric', pr.rubric, 'at', pr.checked_at) order by pr.checked_at)
+      from public.peer_reviews pr where pr.assignment_id = a.id and pr.author_id = auth.uid() and pr.status = 'shared' and pr.reported_at is null), '[]'),
+    'rubrics', coalesce((select jsonb_agg(jsonb_build_object('id', ru.id, 'question_id', q.id, 'title', ru.title, 'criteria', ru.criteria))
+       from public.questions q join public.rubrics ru on ru.id = (to_jsonb(q) ->> 'rubric_id')::uuid where q.id = any (public._peer_questions(a))), '[]'));
+end $$;
+
+-- A learner reports a review of their work (it's hidden from them at once), or a reviewer reports the work they were
+-- given. The teacher who set it, the class's teachers and the place's managers are told.
+create or replace function public.peer_report(p_id uuid, p_reason text) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  pr public.peer_reviews;
+  a public.assignments;
+  v_reason text := left(btrim(coalesce(p_reason, '')), 500);
+  u uuid;
+begin
+  select * into pr from public.peer_reviews where id = p_id and (author_id = auth.uid() or reviewer_id = auth.uid());
+  if pr.id is null then raise exception 'Not found.'; end if;
+  if length(v_reason) < 3 then raise exception 'Say what’s wrong, in a few words.'; end if;
+  if (select count(*) from public.peer_reviews where reported_by = auth.uid() and reported_at > now() - interval '1 day') >= 10 then
+    raise exception 'You’ve reported a lot today. Tell your teacher instead.';
+  end if;
+  update public.peer_reviews set reported_at = now(), reported_by = auth.uid(), report_reason = v_reason where id = pr.id;
+  select * into a from public.assignments where id = pr.assignment_id;
+  for u in select a.tutor_id
+           union select ct.teacher_id from public.class_teachers ct where ct.class_id = a.class_id
+           union select m.user_id from public.org_members m join public.profiles mp on mp.id = m.user_id
+                  where m.org_id = public._place_of(a.tutor_id) and m.role = 'manager' and mp.status = 'active' loop
+    perform public.notify_user(u, 'peer_report', 'A peer review was reported', '“' || a.title || '”: ' || v_reason,
+      jsonb_build_object('assignment_id', a.id, 'review_id', pr.id));
+  end loop;
+end $$;
+
+-- Every 15 minutes: start reviews at the due date, add late hand-ins while reviews are open, and remind reviewers a day
+-- before theirs are due
+create or replace function public._peer_tick() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  a record;
+  pr record;
+  n int := 0;
+begin
+  for a in select x.* from public.assignments x
+            where x.peer is not null and not x.draft and x.visibility <> 'hidden' and x.class_id is not null
+              and ((x.peer_started_at is null and x.peer ->> 'start' = 'due' and x.due_at is not null and x.due_at <= now())
+                   or (x.peer_started_at is not null and x.peer_started_at > now() - make_interval(days => (x.peer ->> 'days')::int))) loop
+    update public.assignments set peer_started_at = coalesce(peer_started_at, now()) where id = a.id;
+    n := n + public._peer_give_out(a.id);
+  end loop;
+  for pr in select r.*, x.title from public.peer_reviews r join public.assignments x on x.id = r.assignment_id
+             where r.status in ('todo', 'returned') and r.reminded_at is null and r.due_at between now() and now() + interval '1 day' loop
+    update public.peer_reviews set reminded_at = now() where id = pr.id;
+    perform public.notify_user(pr.reviewer_id, 'peer_review', 'Your peer review is due tomorrow', '“' || pr.title || '”', jsonb_build_object('assignment_id', pr.assignment_id));
+  end loop;
+  return n;
+end $$;
+
+-- A reviewer may open only the exact files in the answers they review (never with anonymous reviews)
+create or replace function public._peer_file_ok(p_name text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  return exists (select 1 from public.peer_reviews pr join public.assignments a on a.id = pr.assignment_id
+                   join public.responses s on s.attempt_id = pr.attempt_id
+                  where pr.reviewer_id = auth.uid() and pr.status <> 'removed' and a.peer is not null
+                    and not coalesce((a.peer ->> 'anonymous')::boolean, true)
+                    and s.question_id = any (public._peer_questions(a))
+                    and s.answer -> 'files' @> jsonb_build_array(jsonb_build_object('path', p_name)));
+exception when others then return false;
+end $$;
+
+-- ---------------- similar answers (a plagiarism check that stays in StudyBridge) ----------------
+-- Written answers (30 words or more) are kept as fingerprints of every run of 5 words when they're handed in, for
+-- each school, centre or tutor (place). A teacher sees how much of an answer is also in another learner's answer
+-- handed in at the same place, and how much is the model answer's wording. Words from the question don't count.
+-- Never across places, never for learners or parents, nothing leaves StudyBridge, and it doesn't search the internet.
+create table if not exists public.similarity_docs (
+  response_id uuid primary key references public.responses (id) on delete cascade,
+  attempt_id uuid not null references public.attempts (id) on delete cascade,
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  question_id uuid not null references public.questions (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  place_id uuid not null,
+  words int not null,
+  indexed_at timestamptz not null default now()
+);
+create index if not exists similarity_docs_question on public.similarity_docs (question_id);
+create index if not exists similarity_docs_assignment on public.similarity_docs (assignment_id);
+create table if not exists public.similarity_hashes (
+  response_id uuid not null references public.similarity_docs (response_id) on delete cascade,
+  place_id uuid not null,
+  h bigint not null,
+  primary key (response_id, h)
+);
+create index if not exists similarity_hashes_place on public.similarity_hashes (place_id, h);
+alter table public.similarity_docs enable row level security;
+alter table public.similarity_hashes enable row level security;
+revoke all on public.similarity_docs from public, anon, authenticated, service_role;
+revoke all on public.similarity_hashes from public, anon, authenticated, service_role;
+
+-- The words, in order (letters and digits; the app splits text the same way to highlight them)
+create or replace function public._sim_words(p_text text) returns text[]
+language sql immutable as $$
+  select coalesce(array_agg(lower(m[1]) order by o), '{}') from regexp_matches(coalesce(p_text, ''), '([A-Za-z0-9]+)', 'g') with ordinality as x(m, o)
+$$;
+create or replace function public._sim_hashes(p_words text[]) returns table (i int, h bigint)
+language sql immutable as $$
+  select g, hashtextextended(array_to_string(p_words[g:g + 4], ' '), 0) from generate_series(1, coalesce(cardinality(p_words), 0) - 4) g
+$$;
+
+create or replace function public._sim_index(p_attempt uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  s record;
+  w text[];
+  n int := 0;
+begin
+  select * into t from public.attempts where id = p_attempt;
+  select * into a from public.assignments where id = t.assignment_id;
+  if t.id is null or coalesce((to_jsonb(a) ->> 'practice')::boolean, false) or a.source = 'self'
+     or exists (select 1 from public.profiles p where p.id = a.tutor_id and p.is_studybridge) then return 0; end if;
+  for s in select r.id, r.question_id, r.answer ->> 'text' txt from public.responses r join public.questions q on q.id = r.question_id
+            where r.attempt_id = t.id and q.type = 'short' loop
+    delete from public.similarity_docs where response_id = s.id;
+    w := public._sim_words(s.txt);
+    continue when cardinality(w) < 30;
+    insert into public.similarity_docs (response_id, attempt_id, assignment_id, question_id, learner_id, place_id, words)
+    values (s.id, t.id, a.id, s.question_id, t.learner_id, public._place_of(a.tutor_id), cardinality(w));
+    insert into public.similarity_hashes (response_id, place_id, h)
+    select distinct s.id, public._place_of(a.tutor_id), x.h from public._sim_hashes(w) x on conflict do nothing;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+create or replace function public._sim_on_hand_in() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.status = 'in_progress' and new.status in ('submitted', 'marked') then
+    begin
+      perform public._sim_index(new.id);
+    exception when others then null; -- never stands in the way of handing in
+    end;
+  end if;
+  return new;
+end $$;
+drop trigger if exists attempts_similarity on public.attempts;
+create trigger attempts_similarity after update of status on public.attempts for each row execute function public._sim_on_hand_in();
+
+-- Fingerprints of the words that don't count (the question itself) and of the model answer
+create or replace function public._sim_question_hashes(p_question uuid, p_model boolean) returns setof bigint
+language sql stable security definer set search_path = public as $$
+  select x.h from public.questions q left join public.question_keys k on k.question_id = q.id,
+         lateral public._sim_hashes(public._sim_words(case when p_model then concat_ws(' ', k.answer ->> 'text', k.mark_scheme_md) else q.prompt_md end)) x
+   where q.id = p_question
+$$;
+
+-- The other answers at the same place that share wording with one answer: shared share of its own fingerprints
+create or replace function public._sim_matches(p_response uuid) returns table (other uuid, pct int, shared int, total int)
+language sql stable security definer set search_path = public as $$
+  with d as (select * from public.similarity_docs where response_id = p_response),
+  mine as (select x.h from public.similarity_hashes x, d where x.response_id = d.response_id
+           except select public._sim_question_hashes(d.question_id, false) from d),
+  tot as (select count(*)::int n from mine)
+  select o.response_id, (count(*) * 100 / greatest(tot.n, 1))::int, count(*)::int, tot.n
+    from mine join public.similarity_hashes o on o.h = mine.h, d, tot, public.similarity_docs od
+   where o.place_id = d.place_id and o.response_id <> d.response_id and od.response_id = o.response_id and od.learner_id <> d.learner_id
+     and tot.n >= 10
+   group by o.response_id, tot.n
+  having count(*) >= 3
+$$;
+
+-- Can the signed-in teacher open that attempt? (then they may see its words and whose it is)
+create or replace function public._sim_can_see(p_attempt uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.attempts t where t.id = p_attempt and (t.tutor_id = auth.uid() or public._exam_staff(t.assignment_id)))
+$$;
+
+-- For marking: each written answer in an attempt, how much of it matches other answers and the model answer
+create or replace function public.similarity(p_attempt uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._sim_can_see(p_attempt) then raise exception 'Not found.'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('question_id', d.question_id, 'response_id', d.response_id, 'words', d.words,
+      'model', (select (count(*) * 100 / greatest((select count(*) from public.similarity_hashes x where x.response_id = d.response_id), 1))::int
+                  from public.similarity_hashes x where x.response_id = d.response_id
+                   and x.h in (select public._sim_question_hashes(d.question_id, true) except select public._sim_question_hashes(d.question_id, false))),
+      'matches', coalesce((select jsonb_agg(jsonb_build_object('response_id', m.other, 'pct', m.pct,
+           'can_see', public._sim_can_see(od.attempt_id),
+           'name', case when public._sim_can_see(od.attempt_id) then (select display_name from public.profiles where id = od.learner_id) end,
+           'title', case when public._sim_can_see(od.attempt_id) then (select title from public.assignments where id = od.assignment_id) end,
+           'same_work', od.assignment_id = d.assignment_id,
+           'at', (select submitted_at from public.attempts where id = od.attempt_id)) order by m.pct desc)
+         from (select * from public._sim_matches(d.response_id) mm where mm.pct >= 10 order by mm.pct desc limit 5) m
+         join public.similarity_docs od on od.response_id = m.other), '[]')))
+    from public.similarity_docs d where d.attempt_id = p_attempt), '[]');
+end $$;
+
+-- Which words to highlight: word positions in this answer (and in the other one, when the teacher may see it) that are
+-- in runs of 5 words both share. p_other null = compare with the model answer.
+create or replace function public.similarity_pair(p_response uuid, p_other uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  d public.similarity_docs;
+  o public.similarity_docs;
+  w text[];
+  ow text[];
+  v_mine int[];
+  v_theirs int[];
+begin
+  select * into d from public.similarity_docs where response_id = p_response;
+  if d.response_id is null or not public._sim_can_see(d.attempt_id) then raise exception 'Not found.'; end if;
+  w := public._sim_words((select answer ->> 'text' from public.responses where id = d.response_id));
+  if p_other is null then
+    select array_agg(distinct g) into v_mine from public._sim_hashes(w) x, generate_series(x.i, x.i + 4) g
+     where x.h in (select public._sim_question_hashes(d.question_id, true) except select public._sim_question_hashes(d.question_id, false));
+    return jsonb_build_object('mine', coalesce(to_jsonb(v_mine), '[]'));
+  end if;
+  select * into o from public.similarity_docs where response_id = p_other and place_id = d.place_id;
+  if o.response_id is null then raise exception 'Not found.'; end if;
+  select array_agg(distinct g) into v_mine from public._sim_hashes(w) x, generate_series(x.i, x.i + 4) g
+   where x.h in (select h from public.similarity_hashes where response_id = o.response_id except select public._sim_question_hashes(d.question_id, false));
+  if public._sim_can_see(o.attempt_id) then
+    ow := public._sim_words((select answer ->> 'text' from public.responses where id = o.response_id));
+    select array_agg(distinct g) into v_theirs from public._sim_hashes(ow) x, generate_series(x.i, x.i + 4) g
+     where x.h in (select h from public.similarity_hashes where response_id = d.response_id except select public._sim_question_hashes(o.question_id, false));
+    return jsonb_build_object('mine', coalesce(to_jsonb(v_mine), '[]'), 'theirs', coalesce(to_jsonb(v_theirs), '[]'),
+      'other_text', (select answer ->> 'text' from public.responses where id = o.response_id),
+      'other_name', (select display_name from public.profiles where id = o.learner_id));
+  end if;
+  return jsonb_build_object('mine', coalesce(to_jsonb(v_mine), '[]'));
+end $$;
+
+-- For a piece of work: pairs of its answers that share a lot (25% or more), for the teacher to look at
+create or replace function public.similarity_overview(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._exam_staff(p_assignment) then raise exception 'Not found.'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('question_id', d.question_id, 'n', q.position + 1, 'pct', m.pct,
+      'a', jsonb_build_object('attempt_id', d.attempt_id, 'response_id', d.response_id, 'name', (select display_name from public.profiles where id = d.learner_id)),
+      'b', jsonb_build_object('attempt_id', od.attempt_id, 'response_id', od.response_id, 'name', (select display_name from public.profiles where id = od.learner_id)))
+      order by m.pct desc)
+    from public.similarity_docs d join public.questions q on q.id = d.question_id
+    cross join lateral public._sim_matches(d.response_id) m
+    join public.similarity_docs od on od.response_id = m.other
+   where d.assignment_id = p_assignment and od.assignment_id = p_assignment and m.pct >= 25 and d.response_id < od.response_id), '[]');
+end $$;
+
+-- Answers handed in before this update get their fingerprints too (the last year's)
+do $$
+declare x uuid;
+begin
+  for x in select t.id from public.attempts t where t.status in ('submitted', 'marked', 'returned')
+            and t.submitted_at > now() - interval '1 year' and t.submitted_at < timestamptz '2026-11-08 00:00+00'
+            and not exists (select 1 from public.similarity_docs d where d.attempt_id = t.id)
+            and exists (select 1 from public.responses r join public.questions q on q.id = r.question_id
+                         where r.attempt_id = t.id and q.type = 'short' and length(coalesce(r.answer ->> 'text', '')) >= 120) loop
+    begin
+      perform public._sim_index(x);
+    exception when others then null;
+    end;
+  end loop;
+end $$;
+
 grant execute on all functions in schema public to authenticated;
 -- Only the Prof server may call these
 do $$
@@ -18106,6 +19425,23 @@ revoke execute on function public._meeting_tick() from public, anon, authenticat
 revoke execute on function public._parent_link_gone() from public, anon, authenticated;
 revoke execute on function public._portfolio_side(public.portfolio_items) from public, anon, authenticated;
 revoke execute on function public._portfolio_json(public.portfolio_items) from public, anon, authenticated;
+-- classroom gaps (7 Nov 2026); the storage helpers (_work_staff_ok, _marking_files_ok, _note_files_ok, _peer_file_ok)
+-- stay callable because the storage rules use them
+revoke execute on function public._locked_check() from public, anon, authenticated;
+revoke execute on function public._answer_clean(jsonb, uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._feedback_files(jsonb, uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._links_clean(jsonb) from public, anon, authenticated;
+revoke execute on function public._peer_clean(jsonb) from public, anon, authenticated;
+revoke execute on function public._peer_questions(public.assignments) from public, anon, authenticated;
+revoke execute on function public._peer_authors(public.assignments) from public, anon, authenticated;
+revoke execute on function public._peer_give_out(uuid) from public, anon, authenticated;
+revoke execute on function public._peer_staff(public.assignments) from public, anon, authenticated;
+revoke execute on function public._peer_review_json(public.peer_reviews, boolean) from public, anon, authenticated;
+revoke execute on function public._peer_tick() from public, anon, authenticated;
+revoke execute on function public._sim_index(uuid) from public, anon, authenticated;
+revoke execute on function public._sim_question_hashes(uuid, boolean) from public, anon, authenticated;
+revoke execute on function public._sim_matches(uuid) from public, anon, authenticated;
+revoke execute on function public._sim_can_see(uuid) from public, anon, authenticated;
 revoke execute on function public._learner_profile() from public, anon, authenticated;
 revoke execute on function public._atl_skills() from public, anon, authenticated;
 revoke execute on function public._assignment_category() from public, anon, authenticated;
@@ -18165,8 +19501,8 @@ create policy sb_library_learner on storage.objects for select to authenticated
 
 -- Learner: their own work under work/<learner id>/...
 create policy sb_work_learner on storage.objects for all to authenticated
-  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'))
-  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'));
+  using (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio', 'marking', 'notes'))
+  with check (bucket_id = 'work' and (storage.foldername(name))[1] = auth.uid()::text and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio', 'marking', 'notes'));
 -- (IB project files: a learner adds them but never changes or deletes one, so an approved final piece stays what was approved)
 drop policy if exists sb_work_core_add on storage.objects;
 create policy sb_work_core_add on storage.objects for insert to authenticated
@@ -18175,8 +19511,10 @@ create policy sb_work_core_add on storage.objects for insert to authenticated
 
 -- Tutor: read the work of learners they teach, and write marking annotations
 create policy sb_work_tutor on storage.objects for all to authenticated
-  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'))
-  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio'));
+  using (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio', 'marking', 'notes')
+         and public._work_staff_ok((storage.foldername(name))[1], (storage.foldername(name))[2]))
+  with check (bucket_id = 'work' and public._teaches(auth.uid(), ((storage.foldername(name))[1])::uuid) and coalesce((storage.foldername(name))[2], '') not in ('core', 'portfolio', 'marking', 'notes')
+              and public._work_staff_ok((storage.foldername(name))[1], (storage.foldername(name))[2]));
 
 -- Pictures and files in a class's stream (library/<author>/stream/<post group>/…): whoever can see the post
 drop policy if exists sb_library_stream on storage.objects;
@@ -18202,6 +19540,36 @@ drop policy if exists sb_work_portfolio_del on storage.objects;
 create policy sb_work_portfolio_del on storage.objects for delete to authenticated
   using (bucket_id = 'work' and (storage.foldername(name))[2] = 'portfolio'
          and public._portfolio_files_mine((storage.foldername(name))[1], (storage.foldername(name))[3], owner));
+-- Recorded feedback (work/<learner>/marking/<attempt>/…): the teacher who marks it adds it; the learner hears it once
+-- marks are back; the class's teachers can listen too
+drop policy if exists sb_work_marking on storage.objects;
+create policy sb_work_marking on storage.objects for select to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'marking'
+         and public._marking_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], false));
+drop policy if exists sb_work_marking_add on storage.objects;
+create policy sb_work_marking_add on storage.objects for insert to authenticated
+  with check (bucket_id = 'work' and (storage.foldername(name))[2] = 'marking'
+              and public._marking_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], true));
+drop policy if exists sb_work_marking_del on storage.objects;
+create policy sb_work_marking_del on storage.objects for delete to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'marking'
+         and public._marking_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], true));
+-- Recordings in notes and messages (work/<learner>/notes/<tutor>/…): that learner and that tutor only
+drop policy if exists sb_work_notes on storage.objects;
+create policy sb_work_notes on storage.objects for select to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'notes'
+         and public._note_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], false));
+drop policy if exists sb_work_notes_add on storage.objects;
+create policy sb_work_notes_add on storage.objects for insert to authenticated
+  with check (bucket_id = 'work' and (storage.foldername(name))[2] = 'notes'
+              and public._note_files_ok((storage.foldername(name))[1], (storage.foldername(name))[3], true));
+drop policy if exists sb_work_notes_del on storage.objects;
+create policy sb_work_notes_del on storage.objects for delete to authenticated
+  using (bucket_id = 'work' and (storage.foldername(name))[2] = 'notes' and owner = auth.uid());
+-- Peer review: a reviewer opens only the exact files in the answers they review (reviews with names on)
+drop policy if exists sb_work_peer on storage.objects;
+create policy sb_work_peer on storage.objects for select to authenticated
+  using (bucket_id = 'work' and public._peer_file_ok(name));
 
 -- ---------------------------------------------------------------------
 -- Live updates in the app
@@ -18232,6 +19600,7 @@ begin
   perform cron.schedule('studybridge-stream', '*/5 * * * *', 'select public._stream_tick()');
   perform cron.schedule('studybridge-core', '41 * * * *', 'select public._core_tick()');
   perform cron.schedule('studybridge-meetings', '*/5 * * * *', 'select public._meeting_tick()');
+  perform cron.schedule('studybridge-peer', '*/15 * * * *', 'select public._peer_tick()');
 exception when others then
   raise notice 'pg_cron is not available; Prof still works when asked, but weekly auto-created work needs Cron (Supabase → Integrations → Cron)';
 end $$;

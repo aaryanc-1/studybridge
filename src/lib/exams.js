@@ -1,5 +1,6 @@
 // The exam catalogue: which boards and syllabuses exist, how past-paper files are named,
 // and how to read the exam boards' own past-paper pages. No exam content lives here.
+import { rightText } from './qkinds.js';
 
 export const BOARDS = {
   cie: { name: 'Cambridge IGCSE', short: 'IGCSE' },
@@ -480,6 +481,7 @@ export function answerText(q) {
   if (q.type === 'numeric') return `${a.value ?? ''}${a.tolerance && Number(a.tolerance) ? ` (± ${a.tolerance})` : ''}${a.unit ? ' ' + a.unit : ''}`;
   if (q.type === 'steps') return a.final || '';
   if (q.type === 'short') return a.text || '';
+  if (['cloze', 'match', 'order', 'label'].includes(q.type)) return rightText(q, a);
   return '';
 }
 export const DIFFICULTY = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
