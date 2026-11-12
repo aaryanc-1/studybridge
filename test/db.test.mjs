@@ -2621,7 +2621,7 @@ test('classes with teachers: a manager makes a class for any of its teachers; ea
   assert.equal((await as('HB', `select id from attempts where id = $1`, [t.id])).length, 1, 'he marks it');
   assert.equal((await as('HA', `select id from attempts where id = $1`, [t.id])).length, 0, 'not hers to mark');
   // he can see her and her progress, message her, but not run her account (that's her own tutor's)
-  assert.equal((await as('HB', `select id from profiles where id = $1`, [U.SA])).length, 1);
+  assert.equal((await as('HB', `select id from teacher_learners() where id = $1`, [U.SA])).length, 1);
   await val('HB', `select learner_progress($1)`, [U.SA]);
   await as('HB', `insert into comments (tutor_id, learner_id, body) values ($1, $2, 'Nice work on moles')`, [U.HB, U.SA]);
   await fails(as('HB', `select set_learner_password($1, 'newpass123')`, [U.SA]), /Not your learner/);
@@ -2639,7 +2639,7 @@ test('classes with teachers: a manager makes a class for any of its teachers; ea
   assert.equal(await val('SX', `select tutor_id from profiles where id = auth.uid()`), U.PT, 'still the private tutor’s learner');
   assert.equal((await as('SX', `select id from assignments where id = $1`, [hw])).length, 1);
   assert.equal((await as('PT', `select id from profiles where id = $1`, [U.SX])).length, 1);
-  assert.equal((await as('HB', `select id from profiles where id = $1`, [U.SX])).length, 1);
+  assert.equal((await as('HB', `select id from teacher_learners() where id = $1`, [U.SX])).length, 1);
   assert.ok((await val('HM', `select org_overview()`)).learners.some((l) => l.id === U.SX), 'in the school’s overview');
   // the private tutor lets her go: she stays in the school's class
   await as('PT', `select remove_learner($1)`, [U.SX]);
@@ -2973,7 +2973,7 @@ test('one login, many places: a second tutor and a school, a wall between them, 
   const hwS = await val('SH', `insert into assignments (title, kind, class_id, visibility) values ('School essay', 'homework', $1, 'visible') returning id`, [cls]);
   for (const id of [hwMain, hwB, hwS]) await val(id === hwB ? 'TB' : id === hwS ? 'SH' : 'MA', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', '1 + 1?', 2) returning id`, [id]);
   assert.equal((await as('ZO', `select id from assignments where id = any ($1)`, [[hwMain, hwB, hwS]])).length, 3);
-  assert.equal((await as('TB', `select id from profiles where id = $1`, [U.ZO])).length, 1, 'Mr Banda has her as a learner');
+  assert.equal((await as('TB', `select id from teacher_learners() where id = $1`, [U.ZO])).length, 1, 'Mr Banda has her as a learner');
   assert.equal((await as('TB', `select id from assignments where id = any ($1)`, [[hwMain, hwS]])).length, 0, 'but not the others’ work');
   // the wall: time studied and marks from one place aren't seen by another
   for (const [t, id, sec] of [['MA', hwMain, 600], ['TB', hwB, 300], ['SH', hwS, 120]]) {
@@ -3032,7 +3032,7 @@ test('one login, many places: a second tutor and a school, a wall between them, 
   // she leaves Mr Banda (not her main tutor); he can't see her any more
   await fails(as('ZO', `select leave_place($1)`, [U.MA]), /main tutor/);
   await as('ZO', `select leave_place($1)`, [U.TB]);
-  assert.equal((await as('TB', `select id from profiles where id = $1`, [U.ZO])).length, 0);
+  assert.equal((await as('TB', `select id from teacher_learners() where id = $1`, [U.ZO])).length, 0);
   // her main tutor leaving hands her account to the next one she added (the school's class stays)
   const c3 = await val('TB', `insert into invites (name) values ('Zoe') returning code`);
   await one('ZO', `select * from accept_invite($1, 'Zoe')`, [c3]);
@@ -5378,4 +5378,67 @@ test('classroom gaps: peer review in a class, checked by the teacher, anonymous 
   const deb = await val('CT', `insert into assignments (title, kind, class_id, visibility, peer) values ('Debate notes', 'homework', $1, 'visible', '{"count": 1}') returning id`, [spare]);
   await as('CM', `select delete_class($1)`, [spare]);
   assert.deepEqual(await one('CT', `select class_id, peer from assignments where id = $1`, [deb]), { class_id: null, peer: null });
+});
+
+test('sign-in emails: only the learner, their main tutor and their own school’s office; never their other teachers', async () => {
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['EM', 'EP', 'EH', 'ET', 'EF']) {
+    await mk(k, k.toLowerCase() + '@emails.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  // Ella's main tutor is EM (a private tutor); she adds EP with his code, and joins ET's class at Brook School
+  const join = async (tutor, k, name) => {
+    const code = await val(tutor, `insert into invites (name) values ($1) returning code`, [name]);
+    return one(k, `select * from accept_invite($1, $2)`, [code, name]);
+  };
+  await mk('EL', 'ella@emails.x');
+  await mk('EK', 'kim@emails.x');
+  await join('EM', 'EL', 'Ella');
+  assert.equal((await join('EP', 'EL', 'Ella')).tutor_id, U.EM, 'EM stays her main tutor');
+  const school = await val('EH', `select org_make_centre('Brook School')`);
+  await db.query(`update organisations set kind = 'school' where id = $1`, [school.id]);
+  for (const k of ['ET', 'EF']) await val(k, `select org_join($1)`, [school.code]);
+  await val('EH', `select org_set_role($1, 'office')`, [U.EF]);
+  await join('ET', 'EK', 'Kim'); // a classmate, ET's own learner
+  const cls = await val('ET', `select save_class(null, 'Year 9 maths', null, $1)`, [[U.EK]]);
+  await val('EL', `select join_class($1)`, [await val('ET', `select class_code($1)`, [cls])]);
+  const email = (k, id) => as(k, `select email from profiles where id = $1`, [id]);
+  const card = async (k, id) => (await as(k, `select * from teacher_learners() where id = $1`, [id]))[0];
+
+  // she and her main tutor read the whole row
+  assert.deepEqual(await email('EL', U.EL), [{ email: 'ella@emails.x' }]);
+  assert.deepEqual(await email('EM', U.EL), [{ email: 'ella@emails.x' }]);
+  assert.equal((await card('EM', U.EL)).email, 'ella@emails.x');
+  assert.equal(await val('EM', `select learner_email($1)`, [U.EL]), 'ella@emails.x');
+  // the tutor she added and her class teacher at the school read her row without it, whatever they ask for
+  for (const k of ['EP', 'ET']) {
+    assert.deepEqual(await email(k, U.EL), [], `${k} can’t open her row`);
+    assert.equal((await as(k, `select * from profiles where role = 'learner' and id = $1`, [U.EL])).length, 0);
+    const c = await card(k, U.EL);
+    assert.deepEqual([c.display_name, c.tutor_id, c.email], ['Ella', U.EM, null], `${k} still has her name, without the email`);
+    assert.equal(await val(k, `select learner_email($1)`, [U.EL]), null);
+    assert.equal(JSON.stringify(await as(k, `select * from teacher_learners()`)).includes('ella@emails.x'), false);
+  }
+  assert.equal((await val('ET', `select student_record($1)`, [U.EL])).learner.email, null, 'a teacher’s view of her record');
+  // ET still sees his own learner's email
+  assert.equal((await card('ET', U.EK)).email, 'kim@emails.x');
+  // her school's office and its manager have it (on her record too); a classmate, and nobody else, never
+  assert.equal(await val('EF', `select learner_email($1)`, [U.EL]), 'ella@emails.x');
+  assert.equal(await val('EH', `select learner_email($1)`, [U.EL]), 'ella@emails.x');
+  const rec = await val('EF', `select student_record($1)`, [U.EL]);
+  assert.deepEqual([rec.view, rec.learner.email], ['office', 'ella@emails.x']);
+  assert.deepEqual(await email('EF', U.EL), [], 'the office uses the record, not her row');
+  assert.deepEqual(await email('EK', U.EL), []);
+  assert.equal(await val('EK', `select learner_email($1)`, [U.EL]), null);
+  assert.equal((await as('EK', `select * from teacher_learners()`)).length, 0, 'a learner teaches nobody');
+  assert.equal(await val('X', `select learner_email($1)`, [U.EL]), null);
+  await fails(as(null, `select learner_email($1)`, [U.EL]), /permission denied/);
+  await fails(as(null, `select * from teacher_learners()`), /permission denied/);
+  // once she leaves the class, ET loses her altogether
+  await val('ET', `select save_class($1, 'Year 9 maths', null, $2)`, [cls, [U.EK]]);
+  assert.equal(await card('ET', U.EL), undefined);
+  assert.equal(await val('EF', `select learner_email($1)`, [U.EL]), null, 'and she isn’t the school’s any more');
 });

@@ -329,7 +329,8 @@ export async function save(table, row) {
 export const remove = (table, id) => run(sb().from(table).delete().eq('id', id));
 
 // ---------------- learners ----------------
-export const listLearners = () => run(sb().from('profiles').select('*').eq('role', 'learner').order('display_name'));
+// Everyone I teach, by name; the sign-in email only on my own learners' (teacher_learners in setup.sql)
+export const listLearners = () => run(sb().rpc('teacher_learners'));
 export const listLearnerSubjects = () => {
   const as = asLearner();
   return run(as ? sb().from('learner_subjects').select('*').eq('learner_id', as) : sb().from('learner_subjects').select('*'));

@@ -1116,7 +1116,7 @@ function EditLearner({ l, main = true, onClose, onRemove }) {
             ))}
           </div>
         </Field>
-        <div className="muted small">Email: {l.email}</div>
+        {l.email && <div className="muted small">Email: {l.email}</div>}
         {err && <div className="error">{err}</div>}
         <div className="row between">
           <button type="button" className="btn danger" onClick={onRemove} title="They lose access, but their past work stays in your records">

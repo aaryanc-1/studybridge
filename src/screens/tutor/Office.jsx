@@ -534,6 +534,7 @@ export function StudentPage({ id }) {
         <div className="stack">
           <section className="card">
             <h2>Details</h2>
+            {l.email && <div className="small muted">Signs in to StudyBridge with {l.email}</div>}
             <RecordView rec={rec} />
             {rec.record?.updated_at && (
               <div className="tiny muted">

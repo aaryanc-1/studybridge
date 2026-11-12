@@ -896,6 +896,13 @@ shown apart; names and words only for work the teacher could open; teachers only
 src/screens/tutor/MarkingExtras.jsx (FeedbackRecorder, SimilarLine with Compare, SimilarOverview, PeerCard). Exports: `peer_reviews_written`,
 `peer_reviews_received`, `drive_email`. Website: features.html, tutors.html, schools.html "Classroom, complete", privacy.html (recordings,
 peer review, similar answers, Google and Microsoft); website.test.mjs checks nothing promises an internet or AI-writing check.
+Sign-in emails behind the wall (12 Nov 2026, from the step 6 review; not released yet). `profiles_read` gives the whole profile row,
+email included, only to the person, a learner's main tutor (`tutor_id = auth.uid()`) and a learner reading their own teachers. A
+learner's other teachers (a class teacher, a tutor they added with a code) read the same rows without the email from
+`teacher_learners()` (setof profiles; `api.listLearners` uses it), so never read other teachers' learners `from('profiles')`.
+`learner_email(learner)` gives the email to the learner, their main tutor and `_looks_after` (their centre's or school's office,
+managers, head of year); `student_record` carries it as `learner.email`, shown on Office → a student's page. Older app versions
+read `profiles` directly, so until they update a class teacher's list briefly misses learners who aren't their own (no crash).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

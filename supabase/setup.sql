@@ -8430,11 +8430,13 @@ drop policy if exists class_teachers_read on public.class_teachers;
 create policy class_teachers_read on public.class_teachers for select
   using (teacher_id = auth.uid() or public._teaches_class(class_id) or public._class_org_manager(class_id) or public._in_class(class_id));
 
--- A learner reads the subjects, topics and work of everyone who teaches them; a teacher reads their learners
+-- A learner reads the subjects, topics and work of everyone who teaches them; a teacher reads their learners.
+-- (12 Nov 2026) The whole row, sign-in email included, goes only to the person themself and a learner's main tutor
+-- (and a learner reads the teachers they have). A learner's other teachers (a class teacher at a school or centre, a
+-- private tutor they added with a code) read the same row without the email, through teacher_learners().
 drop policy if exists profiles_read on public.profiles;
 create policy profiles_read on public.profiles for select
   using (id = auth.uid() or tutor_id = auth.uid() or id = public.my_tutor()
-         or (role = 'learner' and public._teaches(auth.uid(), id))
          or (role = 'tutor' and id in (select public._my_teachers())));
 drop policy if exists subjects_learner on public.subjects;
 create policy subjects_learner on public.subjects for select using (tutor_id in (select public._my_teachers()));
@@ -15704,7 +15706,7 @@ begin
   select * into l from public.profiles where id = p_learner;
   select * into r from public.student_records where place_id = v_place and learner_id = p_learner;
   return jsonb_build_object('view', v_view, 'place_id', v_place, 'place', public._place_name(v_place), 'can_edit', v_view in ('office', 'parent'),
-    'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade),
+    'learner', jsonb_build_object('id', l.id, 'name', l.display_name, 'grade', l.grade, 'email', public.learner_email(l.id)),
     'homeroom', (select string_agg(c.name, ', ' order by c.name) from public.class_members cm join public.classes c on c.id = cm.class_id
                   where cm.learner_id = p_learner and c.homeroom and not c.archived and c.org_id = v_place),
     'record', public._record_json(r, v_view),
@@ -19570,6 +19572,34 @@ create policy sb_work_notes_del on storage.objects for delete to authenticated
 drop policy if exists sb_work_peer on storage.objects;
 create policy sb_work_peer on storage.objects for select to authenticated
   using (bucket_id = 'work' and public._peer_file_ok(name));
+
+-- ---------------------------------------------------------------------
+-- Sign-in emails stay with the main tutor and the office (12 Nov 2026)
+-- ---------------------------------------------------------------------
+-- A learner's sign-in email is for the learner, their main tutor (who looks after the account) and the office of their
+-- own centre or school (its managers, office staff and the head of their year: _looks_after). profiles_read hands the
+-- whole row only to the learner and their main tutor; every other teacher of theirs gets it here without the email.
+
+-- Every learner the signed-in teacher teaches (their own, ones who added them with a code, and their classes'), as
+-- profile rows; the email only on their own learners'
+create or replace function public.teacher_learners() returns setof public.profiles
+language sql stable security definer set search_path = public as $$
+  select case when p.tutor_id = auth.uid() then p else jsonb_populate_record(p, '{"email": null}'::jsonb) end
+    from public.profiles p
+   where p.role = 'learner' and p.id in (select public._learners_of(auth.uid()))
+   order by p.display_name, p.id
+$$;
+-- One learner's sign-in email, for those who may have it (anyone else gets nothing)
+create or replace function public.learner_email(p_learner uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select p.email from public.profiles p
+   where p.id = p_learner and p.role = 'learner'
+     and (p.id = auth.uid() or p.tutor_id = auth.uid() or public._looks_after(p.id))
+$$;
+revoke execute on function public.teacher_learners() from public, anon;
+revoke execute on function public.learner_email(uuid) from public, anon;
+grant execute on function public.teacher_learners() to authenticated;
+grant execute on function public.learner_email(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Live updates in the app
