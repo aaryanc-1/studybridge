@@ -10,6 +10,7 @@ import { LessonBody } from '../tutor/Library.jsx';
 import { useReadingTime } from '../shared/FileView.jsx';
 import { ReportProblem } from './SelfStudy.jsx';
 import { LearnerLinks, learnerLinks } from '../shared/DriveUI.jsx';
+import { lockText, useLocks } from './Steps.jsx';
 
 export default function LearnerLibrary() {
   const app = useApp();
@@ -18,6 +19,7 @@ export default function LearnerLibrary() {
   const lessons = useQuery('lessons', api.listLessons);
   const [subject, setSubject] = useState('');
   const [tab, setTab] = useState('lessons');
+  const locks = useLocks(); // notes and files in a step that isn't open yet
   const f = (files.data || []).filter((x) => !subject || x.subject_id === subject);
   const l = (lessons.data || []).filter((x) => !subject || x.subject_id === subject);
 
@@ -58,7 +60,16 @@ export default function LearnerLibrary() {
         ) : (
           <div className="card">
             <div className="list">
-              {l.map((x) => (
+              {l.map((x) =>
+                locks.has('lesson:' + x.id) ? (
+                  <div key={x.id} className="item" aria-disabled="true" style={{ opacity: 0.6 }}>
+                    <Icon name="lock" style={{ color: 'var(--muted)' }} />
+                    <span className="grow">
+                      <span className="name">{x.title}</span>
+                      <span className="meta">{lockText(locks.get('lesson:' + x.id))}</span>
+                    </span>
+                  </div>
+                ) : (
                 <Link key={x.id} to={`/lesson/${x.id}`} className="item">
                   <Icon name="book" style={{ color: 'var(--accent)' }} />
                   <span className="grow">
@@ -71,7 +82,8 @@ export default function LearnerLibrary() {
                   </span>
                   <Icon name="right" size={18} />
                 </Link>
-              ))}
+                ),
+              )}
             </div>
           </div>
         )
@@ -82,7 +94,16 @@ export default function LearnerLibrary() {
       ) : (
         <div className="card">
           <div className="list">
-            {f.map((x) => (
+            {f.map((x) =>
+              locks.has('file:' + x.id) ? (
+                <div key={x.id} className="item" aria-disabled="true" style={{ opacity: 0.6 }}>
+                  <Icon name="lock" style={{ color: 'var(--muted)' }} />
+                  <span className="grow">
+                    <span className="name">{x.name}</span>
+                    <span className="meta">{lockText(locks.get('file:' + x.id))}</span>
+                  </span>
+                </div>
+              ) : (
               <Link key={x.id} to={`/file/${x.id}`} className="item">
                 <Icon name={/pdf/.test(x.mime || '') ? 'pdf' : /image/.test(x.mime || '') ? 'image' : 'file'} style={{ color: 'var(--accent)' }} />
                 <span className="grow">
@@ -95,7 +116,8 @@ export default function LearnerLibrary() {
                 </span>
                 <Icon name="right" size={18} />
               </Link>
-            ))}
+              ),
+            )}
           </div>
         </div>
       )}
@@ -107,7 +129,16 @@ export function LessonView({ id }) {
   const lessons = useQuery('lessons', api.listLessons);
   const files = useQuery('files', api.listFiles).data || [];
   const x = (lessons.data || []).find((l) => l.id === id);
-  useReadingTime(x ? id : null, 'lesson');
+  const lock = useLocks().get('lesson:' + id);
+  useReadingTime(x && !lock ? id : null, 'lesson');
+  if (lock)
+    return (
+      <Page title={x?.title || 'Lesson notes'}>
+        <div className="note">
+          <Icon name="lock" size={16} /> {lockText(lock)} first: it’s a step in {lock.class}.
+        </div>
+      </Page>
+    );
   if (!x) return <Page title="Lesson notes">{lessons.data ? <Empty>These lesson notes aren’t available.</Empty> : <Loading />}</Page>;
   const attached = (x.file_ids || []).map((fid) => files.find((f) => f.id === fid)).filter(Boolean);
   return (

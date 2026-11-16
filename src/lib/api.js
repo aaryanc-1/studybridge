@@ -826,13 +826,17 @@ export const listAssignments = () => {
   const as = asLearner();
   const rows = run(sb().from('assignments').select('*').order('created_at', { ascending: false }));
   if (as) return rows.then((r) => seenBy(as, r));
-  // a learner with extra days (access arrangements) or a one-off extension sees their own due date
+  // a learner sees their own due date and closing date (extra days, or a one-off extension) and their group
   if (me?.role !== 'learner') return rows;
   return rows.then(async (r) => {
-    const later = await run(sb().rpc('my_due_changes')).catch(() => []);
-    if (!later?.length) return r;
-    const due = Object.fromEntries(later.map((x) => [x.id, x.due_at]));
-    return r.map((a) => (due[a.id] ? { ...a, class_due_at: a.due_at, due_at: due[a.id] } : a));
+    const info = await run(sb().rpc('my_work_info')).catch(() => []);
+    if (!info?.length) return r;
+    const by = Object.fromEntries(info.map((x) => [x.id, x]));
+    return r.map((a) => {
+      const x = by[a.id];
+      if (!x) return a;
+      return { ...a, ...(x.due_at ? { class_due_at: a.due_at, due_at: x.due_at } : {}), ...(x.closes_at ? { class_closes_at: a.closes_at, closes_at: x.closes_at } : {}), group: x.group || null };
+    });
   });
 };
 export const getAssignment = (id) => run(sb().from('assignments').select('*').eq('id', id).maybeSingle());
@@ -1335,3 +1339,22 @@ export const peerReport = (id, reason) => run(sb().rpc('peer_report', { p_id: id
 export const similarity = (attemptId) => run(sb().rpc('similarity', { p_attempt: attemptId }));
 export const similarityPair = (responseId, otherId) => run(sb().rpc('similarity_pair', { p_response: responseId, p_other: otherId || null }));
 export const similarityOverview = (assignmentId) => run(sb().rpc('similarity_overview', { p_assignment: assignmentId }));
+
+// ---------------- Canvas gaps, part 1 (16 Nov 2026) ----------------
+// Steps: a class's topics in order, each opening once the one before is done
+export const classSteps = (classId) => run(sb().rpc('class_steps', { p_class: classId }));
+export const saveClassSteps = (classId, steps) => run(sb().rpc('save_class_steps', { p_class: classId, p_steps: steps }));
+export const openStepEarly = (stepId, learnerId, on = true) => run(sb().rpc('open_step_early', { p_step: stepId, p_learner: learnerId, p_on: on }));
+export const mySteps = () => run(sb().rpc('my_steps'));
+// Group work: one hand-in counts for the group
+export const workGroups = (assignmentId) => run(sb().rpc('work_groups', { p_assignment: assignmentId }));
+export const saveWorkGroups = (assignmentId, groups) => run(sb().rpc('save_work_groups', { p_assignment: assignmentId, p_groups: groups }));
+// Late rules: don't take marks off on one hand-in (or put it back)
+export const setLateWaive = (attemptId, waived) => run(sb().rpc('set_late_waive', { p_attempt: attemptId, p_waived: waived }));
+// Results question by question (teachers)
+export const workResults = (assignmentId) => run(sb().rpc('work_results', { p_assignment: assignmentId }));
+// A new school year: copy a class; move a centre's or school's learners up a year (and undo it)
+export const copyClass = (classId, name, what = {}) => run(sb().rpc('copy_class', { p_class: classId, p_name: name, p_what: what }));
+export const newYearInfo = () => run(sb().rpc('new_year_info'));
+export const moveUpYear = (putAway, again = false) => run(sb().rpc('move_up_year', { p_put_away: !!putAway, p_again: !!again }));
+export const undoMoveUp = (id) => run(sb().rpc('undo_move_up', { p_move: id }));

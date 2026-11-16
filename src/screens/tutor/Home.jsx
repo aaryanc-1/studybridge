@@ -11,6 +11,8 @@ import { useDueFor } from './Access.jsx';
 import { TodayLessons } from '../shared/School.jsx';
 import { HomeroomRegisters } from '../shared/Office.jsx';
 import { MeetingsToday } from '../shared/Meetings.jsx';
+import { ownHandIn } from './WorkRules.jsx';
+import { handInLabel } from './MarkingExtras.jsx';
 
 function greeting() {
   const h = new Date().getHours();
@@ -78,7 +80,7 @@ export default function Home() {
   const now = Date.now();
 
   // ---------- Needs you: everything waiting on the tutor, each with its button ----------
-  const toMark = attempts.filter((t) => t.status === 'submitted');
+  const toMark = attempts.filter((t) => t.status === 'submitted' && ownHandIn(t));
   const markingDrafts = drafts.filter((d) => d.kind === 'marking');
   const profMarked = new Set(markingDrafts.map((d) => d.attempt_id));
   const liveNow = attempts.filter((t) => t.status === 'in_progress' && aById[t.assignment_id]?.camera);
@@ -136,8 +138,8 @@ export default function Home() {
       const alerts = (t.lockdown_events || []).length;
       return {
         key: 'm' + t.id,
-        lead: <Avatar person={lk.learner(t.learner_id)} size="sm" />,
-        name: `${firstName(t.learner_id)} handed in ${a?.title || 'their work'}`,
+        lead: a?.anonymous && !t.released ? <Icon name="eyeOff" size={18} /> : <Avatar person={lk.learner(t.learner_id)} size="sm" />,
+        name: a?.anonymous && !t.released ? `${handInLabel(t.id)}: ${a?.title || 'work'} (marked without names)` : `${firstName(t.learner_id)} handed in ${a?.title || 'their work'}`,
         meta: (
           <>
             <span>
@@ -671,11 +673,11 @@ function RecentActivity({ attempts, comments, activity, aById, name, me, few }) 
     if (t.status === 'in_progress' && now - new Date(t.started_at).getTime() < DAY) {
       items.push({ key: 'p' + t.id, at: t.started_at, who: t.learner_id, icon: 'pen', text: `${name(t.learner_id)} is working on ${a.title}`, to: `/learners/${t.learner_id}` });
     }
-    if (t.status !== 'in_progress' && recent(t.submitted_at)) {
+    if (t.status !== 'in_progress' && recent(t.submitted_at) && ownHandIn(t)) {
       items.push(
         a.practice
           ? { key: 's' + t.id, at: t.submitted_at, who: t.learner_id, icon: 'target', text: `${name(t.learner_id)} practised ${a.title}${t.released ? score : ''}`, to: `/learners/${t.learner_id}` }
-          : { key: 's' + t.id, at: t.submitted_at, who: t.learner_id, icon: 'clipboard', text: `${name(t.learner_id)} handed in ${a.title}`, to: `/marking/${t.id}` },
+          : { key: 's' + t.id, at: t.submitted_at, who: t.learner_id, icon: 'clipboard', text: a.anonymous && !t.released ? `Someone handed in ${a.title} (marked without names)` : `${name(t.learner_id)} handed in ${a.title}`, to: `/marking/${t.id}` },
       );
     }
     // marks going back (not work that marks itself as it's handed in: that's the line above)

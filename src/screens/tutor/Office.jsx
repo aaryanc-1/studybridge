@@ -15,6 +15,7 @@ import { AttendanceReport, BehaviourReport } from './SchoolSetup.jsx';
 import { AccessLine } from './Access.jsx';
 import { FamilyInbox, MessageFamily, FamilyThreadsFor, useFamilyUnread } from '../shared/Families.jsx';
 import { MeetingsList } from '../shared/Meetings.jsx';
+import { NewSchoolYear } from './WorkRules.jsx';
 
 const first = (name) => String(name || '').split(' ')[0];
 const addDays = (d, n) => {
@@ -57,7 +58,10 @@ export default function Office({ tab = 'today' }) {
       {shown === 'absences' ? (
         <Absences />
       ) : shown === 'students' ? (
-        <Students />
+        <>
+          {access === 'all' && <NewSchoolYear />}
+          <Students />
+        </>
       ) : shown === 'attendance' ? (
         <AttendanceReport />
       ) : shown === 'behaviour' ? (

@@ -17,6 +17,7 @@ import { Planner } from '../shared/Planner.jsx';
 import { GiveBehaviour, GiveProfile } from '../shared/School.jsx';
 import { ClassAttendance, GiveButton } from './SchoolSetup.jsx';
 import { levelsText } from '../../lib/myp.js';
+import { ClassSteps, CopyClass } from './WorkRules.jsx';
 
 const prettyCode = (c) => (/^\d{8}$/.test(String(c)) ? `${String(c).slice(0, 4)} ${String(c).slice(4)}` : c);
 const STATE = { draft: 'Draft', hidden: 'Hidden', scheduled: 'Scheduled', posted: 'Posted' };
@@ -25,6 +26,7 @@ export default function ClassPage({ id, tab = 'stream' }) {
   const lk = useLookups();
   const app = useApp();
   const c = lk.klass(id);
+  const [copying, setCopying] = useState(false);
   if (!c) return <Page title="Class">{lk.ready ? <Empty>This class isn’t in your list.</Empty> : <Loading />}</Page>;
   const members = lk.membersOf(id);
   const teaches = lk.teachersOf(id).includes(app.me.id);
@@ -58,12 +60,18 @@ export default function ClassPage({ id, tab = 'stream' }) {
       }
       actions={
         teaches && (
-          <button className="btn primary" onClick={() => go(`/assignments?new=1&class=${id}${c.subject_id ? `&subject=${c.subject_id}` : ''}`)}>
-            <Icon name="plus" size={18} /> Set work for {c.name}
-          </button>
+          <>
+            <button className="btn" onClick={() => setCopying(true)}>
+              <Icon name="copy" size={18} /> Copy for next year
+            </button>
+            <button className="btn primary" onClick={() => go(`/assignments?new=1&class=${id}${c.subject_id ? `&subject=${c.subject_id}` : ''}`)}>
+              <Icon name="plus" size={18} /> Set work for {c.name}
+            </button>
+          </>
         )
       }
     >
+      {copying && <CopyClass c={c} onClose={() => setCopying(false)} />}
       {tabs.length > 1 && <Seg value={shown} onChange={(t) => go(`/learners/classes/${id}/${t}`, { replace: true })} options={tabs} />}
       {shown === 'gradebook' ? (
         <Gradebook id={id} name={c.name} />
@@ -85,20 +93,27 @@ export default function ClassPage({ id, tab = 'stream' }) {
 // Everything set for the class, grouped by topic
 function Classwork({ id }) {
   const q = useQuery(`class-work:${id}`, () => api.classWork(id));
+  // steps: the class's topics in order (classwork shows in that order, each topic as its step)
+  const steps = useQuery(`class-steps:${id}`, () => api.classSteps(id)).data?.steps || [];
   if (!q.data) return q.error ? <div className="error">{q.error.message}</div> : <Loading />;
   const items = q.data;
-  if (!items.length) return <Empty>Nothing set for this class yet. Work, lesson notes and files you set for it show here, by topic.</Empty>;
   const groups = [];
   for (const x of items) {
     const key = x.topic || 'No topic';
     let g = groups.find((y) => y.key === key);
-    if (!g) groups.push((g = { key, items: [] }));
+    if (!g) groups.push((g = { key, topic: x.topic_id, items: [] }));
     g.items.push(x);
   }
+  const step = (g) => steps.findIndex((s) => s.topic_id === g.topic);
+  if (steps.length) groups.sort((x, y) => (step(x) < 0 ? 999 : step(x)) - (step(y) < 0 ? 999 : step(y)));
   const open = (x) => (x.kind === 'assignment' ? `/assignments/${x.id}` : x.kind === 'lesson' ? `/lesson/${x.id}` : '/library');
-  return groups.map((g) => (
+  return (
+    <>
+      <ClassSteps classId={id} />
+      {!items.length && <Empty>Nothing set for this class yet. Work, lesson notes and files you set for it show here, by topic.</Empty>}
+      {groups.map((g) => (
     <div key={g.key} className="card">
-      <h2>{g.key}</h2>
+      <h2>{step(g) >= 0 ? `Step ${step(g) + 1}: ${g.key}` : g.key}</h2>
       <div className="list">
         {g.items.map((x) => (
           <div key={x.kind + x.id} className="item">
@@ -123,7 +138,9 @@ function Classwork({ id }) {
         ))}
       </div>
     </div>
-  ));
+      ))}
+    </>
+  );
 }
 
 // Each learner × each piece of work: their latest try (marks they've been given back, or what's waiting), sorted into the

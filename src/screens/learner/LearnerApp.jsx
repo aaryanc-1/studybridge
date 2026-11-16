@@ -31,6 +31,8 @@ import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 function notificationTarget(n) {
   const r = n.ref || {};
   if ((n.kind === 'marked' || n.kind === 'auto_submitted') && r.attempt_id) return `/results/${r.attempt_id}`;
+  if (n.kind === 'group' && r.attempt_id) return `/results/${r.attempt_id}`; // someone handed in group work for them
+  if (n.kind === 'step' && r.class_id) return `/classes/${r.class_id}`; // a step opened early for them
   if (n.kind === 'attempt_cancelled') return '/work';
   if (n.kind === 'cards') return '/study';
   if (n.kind === 'feedback_reply') return '/settings?s=contact';

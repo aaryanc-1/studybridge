@@ -18,6 +18,7 @@ import { ASSESSMENT, assessmentOf, pctText } from '../../lib/grading.js';
 import { PARTS, buildQuestion, byHand, editModel, kindProblem } from '../../lib/qkinds.js';
 import { KindEditor } from './KindEditors.jsx';
 import { CopiesCard, LinksEditor } from '../shared/DriveUI.jsx';
+import { GroupFields, LateFields } from './WorkRules.jsx';
 
 let seq = 0;
 const k = () => 'q' + ++seq;
@@ -114,6 +115,7 @@ export default function AssignmentEditor({ id }) {
   // The exam camera comes with Plus: without it, a camera that's already on (saved) stays, and none is switched on
   const noPlus = useQuery('my-plan', api.myPlan).data?.plus === false;
   const savedCamera = useRef(false);
+  const savedClass = useRef(null); // groups are set for the class the work is saved for
 
   const load = useCallback(async () => {
     try {
@@ -122,6 +124,7 @@ export default function AssignmentEditor({ id }) {
       const q = await api.listQuestions(id);
       const keys = await api.listKeys(q.map((x) => x.id));
       savedCamera.current = !!row.camera;
+      savedClass.current = row.class_id || null;
       setA(row);
       setQs(q.map((x) => withEdit({ ...x, _k: k(), key: keys.find((y) => y.question_id === x.id) || { answer: {}, solution_md: '', mark_scheme_md: '' } })));
       setRemoved([]);
@@ -166,6 +169,10 @@ export default function AssignmentEditor({ id }) {
           links: a.links || [], // Google Drive, OneDrive and web links
           peer: a.class_id ? a.peer || null : null, // peer review (work set for a class)
           due_at: a.due_at || null,
+          closes_at: a.closes_at || null, // hand-ins stop then
+          late_rule: a.due_at ? a.late_rule || null : null, // marks off a day late (off unless switched on)
+          anonymous: !!a.anonymous, // marked without names until marks go back
+          groups: a.class_id ? !!a.groups : false, // group work: one hand-in counts for the group
           visibility,
           visible_from: visibility === 'scheduled' ? a.visible_from : null,
           learner_ids: a.learner_ids?.length ? a.learner_ids : null,
@@ -212,6 +219,7 @@ export default function AssignmentEditor({ id }) {
         }
         const s = await api.save('assignments', row);
         savedCamera.current = !!s.camera;
+        savedClass.current = s.class_id || null;
         setA(s);
         setQs(next);
         setRemoved([]);
@@ -458,9 +466,10 @@ export default function AssignmentEditor({ id }) {
             <AudiencePicker learners={lk.learners} value={a.learner_ids} onChange={(ids, cls) => setField({ learner_ids: ids, class_id: cls })} classes={lk.activeClasses} classId={a.class_id} />
             <AudienceNames item={a} />
             <Field label="Due">
-              <input className="input" type="datetime-local" value={toLocalInput(a.due_at)} onChange={(e) => setField({ due_at: fromLocalInput(e.target.value) })} />
+              <input className="input" type="datetime-local" value={toLocalInput(a.due_at)} onChange={(e) => setField({ due_at: fromLocalInput(e.target.value), ...(e.target.value ? {} : { late_rule: null }) })} />
             </Field>
             <ClashNote a={a} />
+            <LateFields a={a} setField={setField} />
           </div>
           <div className="card">
             <h3>Settings</h3>
@@ -504,7 +513,7 @@ export default function AssignmentEditor({ id }) {
                 </select>
               </Field>
             </div>
-            <Toggle checked={a.lockdown} onChange={(v) => setField({ lockdown: v })} icon="lock" title="Lockdown" sub="Their screen stays on StudyBridge until they hand in: there’s no way out. Needs the desktop app." />
+            <Toggle checked={a.lockdown} onChange={(v) => setField(v ? { lockdown: v, groups: false } : { lockdown: v })} icon="lock" title="Lockdown" sub="Their screen stays on StudyBridge until they hand in: there’s no way out. Needs the desktop app." />
             {a.lockdown && (
               <Field
                 label="If they try to leave"
@@ -518,7 +527,7 @@ export default function AssignmentEditor({ id }) {
                 </select>
               </Field>
             )}
-            <Toggle checked={a.camera} onChange={(v) => setField({ camera: v })} disabled={noPlus && !savedCamera.current && !a.camera} icon="camera" title="Camera on" sub="You can watch their camera and screen live while they work." />
+            <Toggle checked={a.camera} onChange={(v) => setField(v ? { camera: v, groups: false } : { camera: v })} disabled={noPlus && !savedCamera.current && !a.camera} icon="camera" title="Camera on" sub="You can watch their camera and screen live while they work." />
             {noPlus && (
               <div className="small muted plus-note">
                 The exam camera comes with Plus. <Link to="/settings?s=plan">See your plan</Link>
@@ -556,10 +565,17 @@ export default function AssignmentEditor({ id }) {
             <Toggle checked={a.show_answers} onChange={(v) => setField({ show_answers: v })} icon="eye" title="Show answers & solutions" sub="Once marks are released, they see the correct answers and your worked solutions." />
             <Toggle
               checked={!!a.self_mark}
-              onChange={(v) => setField(v ? { self_mark: v, max_attempts: 1 } : { self_mark: v })}
+              onChange={(v) => setField(v ? { self_mark: v, max_attempts: 1, groups: false } : { self_mark: v })}
               icon="checkCircle"
               title="They mark it themselves first"
               sub="After handing in (one attempt), they see the mark scheme and give themselves marks. You then check their marks (and your own) before returning it. Good for past papers."
+            />
+            <Toggle
+              checked={!!a.anonymous}
+              onChange={(v) => setField({ anonymous: v })}
+              icon="eyeOff"
+              title="Mark without names"
+              sub="While you mark, each hand-in shows a number, not a name, so the marks are fair. Names come back once you give the marks back."
             />
             <MypCriteria a={a} setField={setField} />
           </div>
@@ -591,6 +607,7 @@ export default function AssignmentEditor({ id }) {
           </div>
           <CopiesCard assignment={a} />
           <PeerFields a={a} setField={setField} live={live} />
+          <GroupFields a={a} setField={setField} savedClassId={savedClass.current} />
           <div className="row">
             <button
               className="btn"
@@ -975,7 +992,7 @@ function PeerFields({ a, setField, live }) {
         <div className="small muted">Set it for a class (Who sees it → A class) to let classmates review each other’s work.</div>
       ) : (
         <>
-          <Toggle checked={!!p} onChange={(v) => setField({ peer: v ? { ...PEER_DEFAULT } : null })} icon="users" title="Classmates review each other’s work" sub="After handing in, each reviews a few classmates’ answers. You read every review before its author sees it, and reviews never change marks." />
+          <Toggle checked={!!p} disabled={!!a.groups && !p} onChange={(v) => setField(v ? { peer: { ...PEER_DEFAULT }, groups: false } : { peer: null })} icon="users" title="Classmates review each other’s work" sub="After handing in, each reviews a few classmates’ answers. You read every review before its author sees it, and reviews never change marks." />
           {p && (
             <div className="stack sm">
               <div className="grid g2" style={{ gap: 10 }}>

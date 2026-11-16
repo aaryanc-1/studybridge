@@ -13,6 +13,7 @@ import { useMyMocks, MockPill } from '../shared/MockHistory.jsx';
 import { FromPlace } from '../shared/places.jsx';
 import { LearnerLinks, MyCopies, learnerLinks } from '../shared/DriveUI.jsx';
 import { MyReviews } from '../shared/Peer.jsx';
+import { GroupCard, WorkRulesNote, closedFor, lockText, useLocks } from './Steps.jsx';
 
 export default function Work() {
   const app = useApp();
@@ -22,6 +23,7 @@ export default function Work() {
   const attempts = useQuery('myattempts', () => api.myAttempts()).data || [];
   const route = useRoute();
   const { paperOf } = useMyMocks();
+  const locks = useLocks(); // work in a step that isn't open yet
   const [tab, setTab] = useState(route.query.get('tab') || 'todo');
   const all = (assignments.data || []).map((a) => ({ a, s: workState(a, attempts) }));
   const states = all.filter((x) => !x.a.practice);
@@ -104,20 +106,31 @@ export default function Work() {
             })}
           {tab !== 'practice' && list.map(({ a, s }) => {
             const d = due(a.due_at);
+            const lock = s.key === 'todo' ? locks.get('assignment:' + a.id) : null;
+            const closed = s.key === 'todo' && closedFor(a);
             return (
               <button key={a.id} className="work-card" onClick={() => go(s.key === 'marked' || s.key === 'waiting' ? `/results/${s.last.id}` : `/work/${a.id}`)}>
                 <span className="bar-l" style={{ background: lk.subject(a.subject_id)?.color || 'var(--accent)' }} />
                 <span className="grow stack sm">
                   <span className="row wrap" style={{ gap: 8 }}>
                     <span className={'kind ' + a.kind}>{kindLabel[a.kind]}</span>
-                    <span className={'pill ' + s.tone}>{s.label}</span>
+                    {lock ? (
+                      <span className="pill">
+                        <Icon name="lock" size={12} /> Not open yet
+                      </span>
+                    ) : closed ? (
+                      <span className="pill bad">Closed</span>
+                    ) : (
+                      <span className={'pill ' + s.tone}>{s.label}</span>
+                    )}
+                    {a.groups && <span className="pill">Group work</span>}
                     <FromPlace tutorId={a.tutor_id} />
                     <MockPill assignmentId={a.id} paperOf={paperOf} />
                   </span>
                   <span className="strong" style={{ fontSize: 16 }}>{a.title}</span>
                   <span className="small muted row wrap" style={{ gap: 10 }}>
                     {a.subject_id && <SubjectTag id={a.subject_id} />}
-                    {tab === 'todo' ? d.text : s.last?.submitted_at ? `Handed in ${ago(s.last.submitted_at)}` : ''}
+                    {tab === 'todo' ? (lock ? lockText(lock) : closed ? 'Hand-ins have closed' : d.text) : s.last?.submitted_at ? `Handed in ${ago(s.last.submitted_at)}` : ''}
                   </span>
                 </span>
                 {s.key === 'marked' && s.last.score != null && <span className="strong" style={{ fontSize: 18 }}>{pct(s.last.score, s.last.max_score)}%</span>}
@@ -141,6 +154,7 @@ export function WorkDetail({ id }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [examConditions, setExamConditions] = useState(true);
+  const locks = useLocks();
   const a = (assignments.data || []).find((x) => x.id === id);
   if (!a) return <Page title="Work">{assignments.data ? <Empty>This isn’t available any more.</Empty> : <Loading />}</Page>;
   const mine = attempts.data || [];
@@ -153,7 +167,10 @@ export function WorkDetail({ id }) {
   const blocked = (a.lockdown || a.camera) && !desktop && !a.watched;
   // Paused by their tutor: they can look, but not start anything
   const paused = app.me.role === 'learner' && !!app.me.paused_at;
-  const canStart = s.key === 'todo' || s.key === 'doing' || s.key === 'redo' || (s.key === 'marked' && s.canRetry);
+  // a step not open yet, or hand-ins closed for them: they can look, not start (a redo or work already started carries on)
+  const lock = locks.get('assignment:' + a.id);
+  const closed = closedFor(a) && (s.key === 'todo' || s.key === 'marked');
+  const canStart = !lock && !closed && (s.key === 'todo' || s.key === 'doing' || s.key === 'redo' || (s.key === 'marked' && s.canRetry));
   const label = s.key === 'doing' ? 'Continue' : s.key === 'redo' ? 'Redo the questions' : s.key === 'marked' ? 'Try again' : 'Start';
   // Students on their own can sit a practice paper or mock like the real thing (full screen, timer, no notes)
   const canExam = !!app.me.self_learner && !desktop && (a.kind === 'test' || a.kind === 'exam') && canFull && !watched;
@@ -204,11 +221,19 @@ export function WorkDetail({ id }) {
         </span>
       }
     >
+      {lock && s.key === 'todo' && (
+        <div className="note">
+          <Icon name="lock" size={16} /> {lockText(lock)} first: it’s a step in {lock.class}.
+        </div>
+      )}
+      {closed && s.key === 'todo' && <div className="note warn">Hand-ins for this have closed. Ask your teacher if you need more time.</div>}
       {a.instructions_md && (
         <div className="card">
           <Markdown src={a.instructions_md} />
         </div>
       )}
+      <WorkRulesNote a={a} />
+      <GroupCard a={a} />
       {special && (
         <div className="card">
           <h3>Before you start</h3>
@@ -289,7 +314,10 @@ export function WorkDetail({ id }) {
               <Link key={t.id} to={t.status === 'in_progress' ? `/attempt/${t.id}` : `/results/${t.id}`} className="item">
                 <span className="grow">
                   <span className="name">Attempt {t.number}</span>
-                  <span className="meta">{t.submitted_at ? `Handed in ${ago(t.submitted_at)}` : `Started ${ago(t.started_at)}`}</span>
+                  <span className="meta">
+                    {t.submitted_at ? `Handed in ${ago(t.submitted_at)}` : `Started ${ago(t.started_at)}`}
+                    {t.group_by ? ` by ${t.group_by} for your group` : ''}
+                  </span>
                 </span>
                 <span className="strong">{t.released && t.score != null ? `${Number(t.score)} / ${Number(t.max_score)}` : t.status === 'in_progress' ? 'In progress' : t.status === 'returned' ? 'Redo' : 'Being marked'}</span>
               </Link>

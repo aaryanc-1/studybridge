@@ -89,7 +89,9 @@ export function useSimilarity(attemptId, enabled = true) {
 }
 
 // Under a written answer in marking: how much of it is also in other answers at this school, centre or tutor
-export function SimilarLine({ attemptId, questionId, text }) {
+// (work marked without names: other hand-ins show as numbers too)
+export const handInLabel = (id) => `Hand-in ${String(id || '').slice(0, 4).toUpperCase()}`;
+export function SimilarLine({ attemptId, questionId, text, anonymous }) {
   const sim = useSimilarity(attemptId).data;
   const [open, setOpen] = useState(null); // a match, or 'model'
   const e = (sim || []).find((x) => x.question_id === questionId);
@@ -101,8 +103,8 @@ export function SimilarLine({ attemptId, questionId, text }) {
       <Icon name="layers" size={14} />
       {top ? (
         <span>
-          <span className={'pill ' + level(top.pct)}>{top.pct}%</span> also in {top.can_see ? `${top.name}’s answer` : 'another learner’s answer here'}
-          {top.same_work ? ' to this' : top.can_see && top.title ? ` (“${top.title}”)` : ''}
+          <span className={'pill ' + level(top.pct)}>{top.pct}%</span> also in {anonymous ? 'another hand-in' : top.can_see ? `${top.name}’s answer` : 'another learner’s answer here'}
+          {top.same_work ? ' to this' : top.can_see && top.title && !anonymous ? ` (“${top.title}”)` : ''}
           {e.matches.length > 1 ? ` · ${e.matches.length - 1} more` : ''}{' '}
           <button type="button" className="linkbtn" onClick={() => setOpen(top)}>
             Compare
@@ -120,12 +122,12 @@ export function SimilarLine({ attemptId, questionId, text }) {
           </button>
         </span>
       )}
-      {open && <CompareModal entry={e} match={open === 'model' ? null : open} text={text} onClose={() => setOpen(null)} onPick={setOpen} />}
+      {open && <CompareModal entry={e} match={open === 'model' ? null : open} text={text} anonymous={anonymous} onClose={() => setOpen(null)} onPick={setOpen} />}
     </div>
   );
 }
 
-function CompareModal({ entry, match, text, onClose, onPick }) {
+function CompareModal({ entry, match, text, anonymous, onClose, onPick }) {
   const pair = useQuery(`sim-pair:${entry.response_id}:${match?.response_id || 'model'}`, () => api.similarityPair(entry.response_id, match?.response_id || null)).data;
   return (
     <Modal title={match ? 'Similar answers' : 'The model answer’s wording'} wide onClose={onClose}>
@@ -136,7 +138,7 @@ function CompareModal({ entry, match, text, onClose, onPick }) {
         <div className="row wrap">
           {entry.matches.map((m) => (
             <button key={m.response_id} className={'btn sm' + (m.response_id === match.response_id ? ' primary' : '')} onClick={() => onPick(m)}>
-              {m.can_see ? m.name : 'Another learner'} · {m.pct}%
+              {anonymous ? 'Another hand-in' : m.can_see ? m.name : 'Another learner'} · {m.pct}%
             </button>
           ))}
         </div>
@@ -152,7 +154,7 @@ function CompareModal({ entry, match, text, onClose, onPick }) {
           {match && pair.other_text != null && (
             <div className="stack sm">
               <div className="label">
-                {pair.other_name}’s{match.at ? `, handed in ${day(match.at)}` : ''}
+                {anonymous ? 'Another hand-in' : `${pair.other_name}’s`}{match.at ? `, handed in ${day(match.at)}` : ''}
               </div>
               <Highlighted text={pair.other_text} words={pair.theirs} />
             </div>
@@ -167,7 +169,7 @@ function CompareModal({ entry, match, text, onClose, onPick }) {
 }
 
 // For a whole piece of work (Marking, one assignment): pairs of answers that share a lot
-export function SimilarOverview({ assignmentId }) {
+export function SimilarOverview({ assignmentId, anonymous }) {
   const rows = useQuery(`similar-overview:${assignmentId}`, () => api.similarityOverview(assignmentId)).data;
   if (!rows?.length) return null;
   return (
@@ -181,7 +183,7 @@ export function SimilarOverview({ assignmentId }) {
           <button key={i} type="button" className="item click" onClick={() => go(`/marking/${r.a.attempt_id}`)}>
             <span className={'pill ' + level(r.pct)}>{r.pct}%</span>
             <span className="grow">
-              Question {r.n}: {r.a.name} and {r.b.name}
+              Question {r.n}: {anonymous ? `${handInLabel(r.a.attempt_id)} and ${handInLabel(r.b.attempt_id)}` : `${r.a.name} and ${r.b.name}`}
             </span>
             <Icon name="right" size={14} />
           </button>

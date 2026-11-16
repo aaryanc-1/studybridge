@@ -2165,6 +2165,112 @@ try {
   // the rest of the run (and the button sweep) has no Google Drive: its stand-ins live only in that browser
   await srv.db.query(`update public.app_config set drive_google = null where id = 1`);
 
+  step('Canvas gaps: the teacher sets Year 10 maths out in steps; Anaya sees the next one locked until she hands in the first, and the teacher opens it early for Zara; results by question; group work counts for the group; the class is copied for next year and the office moves everyone up a year (then undoes it)');
+  const cgClass = (await tc.from('classes').select('id').eq('name', 'Year 10 maths').single()).data;
+  const [cgTRatio, cgTSeq] = (await tc.from('topics').insert([{ subject_id: maths.id, name: 'Ratio', position: 90 }, { subject_id: maths.id, name: 'Sequences', position: 91 }]).select()).data.sort((x, y) => x.position - y.position);
+  const cgWork = async (title, topic) => {
+    const w = (await tc.from('assignments').insert({ title, kind: 'homework', subject_id: maths.id, topic_id: topic, class_id: cgClass.id, visibility: 'visible', release_mode: 'on_submit' }).select().single()).data;
+    const q = (await tc.from('questions').insert({ assignment_id: w.id, type: 'numeric', prompt_md: 'Share 12 in the ratio 1 : 2. How big is the smaller part?', marks: 1 }).select().single()).data;
+    await tc.from('question_keys').insert({ question_id: q.id, answer: { value: '4', tolerance: '0' } });
+    return { ...w, q: q.id };
+  };
+  const cgRatio = await cgWork('Ratio warm-up', cgTRatio.id);
+  const cgSeq = await cgWork('Sequences check', cgTSeq.id);
+  await A.goto(web.url + '#/learners/classes/' + cgClass.id + '/classwork');
+  await A.getByRole('button', { name: 'Set out in steps' }).click();
+  const cgSteps = A.getByRole('dialog', { name: 'Steps' });
+  await cgSteps.getByLabel('Add a topic as the next step').selectOption({ label: 'Ratio (1 thing set)' });
+  await cgSteps.getByLabel('Add a topic as the next step').selectOption({ label: 'Sequences (1 thing set)' });
+  await cgSteps.getByLabel('How Sequences opens').selectOption('handed_in');
+  await shot(A, 'steps-editor');
+  await a11y(A, 'Setting out steps');
+  await cgSteps.getByRole('button', { name: 'Save steps' }).click();
+  await A.getByText('Opens once they’ve handed in everything in the step before').waitFor();
+  await A.getByRole('heading', { name: 'Step 2: Sequences' }).waitFor();
+  // Anaya: Sequences shows, but can't be started until Ratio is handed in
+  const CW = await (await browser.newContext({ viewport: { width: 1280, height: 820 }, timezoneId: 'America/New_York' })).newPage();
+  watch(CW, 'learner (steps)');
+  await (await import('./sweep.mjs')).signIn(CW, web.url, 'anaya@example.com');
+  await CW.goto(web.url + '#/work');
+  await CW.locator('.work-card', { hasText: 'Sequences check' }).getByText('Opens when you finish “Ratio”').waitFor();
+  await shot(CW, 'work-step-locked');
+  await CW.goto(web.url + '#/work/' + cgSeq.id);
+  await CW.getByText(/Opens when you finish “Ratio” first/).waitFor();
+  assert.equal(await CW.getByRole('button', { name: 'Start', exact: true }).count(), 0, 'no Start while its step is shut');
+  await CW.goto(web.url + '#/classes/' + cgClass.id);
+  await CW.getByRole('heading', { name: 'Steps' }).waitFor();
+  await shot(CW, 'class-steps-learner');
+  await a11y(CW, 'A class’s steps');
+  const cgTry = (await lc.rpc('start_attempt', { p_assignment: cgRatio.id, p_client: 'browser' })).data;
+  await lc.rpc('save_response', { p_attempt: cgTry.id, p_question: cgRatio.q, p_answer: { value: '4' } });
+  await lc.rpc('submit_attempt', { p_attempt: cgTry.id });
+  await CW.goto(web.url + '#/work/' + cgSeq.id);
+  await CW.getByRole('button', { name: 'Start', exact: true }).waitFor();
+  // the teacher opens Sequences early for Zara, from Where everyone is
+  await A.reload();
+  await A.getByRole('button', { name: 'Where everyone is' }).click();
+  await A.getByRole('button', { name: 'Open Sequences early for Zara' }).click();
+  await A.getByText('“Sequences” is open for Zara').waitFor();
+  await shot(A, 'steps-progress');
+  const cgZs = (await zc.rpc('my_steps')).data.find((c) => c.class_id === cgClass.id);
+  assert.equal(cgZs.steps.find((s) => s.title === 'Sequences').open, true);
+  // results question by question
+  await A.goto(web.url + '#/work-results/' + cgRatio.id);
+  await A.getByRole('heading', { name: 'Results by question' }).waitFor();
+  await A.getByText('Full marks').first().waitFor();
+  await shot(A, 'results-by-question');
+  await a11y(A, 'Results by question');
+  // group work: Anaya and Zara are a group; Zara hands it in and it counts for Anaya too
+  const cgPoster = (await tc.from('assignments').insert({ title: 'Poster project', kind: 'homework', subject_id: maths.id, class_id: cgClass.id, visibility: 'visible', groups: true }).select().single()).data;
+  const cgPq = (await tc.from('questions').insert({ assignment_id: cgPoster.id, type: 'short', prompt_md: 'What is your cgPoster about?', marks: 3 }).select().single()).data;
+  await A.goto(web.url + '#/assignments/' + cgPoster.id);
+  await A.getByRole('button', { name: 'Set the groups' }).click();
+  const cgGroups = A.getByRole('dialog', { name: 'Groups' });
+  await cgGroups.getByRole('button', { name: 'Add a group' }).click();
+  await cgGroups.getByLabel('Anaya’s group').selectOption({ label: 'Group 1' });
+  await cgGroups.getByLabel('Zara’s group').selectOption({ label: 'Group 1' });
+  await shot(A, 'groups');
+  await a11y(A, 'Setting groups');
+  await cgGroups.getByRole('button', { name: 'Save groups' }).click();
+  await A.getByText(/Group 1: .*Anaya/).waitFor();
+  const cgZp = (await zc.rpc('start_attempt', { p_assignment: cgPoster.id, p_client: 'browser' })).data;
+  await zc.rpc('save_response', { p_attempt: cgZp.id, p_question: cgPq.id, p_answer: { text: 'Fractions in cooking' } });
+  await zc.rpc('submit_attempt', { p_attempt: cgZp.id });
+  await CW.goto(web.url + '#/work/' + cgPoster.id);
+  await CW.getByText(/by Zara for your group/).waitFor();
+  await shot(CW, 'group-work-learner');
+  await A.goto(web.url + '#/marking?a=' + cgPoster.id);
+  await A.getByText(/for their group, with Anaya/).waitFor();
+  await CW.close();
+  // copied for next year: its work and steps, nobody in it
+  await A.goto(web.url + '#/learners/classes/' + cgClass.id + '/classwork');
+  await A.getByRole('button', { name: 'Copy for next year' }).click();
+  const cgCopy = A.getByRole('dialog', { name: 'Copy Year 10 maths for next year' });
+  await cgCopy.getByLabel('New class name').fill('Year 11 maths');
+  await a11y(A, 'Copying a class');
+  await cgCopy.getByRole('button', { name: 'Copy the class' }).click();
+  await A.getByRole('heading', { name: 'Year 11 maths', level: 1 }).waitFor();
+  await A.getByRole('heading', { name: 'Step 1: Ratio' }).waitFor();
+  const cgK11 = (await tc.from('classes').select('id').eq('name', 'Year 11 maths').single()).data;
+  assert.equal((await srv.db.query(`select count(*)::int n from public.class_members where class_id = $1`, [cgK11.id])).rows[0].n, 0);
+  assert.ok((await srv.db.query(`select bool_and(visibility = 'hidden') ok from public.assignments where class_id = $1`, [cgK11.id])).rows[0].ok, 'nothing posted');
+  // the office moves everyone up a year (keeping this year's classes), and undoes it
+  const cgGradeOf = async () => (await srv.db.query(`select grade from public.profiles where email = 'anaya@example.com'`)).rows[0].grade;
+  const cgG0 = await cgGradeOf();
+  await A.goto(web.url + '#/office/students');
+  await A.getByRole('heading', { name: 'A new school year' }).waitFor();
+  await A.getByRole('checkbox', { name: /Put away this year’s classes/ }).uncheck();
+  await shot(A, 'new-school-year');
+  await a11y(A, 'A new school year');
+  await A.getByRole('button', { name: 'Move everyone up a year' }).click();
+  await A.getByRole('dialog', { name: 'Move everyone up a year?' }).getByRole('button', { name: 'Move everyone up' }).click();
+  await A.getByText(/moved up a year/).first().waitFor();
+  assert.equal(await cgGradeOf(), cgG0 + 1);
+  await A.getByRole('button', { name: 'Undo the last move' }).click();
+  await A.getByRole('dialog', { name: 'Undo moving everyone up?' }).getByRole('button', { name: 'Undo it' }).click();
+  await A.getByText(/back where they were/).waitFor();
+  assert.equal(await cgGradeOf(), cgG0);
+
   step('Students on their own: the Owner picks the content account and adds every subject; the content account opens 0607');
   const cc = createClient(srv.url, srv.anonKey, { auth: { persistSession: false } });
   await cc.auth.signUp({ email: 'content@example.com', password: 'secret123' });

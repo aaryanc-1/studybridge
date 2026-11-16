@@ -903,6 +903,41 @@ learner's other teachers (a class teacher, a tutor they added with a code) read 
 `learner_email(learner)` gives the email to the learner, their main tutor and `_looks_after` (their centre's or school's office,
 managers, head of year); `student_record` carries it as `learner.email`, shown on Office → a student's page. Older app versions
 read `profiles` directly, so until they update a class teacher's list briefly misses learners who aren't their own (no crash).
+Compared with Canvas (16 Nov 2026): docs/MASTER.md "Compared with Canvas" (what we have, partly have, and lack). Aaryan put Canvas gaps
+part 1 before step 7 of the 4 Nov order, with the defaults agreed ("go").
+Canvas gaps, part 1 (16 Nov 2026, built, not released yet). All in one block near the end of setup.sql ("Canvas gaps, part 1"), which
+redefines `_hand_in`, `finish_marking`, `reopen_attempt`, `_auto_hand_in`, `my_attempts` and `attempt_detail`. Work settings (trigger
+`assignments_rules` → `_work_rules`): `assignments.closes_at` (on or after due_at), `late_rule` {per_day, max} (`_late_rule`; needs a due
+date), `anonymous`, `groups` (class work only; not with peer, lockdown/camera/watched, mocks or self-marking). Closing: `_closes_for(a, learner)`
+= closes_at + their extra days, or a later `work_extensions` date; trigger `attempts_gate` (`_attempt_gate`, before insert, skipped for
+group copies, practice and self work) refuses new tries after it and before a step opens; `_auto_hand_in` hands in tries still open at
+closing ('hand-ins closed') unless reopened after it (`attempts.reopened_at`) or a redo. Late: `_late_days` (by `_due_for`, each part day
+counts, set once at the first hand-in in `attempts.late_days`), `_late_off` (rule × days, of max_score, rounded down to the half mark) is
+taken off `score` in `_hand_in`/`finish_marking` (`attempts.late_off`); `set_late_waive(attempt, waived)`. Steps: `class_steps` (class,
+topic, position, rule open|opened|handed_in|scored, min_pct; unique class+topic) and `step_unlocks` (RLS on, no policies);
+`_step_items(class, topic)` = the class's posted work, notes and files on that topic; `_item_done` (notes/files: an `activity` row, which
+`useReadingTime` now logs at once on opening; work: started / handed in / given back with min_pct); `_learner_steps(class, learner)`
+(is_open, is_done, after_title, is_early), `_step_lock`; RPCs `class_steps`, `save_class_steps`, `open_step_early` ('step' notification),
+`my_steps` (learners). Locks are enforced on starting work (server); notes and files in a shut step are greyed in the app only.
+Groups: `work_groups`, `work_group_members` (assignment, group, learner; one group each); `work_groups(a)` (+ class pool and other group
+work to reuse), `save_work_groups(a, [{name, learners}])` (owner or class teacher, `_exam_staff`). `_group_handed_in(t)` (from `_hand_in`)
+gives each other member a copy (`attempts.group_copy_of`, responses copied, their own late days; their in-progress try is deleted; anyone
+who handed in their own keeps it; 'group' notification); `finish_marking` → `_group_sync` copies marks/feedback/release to copies not
+`group_own` (finishing a copy sets it); a group can't be sent back to redo; reopening the original deletes its copies; a copy can't be
+reopened. `attempt_detail` falls back to the original's annotations and feedback files for copies; storage `sb_work_group` →
+`_group_file_ok` lets members read the group's answer files (and its marking once released). `my_work_info()` (learners: own due and
+closing dates, `group` from `_my_group_json`) replaces my_due_changes in api.listAssignments. Blind marking: `_hand_in` says "A learner
+submitted …" with no learner_id; the app shows `handInLabel(id)` (MarkingExtras.jsx) until released, also in similar answers.
+`work_results(a)` (teachers via `_exam_staff`): latest hand-in per learner (copies left out): full/zero/average per question, mcq choice
+counts, commonest wrong numeric/short answers. New year: `copy_class(class, name, {work, notes, steps, planner, grading})` (teachers or
+managers; same teachers still there; work hidden, no dates, release 'at' → manual, mocks and files left out, categories mapped);
+`year_moves` + `new_year_info`, `move_up_year(put_away, again)` (office/managers via `_org_office`; grade+1 for `_school_learner_ids`
+grades 1–12; puts away only classes with learners; refuses within 150 days unless again), `undo_move_up` (30 days; only learners whose
+grade wasn't changed since). UI: src/screens/tutor/WorkRules.jsx (LateFields and GroupFields in the editor, ClassSteps on Classwork
+(classwork grouped in step order), CopyClass from the class page, WorkResults at `/work-results/:id` (from Marking and assignment options),
+NewSchoolYear on Office → Students), src/screens/learner/Steps.jsx (useLocks/useMySteps, MyClassSteps on the class page, GroupCard,
+WorkRulesNote); My work, WorkDetail, Library, Today and Results show locks, closing, groups and late marks. The sweep never presses
+"Move everyone up…", "Undo it" or "Copy the class". Website: schools.html, features.html, privacy.html.
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

@@ -37,6 +37,7 @@ import { TermReportPage, TranscriptPage } from '../shared/TermReport.jsx';
 import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 import Office, { StudentPage, officeAccess } from './Office.jsx';
 import { PeerPage } from '../shared/Peer.jsx';
+import { WorkResults, ownHandIn } from './WorkRules.jsx';
 
 function notificationTarget(n, office, officeOnly) {
   const r = n.ref || {};
@@ -76,7 +77,7 @@ export default function TutorApp() {
   const route = useRoute();
   const attempts = useQuery('attempts', api.listAttempts);
   const comments = useQuery('comments', api.listComments);
-  const toMark = (attempts.data || []).filter((a) => a.status === 'submitted').length;
+  const toMark = (attempts.data || []).filter((a) => a.status === 'submitted' && ownHandIn(a)).length;
   const unreadNotes = (comments.data || []).filter((c) => c.author_id !== app.me.id && !c.read_at).length + useFamilyUnread();
   const draftCount = useDraftCounts();
   useProfJobs(); // keeps Prof's requests moving (e.g. sending book pages) on every page
@@ -140,6 +141,7 @@ export default function TutorApp() {
   else if (a === 'mocks' && b) page = <MockPage id={b} />;
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;
   else if (a === 'peer' && b) page = <PeerPage id={b} />;
+  else if (a === 'work-results' && b) page = <WorkResults id={b} />;
   else if (a === 'marking') page = <Marking />;
   else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;

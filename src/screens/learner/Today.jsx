@@ -11,6 +11,7 @@ import { workState, needsAction } from './workState.js';
 import { FromPlace, PausedPlaces } from '../shared/places.jsx';
 import { NewInClasses } from './Classes.jsx';
 import { TodayLessons } from '../shared/School.jsx';
+import { closedFor, useLocks } from './Steps.jsx';
 
 export default function Today() {
   const app = useApp();
@@ -23,10 +24,11 @@ export default function Today() {
   const comments = useQuery('comments', api.listComments).data || [];
   const progress = useQuery(`progress:${app.me.id}`, () => api.learnerProgress(app.me.id)).data;
   const week = useQuery(`summary:${app.me.id}:week:${weekRange(0).from.toISOString().slice(0, 10)}`, () => api.learnerSummary(app.me.id, weekRange(0).from, weekRange(0).to)).data;
+  const locks = useLocks(); // work in a step that isn't open yet, or closed before they started it, isn't to do now
 
   const states = assignments.filter((a) => !a.practice).map((a) => ({ a, s: workState(a, attempts) }));
   const practiceNew = assignments.filter((a) => a.practice && !attempts.some((t) => t.assignment_id === a.id));
-  const todo = states.filter((x) => needsAction(x.s)).sort((x, y) => (x.a.due_at ? new Date(x.a.due_at) : Infinity) - (y.a.due_at ? new Date(y.a.due_at) : Infinity));
+  const todo = states.filter((x) => needsAction(x.s) && !(x.s.key === 'todo' && (locks.has('assignment:' + x.a.id) || closedFor(x.a)))).sort((x, y) => (x.a.due_at ? new Date(x.a.due_at) : Infinity) - (y.a.due_at ? new Date(y.a.due_at) : Infinity));
   const back = attempts.filter((t) => t.released && t.submitted_at && Date.now() - new Date(t.submitted_at) < 14 * 86400000).slice(0, 4);
   const nextSession = sessions.find((s) => new Date(s.starts_at).getTime() + s.duration_min * 60000 > Date.now());
   const fresh = [...lessons.map((l) => ({ ...l, _k: 'lesson' })), ...files.map((f) => ({ ...f, _k: 'file' }))].filter((x) => Date.now() - new Date(x.visible_from || x.created_at) < 7 * 86400000).slice(0, 5);

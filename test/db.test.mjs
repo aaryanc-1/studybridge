@@ -5442,3 +5442,233 @@ test('sign-in emails: only the learner, their main tutor and their own school’
   assert.equal(await card('ET', U.EL), undefined);
   assert.equal(await val('EF', `select learner_email($1)`, [U.EL]), null, 'and she isn’t the school’s any more');
 });
+
+test('Canvas gaps, part 1: steps that open in order, group work, closing dates and late rules, marking without names, results by question, a new school year', async () => {
+  const sql = async (q, p) => (await db.query(q, p)).rows[0];
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['GM', 'GT', 'GX']) {
+    await mk(k, k.toLowerCase() + '@canvas.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const school = await val('GM', `select org_make_centre('Hill Academy')`);
+  await db.query(`update organisations set kind = 'school' where id = $1`, [school.id]);
+  await val('GT', `select org_join($1)`, [school.code]);
+  for (const k of ['GA', 'GB', 'GC', 'GD']) {
+    await mk(k, k.toLowerCase() + '@canvas.x');
+    const code = await val('GT', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  const sci = await val('GT', `insert into subjects (name) values ('Science') returning id`);
+  const topic = (name, pos) => val('GT', `insert into topics (subject_id, name, position) values ($1, $2, $3) returning id`, [sci, name, pos]);
+  const T = { cells: await topic('Cells', 1), energy: await topic('Energy', 2), forces: await topic('Forces', 3) };
+  const cls = await val('GT', `select save_class(null, 'Year 9 science', $1, $2)`, [sci, [U.GA, U.GB, U.GC, U.GD]]);
+  const work = async (title, extra = {}) => {
+    const cols = { title, kind: 'homework', subject_id: sci, class_id: cls, visibility: 'visible', ...extra };
+    const keys = Object.keys(cols);
+    return val('GT', `insert into assignments (${keys.join(', ')}) values (${keys.map((_, i) => '$' + (i + 1)).join(', ')}) returning id`, Object.values(cols));
+  };
+  const numQ = async (aid, value, marks = 1) => {
+    const q = await val('GT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'numeric', 'How many?', $2) returning id`, [aid, marks]);
+    await as('GT', `insert into question_keys (question_id, answer) values ($1, $2)`, [q, { value: String(value), tolerance: '0' }]);
+    return q;
+  };
+  const doIt = async (who, aid, answers) => {
+    const t = await one(who, `select * from start_attempt($1)`, [aid]);
+    for (const [q, ans] of answers) await as(who, `select save_response($1, $2, $3)`, [t.id, q, ans]);
+    return one(who, `select * from submit_attempt($1)`, [t.id]);
+  };
+
+  // ---- settings checked on the server ----
+  await fails(work('Bad close', { due_at: new Date(Date.now() + 2 * 864e5), closes_at: new Date(Date.now() + 864e5) }), /on or after the due date/);
+  const solo = await val('GT', `insert into assignments (title, kind, visibility, groups, late_rule) values ('Not a class', 'homework', 'visible', true, '{"per_day": 10}') returning id`);
+  assert.deepEqual(await one('GT', `select groups, late_rule from assignments where id = $1`, [solo]), { groups: false, late_rule: null }, 'group work needs a class; a late rule needs a due date');
+  await fails(work('Both', { groups: true, peer: '{"count": 1}' }), /peer review as well/);
+  await fails(work('Locked', { groups: true, lockdown: true, kind: 'test' }), /locked down/);
+
+  // ---- steps: Cells, then Energy once Cells is handed in (and its notes opened), then Forces at 60% or more ----
+  const hwCells = await work('Cell parts', { topic_id: T.cells });
+  const qCells = await numQ(hwCells, 4);
+  const notes = await val('GT', `insert into lessons (title, subject_id, topic_id, class_id, visibility) values ('Cells notes', $1, $2, $3, 'visible') returning id`, [sci, T.cells, cls]);
+  const hwEnergy = await work('Energy stores', { topic_id: T.energy });
+  const qEnergy = await numQ(hwEnergy, 8, 2);
+  const hwForces = await work('Forces', { topic_id: T.forces });
+  await fails(as('GX', `select save_class_steps($1, '[]')`, [cls]), /Not your class/);
+  await fails(as('GT', `select save_class_steps($1, $2)`, [cls, JSON.stringify([{ topic_id: T.cells }, { topic_id: T.cells }])]), /only be one step/);
+  const otherSubject = await val('GX', `insert into subjects (name) values ('Secret') returning id`);
+  const otherTopic = await val('GX', `insert into topics (subject_id, name) values ($1, 'Not yours') returning id`, [otherSubject]);
+  await fails(as('GT', `select save_class_steps($1, $2)`, [cls, JSON.stringify([{ topic_id: otherTopic }])]), /isn’t there any more/, 'another tutor’s topic');
+  const st = await val('GT', `select save_class_steps($1, $2)`, [cls, JSON.stringify([
+    { topic_id: T.cells, rule: 'open' }, { topic_id: T.energy, rule: 'handed_in' }, { topic_id: T.forces, rule: 'scored', min_pct: 60 }])]);
+  assert.deepEqual(st.steps.map((s) => [s.title, s.rule, s.min_pct, s.items]), [['Cells', 'open', null, 2], ['Energy', 'handed_in', null, 1], ['Forces', 'scored', 60, 1]]);
+  const stepId = Object.fromEntries(st.steps.map((s) => [s.title, s.id]));
+  let mine = (await val('GA', `select my_steps()`))[0];
+  assert.deepEqual(mine.steps.map((s) => [s.title, s.open, s.after ?? null]), [['Cells', true, null], ['Energy', false, 'Cells'], ['Forces', false, 'Energy']]);
+  await fails(as('GA', `select * from start_attempt($1)`, [hwEnergy]), /opens when you finish “Cells”/);
+  await doIt('GA', hwCells, [[qCells, { value: '4' }]]);
+  assert.equal((await val('GA', `select my_steps()`))[0].steps[1].open, false, 'the notes in Cells aren’t opened yet');
+  await db.query(`insert into activity (learner_id, tutor_id, kind, ref_id, seconds) values ($1, $2, 'lesson', $3, 1)`, [U.GA, U.GT, notes]);
+  mine = (await val('GA', `select my_steps()`))[0];
+  assert.deepEqual(mine.steps.map((s) => s.open), [true, true, false]);
+  assert.equal(mine.steps[0].done, true);
+  await doIt('GA', hwEnergy, [[qEnergy, { value: '3' }]]); // wrong, and marks go back by hand
+  assert.equal((await val('GA', `select my_steps()`))[0].steps[2].open, false, 'Forces needs 60% given back');
+  await fails(as('GA', `select * from start_attempt($1)`, [hwForces]), /opens when you finish “Energy”/);
+  // the teacher opens it early for her (and she's told); the class view shows where everyone is
+  await fails(as('GX', `select open_step_early($1, $2)`, [stepId.Forces, U.GA]), /Not your class/);
+  await as('GT', `select open_step_early($1, $2)`, [stepId.Forces, U.GA]);
+  assert.equal(await val('GA', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'step'`), 1);
+  assert.equal((await val('GA', `select my_steps()`))[0].steps[2].open, true);
+  await one('GA', `select * from start_attempt($1)`, [hwForces]);
+  const prog = await val('GT', `select class_steps($1)`, [cls]);
+  const ga = prog.learners.find((l) => l.id === U.GA);
+  assert.deepEqual(ga.steps.map((s) => [s.open, s.early]), [[true, false], [true, false], [true, true]]);
+  assert.deepEqual(prog.learners.find((l) => l.id === U.GB).steps.map((s) => s.open), [true, false, false]);
+  // scored: once marks of 60% or more are given back, the next step opens by itself
+  await as('GT', `select open_step_early($1, $2, false)`, [stepId.Forces, U.GA]);
+  const tEnergy = await one('GT', `select id from attempts where assignment_id = $1 and learner_id = $2`, [hwEnergy, U.GA]);
+  await as('GT', `update responses set marks = 2 where attempt_id = $1`, [tEnergy.id]);
+  await as('GT', `select finish_marking($1, true, null, false)`, [tEnergy.id]);
+  assert.equal((await val('GA', `select my_steps()`))[0].steps[2].open, true);
+
+  // ---- closing dates and late rules ----
+  const ago = (d) => new Date(Date.now() - d * 864e5);
+  const soon = (d) => new Date(Date.now() + d * 864e5);
+  const hwLate = await work('Late one', { due_at: ago(2.5), closes_at: soon(1), late_rule: { per_day: 10, max: 50 } });
+  const qLate = await numQ(hwLate, 21, 2);
+  const late = await doIt('GB', hwLate, [[qLate, { value: '21' }]]);
+  assert.deepEqual([late.late_days, Number(late.late_off), Number(late.score)], [3, 0.5, 1.5], '2½ days late counts as 3: 30% of 2 marks, rounded down to the half mark');
+  await fails(as('GX', `select set_late_waive($1, true)`, [late.id]), /not found/);
+  assert.equal(Number((await one('GT', `select * from set_late_waive($1, true)`, [late.id])).score), 2);
+  assert.equal(Number((await one('GT', `select * from set_late_waive($1, false)`, [late.id])).score), 1.5);
+  const det = await val('GB', `select attempt_detail($1)`, [late.id]);
+  assert.equal(det.attempt.late_days, 3);
+  const hwClosed = await work('Closed one', { due_at: ago(2), closes_at: ago(1) });
+  await numQ(hwClosed, 1);
+  await fails(as('GC', `select * from start_attempt($1)`, [hwClosed]), /closed on/);
+  // more time for her: hand-ins stay open for her until then
+  await as('GT', `select extend_work($1, $2, $3)`, [hwClosed, U.GC, soon(1)]);
+  assert.ok((await val('GC', `select my_work_info()`)).some((x) => x.id === hwClosed && new Date(x.closes_at) > new Date()));
+  await one('GC', `select * from start_attempt($1)`, [hwClosed]);
+  // work still open when hand-ins close is handed in by itself, unless the teacher reopened it after that
+  const hwShut = await work('Shut', { due_at: soon(1), closes_at: soon(2) });
+  await numQ(hwShut, 1);
+  const open = await one('GD', `select * from start_attempt($1)`, [hwShut]);
+  await db.query(`update assignments set due_at = now() - interval '2 hours', closes_at = now() - interval '1 minute' where id = $1`, [hwShut]);
+  await db.query(`select public._auto_hand_in()`);
+  const shut = await sql(`select status, auto_reason, late_days from attempts where id = $1`, [open.id]);
+  assert.deepEqual([shut.status, shut.auto_reason, shut.late_days], ['marked', 'hand-ins closed', 1]);
+  await as('GT', `select reopen_attempt($1)`, [open.id]);
+  await db.query(`select public._auto_hand_in()`);
+  assert.equal((await sql(`select status from attempts where id = $1`, [open.id])).status, 'in_progress', 'reopened after closing: they can finish');
+
+  // ---- group work: one hand-in counts for the group ----
+  const hwGroup = await work('Poster', { groups: true });
+  const qShort = await val('GT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Explain.', 4) returning id`, [hwGroup]);
+  const qNum = await numQ(hwGroup, 5);
+  await fails(as('GT', `select save_work_groups($1, $2)`, [hwGroup, JSON.stringify([{ learners: [U.GA] }, { learners: [U.GA, U.GB] }])]), /two groups/);
+  await fails(as('GT', `select save_work_groups($1, $2)`, [hwGroup, JSON.stringify([{ learners: [U.GX] }])]), /in the class/);
+  await fails(as('GX', `select save_work_groups($1, '[]')`, [hwGroup]), /Not your work/);
+  const wg = await val('GT', `select save_work_groups($1, $2)`, [hwGroup, JSON.stringify([{ name: 'Reds', learners: [U.GA, U.GB] }, { learners: [U.GC, U.GD] }])]);
+  assert.deepEqual(wg.groups.map((g) => [g.name, g.members.length]), [['Reds', 2], ['Group 2', 2]]);
+  const gbStarted = await one('GB', `select * from start_attempt($1)`, [hwGroup]);
+  assert.deepEqual((await val('GA', `select my_work_info()`)).find((x) => x.id === hwGroup).group, { name: 'Reds', members: ['GB'], started: ['GB'] });
+  const orig = await doIt('GA', hwGroup, [[qShort, { text: 'Plants make food.' }], [qNum, { value: '5' }]]);
+  assert.equal((await sql(`select count(*)::int n from attempts where id = $1`, [gbStarted.id])).n, 0, 'what GB had started is replaced');
+  const copy = await one('GT', `select * from attempts where assignment_id = $1 and learner_id = $2`, [hwGroup, U.GB]);
+  assert.deepEqual([copy.group_copy_of, copy.status], [orig.id, 'submitted']);
+  assert.equal(await val('GB', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'group'`), 1);
+  assert.match(await val('GT', `select title from notifications where user_id = auth.uid() and kind = 'submitted' order by created_at desc limit 1`), /^GA submitted Poster for their group/);
+  assert.equal((await val('GB', `select my_attempts($1)`, [hwGroup]))[0].group_by, 'GA');
+  await fails(as('GB', `select * from start_attempt($1)`, [hwGroup]), /used all your attempts/);
+  await fails(as('GT', `select reopen_attempt($1)`, [copy.id]), /handed in for the group by GA/);
+  // its files open for the others in the group only (and its marking once given back)
+  assert.equal(await val('GB', `select public._group_file_ok($1)`, [`${U.GA}/${orig.id}/poster.png`]), true);
+  assert.equal(await val('GC', `select public._group_file_ok($1)`, [`${U.GA}/${orig.id}/poster.png`]), false);
+  assert.equal(await val('GB', `select public._group_file_ok($1)`, [`${U.GA}/marking/${orig.id}/note.webm`]), false, 'not before marks are back');
+  // marked once: everyone gets it (a redo can't be asked of a group)
+  await as('GT', `update responses set marks = 3, redo = true where attempt_id = $1 and question_id = $2`, [orig.id, qShort]);
+  await fails(as('GT', `select finish_marking($1, true, null, true)`, [orig.id]), /can’t go back to redo/);
+  await as('GT', `select finish_marking($1, true, 'Lovely poster', false)`, [orig.id]);
+  let cp = await sql(`select status, released, score, feedback_md, group_own from attempts where id = $1`, [copy.id]);
+  assert.deepEqual([cp.status, cp.released, Number(cp.score), cp.feedback_md, cp.group_own], ['marked', true, 4, 'Lovely poster', false]);
+  assert.equal(await val('GB', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'marked' and title = 'Your marks are back: Poster'`), 1);
+  assert.equal(await val('GB', `select public._group_file_ok($1)`, [`${U.GA}/marking/${orig.id}/note.webm`]), true);
+  // the teacher changes GB's mark on its own; marking the group's again leaves GB's alone
+  await as('GT', `update responses set marks = 4 where attempt_id = $1 and question_id = $2`, [copy.id, qShort]);
+  await as('GT', `select finish_marking($1, true, null, false)`, [copy.id]);
+  await as('GT', `update responses set marks = 2 where attempt_id = $1 and question_id = $2`, [orig.id, qShort]);
+  await as('GT', `select finish_marking($1, true, null, false)`, [orig.id]);
+  cp = await sql(`select score, group_own from attempts where id = $1`, [copy.id]);
+  assert.deepEqual([Number(cp.score), cp.group_own], [5, true]);
+  assert.equal(Number((await sql(`select score from attempts where id = $1`, [orig.id])).score), 3);
+  // group 2: reopening the hand-in takes the others' copies away until it's handed in again
+  const g2 = await doIt('GC', hwGroup, [[qNum, { value: '5' }]]);
+  assert.equal((await sql(`select count(*)::int n from attempts where group_copy_of = $1`, [g2.id])).n, 1);
+  await as('GT', `select reopen_attempt($1)`, [g2.id]);
+  assert.equal((await sql(`select count(*)::int n from attempts where group_copy_of = $1`, [g2.id])).n, 0);
+  const res = await val('GT', `select work_results($1)`, [hwGroup]);
+  assert.equal(res.handed_in, 1, 'a group’s hand-in counts once');
+
+  // ---- marking without names: the teacher isn't told who handed it in ----
+  const hwAnon = await work('Essay', { anonymous: true });
+  const qA = await numQ(hwAnon, 1);
+  await doIt('GD', hwAnon, [[qA, { value: '2' }]]);
+  const told = await one('GT', `select title, ref from notifications where user_id = auth.uid() and kind = 'submitted' order by created_at desc limit 1`);
+  assert.match(told.title, /^A learner submitted Essay/);
+  assert.equal(told.ref.learner_id, null);
+  const aDet = await val('GT', `select attempt_detail(id) from attempts where assignment_id = $1`, [hwAnon]);
+  assert.equal(aDet.attempt.anonymous, true);
+
+  // ---- results question by question ----
+  const hwQuiz = await work('Quiz', { kind: 'quiz' });
+  const qm = await val('GT', `insert into questions (assignment_id, type, prompt_md, marks, options) values ($1, 'mcq', 'Pick', 1, '["a", "b", "c"]') returning id`, [hwQuiz]);
+  await as('GT', `insert into question_keys (question_id, answer) values ($1, '{"choice": "1"}')`, [qm]);
+  const qn = await numQ(hwQuiz, 10);
+  for (const [who, c, v] of [['GA', '0', '5'], ['GB', '1', '5'], ['GC', '1', '7']]) await doIt(who, hwQuiz, [[qm, { choice: c }], [qn, { value: v }]]);
+  await fails(as('GX', `select work_results($1)`, [hwQuiz]), /Not your work/);
+  await fails(as('GA', `select work_results($1)`, [hwQuiz]), /Not your work/);
+  const wr = await val('GT', `select work_results($1)`, [hwQuiz]);
+  assert.equal(wr.handed_in, 3);
+  assert.deepEqual(wr.questions[0].choices, { 0: 1, 1: 2 });
+  assert.deepEqual([wr.questions[0].full, wr.questions[0].zero], [2, 1]);
+  assert.deepEqual(wr.questions[1].common, [{ answer: '5', count: 2 }, { answer: '7', count: 1 }]);
+
+  // ---- a new school year: copy the class (no learners, nothing posted, no dates) ----
+  await fails(as('GA', `select copy_class($1, 'Mine')`, [cls]), /Not your class/);
+  await fails(as('GT', `select copy_class($1, '  ')`, [cls]), /name/);
+  const before = (await sql(`select count(*)::int n from assignments where class_id = $1 and not practice and mock_id is null`, [cls])).n;
+  const cc = await val('GT', `select copy_class($1, 'Year 10 science')`, [cls]);
+  assert.deepEqual([cc.work, cc.notes], [before, 1]);
+  const copied = (await db.query(`select visibility, due_at, closes_at, learner_ids from assignments where class_id = $1`, [cc.id])).rows;
+  assert.ok(copied.every((r) => r.visibility === 'hidden' && !r.due_at && !r.closes_at), 'nothing posted, no dates');
+  assert.ok(copied.every((r) => JSON.stringify(r.learner_ids) === JSON.stringify([cc.id])), 'for nobody until learners join');
+  assert.equal((await sql(`select count(*)::int n from class_members where class_id = $1`, [cc.id])).n, 0);
+  assert.equal((await sql(`select count(*)::int n from class_steps where class_id = $1`, [cc.id])).n, 3);
+  assert.equal((await sql(`select count(*)::int n from questions q join assignments a on a.id = q.assignment_id where a.class_id = $1`, [cc.id])).n,
+    (await sql(`select count(*)::int n from questions q join assignments a on a.id = q.assignment_id where a.class_id = $1 and not a.practice`, [cls])).n);
+  assert.ok((await sql(`select count(*)::int n from question_keys k join questions q on q.id = k.question_id join assignments a on a.id = q.assignment_id where a.class_id = $1`, [cc.id])).n > 0);
+  assert.deepEqual((await as('GT', `select teacher_id from class_teachers where class_id = $1`, [cc.id])).map((r) => r.teacher_id), [U.GT]);
+
+  // ---- and move everyone up a year (the office or a manager), with an undo ----
+  await db.query(`update profiles set grade = 9 where id = any($1)`, [[U.GA, U.GB, U.GC, U.GD]]);
+  await fails(as('GT', `select new_year_info()`), /office or a manager/);
+  await fails(as('GT', `select move_up_year()`), /office or a manager/);
+  const ny = await val('GM', `select new_year_info()`);
+  assert.deepEqual(ny.by_grade, [{ grade: 9, count: 4 }]);
+  assert.equal(ny.classes, 1, 'the empty copy for next year isn’t counted');
+  const mv = await val('GM', `select move_up_year(true)`);
+  assert.deepEqual([mv.count, mv.put_away], [4, 1]);
+  assert.equal((await sql(`select grade from profiles where id = $1`, [U.GA])).grade, 10);
+  assert.deepEqual((await db.query(`select id, archived from classes where id = any($1)`, [[cls, cc.id]])).rows.map((r) => [r.id === cls, r.archived]).sort(),
+    [[false, false], [true, true]]);
+  await fails(as('GM', `select move_up_year()`), /already/);
+  await db.query(`update profiles set grade = 11 where id = $1`, [U.GD]); // someone changed hers since
+  const undo = await val('GM', `select undo_move_up($1)`, [mv.id]);
+  assert.equal(undo.count, 3, 'everyone but the one changed since');
+  assert.deepEqual((await db.query(`select grade from profiles where id = any($1) order by grade`, [[U.GA, U.GD]])).rows.map((r) => r.grade), [9, 11]);
+  assert.equal((await sql(`select archived from classes where id = $1`, [cls])).archived, false);
+  await fails(as('GM', `select undo_move_up($1)`, [mv.id]), /undone already/);
+});

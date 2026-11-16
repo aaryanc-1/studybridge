@@ -19601,6 +19601,1002 @@ revoke execute on function public.learner_email(uuid) from public, anon;
 grant execute on function public.teacher_learners() to authenticated;
 grant execute on function public.learner_email(uuid) to authenticated;
 
+-- =====================================================================
+-- Canvas gaps, part 1 (16 Nov 2026; Aaryan: "go", after comparing StudyBridge with Canvas, his defaults agreed).
+-- Steps: a class's topics in order, the next opening once the last is opened, handed in or scored well enough (a
+-- teacher can open one early for a learner). Group work: one hand-in counts for the whole group; the teacher marks
+-- it once and can change one person's mark. Closing dates (hand-ins stop; each learner's extra days push it) and late
+-- rules (off unless the teacher switches one on: a share of the marks off a day). Marking without names until marks go
+-- back. Results question by question for teachers. Copying a class for next year, and moving a school up a year.
+-- =====================================================================
+
+-- ---------------- the settings on a piece of work ----------------
+alter table public.assignments add column if not exists closes_at timestamptz;        -- hand-ins stop then (null: never)
+alter table public.assignments add column if not exists late_rule jsonb;              -- {"per_day": 10, "max": 50}: % of the marks off a day late
+alter table public.assignments add column if not exists anonymous boolean not null default false; -- marked without names
+alter table public.assignments add column if not exists groups boolean not null default false;    -- group work
+alter table public.attempts add column if not exists late_days int;                   -- days late when first handed in (0 on time; null no due date)
+alter table public.attempts add column if not exists late_off numeric not null default 0; -- marks taken off for it
+alter table public.attempts add column if not exists late_waived boolean not null default false;
+alter table public.attempts add column if not exists reopened_at timestamptz;
+alter table public.attempts add column if not exists group_copy_of uuid references public.attempts (id) on delete set null;
+alter table public.attempts add column if not exists group_own boolean not null default false; -- the teacher marked this copy on its own
+create index if not exists attempts_group_copy on public.attempts (group_copy_of) where group_copy_of is not null;
+
+-- A late rule as it's kept: a whole % a day (1–100) and the most it can take off (1–100), or none
+create or replace function public._late_rule(p jsonb) returns jsonb
+language sql immutable as $$
+  select case when p is null or jsonb_typeof(p) <> 'object' or coalesce(p ->> 'per_day', '') !~ '^[0-9]{1,3}$'
+                   or (p ->> 'per_day')::int = 0 then null
+              else jsonb_build_object('per_day', least(100, (p ->> 'per_day')::int),
+                                      'max', least(100, greatest(1, coalesce(case when coalesce(p ->> 'max', '') ~ '^[0-9]{1,3}$' then (p ->> 'max')::int end, 100))))
+         end
+$$;
+create or replace function public._work_rules() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  new.late_rule := public._late_rule(new.late_rule);
+  if new.practice or new.source = 'self' then
+    new.closes_at := null; new.late_rule := null; new.groups := false;
+  end if;
+  if new.due_at is null then new.late_rule := null; end if;
+  if new.closes_at is not null and new.due_at is not null and new.closes_at < new.due_at then
+    raise exception 'Close hand-ins on or after the due date.';
+  end if;
+  -- group work is for work set for a class, marked by the teacher, done in the open
+  if new.class_id is null then new.groups := false; end if;
+  if new.groups then
+    if new.peer is not null then raise exception 'Group work can’t have peer review as well.'; end if;
+    if new.lockdown or new.camera or new.watched then raise exception 'Group work can’t be locked down or watched.'; end if;
+    if new.mock_id is not null then raise exception 'Mock exam papers are done on your own.'; end if;
+    if new.self_mark then raise exception 'Group work is marked by the teacher.'; end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists assignments_rules on public.assignments;
+create trigger assignments_rules before insert or update of closes_at, due_at, late_rule, groups, class_id, peer, lockdown, camera, watched,
+  mock_id, self_mark, practice, source on public.assignments for each row execute function public._work_rules();
+
+-- When hand-ins close for one learner: the closing date, pushed by their extra days, or a later one-off extension
+create or replace function public._closes_for(a public.assignments, p_learner uuid) returns timestamptz
+language plpgsql stable security definer set search_path = public as $$
+declare v_ext timestamptz;
+begin
+  if a.closes_at is null then return null; end if;
+  select e.due_at into v_ext from public.work_extensions e where e.assignment_id = a.id and e.learner_id = p_learner and e.due_at is not null;
+  return greatest(a.closes_at + make_interval(days => coalesce((select r.extra_days from public.access_arrangements r
+                    where r.learner_id = p_learner and r.place_id = public._place_of(a.tutor_id)), 0)), v_ext);
+end $$;
+-- How many days late a hand-in is, by the learner's own due date (each part day counts)
+create or replace function public._late_days(a public.assignments, p_learner uuid, p_at timestamptz) returns int
+language sql stable security definer set search_path = public as $$
+  select case when z.d is null or p_at is null then null when p_at <= z.d then 0
+              else ceil(extract(epoch from (p_at - z.d)) / 86400)::int end
+    from (select public._due_for(a, p_learner) d) z
+$$;
+-- Marks off for being late: the work's rule × days late, of its total marks, rounded down to the half mark
+create or replace function public._late_off(a public.assignments, t public.attempts) returns numeric
+language sql stable set search_path = public as $$
+  select case when t.late_waived or coalesce(t.late_days, 0) <= 0 or a.late_rule is null or coalesce(t.max_score, 0) <= 0 then 0
+              else floor(t.max_score * least((a.late_rule ->> 'max')::numeric, (a.late_rule ->> 'per_day')::numeric * t.late_days) / 100 * 2) / 2 end
+$$;
+
+-- ---------------- steps: a class's topics in order ----------------
+create table if not exists public.class_steps (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes (id) on delete cascade,
+  topic_id uuid not null references public.topics (id) on delete cascade,
+  position int not null default 0,
+  rule text not null default 'handed_in' check (rule in ('open', 'opened', 'handed_in', 'scored')), -- how it opens after the one before
+  min_pct int check (min_pct is null or min_pct between 1 and 100),                                  -- 'scored': at least this %
+  updated_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  unique (class_id, topic_id)
+);
+create table if not exists public.step_unlocks (
+  step_id uuid not null references public.class_steps (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  by_id uuid references public.profiles (id) on delete set null,
+  at timestamptz not null default now(),
+  primary key (step_id, learner_id)
+);
+alter table public.class_steps enable row level security;
+alter table public.step_unlocks enable row level security;
+
+-- What's in a step: the class's posted work, lesson notes and files on its topic
+create or replace function public._step_items(p_class uuid, p_topic uuid) returns table (kind text, id uuid, title text, type text)
+language sql stable security definer set search_path = public as $$
+  select 'assignment'::text, a.id, a.title, a.kind from public.assignments a
+   where a.class_id = p_class and a.topic_id = p_topic and not a.draft and not a.practice and a.source <> 'self'
+     and (a.visibility = 'visible' or (a.visibility = 'scheduled' and a.visible_from <= now()))
+  union all
+  select 'lesson', l.id, l.title, null from public.lessons l
+   where l.class_id = p_class and l.topic_id = p_topic and (l.visibility = 'visible' or (l.visibility = 'scheduled' and l.visible_from <= now()))
+  union all
+  select 'file', f.id, f.name, null from public.files f
+   where f.class_id = p_class and f.topic_id = p_topic and (f.visibility = 'visible' or (f.visibility = 'scheduled' and f.visible_from <= now()))
+$$;
+-- Has a learner done one thing, by a step's rule? Notes and files: opened. Work: started ('opened'), handed in, or
+-- given back with at least the score asked for ('scored')
+create or replace function public._item_done(p_kind text, p_id uuid, p_learner uuid, p_rule text, p_min int) returns boolean
+language sql stable security definer set search_path = public as $$
+  select case
+    when p_kind in ('lesson', 'file') then exists (select 1 from public.activity v where v.learner_id = p_learner and v.kind = p_kind and v.ref_id = p_id)
+    when p_rule in ('open', 'opened') then exists (select 1 from public.attempts t where t.assignment_id = p_id and t.learner_id = p_learner)
+    when p_rule = 'handed_in' then exists (select 1 from public.attempts t where t.assignment_id = p_id and t.learner_id = p_learner and t.submitted_at is not null)
+    else exists (select 1 from public.attempts t where t.assignment_id = p_id and t.learner_id = p_learner and t.score is not null
+                  and public._is_released(t) and (coalesce(t.max_score, 0) = 0 or t.score * 100 >= coalesce(p_min, 50) * t.max_score))
+  end
+$$;
+-- A learner's steps in a class, in order: open or not (with the step to finish first), done (everything in it handed in or
+-- opened), and opened early by a teacher
+create or replace function public._learner_steps(p_class uuid, p_learner uuid)
+returns table (step_id uuid, topic_id uuid, title text, pos int, step_rule text, min_pct int, is_open boolean, is_done boolean, after_title text, is_early boolean)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  s record;
+  i int := 0;
+  v_prev_open boolean;
+  v_prev_title text;
+  v_prev_topic uuid;
+begin
+  for s in select cs.id, cs.topic_id, cs.rule, cs.min_pct, tp.name from public.class_steps cs join public.topics tp on tp.id = cs.topic_id
+            where cs.class_id = p_class order by cs.position, tp.position, tp.name loop
+    i := i + 1;
+    step_id := s.id; topic_id := s.topic_id; title := s.name; pos := i; step_rule := s.rule; min_pct := s.min_pct;
+    is_early := exists (select 1 from public.step_unlocks u where u.step_id = s.id and u.learner_id = p_learner);
+    if i = 1 or s.rule = 'open' or is_early then
+      is_open := true;
+    else
+      is_open := v_prev_open and not exists (select 1 from public._step_items(p_class, v_prev_topic) it
+                                           where not public._item_done(it.kind, it.id, p_learner, s.rule, s.min_pct));
+    end if;
+    after_title := case when is_open then null else v_prev_title end;
+    is_done := not exists (select 1 from public._step_items(p_class, s.topic_id) it where not public._item_done(it.kind, it.id, p_learner, 'handed_in', null));
+    return next;
+    v_prev_open := is_open; v_prev_title := s.name; v_prev_topic := s.topic_id;
+  end loop;
+end $$;
+-- Is this topic a step not open yet for the learner? The step to finish first, or null
+create or replace function public._step_lock(p_class uuid, p_topic uuid, p_learner uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select case when p_class is null or p_topic is null
+                   or not exists (select 1 from public.class_steps cs where cs.class_id = p_class and cs.topic_id = p_topic) then null
+              else (select s.after_title from public._learner_steps(p_class, p_learner) s where s.topic_id = p_topic and not s.is_open) end
+$$;
+
+-- Teachers: a class's steps, the topics to choose from, and where each learner is
+create or replace function public.class_steps(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare c public.classes;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  return jsonb_build_object(
+    'steps', coalesce((select jsonb_agg(jsonb_build_object('id', s.id, 'topic_id', s.topic_id, 'title', t.name, 'rule', s.rule, 'min_pct', s.min_pct,
+               'items', (select count(*) from public._step_items(p_class, s.topic_id))) order by s.position, t.position, t.name)
+               from public.class_steps s join public.topics t on t.id = s.topic_id where s.class_id = p_class), '[]'),
+    'topics', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'name', t.name, 'items', (select count(*) from public._step_items(p_class, t.id)))
+                                         order by t.position, t.name)
+               from public.topics t
+              where t.subject_id = c.subject_id
+                 or t.id in (select topic_id from public.assignments where class_id = p_class
+                             union select topic_id from public.lessons where class_id = p_class
+                             union select topic_id from public.files where class_id = p_class)), '[]'),
+    'learners', coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'name', l.display_name,
+               'steps', (select coalesce(jsonb_agg(jsonb_build_object('step_id', x.step_id, 'open', x.is_open, 'done', x.is_done, 'early', x.is_early) order by x.pos), '[]')
+                           from public._learner_steps(p_class, l.id) x)) order by l.display_name)
+               from public.class_members m join public.profiles l on l.id = m.learner_id where m.class_id = p_class), '[]'));
+end $$;
+-- Set out a class's steps (their order, and how each opens): any of its teachers
+create or replace function public.save_class_steps(p_class uuid, p_steps jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  x jsonb;
+  i int := 0;
+  v_ids uuid[] := '{}';
+  v_topic uuid;
+  v_rule text;
+  c public.classes;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  perform public._locked_check();
+  if jsonb_typeof(coalesce(p_steps, '[]'::jsonb)) <> 'array' then raise exception 'Steps come as a list.'; end if;
+  if jsonb_array_length(coalesce(p_steps, '[]'::jsonb)) > 40 then raise exception 'Up to 40 steps.'; end if;
+  for x in select * from jsonb_array_elements(coalesce(p_steps, '[]'::jsonb)) loop
+    i := i + 1;
+    v_topic := case when coalesce(x ->> 'topic_id', '') ~ '^[0-9a-f-]{36}$' then (x ->> 'topic_id')::uuid end;
+    -- a topic of the class's subject, one its work is on, or the teacher's own
+    if v_topic is null or not exists (select 1 from public.topics t where t.id = v_topic
+         and (t.subject_id = c.subject_id or t.tutor_id = auth.uid()
+              or t.id in (select topic_id from public.assignments where class_id = p_class
+                          union select topic_id from public.lessons where class_id = p_class
+                          union select topic_id from public.files where class_id = p_class))) then
+      raise exception 'That topic isn’t there any more.';
+    end if;
+    if v_topic = any (v_ids) then raise exception 'A topic can only be one step.'; end if;
+    v_rule := coalesce(x ->> 'rule', 'handed_in');
+    if v_rule not in ('open', 'opened', 'handed_in', 'scored') then raise exception 'That isn’t a way for a step to open.'; end if;
+    insert into public.class_steps (class_id, topic_id, position, rule, min_pct, updated_by)
+    values (p_class, v_topic, i, v_rule,
+            case when v_rule = 'scored' then least(100, greatest(1, coalesce(case when coalesce(x ->> 'min_pct', '') ~ '^[0-9]{1,3}$' then (x ->> 'min_pct')::int end, 50))) end,
+            auth.uid())
+    on conflict (class_id, topic_id) do update set position = excluded.position, rule = excluded.rule, min_pct = excluded.min_pct,
+                                                   updated_by = excluded.updated_by, updated_at = now();
+    v_ids := v_ids || v_topic;
+  end loop;
+  delete from public.class_steps where class_id = p_class and not (topic_id = any (v_ids));
+  return public.class_steps(p_class);
+end $$;
+-- Open a step early for one learner (or take that back)
+create or replace function public.open_step_early(p_step uuid, p_learner uuid, p_on boolean default true) returns void
+language plpgsql security definer set search_path = public as $$
+declare s record;
+begin
+  select cs.id, cs.class_id, t.name into s from public.class_steps cs join public.topics t on t.id = cs.topic_id where cs.id = p_step;
+  if s.id is null or not public._class_teacher(s.class_id) then raise exception 'Not your class.'; end if;
+  if not exists (select 1 from public.class_members where class_id = s.class_id and learner_id = p_learner) then
+    raise exception 'They aren’t in this class.';
+  end if;
+  if coalesce(p_on, true) then
+    insert into public.step_unlocks (step_id, learner_id, by_id) values (p_step, p_learner, auth.uid()) on conflict do nothing;
+    if found then
+      perform public.notify_user(p_learner, 'step', '“' || s.name || '” is open for you',
+        'Your teacher opened it early.', jsonb_build_object('class_id', s.class_id));
+    end if;
+  else
+    delete from public.step_unlocks where step_id = p_step and learner_id = p_learner;
+  end if;
+end $$;
+-- A learner's steps in each of their classes that has them, with what's in each
+create or replace function public.my_steps() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('class_id', c.id, 'class', c.name,
+           'steps', (select coalesce(jsonb_agg(jsonb_build_object('id', s.step_id, 'topic_id', s.topic_id, 'title', s.title, 'rule', s.step_rule,
+                       'min_pct', s.min_pct, 'open', s.is_open, 'done', s.is_done, 'after', s.after_title,
+                       'items', (select coalesce(jsonb_agg(jsonb_build_object('kind', it.kind, 'id', it.id, 'title', it.title, 'type', it.type,
+                                   'done', public._item_done(it.kind, it.id, auth.uid(), 'handed_in', null))), '[]')
+                                   from public._step_items(c.id, s.topic_id) it)) order by s.pos), '[]')
+                     from public._learner_steps(c.id, auth.uid()) s)) order by c.name), '[]')
+    from public.class_members m join public.classes c on c.id = m.class_id
+   where m.learner_id = auth.uid() and public.my_role() = 'learner' and not c.archived
+     and exists (select 1 from public.class_steps cs where cs.class_id = c.id)
+$$;
+
+-- ---------------- group work ----------------
+create table if not exists public.work_groups (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  name text not null check (length(trim(name)) between 1 and 60),
+  position int not null default 0
+);
+create table if not exists public.work_group_members (
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  group_id uuid not null references public.work_groups (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  primary key (assignment_id, learner_id)
+);
+create index if not exists work_group_members_group on public.work_group_members (group_id);
+alter table public.work_groups enable row level security;
+alter table public.work_group_members enable row level security;
+
+-- Teachers: a piece of work's groups, the class to make them from, and other group work in the class (to reuse its groups)
+create or replace function public.work_groups(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  return jsonb_build_object(
+    'groups', coalesce((select jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name,
+                 'members', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
+                               from public.work_group_members m join public.profiles p on p.id = m.learner_id where m.group_id = g.id)) order by g.position, g.name)
+                 from public.work_groups g where g.assignment_id = a.id), '[]'),
+    'pool', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name)
+                 from public.class_members m join public.profiles p on p.id = m.learner_id where m.class_id = a.class_id), '[]'),
+    'others', coalesce((select jsonb_agg(jsonb_build_object('id', o.id, 'title', o.title) order by o.created_at desc)
+                 from public.assignments o where o.class_id = a.class_id and o.id <> a.id and exists (select 1 from public.work_groups g where g.assignment_id = o.id)), '[]'));
+end $$;
+-- Save a piece of work's groups (they replace the ones before): [{name, learners: [ids]}]; everyone in the class's list
+create or replace function public.save_work_groups(p_assignment uuid, p_groups jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  x jsonb;
+  l text;
+  g uuid;
+  i int := 0;
+  v_seen uuid[] := '{}';
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  perform public._locked_check();
+  if a.class_id is null then raise exception 'Group work is for work set for a class.'; end if;
+  if jsonb_typeof(coalesce(p_groups, '[]'::jsonb)) <> 'array' or jsonb_array_length(coalesce(p_groups, '[]'::jsonb)) > 60 then
+    raise exception 'Up to 60 groups.';
+  end if;
+  delete from public.work_groups where assignment_id = a.id;
+  for x in select * from jsonb_array_elements(coalesce(p_groups, '[]'::jsonb)) loop
+    continue when jsonb_typeof(x -> 'learners') <> 'array' or jsonb_array_length(x -> 'learners') = 0;
+    i := i + 1;
+    insert into public.work_groups (assignment_id, name, position)
+    values (a.id, coalesce(nullif(left(btrim(coalesce(x ->> 'name', '')), 60), ''), 'Group ' || i), i) returning id into g;
+    for l in select jsonb_array_elements_text(x -> 'learners') loop
+      if l !~ '^[0-9a-f-]{36}$' or not exists (select 1 from public.class_members where class_id = a.class_id and learner_id = l::uuid) then
+        raise exception 'Everyone in a group has to be in the class.';
+      end if;
+      if l::uuid = any (v_seen) then raise exception 'Someone is in two groups.'; end if;
+      v_seen := v_seen || l::uuid;
+      insert into public.work_group_members (assignment_id, group_id, learner_id) values (a.id, g, l::uuid);
+    end loop;
+  end loop;
+  return public.work_groups(p_assignment);
+end $$;
+-- A learner's group for a piece of work: its name, the others in it, and who has started it
+create or replace function public._my_group_json(p_assignment uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('name', g.name,
+           'members', (select coalesce(jsonb_agg(p.display_name order by p.display_name), '[]') from public.work_group_members x
+                        join public.profiles p on p.id = x.learner_id where x.group_id = g.id and x.learner_id <> m.learner_id),
+           'started', (select coalesce(jsonb_agg(distinct p.display_name), '[]') from public.attempts t
+                        join public.work_group_members x on x.learner_id = t.learner_id and x.group_id = g.id
+                        join public.profiles p on p.id = t.learner_id
+                        where t.assignment_id = p_assignment and t.status = 'in_progress' and t.learner_id <> m.learner_id))
+    from public.work_group_members m join public.work_groups g on g.id = m.group_id
+   where m.assignment_id = p_assignment and m.learner_id = auth.uid()
+$$;
+-- A hand-in by someone in a group counts for everyone in it: each of the others gets a copy (what they'd started is
+-- replaced; anyone who handed in their own already keeps theirs)
+create or replace function public._group_handed_in(t public.attempts) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  g uuid;
+  m record;
+  c public.attempts;
+  n int := 0;
+  v_name text;
+begin
+  select * into a from public.assignments where id = t.assignment_id;
+  if not coalesce(a.groups, false) or t.group_copy_of is not null then return 0; end if;
+  select group_id into g from public.work_group_members where assignment_id = a.id and learner_id = t.learner_id;
+  if g is null then return 0; end if;
+  select display_name into v_name from public.profiles where id = t.learner_id;
+  for m in select learner_id from public.work_group_members where group_id = g and learner_id <> t.learner_id loop
+    continue when exists (select 1 from public.attempts x where x.assignment_id = a.id and x.learner_id = m.learner_id
+                            and x.submitted_at is not null and x.group_copy_of is null);
+    delete from public.attempts where assignment_id = a.id and learner_id = m.learner_id and status = 'in_progress';
+    insert into public.attempts (assignment_id, learner_id, tutor_id, number, status, started_at, submitted_at, max_score,
+                                 released, released_at, auto_reason, client, group_copy_of, late_days)
+    values (a.id, m.learner_id, t.tutor_id,
+            coalesce((select max(number) from public.attempts where assignment_id = a.id and learner_id = m.learner_id), 0) + 1,
+            t.status, t.started_at, t.submitted_at, t.max_score, t.released, t.released_at, t.auto_reason, t.client, t.id,
+            public._late_days(a, m.learner_id, t.submitted_at))
+    returning * into c;
+    insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, auto_marks, marks, step_marks, mistake)
+    select c.id, r.question_id, m.learner_id, r.tutor_id, r.answer, r.auto_marks, r.marks, r.step_marks, r.mistake
+      from public.responses r where r.attempt_id = t.id;
+    if t.score is not null then
+      c.late_off := public._late_off(a, c);
+      update public.attempts set late_off = c.late_off,
+             score = greatest((select coalesce(sum(marks), 0) from public.responses where attempt_id = c.id) - c.late_off, 0)
+       where id = c.id;
+    end if;
+    perform public.notify_user(m.learner_id, 'group', coalesce(v_name, 'Someone') || ' handed in ' || a.title || ' for your group',
+      'It counts for everyone in the group.', jsonb_build_object('attempt_id', c.id, 'assignment_id', a.id));
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+-- The group's marks go to each copy the teacher hasn't marked on its own (with each learner's own late rule)
+create or replace function public._group_sync(p_attempt uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  o public.attempts;
+  a public.assignments;
+  c public.attempts;
+  v_was boolean;
+begin
+  select * into o from public.attempts where id = p_attempt;
+  select * into a from public.assignments where id = o.assignment_id;
+  for c in select * from public.attempts where group_copy_of = o.id and not group_own for update loop
+    v_was := c.released;
+    update public.responses r
+       set marks = x.marks, auto_marks = x.auto_marks, step_marks = x.step_marks, feedback_md = x.feedback_md, mistake = x.mistake,
+           rubric = x.rubric, redo = false, updated_at = now()
+      from public.responses x where x.attempt_id = o.id and x.question_id = r.question_id and r.attempt_id = c.id;
+    c.late_off := public._late_off(a, c);
+    update public.attempts
+       set status = o.status, feedback_md = o.feedback_md, criteria = o.criteria, released = o.released, released_at = o.released_at,
+           late_off = case when o.score is null then 0 else c.late_off end,
+           score = case when o.score is null then null
+                        else greatest((select coalesce(sum(marks), 0) from public.responses where attempt_id = c.id) - c.late_off, 0) end
+     where id = c.id returning * into c;
+    if c.released and not v_was then
+      perform public.notify_user(c.learner_id, 'marked', 'Your marks are back: ' || a.title, 'Score ' || c.score || ' / ' || coalesce(c.max_score, 0),
+        jsonb_build_object('attempt_id', c.id, 'assignment_id', a.id));
+    end if;
+  end loop;
+end $$;
+
+-- ---------------- handing in, marking and reopening (with late rules, groups and names kept back) ----------------
+create or replace function public._hand_in(p_attempt uuid, p_why text default null)
+returns public.attempts language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  q record;
+  v_auto numeric;
+  v_all_auto boolean := true;
+  v_total numeric := 0;
+  v_name text;
+  v_redo boolean;
+  v_group int := 0;
+begin
+  select * into t from public.attempts where id = p_attempt for update;
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  if t.status <> 'in_progress' then raise exception 'Already submitted.'; end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  select exists (select 1 from public.responses where attempt_id = t.id and redo) into v_redo;
+  update public.responses set marks = null, auto_marks = null, step_marks = '[]', mistake = null
+   where attempt_id = t.id and redo;
+
+  for q in select qs.id, qs.type, qs.marks, k.answer as key from public.questions qs
+             left join public.question_keys k on k.question_id = qs.id
+            where qs.assignment_id = t.assignment_id loop
+    insert into public.responses (attempt_id, question_id, learner_id, tutor_id)
+    values (t.id, q.id, t.learner_id, t.tutor_id) on conflict do nothing;
+    select public._auto_mark(q.type, r.answer, q.key, q.marks) into v_auto
+      from public.responses r where r.attempt_id = t.id and r.question_id = q.id;
+    if v_auto is null then
+      v_all_auto := false;
+    else
+      update public.responses set auto_marks = v_auto, marks = coalesce(marks, v_auto)
+       where attempt_id = t.id and question_id = q.id;
+    end if;
+  end loop;
+  update public.responses set redo = false where attempt_id = t.id and redo;
+  select bool_and(marks is not null) into v_all_auto from public.responses where attempt_id = t.id;
+  v_all_auto := coalesce(v_all_auto, true);
+
+  select coalesce(sum(marks), 0) into v_total from public.responses where attempt_id = t.id;
+  -- late: counted once, at the first hand-in, by their own due date
+  if not a.practice then t.late_days := coalesce(t.late_days, public._late_days(a, t.learner_id, now())); end if;
+  t.late_off := public._late_off(a, t);
+  update public.attempts
+     set status = case when v_all_auto then 'marked' else 'submitted' end,
+         submitted_at = now(),
+         late_days = t.late_days,
+         late_off = case when v_all_auto then t.late_off else 0 end,
+         score = case when v_all_auto then greatest(v_total - t.late_off, 0) else null end,
+         released = released or a.release_mode = 'on_submit',
+         released_at = case when a.release_mode = 'on_submit' then now() else released_at end,
+         auto_reason = p_why
+   where id = t.id returning * into t;
+  v_group := public._group_handed_in(t);
+
+  select display_name into v_name from public.profiles where id = t.learner_id;
+  if a.anonymous then v_name := case when v_group > 0 then 'A group' else 'A learner' end; end if;
+  if p_why is not null then
+    perform public.notify_user(t.learner_id, 'auto_submitted', 'Your ' || lower(coalesce(a.title, 'work')) || ' was handed in',
+      'Handed in automatically: ' || p_why || '. Your answers were kept.', jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id));
+  end if;
+  -- practice is marked instantly and shows in progress; the tutor isn't pinged each time
+  if a.practice and v_all_auto then return t; end if;
+  perform public.notify_user(t.tutor_id, 'submitted',
+    coalesce(v_name, 'Your learner') || case when v_redo then ' resubmitted ' else ' submitted ' end || a.title
+      || case when v_group > 0 and not a.anonymous then ' for their group' else '' end
+      || case when p_why is not null then ' (handed in automatically)' else '' end,
+    case when p_why is not null then 'Handed in automatically: ' || p_why || '. ' else '' end
+      || case when v_all_auto then 'Marked automatically: ' || t.score || ' / ' || coalesce(t.max_score, 0) else 'Ready for you to mark.' end,
+    jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id, 'learner_id', case when a.anonymous then null else t.learner_id end));
+  return t;
+end $$;
+
+drop function if exists public.finish_marking(uuid, boolean, text);
+create or replace function public.finish_marking(p_attempt uuid, p_release boolean, p_feedback text default null, p_redo boolean default true)
+returns public.attempts language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  v_redo boolean;
+begin
+  select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  if p_release and not coalesce(p_redo, true) then
+    update public.responses set redo = false where attempt_id = t.id and redo;
+  end if;
+  v_redo := p_release and exists (select 1 from public.responses where attempt_id = t.id and redo);
+  if v_redo and exists (select 1 from public.attempts where group_copy_of = t.id) then
+    raise exception 'Group work can’t go back to redo. Return the marks, or use “Let them try again”.';
+  end if;
+  t.late_off := public._late_off(a, t);
+  update public.attempts
+     set score = greatest((select coalesce(sum(marks), 0) from public.responses where attempt_id = t.id) - t.late_off, 0),
+         late_off = t.late_off,
+         status = case when v_redo then 'returned' else 'marked' end,
+         feedback_md = coalesce(public._fix_newlines(p_feedback), feedback_md),
+         released = released or p_release,
+         released_at = case when p_release and not released then now() else released_at end,
+         -- a copy of a group's hand-in marked on its own keeps its own marks from now on
+         group_own = group_own or group_copy_of is not null
+   where id = t.id returning * into t;
+  if t.released then
+    perform public.notify_user(t.learner_id, 'marked',
+      case when v_redo then 'Some questions need another try: ' else 'Your marks are back: ' end || a.title,
+      case when v_redo then 'Open it to see the feedback and redo.' else 'Score ' || t.score || ' / ' || coalesce(t.max_score, 0) end,
+      jsonb_build_object('attempt_id', t.id, 'assignment_id', a.id));
+  end if;
+  perform public._group_sync(t.id);
+  return t;
+end $$;
+
+-- Don't take marks off for lateness on one hand-in (or put it back)
+create or replace function public.set_late_waive(p_attempt uuid, p_waived boolean) returns public.attempts
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+begin
+  select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
+  if t.id is null then raise exception 'Attempt not found.'; end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  t.late_waived := coalesce(p_waived, false);
+  t.late_off := case when t.score is null then 0 else public._late_off(a, t) end;
+  update public.attempts
+     set late_waived = t.late_waived, late_off = t.late_off,
+         score = case when score is null then null
+                      else greatest((select coalesce(sum(marks), 0) from public.responses where attempt_id = t.id) - t.late_off, 0) end
+   where id = t.id returning * into t;
+  return t;
+end $$;
+
+-- The tutor reopens a handed-in attempt: the answers stay, marks are cleared, a timed one gets the time it had left (at
+-- least 5 minutes). A group's hand-in reopens for the one who handed it in (the others' copies go until it's handed in
+-- again); a copy can't be reopened on its own. Reopening after hand-ins closed lets them carry on anyway.
+create or replace function public.reopen_attempt(p_attempt uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  v_left int;
+begin
+  select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
+  if t.id is null then raise exception 'Not found.'; end if;
+  if t.status = 'in_progress' then raise exception 'They’re still working on it.'; end if;
+  if t.group_copy_of is not null and not t.group_own then
+    raise exception 'This was handed in for the group by %. Reopen theirs instead.',
+      coalesce((select p.display_name from public.attempts o join public.profiles p on p.id = o.learner_id where o.id = t.group_copy_of), 'someone else');
+  end if;
+  select * into a from public.assignments where id = t.assignment_id;
+  if a.time_limit_min is not null then
+    v_left := greatest(300, (a.time_limit_min + coalesce(t.extra_min, 0)) * 60 - coalesce(t.time_spent_sec, 0));
+  end if;
+  delete from public.attempts where group_copy_of = t.id and not group_own;
+  update public.attempts
+     set status = 'in_progress', submitted_at = null, score = null, released = false, released_at = null,
+         auto_reason = null, strikes = 0, self_marked_at = null, late_off = 0, reopened_at = now(),
+         started_at = case when a.time_limit_min is null then started_at
+                           else now() - make_interval(secs => (a.time_limit_min + coalesce(t.extra_min, 0)) * 60 - v_left) end
+   where id = t.id;
+  update public.responses set marks = null, auto_marks = null, step_marks = '[]', mistake = null, self_marks = null
+   where attempt_id = t.id;
+  perform public.notify_user(t.learner_id, 'assignment', 'You can carry on with ' || a.title,
+    'Your tutor reopened it. Your answers are still there; hand it in again when you’re done.', jsonb_build_object('assignment_id', a.id));
+end $$;
+
+-- Starting work: not after hand-ins closed for them, and not before its step opens (a group's copies are made by StudyBridge)
+create or replace function public._attempt_gate() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  v_close timestamptz;
+  v_after text;
+begin
+  if new.group_copy_of is not null then return new; end if;
+  select * into a from public.assignments where id = new.assignment_id;
+  if a.id is null or a.practice or a.source = 'self' then return new; end if;
+  v_close := public._closes_for(a, new.learner_id);
+  if v_close is not null and now() > v_close then
+    raise exception 'Hand-ins for this closed on %. Ask your teacher if you need more time.',
+      to_char(v_close at time zone public._tz_of(new.learner_id), 'FMDy FMDD FMMon, HH24:MI');
+  end if;
+  v_after := public._step_lock(a.class_id, a.topic_id, new.learner_id);
+  if v_after is not null then raise exception 'This opens when you finish “%”.', v_after; end if;
+  return new;
+end $$;
+drop trigger if exists attempts_gate on public.attempts;
+create trigger attempts_gate before insert on public.attempts for each row execute function public._attempt_gate();
+
+-- Every minute: time limits, and work still open when hand-ins close for that learner (unless a teacher reopened it
+-- after that, or asked for a redo)
+create or replace function public._auto_hand_in() returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  r record;
+  n int := 0;
+begin
+  for r in select x.id from public.attempts x
+            where x.status = 'in_progress' and public._attempt_timed_out(x)
+            for update skip locked loop
+    perform public._hand_in(r.id, 'time ran out');
+    n := n + 1;
+  end loop;
+  for r in select x.id from public.attempts x join public.assignments a on a.id = x.assignment_id
+            where x.status = 'in_progress' and a.closes_at is not null and a.closes_at < now()
+              and now() > public._closes_for(a, x.learner_id)
+              and (x.reopened_at is null or x.reopened_at < public._closes_for(a, x.learner_id))
+              and not exists (select 1 from public.responses rr where rr.attempt_id = x.id and rr.redo)
+            for update of x skip locked loop
+    begin
+      perform public._hand_in(r.id, 'hand-ins closed');
+      n := n + 1;
+    exception when others then null; -- one that can't be handed in never holds up the rest
+    end;
+  end loop;
+  perform public._watch_away();
+  return n;
+end $$;
+
+-- What a learner sees about their own work: their own due date and closing date, their group
+create or replace function public.my_work_info() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('id', a.id,
+      'due_at', case when public._due_for(a, auth.uid()) is distinct from a.due_at then public._due_for(a, auth.uid()) end,
+      'closes_at', public._closes_for(a, auth.uid()),
+      'group', case when a.groups then public._my_group_json(a.id) end))), '[]')
+    from public.assignments a
+   where public.my_role() = 'learner' and a.tutor_id in (select public._my_teachers())
+     and (a.due_at is not null or a.closes_at is not null or a.groups)
+     and public._assignment_visible_to(a, auth.uid())
+$$;
+
+-- Learners: their attempts (marks hidden until released), who handed in a group's for them, and marks off for lateness
+create or replace function public.my_attempts(p_assignment uuid default null)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', t.id, 'assignment_id', t.assignment_id, 'number', t.number, 'status', t.status,
+    'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
+    'released', public._is_released(t),
+    'released_at', case when public._is_released(t) then t.released_at end,
+    'score', case when public._is_released(t) then t.score end,
+    'max_score', t.max_score,
+    'feedback_md', case when public._is_released(t) then t.feedback_md end,
+    'late_days', t.late_days,
+    'late_off', case when public._is_released(t) then t.late_off end,
+    'group_by', case when t.group_copy_of is not null then
+                  (select p.display_name from public.attempts o join public.profiles p on p.id = o.learner_id where o.id = t.group_copy_of) end
+  ) order by t.started_at desc), '[]')
+  from public.attempts t
+  where t.learner_id = auth.uid() and (p_assignment is null or t.assignment_id = p_assignment)
+$$;
+
+-- One attempt for its learner or the tutor who set it: as before, plus lateness, the group, and (for a group's copy) the
+-- marked copy and recorded feedback of the group's hand-in
+create or replace function public.attempt_detail(p_attempt uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  t public.attempts;
+  a public.assignments;
+  o public.attempts;
+  rel boolean;
+  is_tutor boolean;
+begin
+  select * into t from public.attempts where id = p_attempt;
+  if t.id is null or (t.learner_id <> auth.uid() and t.tutor_id <> auth.uid()) then raise exception 'Attempt not found.'; end if;
+  is_tutor := t.tutor_id = auth.uid();
+  select * into a from public.assignments where id = t.assignment_id;
+  if t.group_copy_of is not null then select * into o from public.attempts where id = t.group_copy_of; end if;
+  rel := public._is_released(t);
+  return jsonb_build_object(
+    'attempt', jsonb_build_object('id', t.id, 'assignment_id', t.assignment_id, 'learner_id', t.learner_id, 'number', t.number,
+      'client', case when is_tutor then t.client end,
+      'seen_at', case when is_tutor then t.seen_at end,
+      'extra_min', coalesce(t.extra_min, 0),
+      'status', t.status, 'started_at', t.started_at, 'submitted_at', t.submitted_at, 'time_spent_sec', t.time_spent_sec,
+      'released', rel, 'score', case when rel or is_tutor then t.score end, 'max_score', t.max_score,
+      'feedback_md', case when rel or is_tutor then t.feedback_md end,
+      'feedback_files', case when rel or is_tutor then
+                          case when t.feedback_files = '[]'::jsonb and o.id is not null then o.feedback_files else t.feedback_files end
+                        else '[]'::jsonb end,
+      'lockdown_events', case when is_tutor then t.lockdown_events else '[]'::jsonb end,
+      'self_mark', a.self_mark, 'self_marked_at', t.self_marked_at, 'self_mark_open', public._self_mark_open(t, a),
+      'strikes', t.strikes, 'auto_reason', t.auto_reason,
+      'criteria', case when rel or is_tutor then t.criteria end,
+      'late_days', t.late_days, 'late_off', case when rel or is_tutor then t.late_off end, 'late_waived', t.late_waived,
+      'late_rule', a.late_rule, 'anonymous', is_tutor and a.anonymous,
+      'group_of', o.id, 'group_own', t.group_own,
+      'group_by', case when o.id is not null then (select display_name from public.profiles where id = o.learner_id) end,
+      'group', case when is_tutor and o.id is null and exists (select 1 from public.attempts c where c.group_copy_of = t.id) then
+                 (select jsonb_agg(jsonb_build_object('attempt_id', c.id, 'learner_id', c.learner_id, 'name', p.display_name, 'own', c.group_own)
+                                   order by p.display_name)
+                    from public.attempts c join public.profiles p on p.id = c.learner_id where c.group_copy_of = t.id) end),
+    'myp', case when coalesce(array_length(a.criteria, 1), 0) > 0 then
+             jsonb_build_object('on', to_jsonb(a.criteria),
+                                'names', public._myp_criteria((select s.myp_group from public.subjects s where s.id = a.subject_id))) end,
+    'responses', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', r.id, 'question_id', r.question_id, 'answer', r.answer, 'updated_at', r.updated_at, 'redo', r.redo,
+        'prof_note', case when is_tutor then r.prof_note end,
+        'marks', case when rel or is_tutor then r.marks end,
+        'auto_marks', case when rel or is_tutor then r.auto_marks end,
+        'feedback_md', case when rel or is_tutor then r.feedback_md end,
+        'feedback_files', case when rel or is_tutor then
+                            case when r.feedback_files = '[]'::jsonb and o.id is not null then coalesce(x.feedback_files, '[]'::jsonb) else r.feedback_files end
+                          else '[]'::jsonb end,
+        'step_marks', case when rel or is_tutor then r.step_marks else '[]'::jsonb end,
+        'annotation_path', case when rel or is_tutor then coalesce(r.annotation_path, x.annotation_path) end,
+        'mistake', case when rel or is_tutor then r.mistake end,
+        'rubric', case when rel or is_tutor then r.rubric end,
+        'self_marks', r.self_marks))
+      from public.responses r left join public.responses x on x.attempt_id = o.id and x.question_id = r.question_id
+     where r.attempt_id = t.id), '[]'),
+    'rubrics', coalesce((select jsonb_agg(jsonb_build_object('id', ru.id, 'title', ru.title, 'criteria', ru.criteria))
+      from public.rubrics ru where ru.id in (select q.rubric_id from public.questions q where q.assignment_id = t.assignment_id)), '[]'),
+    'keys', case when is_tutor or (rel and a.show_answers) or public._self_mark_open(t, a) then coalesce((select jsonb_agg(jsonb_build_object(
+        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
+      from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
+      else '[]'::jsonb end
+  );
+end $$;
+
+-- Files of a group's hand-in (its answers, and its marking once given back) open for the others in the group
+create or replace function public._group_file_ok(p_name text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare
+  seg text[] := string_to_array(p_name, '/');
+  v_att uuid;
+  v_marking boolean := false;
+begin
+  if coalesce(array_length(seg, 1), 0) < 3 then return false; end if;
+  if seg[2] = 'marking' then v_marking := true; v_att := seg[3]::uuid; else v_att := seg[2]::uuid; end if;
+  return exists (select 1 from public.attempts c join public.attempts o on o.id = c.group_copy_of
+                  where c.group_copy_of = v_att and c.learner_id = auth.uid() and o.learner_id::text = seg[1]
+                    and (not v_marking or public._is_released(c)));
+exception when others then return false;
+end $$;
+drop policy if exists sb_work_group on storage.objects;
+create policy sb_work_group on storage.objects for select to authenticated
+  using (bucket_id = 'work' and public._group_file_ok(name));
+
+-- ---------------- results question by question (teachers) ----------------
+-- From each learner's latest hand-in (a group's counted once): how many answered and were marked, the average, how many
+-- got full marks or none, each choice's count, and the commonest wrong answers to number and short questions. No names.
+create or replace function public.work_results(p_assignment uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare a public.assignments;
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or not public._exam_staff(p_assignment) then raise exception 'Not your work.'; end if;
+  return (with latest as (
+      select distinct on (t.learner_id) t.* from public.attempts t
+       where t.assignment_id = a.id and t.submitted_at is not null and t.group_copy_of is null
+       order by t.learner_id, t.number desc),
+    resp as (select r.* from public.responses r join latest t on t.id = r.attempt_id)
+    select jsonb_build_object(
+      'handed_in', (select count(*) from latest),
+      'marked', (select count(*) from latest where status in ('marked', 'returned')),
+      'average', (select round(avg(score * 100 / nullif(max_score, 0)), 1) from latest where score is not null),
+      'questions', coalesce((select jsonb_agg(jsonb_build_object(
+          'id', q.id, 'position', q.position, 'type', q.type, 'marks', q.marks,
+          'answered', (select count(*) from resp r where r.question_id = q.id and r.answer <> '{}'::jsonb),
+          'marked', (select count(*) from resp r where r.question_id = q.id and r.marks is not null),
+          'average', (select round(avg(r.marks), 2) from resp r where r.question_id = q.id and r.marks is not null),
+          'full', (select count(*) from resp r where r.question_id = q.id and r.marks is not null and r.marks >= q.marks),
+          'zero', (select count(*) from resp r where r.question_id = q.id and r.marks is not null and r.marks = 0),
+          'choices', case when q.type = 'mcq' then
+                       (select coalesce(jsonb_object_agg(z.c, z.n), '{}') from (
+                          select c, count(*) n from (
+                            select r.answer ->> 'choice' c from resp r where r.question_id = q.id and r.answer ? 'choice'
+                            union all
+                            select jsonb_array_elements_text(r.answer -> 'choices') from resp r
+                             where r.question_id = q.id and jsonb_typeof(r.answer -> 'choices') = 'array') y
+                          where c is not null group by c) z) end,
+          'common', case when q.type in ('numeric', 'short') then
+                      (select coalesce(jsonb_agg(jsonb_build_object('answer', z.v, 'count', z.n) order by z.n desc, z.v), '[]') from (
+                         select v, count(*) n from (
+                           select left(lower(btrim(coalesce(r.answer ->> 'value', r.answer ->> 'text', ''))), 60) v from resp r
+                            where r.question_id = q.id and r.marks is not null and r.marks < q.marks) y
+                          where v <> '' group by v order by count(*) desc, v limit 3) z) end
+        ) order by q.position)
+        from public.questions q where q.assignment_id = a.id), '[]')));
+end $$;
+
+-- ---------------- a new school year ----------------
+-- Copy a class for next year: its work and lesson notes (not posted, no dates), its steps, planner (no dates) and
+-- gradebook set-up; never its learners, posts, marks or registers. Files stay in My files to set again.
+create or replace function public.copy_class(p_class uuid, p_name text, p_what jsonb default '{}') returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  c public.classes;
+  n public.classes;
+  v_name text := left(btrim(coalesce(p_name, '')), 80);
+  v_owner uuid;
+  v_teachers uuid[];
+  v_cats jsonb := '{}';
+  v_new uuid;
+  v_q uuid;
+  a record;
+  q record;
+  x record;
+  v_work int := 0;
+  v_notes int := 0;
+  w boolean;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not (public._class_teacher(p_class) or public._class_org_manager(p_class)) then raise exception 'Not your class.'; end if;
+  perform public._locked_check();
+  if v_name = '' then raise exception 'Give the new class a name.'; end if;
+  -- its teachers who still teach there (the first stays its main teacher), else whoever copies it
+  select coalesce(array_agg(ct.teacher_id), '{}') into v_teachers
+    from public.class_teachers ct join public.profiles p on p.id = ct.teacher_id
+   where ct.class_id = p_class and p.role = 'tutor' and p.status = 'active'
+     and (c.org_id is null or public._org_of(ct.teacher_id) = c.org_id);
+  v_owner := case when c.tutor_id = any (v_teachers) then c.tutor_id when auth.uid() = any (v_teachers) then auth.uid()
+                  else coalesce(v_teachers[1], auth.uid()) end;
+  insert into public.classes (tutor_id, name, subject_id, org_id) values (v_owner, v_name, c.subject_id, c.org_id) returning * into n;
+  insert into public.class_teachers (class_id, teacher_id) select n.id, x2 from unnest(v_teachers) x2 on conflict do nothing;
+
+  if coalesce((p_what ->> 'grading')::boolean, true) then
+    insert into public.class_grading (class_id, counts, scale, scale_name, updated_by)
+    select n.id, g.counts, g.scale, g.scale_name, auth.uid() from public.class_grading g where g.class_id = p_class;
+    for x in select * from public.grade_categories where class_id = p_class order by position loop
+      v_new := gen_random_uuid();
+      insert into public.grade_categories
+      select (jsonb_populate_record(null::public.grade_categories, to_jsonb(x) || jsonb_build_object('id', v_new, 'class_id', n.id))).*;
+      v_cats := v_cats || jsonb_build_object(x.id::text, v_new);
+    end loop;
+  end if;
+  if coalesce((p_what ->> 'steps')::boolean, true) then
+    insert into public.class_steps (class_id, topic_id, position, rule, min_pct, updated_by)
+    select n.id, s.topic_id, s.position, s.rule, s.min_pct, auth.uid() from public.class_steps s where s.class_id = p_class;
+  end if;
+  if coalesce((p_what ->> 'planner')::boolean, true) then
+    insert into public.units
+    select (jsonb_populate_record(null::public.units, to_jsonb(u) || jsonb_build_object('id', gen_random_uuid(), 'class_id', n.id,
+              'starts', null, 'ends', null, 'created_by', auth.uid(), 'updated_by', auth.uid(), 'created_at', now(), 'updated_at', now()))).*
+      from public.units u where u.class_id = p_class;
+  end if;
+  w := coalesce((p_what ->> 'work')::boolean, true);
+  if w then
+    for a in select * from public.assignments where class_id = p_class and not practice and source <> 'self' and mock_id is null order by created_at loop
+      v_new := gen_random_uuid();
+      insert into public.assignments
+      select (jsonb_populate_record(null::public.assignments, to_jsonb(a) || jsonb_build_object(
+                'id', v_new, 'class_id', n.id, 'tutor_id', case when a.tutor_id = any (v_teachers) then a.tutor_id else v_owner end,
+                'due_at', null, 'closes_at', null, 'visible_from', null, 'release_at', null,
+                'release_mode', case when a.release_mode = 'at' then 'manual' else a.release_mode end, 'visibility', 'hidden', 'draft', false,
+                'learner_ids', null, 'nudged_at', null, 'peer_started_at', null, 'mock_id', null, 'mock_position', null, 'learner_hidden', false,
+                'category_id', v_cats ->> coalesce(a.category_id::text, ''), 'created_at', now(), 'updated_at', now()))).*;
+      for q in select * from public.questions where assignment_id = a.id order by position loop
+        v_q := gen_random_uuid();
+        insert into public.questions
+        select (jsonb_populate_record(null::public.questions, to_jsonb(q) || jsonb_build_object('id', v_q, 'assignment_id', v_new,
+                  'tutor_id', case when a.tutor_id = any (v_teachers) then a.tutor_id else v_owner end,
+                  'rubric_id', case when a.tutor_id = any (v_teachers) then q.rubric_id end, 'created_at', now()))).*;
+        insert into public.question_keys
+        select (jsonb_populate_record(null::public.question_keys, to_jsonb(k) || jsonb_build_object('question_id', v_q,
+                  'tutor_id', case when a.tutor_id = any (v_teachers) then a.tutor_id else v_owner end))).*
+          from public.question_keys k where k.question_id = q.id;
+      end loop;
+      v_work := v_work + 1;
+    end loop;
+  end if;
+  if coalesce((p_what ->> 'notes')::boolean, true) then
+    for x in select * from public.lessons where class_id = p_class order by created_at loop
+      insert into public.lessons
+      select (jsonb_populate_record(null::public.lessons, to_jsonb(x) || jsonb_build_object('id', gen_random_uuid(), 'class_id', n.id,
+                'tutor_id', case when x.tutor_id = any (v_teachers) then x.tutor_id else v_owner end,
+                'visibility', 'hidden', 'visible_from', null, 'learner_ids', null, 'session_id', null, 'created_at', now(), 'updated_at', now()))).*;
+      v_notes := v_notes + 1;
+    end loop;
+  end if;
+  return jsonb_build_object('id', n.id, 'name', n.name, 'work', v_work, 'notes', v_notes,
+    'files', (select count(*) from public.files where class_id = p_class));
+end $$;
+
+-- Moving a centre's or school's learners up a year (the office or a manager), undone within 30 days if it was a mistake
+create table if not exists public.year_moves (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  by_id uuid references public.profiles (id) on delete set null,
+  at timestamptz not null default now(),
+  grades jsonb not null default '[]',      -- [{"id": learner, "from": 9}]
+  put_away uuid[] not null default '{}',   -- classes put away with it
+  undone_at timestamptz
+);
+alter table public.year_moves enable row level security;
+create or replace function public.new_year_info() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v_org uuid := public._my_school();
+begin
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only the office or a manager can do this.'; end if;
+  return jsonb_build_object(
+    'by_grade', coalesce((select jsonb_agg(jsonb_build_object('grade', z.grade, 'count', z.n) order by z.grade) from (
+                  select p.grade, count(*) n from public.profiles p where p.id in (select public._school_learner_ids(v_org)) and p.role = 'learner'
+                     and p.grade between 1 and 12 group by p.grade) z), '[]'),
+    'classes', (select count(*) from public.classes c where c.org_id = v_org and not c.archived
+                  and exists (select 1 from public.class_members m where m.class_id = c.id)),
+    'last', (select jsonb_build_object('id', m.id, 'at', m.at, 'by', (select display_name from public.profiles where id = m.by_id),
+                                       'count', jsonb_array_length(m.grades), 'put_away', cardinality(m.put_away), 'undone_at', m.undone_at,
+                                       'can_undo', m.undone_at is null and m.at > now() - interval '30 days')
+               from public.year_moves m where m.org_id = v_org order by m.at desc limit 1));
+end $$;
+create or replace function public.move_up_year(p_put_away boolean default false, p_again boolean default false) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public._my_school();
+  v_last timestamptz;
+  v_grades jsonb;
+  v_away uuid[] := '{}';
+  m public.year_moves;
+begin
+  if v_org is null or not public._org_office(v_org) then raise exception 'Only the office or a manager can do this.'; end if;
+  select max(at) into v_last from public.year_moves where org_id = v_org and undone_at is null;
+  if v_last > now() - interval '150 days' and not coalesce(p_again, false) then
+    raise exception 'Everyone moved up a year on % already.', to_char(v_last at time zone public._school_tz(v_org), 'FMDD FMMonth YYYY');
+  end if;
+  with up as (
+    update public.profiles p set grade = p.grade + 1
+     where p.id in (select public._school_learner_ids(v_org)) and p.role = 'learner' and p.grade between 1 and 12
+    returning p.id, p.grade - 1 as was)
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'from', was)), '[]') into v_grades from up;
+  if coalesce(p_put_away, false) then
+    -- (classes with learners in them: an empty class is most likely next year's, copied ready)
+    with away as (update public.classes c set archived = true
+                   where c.org_id = v_org and not c.archived and exists (select 1 from public.class_members cm where cm.class_id = c.id)
+                  returning c.id)
+    select coalesce(array_agg(id), '{}') into v_away from away;
+  end if;
+  insert into public.year_moves (org_id, by_id, grades, put_away) values (v_org, auth.uid(), v_grades, v_away) returning * into m;
+  return jsonb_build_object('id', m.id, 'count', jsonb_array_length(v_grades), 'put_away', cardinality(v_away));
+end $$;
+create or replace function public.undo_move_up(p_move uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  m public.year_moves;
+  n int;
+begin
+  select * into m from public.year_moves where id = p_move for update;
+  if m.id is null or not public._org_office(m.org_id) then raise exception 'Only the office or a manager can do this.'; end if;
+  if m.undone_at is not null then raise exception 'That was undone already.'; end if;
+  if m.at < now() - interval '30 days' then raise exception 'It can only be undone within 30 days.'; end if;
+  -- each learner goes back only if nobody has changed their year since
+  update public.profiles p set grade = (g ->> 'from')::int
+    from jsonb_array_elements(m.grades) g
+   where p.id = (g ->> 'id')::uuid and p.grade = (g ->> 'from')::int + 1;
+  get diagnostics n = row_count;
+  update public.classes set archived = false where id = any (m.put_away);
+  update public.year_moves set undone_at = now() where id = m.id;
+  return jsonb_build_object('count', n, 'put_away', cardinality(m.put_away));
+end $$;
+
+revoke execute on function public._late_rule(jsonb) from public, anon, authenticated;
+revoke execute on function public._closes_for(public.assignments, uuid) from public, anon, authenticated;
+revoke execute on function public._late_days(public.assignments, uuid, timestamptz) from public, anon, authenticated;
+revoke execute on function public._late_off(public.assignments, public.attempts) from public, anon, authenticated;
+revoke execute on function public._step_items(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._item_done(text, uuid, uuid, text, int) from public, anon, authenticated;
+revoke execute on function public._learner_steps(uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._step_lock(uuid, uuid, uuid) from public, anon, authenticated;
+revoke execute on function public._my_group_json(uuid) from public, anon, authenticated;
+revoke execute on function public._group_handed_in(public.attempts) from public, anon, authenticated;
+revoke execute on function public._group_sync(uuid) from public, anon, authenticated;
+revoke execute on function public._hand_in(uuid, text) from public, anon, authenticated;
+revoke execute on function public._auto_hand_in() from public, anon, authenticated;
+do $$
+declare f text;
+begin
+  foreach f in array array['class_steps(uuid)', 'save_class_steps(uuid, jsonb)', 'open_step_early(uuid, uuid, boolean)', 'my_steps()',
+                           'work_groups(uuid)', 'save_work_groups(uuid, jsonb)', 'set_late_waive(uuid, boolean)', 'my_work_info()',
+                           'work_results(uuid)', 'copy_class(uuid, text, jsonb)', 'new_year_info()', 'move_up_year(boolean, boolean)',
+                           'undo_move_up(uuid)'] loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;
+
 -- ---------------------------------------------------------------------
 -- Live updates in the app
 -- ---------------------------------------------------------------------

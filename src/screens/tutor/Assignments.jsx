@@ -132,7 +132,7 @@ export default function Assignments() {
     const mine = attempts.filter((t) => t.assignment_id === a.id);
     const who = lk.audience(a);
     const submitted = new Set(mine.filter((t) => t.submitted_at).map((t) => t.learner_id)).size;
-    const toMark = mine.filter((t) => t.status === 'submitted').length;
+    const toMark = mine.filter((t) => t.status === 'submitted' && (!t.group_copy_of || t.group_own)).length; // a group's hand-in is marked once
     return { who, submitted, toMark, started: mine.length };
   }
 
@@ -266,6 +266,11 @@ function AssignmentOptions({ a, stats, onClose }) {
           {!waiting && (
             <button className="btn" onClick={() => go(`/marking?a=${a.id}`)}>
               <Icon name="checkCircle" size={18} /> Handed in ({stats.submitted}){stats.toMark ? ` · ${stats.toMark} to mark` : ''}
+            </button>
+          )}
+          {!waiting && stats.submitted > 0 && (
+            <button className="btn" onClick={() => go(`/work-results/${a.id}`)}>
+              <Icon name="chart" size={18} /> Results by question
             </button>
           )}
           {!waiting && (a.time_limit_min || a.lockdown || a.kind === 'test' || a.kind === 'exam') && (

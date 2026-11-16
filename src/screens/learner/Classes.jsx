@@ -9,6 +9,7 @@ import { SubjectTag } from '../shared/lookups.jsx';
 import { FromPlace } from '../shared/places.jsx';
 import Stream from '../shared/Stream.jsx';
 import { ClassUnits } from '../shared/Planner.jsx';
+import { MyClassSteps } from './Steps.jsx';
 
 export const useMyClasses = (on = true) => useQuery(on ? 'my-classes' : null, api.myClasses);
 
@@ -65,6 +66,7 @@ export function ClassView({ id }) {
       title={c?.name || 'Class'}
       subtitle={c ? (c.teachers || []).join(', ') : ''}
     >
+      <MyClassSteps classId={id} />
       <ClassUnits classId={id} />
       <Stream classId={id} learner />
     </Page>

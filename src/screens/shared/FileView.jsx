@@ -125,6 +125,8 @@ export function useReadingTime(ref, kind = 'file') {
   const acc = useRef(0);
   useEffect(() => {
     if (!ref) return;
+    // opened: counts at once (a class's next step can open when its notes and files have been opened)
+    api.logTime(kind, ref, 1);
     let last = Date.now();
     let lastInput = Date.now();
     const bump = () => (lastInput = Date.now());

@@ -113,6 +113,12 @@ export default function Results({ id }) {
                 {p == null ? 'Marked' : p >= 90 ? 'Outstanding!' : p >= 80 ? 'Great work!' : p >= 60 ? 'Good effort!' : p >= 40 ? 'Getting there' : 'Let’s practise this together'}
               </div>
               <div className="muted">{p != null ? `You scored ${p}%.` : ''} {redo ? '' : 'Look through each question below to see what went well and what to fix.'}</div>
+              {Number(t.late_off) > 0 && (
+                <div className="small">
+                  {Number(t.late_off)} mark{Number(t.late_off) === 1 ? '' : 's'} came off for handing it in {t.late_days === 1 ? 'a day' : `${t.late_days} days`} late.
+                </div>
+              )}
+              {t.group_by && <div className="small muted">{t.group_by} handed this in for your group.</div>}
               {t.status === 'marked' && (
                 <div>
                   <AddWorkToPortfolio attemptId={t.id} />

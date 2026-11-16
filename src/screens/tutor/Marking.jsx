@@ -16,7 +16,8 @@ import { ExtendWork, useDueFor } from './Access.jsx';
 import { StatusPill } from './Learners.jsx';
 import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 import { band } from '../../lib/myp.js';
-import { FeedbackRecorder, PeerCard, SimilarLine, SimilarOverview } from './MarkingExtras.jsx';
+import { FeedbackRecorder, PeerCard, SimilarLine, SimilarOverview, handInLabel } from './MarkingExtras.jsx';
+import { lateOff, lateRuleText } from './WorkRules.jsx';
 import { LockAllCopies, TheirCopy } from '../shared/DriveUI.jsx';
 
 export default function Marking() {
@@ -29,7 +30,10 @@ export default function Marking() {
   const dueFor = useDueFor();
   const only = route.query.get('a');
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
-  const all = (attempts.data || []).filter((t) => !only || t.assignment_id === only);
+  const all = (attempts.data || []).filter((t) => (!only || t.assignment_id === only) && (!t.group_copy_of || t.group_own));
+  // a group's hand-in: the others it counts for
+  const groupOf = (t) => (attempts.data || []).filter((x) => x.group_copy_of === t.id).map((x) => lk.learner(x.learner_id)?.display_name || 'someone');
+  const blind = (t) => !!aById[t.assignment_id]?.anonymous && !t.released;
   const groups = {
     submitted: all.filter((t) => t.status === 'submitted'),
     unreleased: all.filter((t) => t.status === 'marked' && !t.released),
@@ -58,6 +62,9 @@ export default function Marking() {
         only ? (
           <>
             {aById[only] && <LockAllCopies assignment={aById[only]} handedIn={all.filter((t) => t.submitted_at).map((t) => t.learner_id)} />}
+            <button className="btn" onClick={() => go(`/work-results/${only}`)}>
+              <Icon name="chart" size={16} /> Results by question
+            </button>
             <button className="btn" onClick={() => go('/marking')}>
               Show all assignments
             </button>
@@ -79,7 +86,7 @@ export default function Marking() {
       {extending && <ExtendWork a={extending.a} l={extending.l} onClose={() => setExtending(null)} />}
       {only && aById[only] && (
         <>
-          <SimilarOverview assignmentId={only} />
+          <SimilarOverview assignmentId={only} anonymous={!!aById[only].anonymous} />
           <PeerCard assignment={aById[only]} />
         </>
       )}
@@ -152,10 +159,20 @@ export default function Marking() {
                 return (
                   <tr key={t.id} className="click" onClick={() => go(t.status === 'in_progress' && a?.camera ? `/watch/${t.id}` : `/marking/${t.id}`)}>
                     <td data-label="Learner">
-                      <div className="row">
-                        <Avatar person={lk.learner(t.learner_id)} size="sm" />
-                        {lk.learner(t.learner_id)?.display_name || 'Former learner'}
-                      </div>
+                      {blind(t) ? (
+                        <div className="row">
+                          <Icon name="eyeOff" size={16} style={{ color: 'var(--muted)' }} />
+                          {handInLabel(t.id)}
+                        </div>
+                      ) : (
+                        <div className="row">
+                          <Avatar person={lk.learner(t.learner_id)} size="sm" />
+                          <span>
+                            {lk.learner(t.learner_id)?.display_name || 'Former learner'}
+                            {groupOf(t).length > 0 && <span className="tiny muted" style={{ display: 'block' }}>for their group, with {groupOf(t).join(', ')}</span>}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td data-label="Assignment">
                       <div className="strong">{a?.title}</div>
@@ -210,7 +227,8 @@ export function MarkAttempt({ id }) {
   async function reopen() {
     const name = learner?.display_name?.split(' ')[0] || 'them';
     const timed = a?.time_limit_min ? ' They get the time they had left (at least 5 minutes).' : '';
-    if (!(await confirm({ title: `Let ${name} try again?`, body: `It opens again with their answers still there. Any marks for it are cleared, and they hand it in again.${timed}`, ok: 'Reopen it' }))) return;
+    const group = (d?.attempt.group || []).length ? ' The others in the group lose their copy until it’s handed in again.' : '';
+    if (!(await confirm({ title: `Let ${name} try again?`, body: `It opens again with their answers still there. Any marks for it are cleared, and they hand it in again.${timed}${group}`, ok: 'Reopen it' }))) return;
     try {
       await api.reopenAttempt(id);
       invalidate('attempts', `attempt:${id}`);
@@ -284,7 +302,21 @@ export function MarkAttempt({ id }) {
   const redoCount = qs.filter((q) => responses[q.id]?.redo).length;
   const due = dueFor(a, d.attempt.learner_id);
   const late = due && d.attempt.submitted_at && new Date(d.attempt.submitted_at) > new Date(due);
-  const others = attempts.filter((t) => t.assignment_id === a.id && t.status === 'submitted' && t.id !== id);
+  const others = attempts.filter((t) => t.assignment_id === a.id && t.status === 'submitted' && t.id !== id && (!t.group_copy_of || t.group_own));
+  // marked without names until marks go back; a group's hand-in (or one learner's copy of it); marks off for lateness
+  const blind = !!d.attempt.anonymous && !d.attempt.released;
+  const copyOf = d.attempt.group_of && !d.attempt.group_own;
+  const lateDays = Number(d.attempt.late_days) || 0;
+  const off = lateOff(d.attempt.late_rule, lateDays, max, d.attempt.late_waived);
+  async function waive(v) {
+    try {
+      await api.setLateWaive(id, v);
+      invalidate(`attempt:${id}`, 'attempts');
+      toast(v ? 'No marks off for this one' : 'Marks off for lateness again');
+    } catch (e) {
+      toast({ title: 'Couldn’t change that', body: e.message, tone: 'bad' });
+    }
+  }
   const device = [doneOn({ client: d.attempt.client ?? attempts.find((t) => t.id === id)?.client }, a), onPage(d.attempt, a)].filter(Boolean).join(' · ');
 
   // release: give the marks back now (or save them for later); redo: also send the ticked questions back to redo
@@ -314,8 +346,19 @@ export function MarkAttempt({ id }) {
       title={a.title}
       subtitle={
         <span className="row wrap" style={{ gap: 10 }}>
-          <Avatar person={learner} size="sm" />
-          <span className="strong">{learner?.display_name}</span>
+          {blind ? (
+            <>
+              <Icon name="eyeOff" size={16} />
+              <span className="strong">{handInLabel(id)}</span>
+              <span className="pill">Marked without names</span>
+            </>
+          ) : (
+            <>
+              <Avatar person={learner} size="sm" />
+              <span className="strong">{learner?.display_name}</span>
+            </>
+          )}
+          {d.attempt.group_by && <span>for their group (handed in by {d.attempt.group_by})</span>}
           {d.attempt.number > 1 && <span>Attempt {d.attempt.number}</span>}
           <span>{d.attempt.submitted_at ? `Submitted ${when(d.attempt.submitted_at)}` : `Started ${when(d.attempt.started_at)} · not submitted yet`}</span>
           {late && <span className="pill bad">Late</span>}
@@ -331,7 +374,7 @@ export function MarkAttempt({ id }) {
       actions={
         <>
           <span className="save-state">{saving > 0 ? 'Saving…' : 'Saved'}</span>
-          {d.attempt.status !== 'in_progress' && (
+          {d.attempt.status !== 'in_progress' && !copyOf && (
             <button className="btn ghost" onClick={reopen}>
               <Icon name="refresh" size={16} /> Let them try again
             </button>
@@ -370,6 +413,7 @@ export function MarkAttempt({ id }) {
                 notes={notes}
                 attemptId={id}
                 learnerId={d.attempt.learner_id}
+                anonymous={blind}
                 onEdit={(patch) => r && edit(r, patch)}
                 onAnnotate={(x) => setAnnotating(typeof x === 'string' ? { path: x, r, q } : { strokes: x.strokes, r, q })}
               />
@@ -397,6 +441,24 @@ export function MarkAttempt({ id }) {
               <span className="grow" />
               <span className="strong">{max ? pct(total, max) + '%' : ''}</span>
             </div>
+            {lateDays > 0 && (
+              <div className="stack sm">
+                <div className="small">
+                  <span className="pill bad">Late</span> Handed in {lateDays === 1 ? 'a day' : `${lateDays} days`} late
+                  {d.attempt.late_rule ? `: ${lateRuleText(d.attempt.late_rule)}.` : '.'}
+                </div>
+                {d.attempt.late_rule && (
+                  <>
+                    {off > 0 && (
+                      <div className="small">
+                        <b>{off}</b> mark{off === 1 ? '' : 's'} off: <b>{Math.max(0, total - off)}</b> / {max} once you return it.
+                      </div>
+                    )}
+                    <Toggle checked={!!d.attempt.late_waived} onChange={waive} icon="clock" title="Don’t take marks off for this one" sub="For example when they were ill. It shows as late, with no marks off." />
+                  </>
+                )}
+              </div>
+            )}
             <Field label="Overall feedback">
               <MathText value={feedback || ''} onChange={setFeedback} label="Overall feedback" placeholder="What went well, and what to focus on next." minHeight={80} />
             </Field>
@@ -417,6 +479,32 @@ export function MarkAttempt({ id }) {
             </button>
             {others.length > 0 && <div className="muted small">{others.length} more submission{others.length > 1 ? 's' : ''} of this to mark.</div>}
           </div>
+          {(d.attempt.group || []).length > 0 && (
+            <div className="card">
+              <h3 className="row">
+                <Icon name="users" /> Group work
+              </h3>
+              <div className="small">
+                Handed in for the group. When you return the marks, everyone gets them:{' '}
+                {d.attempt.group.map((g, i) => (
+                  <span key={g.attempt_id}>
+                    {i ? ', ' : ''}
+                    <Link to={`/marking/${g.attempt_id}`}>{g.name}</Link>
+                    {g.own ? ' (marked on their own)' : ''}
+                  </span>
+                ))}
+                . To change one person’s marks, open theirs.
+              </div>
+            </div>
+          )}
+          {copyOf && (
+            <div className="card warn">
+              <div className="small">
+                This is {learner?.display_name || 'their'} copy of the group’s hand-in by {d.attempt.group_by}. Marking it here changes only {learner?.display_name?.split(' ')[0] || 'their'}’s marks from now on.{' '}
+                <Link to={`/marking/${d.attempt.group_of}`}>Mark the group’s hand-in</Link>
+              </div>
+            </div>
+          )}
           <CriteriaCard id={id} d={d} />
           <TheirCopy assignment={a} learnerId={d.attempt.learner_id} />
           <PeerCard assignment={a} />
@@ -451,7 +539,7 @@ export function MarkAttempt({ id }) {
   );
 }
 
-function MarkQuestion({ n, q, r, keyRow, notes, attemptId, learnerId, onEdit, onAnnotate }) {
+function MarkQuestion({ n, q, r, keyRow, notes, attemptId, learnerId, anonymous, onEdit, onAnnotate }) {
   const [hints, setHints] = useState(null);
   const rubric = (useQuery(q.rubric_id ? 'rubrics' : null, api.listRubrics).data || []).find((x) => x.id === q.rubric_id);
   const lines = useMemo(() => (r?.answer?.steps || []).filter((s) => s && s.trim()), [r?.answer?.steps]);
@@ -507,7 +595,7 @@ function MarkQuestion({ n, q, r, keyRow, notes, attemptId, learnerId, onEdit, on
           onEdit({ step_marks: next });
         }}
       />
-      {q.type === 'short' && r.answer?.text && <SimilarLine attemptId={attemptId} questionId={q.id} text={r.answer.text} />}
+      {q.type === 'short' && r.answer?.text && <SimilarLine attemptId={attemptId} questionId={q.id} text={r.answer.text} anonymous={anonymous} />}
       {keyRow?.mark_scheme_md && (
         <details className="small">
           <summary className="linkbtn">Your mark scheme</summary>
