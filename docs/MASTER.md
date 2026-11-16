@@ -304,6 +304,7 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Parents, more | Messaging teachers, conference booking, a student portfolio | 5 of the 4 Nov order | Shipped (6 Nov 2026, app 1.1.113) |
 | Classroom gaps | Google Drive and OneDrive (a copy for each learner), recordings, more question types, peer review, a plagiarism check | 6 of the 4 Nov order | Shipped (7 Nov 2026, app 1.1.115) |
 | Activities and trips | Activities, trips and consent forms | 7 of the 4 Nov order | Next |
+| Canvas gaps | Modules that unlock in order, groups in a class, marking without names, question pools, closing dates and late rules, a gradebook by term, copying a class to next year (see Compared with Canvas) | After the 16 Nov 2026 comparison | To discuss |
 | Reach | Languages, Microsoft sign-in, syncing with school office systems | 8 of the 4 Nov order | Planned |
 | Admissions and university guidance | Applications to join, and university and careers guidance | Idea | A future idea, not planned |
 | Landing page and website | Pricing, download link, sign-up | 1.6 part 5 | Shipped |
@@ -322,6 +323,61 @@ Shipped 2–3 Oct 2026, each part as its own auto-update. Needs the server updat
 | Past papers in one click + question bank | Upload a past paper and mark scheme, Prof splits it into questions; every question saved by topic and difficulty | 1.2 | Shipped |
 | Practice mode for learners | Tutor-approved extra questions on weak topics, marked instantly, no AI for learners | 1.2 | Shipped |
 | Prof cost savings | Notes from pages Prof already read, more questions per round: about half the cost | 1.2 | Shipped |
+
+## Compared with Canvas
+
+16 Nov 2026, after step 6 of the 4 Nov order. The 4 Nov comparison (which set the order for schools) was with ManageBac and Google Classroom; this one checks Canvas’s main features against StudyBridge’s code. “Missing” means nothing for it was found in the code.
+
+**Already in StudyBridge (often more than Canvas)**
+
+| Canvas | StudyBridge |
+| --- | --- |
+| Courses | A page for each class: stream, classwork by topic, gradebook, people, planner, attendance |
+| Announcements | Class posts, scheduled, pinned, to one class or several |
+| Pages and files | Lesson notes and My files, shown now or later |
+| Assignments | Text, files, links, photos, drawings, recordings; due dates and extra time per learner; for a class or chosen learners |
+| Quizzes | 12 question types (multiple choice with one or more right answers, fill in the blanks typed or from a list, matching and sorting, putting in order, labelling a picture, recordings, files and more); time limits, a set number of tries; locked-down and watched exams (Canvas needs a paid add-on) |
+| SpeedGrader | Marking with rubrics, recorded feedback, marks released when the teacher is ready |
+| Gradebook | Weighted categories, formative and summative, grading scales, predicted grades, spreadsheet download |
+| Peer review, question banks | Both, plus StudyBridge’s own checked library |
+| Plagiarism check (Turnitin add-on) | Similar answers within one school, centre or tutor only, never the internet |
+| Calendar | A calendar link with lessons, due dates and parents’ meetings; Timetable; the assessment calendar |
+| Conferences | Live video lessons |
+| Roll Call attendance | Registers every lesson, daily registers, parents told the same day |
+| Observer (parent) role | Parents see much more: reports, marks, messages with teachers, meetings, absences, portfolios |
+| Student view | See it as your learner |
+| ePortfolios | Portfolios the learner chooses to show |
+| Collaborations | Google Drive and OneDrive, a copy for each learner |
+| Course pacing | Teaching plans spread over the weeks |
+| Syllabus | The syllabus with a coverage map |
+
+**Partly there**
+
+| Canvas | What StudyBridge has | What’s missing |
+| --- | --- | --- |
+| Outcomes and mastery | Topic strengths per subject, coverage | Outcomes shared across a school; rubrics linked to topics |
+| Course analytics, quiz statistics | Time studied, hand-ins, last seen, the gradebook | Question-by-question results for a quiz (which questions most got wrong) |
+| Course copy | Duplicate one assignment | Copy a whole class or subject; move a class on to next year |
+| Late policy, “until” dates | Work shows as late | A closing date after which hand-ins stop; automatic late deductions |
+| Discussions | Class stream replies | Marked discussions; “post first, then see the others” |
+| Notification settings | On or off, phone alerts, the study reminder | Choosing by kind; a daily summary |
+| Captions (Canvas Studio) | Teachers can type the words of a recording | Automatic captions |
+| Phone apps | The phone web app | Apps in the App Store and Google Play |
+
+**Missing**
+
+- Modules: content in a set order, the next part opening once the last is done, or a different path depending on the score (Mastery Paths)
+- Groups inside a class: group projects with one hand-in (only IB project teams today)
+- Marking without names; a second marker checking marks (moderated marking)
+- Gradebook: drop the lowest score, terms (grading periods), overriding the final grade, learners trying “what if”, importing marks from a spreadsheet
+- Quizzes: random questions per learner from a pool, questions with random numbers, one passage shared by several questions
+- Learners booking time with a teacher (office hours); meetings are only for parents
+- Messages between learners (may be on purpose)
+- Plug-in tools (LTI, e.g. Turnitin), course templates (Blueprint), badges
+- An accessibility checker while writing
+- Already in step 8 of the 4 Nov order: languages, Microsoft sign-in, syncing with school office systems
+
+**Suggested:** for schools the gaps that matter most are modules with unlocking, groups in a class, marking without names and second marking, question pools and random-number questions, closing dates and late rules, a gradebook by term with drop lowest, copying a class to next year, and quiz results question by question. Plug-in tools and badges can wait. Where these go in the order is Aaryan’s call.
 
 ## Known issues and open questions
 
