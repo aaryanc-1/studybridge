@@ -15,6 +15,8 @@ import { band } from '../../lib/myp.js';
 import { AddWorkToPortfolio } from '../shared/Portfolio.jsx';
 import { Recordings } from '../../ui/Recorder.jsx';
 import { PeerReceived } from '../shared/Peer.jsx';
+import { withVars } from '../../lib/randomq.js';
+import { PassageBox, passageStarts } from '../tutor/QuestionExtras.jsx';
 
 function useCelebrate(id, show) {
   useEffect(() => {
@@ -34,10 +36,14 @@ export default function Results({ id }) {
   const detail = useQuery(`attempt:${id}`, () => api.attemptDetail(id));
   const assignments = useQuery('assignments', api.listAssignments).data || [];
   const aid = detail.data?.attempt.assignment_id;
-  const questions = useQuery(aid ? `questions:${aid}` : null, () => api.listQuestions(aid)).data || [];
+  const allQuestions = useQuery(aid ? `questions:${aid}` : null, () => api.listQuestions(aid)).data || [];
+  const passages = useQuery(aid ? `passages:${aid}` : null, () => api.listPassages(aid)).data || [];
   const comments = useQuery('comments', api.listComments).data || [];
   const [busy, setBusy] = useState(false);
   const d = detail.data;
+  // the questions this try got (a pool's share), with their own numbers in random-number questions
+  const questions = allQuestions.filter((q) => !d?.attempt.question_ids || d.attempt.question_ids.includes(q.id)).map((q) => withVars(q, d?.attempt.vars));
+  const starts = passageStarts(questions);
   const a = assignments.find((x) => x.id === aid);
   useCelebrate(id, !!d && d.attempt.released && d.attempt.status === 'marked' && (pct(d.attempt.score, d.attempt.max_score) ?? 0) >= 80);
   if (detail.error && !d) return <Page title="Results"><div className="error">{detail.error.message}</div></Page>;
@@ -168,6 +174,7 @@ export default function Results({ id }) {
                 </span>
               )}
             </div>
+            {starts[q.id] && <PassageBox p={passages.find((p) => p.id === starts[q.id])} />}
             <QuestionPrompt q={q} />
             <div className="label">Your answer</div>
             <AnswerDisplay q={q} mine answer={r.answer || {}} keyAns={k?.answer} stepMarks={rel ? r.step_marks || [] : []} annotation={rel ? r.annotation_path : null} />

@@ -938,6 +938,44 @@ grade wasn't changed since). UI: src/screens/tutor/WorkRules.jsx (LateFields and
 NewSchoolYear on Office → Students), src/screens/learner/Steps.jsx (useLocks/useMySteps, MyClassSteps on the class page, GroupCard,
 WorkRulesNote); My work, WorkDetail, Library, Today and Results show locks, closing, groups and late marks. The sweep never presses
 "Move everyone up…", "Undo it" or "Copy the class". Website: schools.html, features.html, privacy.html.
+Canvas gaps, part 2 (17 Nov 2026, app 1.1.118; Aaryan: "yes and part 2 before step 7, go"; learners see their running grade
+only when the teacher switches it on). Block "Canvas gaps, part 2" near the end of setup.sql (before "Live updates in the app"); it
+also changes part 1's `_work_rules`, `_group_handed_in`, `_hand_in`, `finish_marking`, `_attempt_gate`, `attempt_detail`, `work_results`
+and `copy_class` in place. Pools: `questions.pool` (1–9) and `assignments.pool_pick` {pool: how many} (cleaned by `_pool_pick` in
+`_work_rules`; the column is added in the part 1 section because that trigger names it); `_attempt_gate` picks each try's
+`attempts.question_ids` (every question not in a pool, plus a random few from each pool) and its max_score; `_hand_in`, marking, results,
+second marking and `attempt_detail` use only those (null = all); a pool's questions need the same marks (`poolsProblem` in the editor).
+Random numbers: a numeric question's `options.vars` [{name, min, max, step}] (up to 6, names of 1–2 letters, not pi/ln; trigger
+`_question_rules`) and its key's `answer.formula` (trigger `_key_formula_ok`: it must work at the lowest and highest values);
+`_pick_vars` → `attempts.vars` {question id: {a: 3, …}} (up to 10 tries until `_formula_value` works); `_formula_value(formula, vars)`
+checks the text (letters, numbers, + - * / ^, brackets, sqrt abs round pi sin cos tan ln log exp) and evaluates it, null on any error;
+`_resolved_key(key, vars)` gives `_auto_mark` the value. src/lib/randomq.js (`evalFormula`, a safe parser that works like Postgres:
+unary minus first, ^ left to right; `fillVars`, `withVars`, `sampleVars`, `varsProblem`) fills {a} in for learners, markers and the
+editor's example; mistake cards skip formula questions. Passages: `question_passages` (assignment, title, body_md, position; teachers
+through the assignment, learners via `_questions_open`) and `questions.passage_id` (same assignment, `_question_rules`), shown above the
+first question that uses it (`PassageBox`, `passageStarts` in src/screens/tutor/QuestionExtras.jsx, with QuestionPlace, PoolsCard,
+RandomNumbers, PassagesCard); duplicateAssignment and copy_class copy them. Gradebook: `grade_categories.drop_lowest` (0–5: each learner's
+lowest few left out once they have more marks than that), `class_grading.terms` (the class's own [{name, starts, ends}], else the school's
+`school_dates` terms: `_class_terms`), `class_grading.show_learners`, `final_grades` (class, learner, term 0 = the year, grade, a staff
+note; `set_final_grade`); `_class_marks_in(class, from, to, released)`, `_class_overall_in` (drop lowest), `_class_overall` = the year;
+`class_gradebook(class, term)` (terms, own_terms, each learner's final); `save_grading` takes drop_lowest, terms and show_learners;
+`my_grades()` (learners, classes that show it: released marks only, overall, final, suggested from the class's scale) → `MyGrades`
+(src/screens/learner/MyGrades.jsx) on Progress with "What if…?" (`overallOf` in grading.js is the same sum; text.test checks).
+Second marking: `second_marks` (attempt, marker, asked_by, status asked|done|agreed|cancelled, marks {question: mark}, total, note; one
+open per attempt); `second_markers()` (the other active teachers of `_my_school()`), `second_mark_ask(assignment, marker, share,
+attempts)` (whoever set it; all or a share, at random, of the latest hand-ins), `second_mark_queue`, `second_mark_detail` (never a name,
+the first marks or feedback: "Hand-in 3F2A"), `second_mark_save(id, marks, note, done)`, `second_mark_cancel`, `second_mark_agree(id, take
+{question: 'second'})`, `second_marks_for(assignment)`; `finish_marking` won't give marks back while one is asked or done; storage
+`sb_work_second` (`_second_file_ok`) lets the marker read the answer files. UI: src/screens/tutor/SecondMarking.jsx (AskSecondMarking from a
+piece's marking list, SecondMarkCard on the marking page (agreeing clears marks typed on the page), SecondQueue = Marking → Second marking,
+SecondMarkPage `/second/:id`). Office hours: `office_hours` (teacher, weekday, starts, ends, slot_min, how in_person|video|choice,
+location) and `office_bookings` (unique teacher+start while booked); `_office_slots(teacher, days)` in the teacher's clock,
+`save_office_hours`, `office_hours_mine`, `office_teachers` (a learner's `_teachers_now` with hours, and their bookings), `office_slots`,
+`book_office_hour` (two upcoming per teacher at most; makes a `sessions` row just for them with `office = true`, in person or by video;
+the teacher is told, 'office'), `cancel_office_booking` (cancels the lesson and tells the other side); `my_attendance` leaves office-hours
+lessons out of "no register". UI: src/screens/shared/OfficeHours.jsx (OfficeHoursTeacher = Timetable → Office hours, OfficeHoursCard on
+Today, OfficeHoursLearner `/office-hours`). Website: schools.html "Fair tests, clear grades" and "Office hours", features.html "Fair tests
+and office hours", privacy.html (second marking, office hours).
 
 ## 2.0 (agreed 7 Oct 2026, not built; full plan in docs/MASTER.md "2.0 plan")
 - Aaryan is the Owner and decides everything, including who gets Admin/Reviewer access. He is Owner, Admin and

@@ -38,6 +38,7 @@ import { TimetableSetup, TutorTimetable } from './SchoolSetup.jsx';
 import Office, { StudentPage, officeAccess } from './Office.jsx';
 import { PeerPage } from '../shared/Peer.jsx';
 import { WorkResults, ownHandIn } from './WorkRules.jsx';
+import { SecondMarkPage } from './SecondMarking.jsx';
 
 function notificationTarget(n, office, officeOnly) {
   const r = n.ref || {};
@@ -52,6 +53,9 @@ function notificationTarget(n, office, officeOnly) {
   if (n.kind === 'absence_report') return office ? '/office/absences' : '/timetable/attendance';
   if (n.kind === 'record' && r.learner_id) return office ? `/student/${r.learner_id}` : `/learners/${r.learner_id}/details`;
   if ((n.kind === 'submitted' || n.kind === 'self_marked') && r.attempt_id) return `/marking/${r.attempt_id}`;
+  if (n.kind === 'second_mark') return '/marking?tab=second'; // asked to second-mark
+  if (n.kind === 'second_done' && r.attempt_id) return `/marking/${r.attempt_id}`;
+  if (n.kind === 'office') return '/timetable/office'; // a learner booked (or cancelled) office hours
   if (n.kind === 'note' && r.learner_id) return `/messages/${r.learner_id}`;
   if (n.kind === 'joined' && r.learner_id) return `/learners/${r.learner_id}`;
   if (n.kind === 'lockdown' && r.attempt_id) return `/watch/${r.attempt_id}`;
@@ -142,6 +146,7 @@ export default function TutorApp() {
   else if (a === 'marking' && b) page = <MarkAttempt id={b} />;
   else if (a === 'peer' && b) page = <PeerPage id={b} />;
   else if (a === 'work-results' && b) page = <WorkResults id={b} />;
+  else if (a === 'second' && b) page = <SecondMarkPage id={b} />;
   else if (a === 'marking') page = <Marking />;
   else if (a === 'prof' && b === 'history') page = <ProfHistory />;
   else if (a === 'claude' || a === 'prof') page = <Prof />;

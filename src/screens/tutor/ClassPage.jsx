@@ -147,7 +147,9 @@ function Classwork({ id }) {
 // class's categories (each weighted), with each learner's overall, a grade suggested by plain maths and their predicted
 // grade. Formative work counts unless the class counts summative work only.
 function Gradebook({ id, name }) {
-  const q = useQuery(`gradebook:${id}`, () => api.classGradebook(id));
+  const [term, setTerm] = useState(0); // 0: the whole year
+  const q = useQuery(`gradebook:${id}:${term}`, () => api.classGradebookTerm(id, term || null));
+  const [finalFor, setFinalFor] = useState(null); // a learner: the final grade the teacher sets
   const toast = useToast();
   const confirm = useConfirm();
   const [view, setView] = useState('all'); // all | summative | formative | a category's id
@@ -169,8 +171,9 @@ function Gradebook({ id, name }) {
   const byCat = (c) => avg(g.learners.map((l) => l.by_category?.[c]));
   const suggests = !!(g.myp || g.grading.scale || g.grading.boundaries);
   const missing = g.learners.filter((l) => !l.predicted && l.suggested);
-  const show = (x) => {
+  const show = (x, w) => {
     if (!x) return { text: '—', tone: 'muted' };
+    if (w?.anonymous && !x.released && x.pct != null) return { text: 'Marked, not back', tone: '' };
     if (x.status === 'in_progress') return { text: 'Working', tone: 'muted' };
     if (x.pct == null) return x.status === 'returned' ? { text: 'Working', tone: 'muted' } : { text: 'To mark', tone: 'warn' };
     const p = Math.round(x.pct);
@@ -209,7 +212,7 @@ function Gradebook({ id, name }) {
     const pc = (v) => (v == null ? '' : pctText(v));
     const head = ['Learner', ...work.map((w) => `${w.title}${w.category_id ? ` (${catName(w.category_id)})` : ''}`), ...cats.map((c) => `${c.name} (${pctText(c.weight)})`), 'Overall'];
     if (suggests) head.push('Suggested');
-    head.push('Predicted');
+    head.push('Final', 'Predicted');
     const rows = [head.map(esc).join(',')];
     for (const l of g.learners) {
       const r = [
@@ -222,7 +225,7 @@ function Gradebook({ id, name }) {
         pc(l.overall),
       ];
       if (suggests) r.push(l.suggested || '');
-      r.push(l.predicted?.grade || '');
+      r.push(l.final?.grade || '', l.predicted?.grade || '');
       rows.push(r.map(esc).join(','));
     }
     const last = ['Class average', ...work.map((w) => pc(byWork(w.id))), ...cats.map((c) => pc(byCat(c.id))), pc(avg(g.learners.map((l) => l.overall)))];
@@ -249,6 +252,16 @@ function Gradebook({ id, name }) {
             <span className="small">{how.join(' · ')}</span>
           </span>
           <span className="row wrap" style={{ gap: 8 }}>
+            {(g.terms || []).length > 0 && (
+              <select className="select" style={{ width: 'auto', minHeight: 34 }} value={term} onChange={(e) => setTerm(Number(e.target.value))} aria-label="Which term">
+                <option value={0}>The whole year</option>
+                {g.terms.map((t) => (
+                  <option key={t.n} value={t.n}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button className="btn sm" onClick={() => setSetting(true)}>
               <Icon name="settings" size={15} /> Set up
             </button>
@@ -318,6 +331,7 @@ function Gradebook({ id, name }) {
                   ))}
                   <th className="gb-sum">Overall</th>
                   {suggests && <th className="gb-sum">Suggested</th>}
+                  <th className="gb-sum">Final</th>
                   <th className="gb-sum">Predicted</th>
                 </tr>
               </thead>
@@ -327,7 +341,7 @@ function Gradebook({ id, name }) {
                     <th scope="row">{l.name}</th>
                     {work.map((w) => {
                       const x = cell(l.id, w.id);
-                      const s = show(x);
+                      const s = show(x, w);
                       return (
                         <td key={w.id} className={w.counts ? '' : 'gb-off'}>
                           {x ? (
@@ -354,6 +368,11 @@ function Gradebook({ id, name }) {
                       {l.levels && Object.keys(l.levels).length > 0 && <span className="gb-crit">{levelsText(l.levels)}</span>}
                     </td>
                     {suggests && <td className="gb-sum">{l.suggested || <span className="muted">—</span>}</td>}
+                    <td className="gb-sum">
+                      <button className={'btn sm' + (l.final ? '' : ' ghost')} onClick={() => setFinalFor(l)} aria-label={`Final grade for ${l.name}`} title={l.final?.note || 'Set the grade yourself (it shows instead of the suggested one)'}>
+                        {l.final ? <b>{l.final.grade}</b> : 'Set'}
+                      </button>
+                    </td>
                     <td className="gb-sum">
                       <button className={'btn sm' + (l.predicted ? '' : ' ghost')} onClick={() => setPredicting(l)} aria-label={`Predicted grade for ${l.name}`}>
                         {l.predicted ? (
@@ -383,6 +402,7 @@ function Gradebook({ id, name }) {
                   <td className="strong gb-sum">{pctText(avg(g.learners.map((l) => l.overall)))}</td>
                   {suggests && <td className="gb-sum" />}
                   <td className="gb-sum" />
+                  <td className="gb-sum" />
                 </tr>
               </tbody>
             </table>
@@ -398,6 +418,7 @@ function Gradebook({ id, name }) {
       {setting && <GradingSetup id={id} g={g} onClose={() => setSetting(false)} />}
       {editing && <WorkGrading classId={id} w={editing} cats={cats} onClose={() => setEditing(null)} />}
       {predicting && <Predicted classId={id} l={predicting} myp={!!g.myp} onClose={() => setPredicting(null)} />}
+      {finalFor && <FinalGrade classId={id} l={finalFor} term={term} termName={term ? g.terms.find((t) => t.n === term)?.name : null} onClose={() => setFinalFor(null)} />}
     </>
   );
 }
@@ -405,7 +426,10 @@ function Gradebook({ id, name }) {
 // Set up a class's gradebook: categories and their weights, what counts, and the grade scale for suggested grades
 function GradingSetup({ id, g, onClose }) {
   const toast = useToast();
-  const [cats, setCats] = useState(() => g.categories.map((c) => ({ id: c.id, name: c.name, weight: String(Number(c.weight)) })));
+  const [cats, setCats] = useState(() => g.categories.map((c) => ({ id: c.id, name: c.name, weight: String(Number(c.weight)), drop_lowest: Number(c.drop_lowest) || 0 })));
+  const [showLearners, setShowLearners] = useState(!!g.grading.show_learners);
+  const [terms, setTerms] = useState(() => (g.own_terms || []).map((t) => ({ name: t.name, starts: t.starts, ends: t.ends })));
+  const schoolTerms = g.own_terms?.length ? [] : g.terms || [];
   const [counts, setCounts] = useState(g.grading.counts || 'all');
   const [scaleName, setScaleName] = useState(g.grading.scale ? g.grading.scale_name || 'own' : '');
   const [scale, setScale] = useState(() => (g.grading.scale || []).map((x) => ({ grade: x.grade, min: String(Number(x.min)) })));
@@ -425,14 +449,17 @@ function GradingSetup({ id, g, onClose }) {
     if (cats.some((c) => !c.name.trim())) return setErr('Every category needs a name.');
     if (cats.some((c) => c.weight === '' || !(Number(c.weight) >= 0 && Number(c.weight) <= 100))) return setErr('Give each category a weight from 0 to 100.');
     if (cats.length && total <= 0) return setErr('At least one category needs a weight above 0.');
+    if (terms.some((t) => (t.name.trim() || t.starts || t.ends) && (!t.name.trim() || !t.starts || !t.ends || t.ends < t.starts))) return setErr('Give each term a name, the day it starts and the day it ends.');
     const useScale = scaleName && !g.myp ? scale.filter((x) => String(x.grade).trim() || x.min !== '') : [];
     const problem = useScale.length ? scaleProblem(useScale) : '';
     if (problem) return setErr(problem);
     setBusy(true);
     try {
       await api.saveGrading(id, {
-        categories: cats.map((c) => ({ ...(c.id ? { id: c.id } : {}), name: c.name.trim(), weight: Number(c.weight) })),
+        categories: cats.map((c) => ({ ...(c.id ? { id: c.id } : {}), name: c.name.trim(), weight: Number(c.weight), drop_lowest: Number(c.drop_lowest) || 0 })),
         counts,
+        show_learners: showLearners,
+        terms: terms.filter((t) => t.name.trim() || t.starts || t.ends).map((t) => ({ name: t.name.trim(), starts: t.starts, ends: t.ends })),
         scale: useScale.length ? useScale.map((x) => ({ grade: String(x.grade).trim(), min: Number(x.min) })) : null,
         scale_name: useScale.length ? scaleName : null,
       });
@@ -475,6 +502,14 @@ function GradingSetup({ id, g, onClose }) {
                 <input className="input" style={{ width: 80 }} type="number" min="0" max="100" aria-label={`${c.name || 'Category'} weight`} value={c.weight} onChange={(e) => setCat(i, { weight: e.target.value })} />
                 <span className="small muted">%</span>
               </span>
+              <select className="select" style={{ width: 'auto', minHeight: 34 }} value={c.drop_lowest || 0} onChange={(e) => setCat(i, { drop_lowest: Number(e.target.value) })} aria-label={`${c.name || 'Category'}: leave out the lowest`}>
+                <option value={0}>Count every mark</option>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>
+                    Leave out the lowest {n === 1 ? '' : n + ' '}mark{n === 1 ? '' : 's'}
+                  </option>
+                ))}
+              </select>
               <button className="btn ghost icon sm" aria-label={`Take away ${c.name || 'this category'}`} onClick={() => setCats((list) => list.filter((_, j) => j !== i))}>
                 <Icon name="trash" size={15} />
               </button>
@@ -521,6 +556,45 @@ function GradingSetup({ id, g, onClose }) {
             ]}
           />
           <div className="small muted">Formative work is practice and feedback; summative work counts for grades. Tests and exams are summative unless you say otherwise on the work.</div>
+        </div>
+        <div className="stack sm">
+          <h3>Terms</h3>
+          {schoolTerms.length > 0 && !terms.length ? (
+            <div className="small muted">
+              The gradebook uses your school’s terms: {schoolTerms.map((t) => t.name).join(', ')}.{' '}
+              <button className="linkbtn" onClick={() => setTerms(schoolTerms.map((t) => ({ name: t.name, starts: t.starts, ends: t.ends })))}>
+                Use this class’s own
+              </button>
+            </div>
+          ) : (
+            <div className="small muted">Pick a term at the top of the gradebook to see just that term’s work and overall. Work belongs to the term it’s due in.</div>
+          )}
+          {terms.map((t, i) => (
+            <div key={i} className="row wrap" style={{ gap: 6 }}>
+              <input className="input" style={{ width: 140 }} value={t.name} maxLength={40} placeholder="Term 1" aria-label={`Term ${i + 1} name`} onChange={(e) => setTerms((ts) => ts.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+              <input className="input" type="date" style={{ width: 'auto' }} value={t.starts || ''} aria-label={`Term ${i + 1} starts`} onChange={(e) => setTerms((ts) => ts.map((x, j) => (j === i ? { ...x, starts: e.target.value } : x)))} />
+              <span className="small">to</span>
+              <input className="input" type="date" style={{ width: 'auto' }} value={t.ends || ''} aria-label={`Term ${i + 1} ends`} onChange={(e) => setTerms((ts) => ts.map((x, j) => (j === i ? { ...x, ends: e.target.value } : x)))} />
+              <button className="btn ghost icon sm" aria-label={`Take away term ${i + 1}`} onClick={() => setTerms((ts) => ts.filter((_, j) => j !== i))}>
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          ))}
+          {terms.length < 6 && (
+            <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => setTerms((ts) => [...ts, { name: `Term ${ts.length + 1}`, starts: '', ends: '' }])}>
+              <Icon name="plus" size={15} /> Add a term
+            </button>
+          )}
+        </div>
+        <div className="stack sm">
+          <h3>What learners see</h3>
+          <Toggle
+            checked={showLearners}
+            onChange={setShowLearners}
+            icon="eye"
+            title="Show learners their running grade"
+            sub="On their Progress page: their overall from marks you’ve given back, the grade it suggests (or the final grade you set), and a “what if” to try marks for work still to come."
+          />
         </div>
         <div className="stack sm">
           <h3>Suggested grades</h3>
@@ -570,6 +644,51 @@ function GradingSetup({ id, g, onClose }) {
           )}
         </div>
         {err && <div className="error">{err}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+// The final grade a teacher sets for the year or a term (instead of the suggested one); learners see it when shown
+function FinalGrade({ classId, l, term, termName, onClose }) {
+  const toast = useToast();
+  const [grade, setGrade] = useState(l.final?.grade || l.suggested || '');
+  const [note, setNote] = useState(l.final?.note || '');
+  const [busy, setBusy] = useState(false);
+  async function save(clear = false) {
+    setBusy(true);
+    try {
+      await api.setFinalGrade(classId, l.id, term, clear ? '' : grade.trim(), note.trim());
+      invalidate(`gradebook:${classId}`);
+      toast(clear ? 'Final grade taken away' : 'Final grade saved');
+      onClose();
+    } catch (e) {
+      toast({ title: 'Couldn’t save it', body: e.message, tone: 'bad' });
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={`${l.name}’s final grade${termName ? `, ${termName}` : ''}`} onClose={onClose}>
+      <div className="stack">
+        <div className="small muted">Your grade for {termName || 'the year'}, instead of the one the marks suggest{l.suggested ? ` (${l.suggested})` : ''}. Their overall is {pctText(l.overall)}.</div>
+        <Field label="Grade">
+          <input className="input" value={grade} maxLength={12} onChange={(e) => setGrade(e.target.value)} />
+        </Field>
+        <Field label="Why (for you and other teachers)">
+          <input className="input" value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Moderated with the department" />
+        </Field>
+        <div className="foot row between">
+          {l.final ? (
+            <button className="btn ghost" disabled={busy} onClick={() => save(true)}>
+              Take it away
+            </button>
+          ) : (
+            <span />
+          )}
+          <button className="btn primary" disabled={busy || !grade.trim()} onClick={() => save(false)}>
+            Save
+          </button>
+        </div>
       </div>
     </Modal>
   );

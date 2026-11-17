@@ -14,6 +14,8 @@ import { Thread } from '../shared/Messages.jsx';
 import { FileBody } from '../shared/FileView.jsx';
 import { joinRoom } from '../shared/Live.jsx';
 import AnswerInput from './AnswerInputs.jsx';
+import { withVars } from '../../lib/randomq.js';
+import { PassageBox, passageStarts } from '../tutor/QuestionExtras.jsx';
 import { Hint, ReportProblem } from './SelfStudy.jsx';
 import { strokesPicture } from '../../ui/DrawingPad.jsx';
 import { confetti } from '../../ui/confetti.js';
@@ -31,6 +33,7 @@ export default function Attempt({ id }) {
   const assignments = useQuery('assignments', api.listAssignments);
   const a = (assignments.data || []).find((x) => x.id === aid);
   const questions = useQuery(aid ? `questions:${aid}` : null, () => api.listQuestions(aid));
+  const passages = useQuery(aid ? `passages:${aid}` : null, () => api.listPassages(aid)).data || [];
   const files = useQuery('files', api.listFiles).data || [];
   const comments = useQuery('comments', api.listComments).data || [];
   const [answers, setAnswers] = useState(null);
@@ -48,8 +51,13 @@ export default function Attempt({ id }) {
   const camRoom = useRef(null);
   const selfVideo = useRef(null);
   const d = detail.data;
-  const qs = questions.data || [];
+  // the questions this try got (a pool's share), with their own numbers in random-number questions
+  const qs = useMemo(
+    () => (questions.data || []).filter((q) => !d?.attempt.question_ids || d.attempt.question_ids.includes(q.id)).map((q) => withVars(q, d?.attempt.vars)),
+    [questions.data, d],
+  );
   const t = d?.attempt;
+  const starts = useMemo(() => passageStarts(qs), [qs]);
   const redoOnly = useMemo(() => (d?.responses || []).some((r) => r.redo), [d]);
   const editable = (qid) => !redoOnly || (d?.responses || []).find((r) => r.question_id === qid)?.redo;
 
@@ -677,6 +685,7 @@ export default function Attempt({ id }) {
                       {Number(q.marks)} mark{Number(q.marks) === 1 ? '' : 's'}
                     </span>
                   </div>
+                  {starts[q.id] && <PassageBox p={passages.find((p) => p.id === starts[q.id])} />}
                   <QuestionPrompt q={q} />
                   {a.practice && <Hint md={q.hint_md} />}
                   <AnswerInput q={q} value={answers[q.id] || {}} onChange={(v) => change(q.id, v)} attemptId={id} disabled={!can} locked={locked || watching || !!a?.camera} />

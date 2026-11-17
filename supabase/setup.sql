@@ -3941,6 +3941,8 @@ create unique index if not exists sessions_series_date on public.sessions (serie
 -- A lesson in person (30 Oct 2026): no video, and where it is ("At Aranya’s"); weekly lessons pass both on to each lesson
 alter table public.sessions add column if not exists in_person boolean not null default false;
 alter table public.sessions add column if not exists location text check (location is null or length(location) <= 80);
+-- Office hours a learner booked (17 Nov 2026): a lesson like any other, but never "waiting for a register"
+alter table public.sessions add column if not exists office boolean not null default false;
 alter table public.lesson_series add column if not exists in_person boolean not null default false;
 alter table public.lesson_series add column if not exists location text check (location is null or length(location) <= 80);
 
@@ -13083,7 +13085,7 @@ begin
                       select jsonb_build_object('kind', 'live', 'id', se.id, 'day', (se.starts_at at time zone public._tz_of(auth.uid()))::date,
                                'at', se.starts_at, 'title', se.title, 'in_person', se.in_person) as z
                         from public.sessions se
-                       where se.tutor_id = auth.uid() and not se.cancelled and cardinality(se.learner_ids) > 0
+                       where se.tutor_id = auth.uid() and not se.cancelled and not se.office and cardinality(se.learner_ids) > 0
                          and se.starts_at between now() - interval '7 days' and now()
                          and not exists (select 1 from public.attendance x where x.session_id = se.id
                                           and (x.marked_by is not null or not se.in_person))
@@ -18055,6 +18057,7 @@ begin
    where r.learner_id = auth.uid() and r.marks is not null and r.marks < q.marks and q.marks > 0
      and t.status in ('marked', 'returned') and public._is_released(t)
      and q.image_path is null and q.type in ('mcq', 'numeric', 'short', 'steps', 'upload', 'drawing')
+     and not coalesce(k.answer ? 'formula', false) -- (random numbers: everyone's question is different)
      and not exists (select 1 from public.cards c where c.learner_id = auth.uid() and c.question_id = q.id and c.source = 'mistake')
    order by q.id, t.submitted_at desc
   on conflict do nothing;
@@ -19615,6 +19618,7 @@ alter table public.assignments add column if not exists closes_at timestamptz;  
 alter table public.assignments add column if not exists late_rule jsonb;              -- {"per_day": 10, "max": 50}: % of the marks off a day late
 alter table public.assignments add column if not exists anonymous boolean not null default false; -- marked without names
 alter table public.assignments add column if not exists groups boolean not null default false;    -- group work
+alter table public.assignments add column if not exists pool_pick jsonb;   -- question pools (part 2, 17 Nov 2026): {"1": 2}
 alter table public.attempts add column if not exists late_days int;                   -- days late when first handed in (0 on time; null no due date)
 alter table public.attempts add column if not exists late_off numeric not null default 0; -- marks taken off for it
 alter table public.attempts add column if not exists late_waived boolean not null default false;
@@ -19636,6 +19640,7 @@ create or replace function public._work_rules() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   new.late_rule := public._late_rule(new.late_rule);
+  new.pool_pick := public._pool_pick(new.pool_pick);
   if new.practice or new.source = 'self' then
     new.closes_at := null; new.late_rule := null; new.groups := false;
   end if;
@@ -19655,7 +19660,7 @@ begin
 end $$;
 drop trigger if exists assignments_rules on public.assignments;
 create trigger assignments_rules before insert or update of closes_at, due_at, late_rule, groups, class_id, peer, lockdown, camera, watched,
-  mock_id, self_mark, practice, source on public.assignments for each row execute function public._work_rules();
+  mock_id, self_mark, practice, source, pool_pick on public.assignments for each row execute function public._work_rules();
 
 -- When hand-ins close for one learner: the closing date, pushed by their extra days, or a later one-off extension
 create or replace function public._closes_for(a public.assignments, p_learner uuid) returns timestamptz
@@ -19968,11 +19973,11 @@ begin
                             and x.submitted_at is not null and x.group_copy_of is null);
     delete from public.attempts where assignment_id = a.id and learner_id = m.learner_id and status = 'in_progress';
     insert into public.attempts (assignment_id, learner_id, tutor_id, number, status, started_at, submitted_at, max_score,
-                                 released, released_at, auto_reason, client, group_copy_of, late_days)
+                                 released, released_at, auto_reason, client, group_copy_of, late_days, question_ids, vars)
     values (a.id, m.learner_id, t.tutor_id,
             coalesce((select max(number) from public.attempts where assignment_id = a.id and learner_id = m.learner_id), 0) + 1,
             t.status, t.started_at, t.submitted_at, t.max_score, t.released, t.released_at, t.auto_reason, t.client, t.id,
-            public._late_days(a, m.learner_id, t.submitted_at))
+            public._late_days(a, m.learner_id, t.submitted_at), t.question_ids, t.vars)
     returning * into c;
     insert into public.responses (attempt_id, question_id, learner_id, tutor_id, answer, auto_marks, marks, step_marks, mistake)
     select c.id, r.question_id, m.learner_id, r.tutor_id, r.answer, r.auto_marks, r.marks, r.step_marks, r.mistake
@@ -20044,10 +20049,10 @@ begin
 
   for q in select qs.id, qs.type, qs.marks, k.answer as key from public.questions qs
              left join public.question_keys k on k.question_id = qs.id
-            where qs.assignment_id = t.assignment_id loop
+            where qs.assignment_id = t.assignment_id and (t.question_ids is null or qs.id = any (t.question_ids)) loop
     insert into public.responses (attempt_id, question_id, learner_id, tutor_id)
     values (t.id, q.id, t.learner_id, t.tutor_id) on conflict do nothing;
-    select public._auto_mark(q.type, r.answer, q.key, q.marks) into v_auto
+    select public._auto_mark(q.type, r.answer, public._resolved_key(q.key, t.vars -> q.id::text), q.marks) into v_auto
       from public.responses r where r.attempt_id = t.id and r.question_id = q.id;
     if v_auto is null then
       v_all_auto := false;
@@ -20105,6 +20110,9 @@ begin
   select * into t from public.attempts where id = p_attempt and tutor_id = auth.uid() for update;
   if t.id is null then raise exception 'Attempt not found.'; end if;
   select * into a from public.assignments where id = t.assignment_id;
+  if p_release and exists (select 1 from public.second_marks s where s.attempt_id = t.id and s.status in ('asked', 'done')) then
+    raise exception 'The second marking isn’t agreed yet. Agree the marks (or cancel it) first.';
+  end if;
   if p_release and not coalesce(p_redo, true) then
     update public.responses set redo = false where attempt_id = t.id and redo;
   end if;
@@ -20194,6 +20202,9 @@ declare
   a public.assignments;
   v_close timestamptz;
   v_after text;
+  rq record;
+  v jsonb;
+  v_vars jsonb := '{}';
 begin
   if new.group_copy_of is not null then return new; end if;
   select * into a from public.assignments where id = new.assignment_id;
@@ -20205,6 +20216,27 @@ begin
   end if;
   v_after := public._step_lock(a.class_id, a.topic_id, new.learner_id);
   if v_after is not null then raise exception 'This opens when you finish “%”.', v_after; end if;
+  -- question pools: from each pool its share at random; every other question as it is
+  if a.pool_pick is not null then
+    select array_agg(y.id) into new.question_ids from (
+      select q.id from public.questions q where q.assignment_id = a.id and q.pool is null
+      union all
+      select z.id from (select q.id, q.pool, row_number() over (partition by q.pool order by random()) rn
+                          from public.questions q where q.assignment_id = a.id and q.pool is not null) z
+       where z.rn <= coalesce((a.pool_pick ->> z.pool::text)::int, 0)) y;
+    new.max_score := (select coalesce(sum(marks), 0) from public.questions where id = any (coalesce(new.question_ids, '{}')));
+  end if;
+  -- random numbers: this learner's own, picked again until every answer's formula works with them
+  for rq in select qs.id, qs.options, k.answer from public.questions qs left join public.question_keys k on k.question_id = qs.id
+             where qs.assignment_id = a.id and jsonb_typeof(qs.options) = 'object' and jsonb_typeof(qs.options -> 'vars') = 'array'
+               and (new.question_ids is null or qs.id = any (new.question_ids)) loop
+    for i in 1..10 loop
+      v := public._pick_vars(rq.options -> 'vars');
+      exit when rq.answer is null or not (rq.answer ? 'formula') or public._formula_value(rq.answer ->> 'formula', v) is not null;
+    end loop;
+    v_vars := v_vars || jsonb_build_object(rq.id::text, v);
+  end loop;
+  if v_vars <> '{}'::jsonb then new.vars := v_vars; end if;
   return new;
 end $$;
 drop trigger if exists attempts_gate on public.attempts;
@@ -20307,7 +20339,10 @@ begin
       'criteria', case when rel or is_tutor then t.criteria end,
       'late_days', t.late_days, 'late_off', case when rel or is_tutor then t.late_off end, 'late_waived', t.late_waived,
       'late_rule', a.late_rule, 'anonymous', is_tutor and a.anonymous,
-      'group_of', o.id, 'group_own', t.group_own,
+      'group_of', o.id, 'group_own', t.group_own, 'question_ids', to_jsonb(t.question_ids), 'vars', t.vars,
+      'second', case when is_tutor then (select jsonb_build_object('id', sm.id, 'status', sm.status, 'marks', sm.marks, 'total', sm.total,
+                   'note', sm.note, 'marker', (select display_name from public.profiles where id = sm.marker_id), 'done_at', sm.done_at)
+                   from public.second_marks sm where sm.attempt_id = t.id and sm.status <> 'cancelled' order by sm.created_at desc limit 1) end,
       'group_by', case when o.id is not null then (select display_name from public.profiles where id = o.learner_id) end,
       'group', case when is_tutor and o.id is null and exists (select 1 from public.attempts c where c.group_copy_of = t.id) then
                  (select jsonb_agg(jsonb_build_object('attempt_id', c.id, 'learner_id', c.learner_id, 'name', p.display_name, 'own', c.group_own)
@@ -20335,7 +20370,8 @@ begin
     'rubrics', coalesce((select jsonb_agg(jsonb_build_object('id', ru.id, 'title', ru.title, 'criteria', ru.criteria))
       from public.rubrics ru where ru.id in (select q.rubric_id from public.questions q where q.assignment_id = t.assignment_id)), '[]'),
     'keys', case when is_tutor or (rel and a.show_answers) or public._self_mark_open(t, a) then coalesce((select jsonb_agg(jsonb_build_object(
-        'question_id', k.question_id, 'answer', k.answer, 'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
+        'question_id', k.question_id, 'answer', public._resolved_key(k.answer, t.vars -> k.question_id::text),
+        'mark_scheme_md', case when is_tutor or a.self_mark then k.mark_scheme_md end, 'solution_md', k.solution_md))
       from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = t.assignment_id), '[]')
       else '[]'::jsonb end
   );
@@ -20393,7 +20429,7 @@ begin
                             select jsonb_array_elements_text(r.answer -> 'choices') from resp r
                              where r.question_id = q.id and jsonb_typeof(r.answer -> 'choices') = 'array') y
                           where c is not null group by c) z) end,
-          'common', case when q.type in ('numeric', 'short') then
+          'common', case when q.type in ('numeric', 'short') and not (jsonb_typeof(q.options) = 'object' and q.options ? 'vars') then
                       (select coalesce(jsonb_agg(jsonb_build_object('answer', z.v, 'count', z.n) order by z.n desc, z.v), '[]') from (
                          select v, count(*) n from (
                            select left(lower(btrim(coalesce(r.answer ->> 'value', r.answer ->> 'text', ''))), 60) v from resp r
@@ -20417,6 +20453,7 @@ declare
   v_cats jsonb := '{}';
   v_new uuid;
   v_q uuid;
+  v_pass jsonb;
   a record;
   q record;
   x record;
@@ -20469,10 +20506,19 @@ begin
                 'release_mode', case when a.release_mode = 'at' then 'manual' else a.release_mode end, 'visibility', 'hidden', 'draft', false,
                 'learner_ids', null, 'nudged_at', null, 'peer_started_at', null, 'mock_id', null, 'mock_position', null, 'learner_hidden', false,
                 'category_id', v_cats ->> coalesce(a.category_id::text, ''), 'created_at', now(), 'updated_at', now()))).*;
+      v_pass := '{}';
+      for x in select * from public.question_passages where assignment_id = a.id order by position loop
+        v_q := gen_random_uuid();
+        insert into public.question_passages
+        select (jsonb_populate_record(null::public.question_passages, to_jsonb(x) || jsonb_build_object('id', v_q, 'assignment_id', v_new,
+                  'tutor_id', case when a.tutor_id = any (v_teachers) then a.tutor_id else v_owner end, 'created_at', now()))).*;
+        v_pass := v_pass || jsonb_build_object(x.id::text, v_q);
+      end loop;
       for q in select * from public.questions where assignment_id = a.id order by position loop
         v_q := gen_random_uuid();
         insert into public.questions
         select (jsonb_populate_record(null::public.questions, to_jsonb(q) || jsonb_build_object('id', v_q, 'assignment_id', v_new,
+                  'passage_id', v_pass ->> coalesce(q.passage_id::text, ''),
                   'tutor_id', case when a.tutor_id = any (v_teachers) then a.tutor_id else v_owner end,
                   'rubric_id', case when a.tutor_id = any (v_teachers) then q.rubric_id end, 'created_at', now()))).*;
         insert into public.question_keys
@@ -20592,6 +20638,839 @@ begin
                            'work_groups(uuid)', 'save_work_groups(uuid, jsonb)', 'set_late_waive(uuid, boolean)', 'my_work_info()',
                            'work_results(uuid)', 'copy_class(uuid, text, jsonb)', 'new_year_info()', 'move_up_year(boolean, boolean)',
                            'undo_move_up(uuid)'] loop
+    execute format('revoke execute on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+end $$;
+
+-- =====================================================================
+-- Canvas gaps, part 2 (17 Nov 2026; Aaryan: "yes and part 2 before step 7, go"). Question pools (each learner gets a share
+-- of a pool at random), random-number questions (each learner's own numbers, the answer worked out from a formula),
+-- reading passages several questions share, a gradebook by term with "drop the lowest" and a final grade the teacher can
+-- set, learners seeing their running grade and trying "what if" (once a class's teacher switches it on), second marking
+-- (another teacher at the school or centre marks without seeing the first marks; nothing goes back until they agree), and
+-- office hours (a teacher's weekly times their learners book, held as a lesson in person or by video).
+-- =====================================================================
+
+-- ---------------- question pools, random numbers and reading passages ----------------
+alter table public.questions add column if not exists pool smallint check (pool is null or pool between 1 and 9);
+alter table public.questions add column if not exists passage_id uuid;
+alter table public.assignments add column if not exists pool_pick jsonb;       -- {"1": 2}: from pool 1, two each
+alter table public.attempts add column if not exists question_ids uuid[];      -- the questions this try got (null: all)
+alter table public.attempts add column if not exists vars jsonb;               -- {question id: {"a": 3, "b": 7}}
+create table if not exists public.question_passages (
+  id uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  tutor_id uuid not null default auth.uid() references public.profiles (id) on delete cascade,
+  title text not null default '' check (length(title) <= 120),
+  body_md text not null default '' check (length(body_md) <= 20000),
+  image_path text,
+  position int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists question_passages_assignment on public.question_passages (assignment_id, position);
+do $$ begin
+  alter table public.questions add constraint questions_passage_fk foreign key (passage_id) references public.question_passages (id) on delete set null;
+exception when duplicate_object then null; end $$;
+alter table public.question_passages enable row level security;
+drop policy if exists question_passages_tutor on public.question_passages;
+create policy question_passages_tutor on public.question_passages for all
+  using (tutor_id = auth.uid())
+  with check (tutor_id = auth.uid() and exists (select 1 from public.assignments a where a.id = assignment_id and a.tutor_id = auth.uid()));
+drop policy if exists question_passages_learner on public.question_passages;
+create policy question_passages_learner on public.question_passages for select
+  using (assignment_id in (select id from public.assignments) and public._questions_open(assignment_id));
+
+-- How many to give from each pool, as kept: pools 1–9, 1–50 each
+create or replace function public._pool_pick(p jsonb) returns jsonb
+language sql immutable as $$
+  select case when p is null or jsonb_typeof(p) <> 'object' then null
+              else nullif((select coalesce(jsonb_object_agg(k, least(50, (v #>> '{}')::int)), '{}')
+                             from jsonb_each(p) x(k, v)
+                            where k ~ '^[1-9]$' and (v #>> '{}') ~ '^[0-9]{1,3}$' and (v #>> '{}')::int > 0), '{}'::jsonb) end
+$$;
+
+-- A random-number question's answer from its formula and one learner's numbers: + − × ÷ ^, brackets, sqrt, abs, round,
+-- sin, cos, tan, ln, log, exp and pi, and the question's letters. Anything else (or a sum that can't be done, like
+-- dividing by 0) gives nothing, so the teacher marks it.
+create or replace function public._formula_value(p_formula text, p_vars jsonb) returns numeric
+language plpgsql stable set search_path = public as $$
+declare
+  e text := lower(btrim(coalesce(p_formula, '')));
+  w text;
+  k text;
+  v numeric;
+begin
+  if e = '' or length(e) > 200 or e !~ '^[a-z0-9_+*/^(). -]+$' or e ~ '--|/\*|\*/' then return null; end if;
+  for w in select distinct r.m[1] from regexp_matches(e, '([a-z_]+)', 'g') as r(m) loop
+    if w not in ('sqrt', 'abs', 'round', 'pi', 'sin', 'cos', 'tan', 'ln', 'log', 'exp') and not (coalesce(p_vars, '{}'::jsonb) ? w) then
+      return null;
+    end if;
+  end loop;
+  -- every number exact (so 1/2 is a half), then each letter as this learner's number
+  e := regexp_replace(e, '([0-9]+(\.[0-9]+)?)', '(\1::numeric)', 'g');
+  for k in select jsonb_object_keys(coalesce(p_vars, '{}'::jsonb)) loop
+    if k !~ '^[a-z]{1,2}$' or jsonb_typeof(p_vars -> k) <> 'number' then return null; end if;
+    e := regexp_replace(e, '\m' || k || '\M', '(' || (p_vars ->> k) || '::numeric)', 'g');
+  end loop;
+  e := regexp_replace(e, '\mpi\M', 'pi()::numeric', 'g');
+  execute 'select (' || e || ')::numeric' into v;
+  return round(v, 6);
+exception when others then return null;
+end $$;
+-- A question's key for one learner: a formula becomes the number it gives with their numbers (nothing if it can't)
+create or replace function public._resolved_key(p_key jsonb, p_vars jsonb) returns jsonb
+language sql stable set search_path = public as $$
+  select case when p_key is null or jsonb_typeof(p_key) <> 'object' or not (p_key ? 'formula') then p_key
+              when public._formula_value(p_key ->> 'formula', p_vars) is null then '{}'::jsonb
+              else p_key || jsonb_build_object('value', public._formula_value(p_key ->> 'formula', p_vars)::text) end
+$$;
+-- Numbers for a learner from a question's letters [{name, min, max, step}]
+create or replace function public._pick_vars(p_spec jsonb) returns jsonb
+language plpgsql volatile as $$
+declare
+  x jsonb;
+  v jsonb := '{}';
+  lo numeric;
+  hi numeric;
+  st numeric;
+begin
+  for x in select * from jsonb_array_elements(case when jsonb_typeof(p_spec) = 'array' then p_spec else '[]'::jsonb end) loop
+    lo := (x ->> 'min')::numeric;
+    hi := (x ->> 'max')::numeric;
+    st := coalesce(nullif((x ->> 'step')::numeric, 0), 1);
+    v := v || jsonb_build_object(x ->> 'name', round(lo + floor(random()::numeric * (floor((hi - lo) / st) + 1)) * st, 4));
+  end loop;
+  return v;
+exception when others then return '{}';
+end $$;
+
+-- A question's letters, its pool and its passage, checked as it's saved
+create or replace function public._question_rules() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  x jsonb;
+  v_names text[] := '{}';
+  n text;
+begin
+  if new.passage_id is not null
+     and not exists (select 1 from public.question_passages p where p.id = new.passage_id and p.assignment_id = new.assignment_id) then
+    raise exception 'That reading passage belongs to other work.';
+  end if;
+  if jsonb_typeof(new.options) = 'object' and new.options ? 'vars' then
+    if new.type <> 'numeric' then raise exception 'Random numbers are for number questions.'; end if;
+    if jsonb_typeof(new.options -> 'vars') <> 'array' or jsonb_array_length(new.options -> 'vars') > 6 then
+      raise exception 'Up to 6 letters with random numbers.';
+    end if;
+    for x in select * from jsonb_array_elements(new.options -> 'vars') loop
+      n := lower(coalesce(x ->> 'name', ''));
+      if n !~ '^[a-z]{1,2}$' or n in ('pi', 'ln') then raise exception 'Name each random number with one or two letters, like a or b.'; end if;
+      if n = any (v_names) then raise exception '“%” is there twice.', n; end if;
+      v_names := v_names || n;
+      begin
+        if (x ->> 'min')::numeric > (x ->> 'max')::numeric or coalesce((x ->> 'step')::numeric, 1) <= 0
+           or ((x ->> 'max')::numeric - (x ->> 'min')::numeric) / coalesce(nullif((x ->> 'step')::numeric, 0), 1) > 100000 then
+          raise exception 'bad';
+        end if;
+      exception when others then
+        raise exception 'Give “%” a lowest and a highest number (and a step above 0).', n;
+      end;
+    end loop;
+  end if;
+  return new;
+end $$;
+drop trigger if exists questions_rules on public.questions;
+create trigger questions_rules before insert or update of options, type, passage_id, assignment_id on public.questions
+  for each row execute function public._question_rules();
+-- A formula has to work with the question's letters
+create or replace function public._key_formula_ok() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  q public.questions;
+  v_hi jsonb := '{}';
+  v_lo jsonb := '{}';
+  x jsonb;
+begin
+  if jsonb_typeof(new.answer) <> 'object' or not (new.answer ? 'formula') then return new; end if;
+  select * into q from public.questions where id = new.question_id;
+  for x in select * from jsonb_array_elements(case when jsonb_typeof(q.options) = 'object' and jsonb_typeof(q.options -> 'vars') = 'array'
+                                                    then q.options -> 'vars' else '[]'::jsonb end) loop
+    v_hi := v_hi || jsonb_build_object(lower(x ->> 'name'), (x ->> 'max')::numeric);
+    v_lo := v_lo || jsonb_build_object(lower(x ->> 'name'), (x ->> 'min')::numeric);
+  end loop;
+  if public._formula_value(new.answer ->> 'formula', v_hi) is null and public._formula_value(new.answer ->> 'formula', v_lo) is null then
+    raise exception 'That formula doesn’t work out. Use the question’s letters, numbers, + − * / ^, brackets and sqrt( ).';
+  end if;
+  return new;
+end $$;
+drop trigger if exists question_keys_formula on public.question_keys;
+create trigger question_keys_formula before insert or update of answer on public.question_keys
+  for each row execute function public._key_formula_ok();
+
+-- Learners see a pool's questions only once they've got them in a try
+create or replace function public._question_mine(p_id uuid, p_assignment uuid, p_pool smallint) returns boolean
+language sql stable security definer set search_path = public as $$
+  select p_pool is null
+      or not exists (select 1 from public.assignments a where a.id = p_assignment and a.pool_pick is not null)
+      or exists (select 1 from public.attempts t where t.assignment_id = p_assignment and t.learner_id = auth.uid() and p_id = any (t.question_ids))
+$$;
+drop policy if exists questions_learner on public.questions;
+create policy questions_learner on public.questions for select
+  using (assignment_id in (select id from public.assignments) and public._questions_open(assignment_id)
+         and public._question_mine(id, assignment_id, pool));
+
+-- ---------------- a gradebook by term, dropping the lowest, a final grade, and "what if" ----------------
+alter table public.grade_categories add column if not exists drop_lowest int not null default 0;
+do $$ begin
+  alter table public.grade_categories add constraint grade_categories_drop_check check (drop_lowest between 0 and 5);
+exception when duplicate_object then null; end $$;
+alter table public.class_grading add column if not exists terms jsonb;                         -- the class's own terms (else the school's)
+alter table public.class_grading add column if not exists show_learners boolean not null default false; -- learners see their running grade
+create table if not exists public.final_grades (
+  class_id uuid not null references public.classes (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  term smallint not null default 0,  -- 0: the whole year
+  grade text not null check (length(grade) between 1 and 12),
+  note text check (note is null or length(note) <= 500),
+  by_id uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (class_id, learner_id, term)
+);
+alter table public.final_grades enable row level security;
+
+-- A class's terms, in order: its own (set in its gradebook) or its centre's or school's
+create or replace function public._class_terms(p_class uuid) returns table (n int, name text, starts date, ends date)
+language sql stable security definer set search_path = public as $$
+  select (row_number() over (order by z.starts))::int, z.name, z.starts, z.ends from (
+    select x ->> 'name' as name, (x ->> 'starts')::date as starts, (x ->> 'ends')::date as ends
+      from public.class_grading g, jsonb_array_elements(g.terms) x
+     where g.class_id = p_class and jsonb_typeof(g.terms) = 'array' and jsonb_array_length(g.terms) > 0
+    union all
+    select d.name, d.starts, d.ends from public.school_dates d join public.classes c on c.org_id = d.org_id
+     where c.id = p_class and d.kind = 'term'
+       and not exists (select 1 from public.class_grading g where g.class_id = p_class and jsonb_typeof(g.terms) = 'array'
+                         and jsonb_array_length(g.terms) > 0)) z
+$$;
+-- Each learner's latest try at each piece of the class's work due (or set) between two days; marks only once given back if asked
+create or replace function public._class_marks_in(p_class uuid, p_from date, p_to date, p_released boolean)
+returns table (learner_id uuid, assignment_id uuid, pct numeric, marked boolean, counts boolean, category_id uuid, criteria jsonb)
+language sql stable security definer set search_path = public as $$
+  select t.learner_id, a.id,
+         case when t.status in ('marked', 'returned') and t.score is not null and coalesce(t.max_score, 0) > 0
+                   and (not p_released or public._is_released(t)) then 100.0 * t.score / t.max_score end,
+         t.status in ('marked', 'returned'),
+         coalesce((select g.counts from public.class_grading g where g.class_id = p_class), 'all') = 'all'
+           or public._assessment(a.kind, a.assessment) = 'summative',
+         a.category_id, t.criteria
+    from public.assignments a
+    join lateral (select distinct on (x.learner_id) x.* from public.attempts x where x.assignment_id = a.id order by x.learner_id, x.number desc) t on true
+    join public.class_members cm on cm.class_id = p_class and cm.learner_id = t.learner_id
+   where a.class_id = p_class and not a.draft and not a.practice
+     and (p_from is null or coalesce(a.due_at, a.created_at)::date >= p_from)
+     and (p_to is null or coalesce(a.due_at, a.created_at)::date <= p_to)
+$$;
+-- Each learner's overall, as before, but a category can leave out its lowest few marks (only once there are more than that)
+create or replace function public._class_overall_in(p_class uuid, p_from date, p_to date, p_released boolean)
+returns table (learner_id uuid, overall numeric, by_category jsonb, counted int)
+language sql stable security definer set search_path = public as $$
+  with m0 as (select * from public._class_marks_in(p_class, p_from, p_to, p_released) k where k.counts and k.pct is not null),
+  cats as (select id, weight, drop_lowest from public.grade_categories where class_id = p_class),
+  w as (select exists (select 1 from cats where weight > 0) as weighted),
+  r as (select m0.*, row_number() over (partition by m0.learner_id, m0.category_id order by m0.pct, m0.assignment_id) as rn,
+               count(*) over (partition by m0.learner_id, m0.category_id) as cnt from m0),
+  m as (select r.* from r left join cats g on g.id = r.category_id
+         where r.category_id is null or coalesce(g.drop_lowest, 0) = 0 or r.cnt <= g.drop_lowest or r.rn > g.drop_lowest),
+  c as (select m.learner_id, m.category_id as cat, avg(m.pct) as a from m where m.category_id is not null group by 1, 2)
+  select cm.learner_id,
+         case when (select weighted from w)
+              then (select round(sum(c.a * g.weight) / nullif(sum(g.weight), 0), 1) from c join cats g on g.id = c.cat
+                     where c.learner_id = cm.learner_id and g.weight > 0)
+              else (select round(avg(m.pct), 1) from m where m.learner_id = cm.learner_id) end,
+         coalesce((select jsonb_object_agg(c.cat, round(c.a, 1)) from c where c.learner_id = cm.learner_id), '{}'),
+         (select count(*)::int from m where m.learner_id = cm.learner_id
+             and (not (select weighted from w) or exists (select 1 from cats g where g.id = m.category_id and g.weight > 0)))
+    from public.class_members cm where cm.class_id = p_class
+$$;
+create or replace function public._class_overall(p_class uuid) returns table (learner_id uuid, overall numeric, by_category jsonb, counted int)
+language sql stable security definer set search_path = public as $$
+  select * from public._class_overall_in(p_class, null, null, false)
+$$;
+
+-- The gradebook, for the whole year or one term (p_term = its number)
+drop function if exists public.class_gradebook(uuid);
+create or replace function public.class_gradebook(p_class uuid, p_term int default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  c public.classes;
+  s public.class_grading;
+  b public.grade_boundaries;
+  v_myp jsonb;
+  v_counts text;
+  v_weighted boolean;
+  v_from date;
+  v_to date;
+begin
+  select * into c from public.classes where id = p_class;
+  if c.id is null or not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  select * into s from public.class_grading where class_id = c.id;
+  v_counts := coalesce(s.counts, 'all');
+  v_weighted := exists (select 1 from public.grade_categories where class_id = c.id and weight > 0);
+  v_myp := public._myp_criteria((select myp_group from public.subjects where id = c.subject_id));
+  if p_term is not null then
+    select t.starts, t.ends into v_from, v_to from public._class_terms(c.id) t where t.n = p_term;
+    if v_from is null then raise exception 'That term isn’t there any more.'; end if;
+  end if;
+  if s.scale is null and v_myp is null then
+    select g.* into b from public.grade_boundaries g join public.subjects x on x.id = c.subject_id
+     where g.tutor_id = auth.uid() and g.exam = public._subject_exam(x)
+     order by g.created_at desc limit 1;
+  end if;
+  return jsonb_build_object(
+    'class', c.name,
+    'myp', v_myp,
+    'term', p_term,
+    'terms', (select coalesce(jsonb_agg(jsonb_build_object('n', t.n, 'name', t.name, 'starts', t.starts, 'ends', t.ends) order by t.n), '[]')
+                from public._class_terms(c.id) t),
+    'own_terms', s.terms,
+    'grading', jsonb_build_object('counts', v_counts, 'scale', s.scale, 'scale_name', s.scale_name, 'show_learners', coalesce(s.show_learners, false),
+                 'boundaries', case when b.id is not null then jsonb_build_object('session', b.session, 'option', b.option_label) end),
+    'categories', (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'weight', g.weight, 'drop_lowest', g.drop_lowest)
+                                   order by g.position, g.created_at), '[]')
+                     from public.grade_categories g where g.class_id = c.id),
+    'learners', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name,
+                   'overall', o.overall, 'by_category', coalesce(o.by_category, '{}'), 'counted', coalesce(o.counted, 0), 'levels', y.levels,
+                   'suggested', case when v_myp is not null then y.grade
+                                     when s.scale is not null then public._scale_grade(s.scale, o.overall)
+                                     when b.id is not null and o.overall is not null then public._grade_for(b.grades, b.max_mark, o.overall, 100) ->> 'grade' end,
+                   'final', (select jsonb_build_object('grade', f.grade, 'note', f.note, 'by', (select display_name from public.profiles where id = f.by_id),
+                                                       'updated_at', f.updated_at)
+                               from public.final_grades f where f.class_id = c.id and f.learner_id = p.id and f.term = coalesce(p_term, 0)),
+                   'predicted', (select jsonb_build_object('grade', pg.grade, 'note', pg.note, 'shared', pg.shared, 'updated_at', pg.updated_at,
+                                                           'by', (select display_name from public.profiles where id = pg.by_id), 'history', pg.history)
+                                   from public.predicted_grades pg where pg.class_id = c.id and pg.learner_id = p.id))
+                   order by p.display_name), '[]')
+                   from public.class_members m join public.profiles p on p.id = m.learner_id
+                   left join public._class_overall_in(c.id, v_from, v_to, false) o on o.learner_id = p.id
+                   left join public._class_myp(c.id) y on y.learner_id = p.id
+                  where m.class_id = c.id),
+    'work', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'due_at', a.due_at,
+                                                          'criteria', to_jsonb(a.criteria), 'anonymous', a.anonymous,
+                                                          'topic', (select name from public.topics where id = a.topic_id),
+                                                          'category_id', a.category_id, 'assessment', public._assessment(a.kind, a.assessment),
+                                                          'assessment_set', a.assessment, 'mine', a.tutor_id = auth.uid(),
+                                                          'by', (select display_name from public.profiles where id = a.tutor_id),
+                                                          'counts', (v_counts = 'all' or public._assessment(a.kind, a.assessment) = 'summative')
+                                                                    and (not v_weighted or exists (select 1 from public.grade_categories g
+                                                                                                    where g.id = a.category_id and g.weight > 0)))
+                                       order by coalesce(a.due_at, a.created_at)), '[]')
+               from public.assignments a where a.class_id = c.id and not a.draft and not a.practice
+                and (v_from is null or coalesce(a.due_at, a.created_at)::date between v_from and v_to)),
+    'cells', (select coalesce(jsonb_agg(jsonb_build_object('learner_id', t.learner_id, 'assignment_id', t.assignment_id, 'attempt_id', t.id,
+                                                           'status', t.status, 'score', t.score, 'max', t.max_score, 'released', public._is_released(t),
+                                                           'pct', case when t.status in ('marked', 'returned') and t.score is not null and coalesce(t.max_score, 0) > 0
+                                                                       then round(100.0 * t.score / t.max_score, 1) end,
+                                                           'criteria', t.criteria,
+                                                           'late', a.due_at is not null and t.submitted_at > public._due_for(a, t.learner_id))), '[]')
+                from (select distinct on (x.assignment_id, x.learner_id) x.* from public.attempts x
+                        join public.assignments a2 on a2.id = x.assignment_id
+                       where a2.class_id = c.id and not a2.draft and not a2.practice
+                         and (v_from is null or coalesce(a2.due_at, a2.created_at)::date between v_from and v_to)
+                       order by x.assignment_id, x.learner_id, x.number desc) t
+                join public.assignments a on a.id = t.assignment_id));
+end $$;
+
+-- A class's categories (for the assignment editor), for its teachers
+create or replace function public.class_categories(p_class uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name, 'weight', g.weight, 'drop_lowest', g.drop_lowest)
+                                    order by g.position, g.created_at), '[]')
+            from public.grade_categories g where g.class_id = p_class);
+end $$;
+
+-- Set up a class's gradebook: as before, plus each category's "drop the lowest", the class's own terms ([{name, starts, ends}],
+-- an empty list: the school's) and whether learners see their running grade. Settings left out stay as they were.
+create or replace function public.save_grading(p_class uuid, p_setup jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_cats jsonb := coalesce(p_setup -> 'categories', '[]');
+  v_counts text := coalesce(nullif(p_setup ->> 'counts', ''), 'all');
+  v_scale jsonb;
+  v_terms jsonb;
+  x jsonb;
+  i int := 0;
+  v_id uuid;
+  v_keep uuid[] := '{}';
+  v_name text;
+  v_w numeric;
+  v_drop int;
+  v_names text[] := '{}';
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  if jsonb_typeof(v_cats) <> 'array' then raise exception 'Those categories aren’t right.'; end if;
+  if jsonb_array_length(v_cats) > 12 then raise exception 'Up to 12 categories.'; end if;
+  if v_counts not in ('all', 'summative') then raise exception 'Count everything, or summative work only.'; end if;
+  for x in select * from jsonb_array_elements(v_cats) loop
+    v_name := left(trim(coalesce(x ->> 'name', '')), 40);
+    if v_name = '' then raise exception 'Every category needs a name.'; end if;
+    if lower(v_name) = any (v_names) then raise exception '“%” is there twice.', v_name; end if;
+    v_names := v_names || lower(v_name);
+    begin
+      v_w := (x ->> 'weight')::numeric;
+    exception when others then
+      v_w := null;
+    end;
+    if v_w is null or v_w < 0 or v_w > 100 then raise exception '%: give it a weight from 0 to 100.', v_name; end if;
+    if coalesce(x ->> 'drop_lowest', '0') !~ '^[0-5]$' then raise exception '%: leave out 0 to 5 of the lowest marks.', v_name; end if;
+  end loop;
+  if jsonb_array_length(v_cats) > 0 and (select sum((e ->> 'weight')::numeric) from jsonb_array_elements(v_cats) e) <= 0 then
+    raise exception 'At least one category needs a weight above 0.';
+  end if;
+  v_scale := public._check_scale(p_setup -> 'scale');
+  -- the class's own terms
+  if p_setup ? 'terms' then
+    if jsonb_typeof(p_setup -> 'terms') <> 'array' or jsonb_array_length(p_setup -> 'terms') > 6 then raise exception 'Up to 6 terms.'; end if;
+    v_terms := '[]';
+    for x in select * from jsonb_array_elements(p_setup -> 'terms') loop
+      v_name := left(trim(coalesce(x ->> 'name', '')), 40);
+      begin
+        if v_name = '' or (x ->> 'ends')::date < (x ->> 'starts')::date then raise exception 'bad'; end if;
+      exception when others then
+        raise exception 'Give each term a name, the day it starts and the day it ends.';
+      end;
+      v_terms := v_terms || jsonb_build_object('name', v_name, 'starts', (x ->> 'starts')::date, 'ends', (x ->> 'ends')::date);
+    end loop;
+    if jsonb_array_length(v_terms) = 0 then v_terms := null; end if;
+  end if;
+  for x in select * from jsonb_array_elements(v_cats) loop
+    i := i + 1;
+    v_id := null;
+    v_drop := coalesce((x ->> 'drop_lowest')::int, 0);
+    if coalesce(x ->> 'id', '') ~ '^[0-9a-f-]{36}$' then
+      update public.grade_categories set name = left(trim(x ->> 'name'), 40), weight = (x ->> 'weight')::numeric, position = i, drop_lowest = v_drop
+       where id = (x ->> 'id')::uuid and class_id = p_class returning id into v_id;
+    end if;
+    if v_id is null then
+      insert into public.grade_categories (class_id, name, weight, position, drop_lowest)
+      values (p_class, left(trim(x ->> 'name'), 40), (x ->> 'weight')::numeric, i, v_drop) returning id into v_id;
+    end if;
+    v_keep := v_keep || v_id;
+  end loop;
+  delete from public.grade_categories where class_id = p_class and not (id = any (v_keep));
+  insert into public.class_grading (class_id, counts, scale, scale_name, terms, show_learners, updated_by, updated_at)
+  values (p_class, v_counts, v_scale, case when v_scale is not null then left(nullif(trim(coalesce(p_setup ->> 'scale_name', '')), ''), 20) end,
+          v_terms, coalesce((p_setup ->> 'show_learners')::boolean, false), auth.uid(), now())
+  on conflict (class_id) do update set counts = excluded.counts, scale = excluded.scale, scale_name = excluded.scale_name,
+                                       terms = case when p_setup ? 'terms' then excluded.terms else class_grading.terms end,
+                                       show_learners = case when p_setup ? 'show_learners' then excluded.show_learners else class_grading.show_learners end,
+                                       updated_by = excluded.updated_by, updated_at = now();
+  return public.class_categories(p_class);
+end $$;
+
+-- The final grade a teacher sets (for the year, term 0, or one term); empty takes it away. Learners see it once the
+-- class shows them their running grade.
+create or replace function public.set_final_grade(p_class uuid, p_learner uuid, p_term int, p_grade text, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public._class_teacher(p_class) then raise exception 'Not your class.'; end if;
+  if not exists (select 1 from public.class_members where class_id = p_class and learner_id = p_learner) then raise exception 'They aren’t in this class.'; end if;
+  if coalesce(p_term, 0) < 0 or coalesce(p_term, 0) > 6 then raise exception 'That term isn’t there.'; end if;
+  if nullif(btrim(coalesce(p_grade, '')), '') is null then
+    delete from public.final_grades where class_id = p_class and learner_id = p_learner and term = coalesce(p_term, 0);
+    return;
+  end if;
+  insert into public.final_grades (class_id, learner_id, term, grade, note, by_id)
+  values (p_class, p_learner, coalesce(p_term, 0), left(btrim(p_grade), 12), nullif(left(btrim(coalesce(p_note, '')), 500), ''), auth.uid())
+  on conflict (class_id, learner_id, term) do update set grade = excluded.grade, note = excluded.note, by_id = excluded.by_id, updated_at = now();
+end $$;
+
+-- A learner's running grade in each class whose teacher shows it: the work that counts with their marks given back,
+-- the categories and weights, their overall and a suggested grade (from the class's scale), and a final grade if set
+create or replace function public.my_grades() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'class_id', c.id, 'class', c.name, 'subject_id', c.subject_id,
+      'counts', coalesce(g.counts, 'all'), 'scale', g.scale,
+      'categories', (select coalesce(jsonb_agg(jsonb_build_object('id', x.id, 'name', x.name, 'weight', x.weight, 'drop_lowest', x.drop_lowest)
+                                               order by x.position, x.created_at), '[]')
+                       from public.grade_categories x where x.class_id = c.id),
+      'work', (select coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind, 'due_at', a.due_at, 'category_id', a.category_id,
+                 'counts', coalesce(g.counts, 'all') = 'all' or public._assessment(a.kind, a.assessment) = 'summative',
+                 'pct', (select case when t.status in ('marked', 'returned') and t.score is not null and coalesce(t.max_score, 0) > 0
+                                          and public._is_released(t) then round(100.0 * t.score / t.max_score, 1) end
+                           from public.attempts t where t.assignment_id = a.id and t.learner_id = auth.uid() order by t.number desc limit 1))
+                 order by coalesce(a.due_at, a.created_at)), '[]')
+                 from public.assignments a
+                where a.class_id = c.id and not a.draft and not a.practice and public._assignment_visible_to(a, auth.uid())),
+      'overall', (select o.overall from public._class_overall_in(c.id, null, null, true) o where o.learner_id = auth.uid()),
+      'final', (select f.grade from public.final_grades f where f.class_id = c.id and f.learner_id = auth.uid() and f.term = 0))
+      || jsonb_build_object('suggested', public._scale_grade(g.scale,
+           (select o.overall from public._class_overall_in(c.id, null, null, true) o where o.learner_id = auth.uid())))
+      order by c.name), '[]')
+    from public.class_members m join public.classes c on c.id = m.class_id join public.class_grading g on g.class_id = c.id
+   where m.learner_id = auth.uid() and public.my_role() = 'learner' and not c.archived and g.show_learners
+$$;
+
+-- ---------------- second marking ----------------
+create table if not exists public.second_marks (
+  id uuid primary key default gen_random_uuid(),
+  attempt_id uuid not null references public.attempts (id) on delete cascade,
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  marker_id uuid not null references public.profiles (id) on delete cascade,
+  asked_by uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'asked' check (status in ('asked', 'done', 'agreed', 'cancelled')),
+  marks jsonb not null default '{}',   -- {question id: mark}
+  total numeric,
+  note text check (note is null or length(note) <= 2000),
+  created_at timestamptz not null default now(),
+  done_at timestamptz,
+  agreed_at timestamptz
+);
+create unique index if not exists second_marks_open on public.second_marks (attempt_id) where status in ('asked', 'done');
+create index if not exists second_marks_marker on public.second_marks (marker_id, status);
+alter table public.second_marks enable row level security;
+
+-- Who can second-mark for me: the other active teachers of my centre or school
+create or replace function public.second_markers() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
+    from public.org_members m join public.profiles p on p.id = m.user_id
+   where m.org_id = public._my_school() and m.role in ('manager', 'tutor') and p.role = 'tutor' and p.status = 'active'
+     and p.id <> auth.uid() and public.my_role() = 'tutor'
+$$;
+-- Ask another teacher to second-mark hand-ins of my work: these ones, or a share of them at random
+create or replace function public.second_mark_ask(p_assignment uuid, p_marker uuid, p_share int default 100, p_attempts uuid[] default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  a public.assignments;
+  n int;
+  v_share int := greatest(1, least(100, coalesce(p_share, 100)));
+begin
+  select * into a from public.assignments where id = p_assignment;
+  if a.id is null or a.tutor_id <> auth.uid() then raise exception 'Only whoever set it can ask for second marking.'; end if;
+  perform public._locked_check();
+  if not exists (select 1 from jsonb_array_elements(public.second_markers()) x where (x ->> 'id')::uuid = p_marker) then
+    raise exception 'Pick another teacher at your school or centre.';
+  end if;
+  with c as (
+    select t.id from (select distinct on (x.learner_id) x.* from public.attempts x
+                       where x.assignment_id = a.id and x.group_copy_of is null order by x.learner_id, x.number desc) t
+     where t.submitted_at is not null and t.status <> 'in_progress'
+       and (p_attempts is null or t.id = any (p_attempts))
+       and not exists (select 1 from public.second_marks s where s.attempt_id = t.id and s.status in ('asked', 'done'))),
+  pick as (select id from c order by random()
+            limit case when p_attempts is not null then 10000 else greatest(1, ceil((select count(*) from c) * v_share / 100.0))::int end)
+  insert into public.second_marks (attempt_id, assignment_id, marker_id, asked_by)
+  select id, a.id, p_marker, auth.uid() from pick;
+  get diagnostics n = row_count;
+  if n > 0 then
+    perform public.notify_user(p_marker, 'second_mark', 'Second marking: ' || a.title,
+      n || ' hand-in' || case when n = 1 then '' else 's' end || ' to mark, without the first marks or names.',
+      jsonb_build_object('assignment_id', a.id));
+  end if;
+  return n;
+end $$;
+-- Second marking for me to do, and what I've asked others for
+create or replace function public.second_mark_queue() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'mine', (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'status', s.status, 'title', a.title, 'kind', a.kind,
+               'label', 'Hand-in ' || upper(left(s.attempt_id::text, 4)), 'asked_by', (select display_name from public.profiles where id = s.asked_by),
+               'created_at', s.created_at, 'done_at', s.done_at) order by s.status, s.created_at), '[]')
+               from public.second_marks s join public.assignments a on a.id = s.assignment_id
+              where s.marker_id = auth.uid() and s.status in ('asked', 'done')),
+    'asked', (select coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'attempt_id', s.attempt_id, 'assignment_id', s.assignment_id,
+                'status', s.status, 'marker', (select display_name from public.profiles where id = s.marker_id), 'total', s.total)
+                order by s.created_at), '[]')
+                from public.second_marks s where s.asked_by = auth.uid() and s.status in ('asked', 'done')))
+$$;
+-- One hand-in to second-mark: its questions, answers and mark schemes, never the first marks, feedback or a name
+create or replace function public.second_mark_detail(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  s public.second_marks;
+  t public.attempts;
+  a public.assignments;
+begin
+  select * into s from public.second_marks where id = p_id;
+  if s.id is null or s.marker_id <> auth.uid() or s.status not in ('asked', 'done') then raise exception 'Not found.'; end if;
+  select * into t from public.attempts where id = s.attempt_id;
+  select * into a from public.assignments where id = s.assignment_id;
+  return jsonb_build_object(
+    'id', s.id, 'status', s.status, 'marks', s.marks, 'note', s.note, 'total', s.total,
+    'label', 'Hand-in ' || upper(left(t.id::text, 4)), 'attempt_id', t.id, 'learner_id', t.learner_id, 'vars', t.vars,
+    'assignment', jsonb_build_object('id', a.id, 'title', a.title, 'kind', a.kind),
+    'questions', (select coalesce(jsonb_agg(jsonb_build_object('id', q.id, 'position', q.position, 'type', q.type, 'prompt_md', q.prompt_md,
+                    'image_path', q.image_path, 'options', q.options, 'marks', q.marks, 'passage_id', q.passage_id) order by q.position), '[]')
+                    from public.questions q where q.assignment_id = a.id and (t.question_ids is null or q.id = any (t.question_ids))),
+    'passages', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'title', p.title, 'body_md', p.body_md, 'image_path', p.image_path)
+                    order by p.position), '[]') from public.question_passages p where p.assignment_id = a.id),
+    'answers', (select coalesce(jsonb_agg(jsonb_build_object('question_id', r.question_id, 'answer', r.answer, 'auto_marks', r.auto_marks)), '[]')
+                  from public.responses r where r.attempt_id = t.id),
+    'keys', (select coalesce(jsonb_agg(jsonb_build_object('question_id', k.question_id, 'answer', public._resolved_key(k.answer, t.vars -> k.question_id::text),
+               'mark_scheme_md', k.mark_scheme_md, 'solution_md', k.solution_md)), '[]')
+               from public.question_keys k join public.questions q on q.id = k.question_id where q.assignment_id = a.id));
+end $$;
+-- Save second marks ({question id: mark}); done sends them to whoever asked
+create or replace function public.second_mark_save(p_id uuid, p_marks jsonb, p_note text default null, p_done boolean default false) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  s public.second_marks;
+  t public.attempts;
+  v jsonb := '{}';
+  x record;
+  m numeric;
+  v_title text;
+begin
+  select * into s from public.second_marks where id = p_id for update;
+  if s.id is null or s.marker_id <> auth.uid() or s.status not in ('asked', 'done') then raise exception 'Not found.'; end if;
+  select * into t from public.attempts where id = s.attempt_id;
+  for x in select q.id, q.marks from public.questions q where q.assignment_id = s.assignment_id and (t.question_ids is null or q.id = any (t.question_ids)) loop
+    if coalesce(p_marks, '{}'::jsonb) ? x.id::text and nullif(p_marks ->> x.id::text, '') is not null then
+      begin
+        m := (p_marks ->> x.id::text)::numeric;
+      exception when others then
+        raise exception 'Marks are numbers.';
+      end;
+      if m < 0 or m > x.marks then raise exception 'A mark can be 0 to %.', x.marks; end if;
+      v := v || jsonb_build_object(x.id::text, m);
+    elsif p_done then
+      raise exception 'Give every question a mark first.';
+    end if;
+  end loop;
+  update public.second_marks
+     set marks = v, note = nullif(left(btrim(coalesce(p_note, '')), 2000), ''),
+         total = (select coalesce(sum(value::numeric), 0) from jsonb_each_text(v)),
+         status = case when p_done then 'done' else status end, done_at = case when p_done then now() else done_at end
+   where id = s.id returning * into s;
+  if p_done then
+    select title into v_title from public.assignments where id = s.assignment_id;
+    perform public.notify_user(s.asked_by, 'second_done', 'Second marking done: ' || coalesce(v_title, 'work'),
+      'Compare the marks and agree them before you give them back.', jsonb_build_object('attempt_id', s.attempt_id, 'assignment_id', s.assignment_id));
+  end if;
+  return jsonb_build_object('id', s.id, 'status', s.status, 'total', s.total);
+end $$;
+-- Whoever asked: cancel, or agree (each question: keep my mark, or take the second marker's)
+create or replace function public.second_mark_cancel(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  update public.second_marks set status = 'cancelled' where id = p_id and asked_by = auth.uid() and status in ('asked', 'done');
+  if not found then raise exception 'Not found.'; end if;
+end $$;
+create or replace function public.second_mark_agree(p_id uuid, p_take jsonb default '{}') returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  s public.second_marks;
+  k text;
+begin
+  select * into s from public.second_marks where id = p_id for update;
+  if s.id is null or s.asked_by <> auth.uid() then raise exception 'Not found.'; end if;
+  if s.status <> 'done' then raise exception 'The second marker hasn’t finished yet.'; end if;
+  for k in select key from jsonb_each_text(coalesce(p_take, '{}'::jsonb)) where value = 'second' loop
+    update public.responses set marks = (s.marks ->> k)::numeric, updated_at = now()
+     where attempt_id = s.attempt_id and question_id::text = k and s.marks ? k;
+  end loop;
+  update public.second_marks set status = 'agreed', agreed_at = now() where id = s.id;
+end $$;
+-- What's being second-marked in a piece of work (for its marking list)
+create or replace function public.second_marks_for(p_assignment uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('attempt_id', s.attempt_id, 'status', s.status,
+           'marker', (select display_name from public.profiles where id = s.marker_id))), '[]')
+    from public.second_marks s join public.assignments a on a.id = s.assignment_id
+   where s.assignment_id = p_assignment and a.tutor_id = auth.uid() and s.status <> 'cancelled'
+$$;
+-- The second marker opens the answer files of the hand-ins they're marking
+create or replace function public._second_file_ok(p_name text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare seg text[] := string_to_array(p_name, '/');
+begin
+  if coalesce(array_length(seg, 1), 0) < 3 or seg[2] in ('marking', 'notes', 'core', 'portfolio') then return false; end if;
+  return exists (select 1 from public.second_marks s join public.attempts t on t.id = s.attempt_id
+                  where s.attempt_id = seg[2]::uuid and t.learner_id::text = seg[1] and s.marker_id = auth.uid() and s.status in ('asked', 'done'));
+exception when others then return false;
+end $$;
+drop policy if exists sb_work_second on storage.objects;
+create policy sb_work_second on storage.objects for select to authenticated
+  using (bucket_id = 'work' and public._second_file_ok(name));
+
+-- ---------------- office hours ----------------
+create table if not exists public.office_hours (
+  id uuid primary key default gen_random_uuid(),
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  weekday smallint not null check (weekday between 1 and 7),
+  starts time not null,
+  ends time not null,
+  slot_min smallint not null default 15 check (slot_min in (10, 15, 20, 30, 45, 60)),
+  how text not null default 'choice' check (how in ('in_person', 'video', 'choice')),
+  location text check (location is null or length(location) <= 80),
+  check (ends > starts)
+);
+create index if not exists office_hours_teacher on public.office_hours (teacher_id);
+create table if not exists public.office_bookings (
+  id uuid primary key default gen_random_uuid(),
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  learner_id uuid not null references public.profiles (id) on delete cascade,
+  starts_at timestamptz not null,
+  ends_at timestamptz not null,
+  how text not null check (how in ('in_person', 'video')),
+  note text check (note is null or length(note) <= 500),
+  session_id uuid references public.sessions (id) on delete set null,
+  status text not null default 'booked' check (status in ('booked', 'cancelled')),
+  created_at timestamptz not null default now()
+);
+create unique index if not exists office_bookings_slot on public.office_bookings (teacher_id, starts_at) where status = 'booked';
+create index if not exists office_bookings_learner on public.office_bookings (learner_id, starts_at);
+alter table public.office_hours enable row level security;
+alter table public.office_bookings enable row level security;
+
+-- A teacher's free times in the next few weeks, on their own clock: each window cut into slots, less what's booked and
+-- any lesson they already have then, and never within the next half hour
+create or replace function public._office_slots(p_teacher uuid, p_days int default 14)
+returns table (starts_at timestamptz, ends_at timestamptz, how text, location text, slot_min int)
+language sql stable security definer set search_path = public as $$
+  with tz as (select public._tz_of(p_teacher) as z),
+  days as (select (now() at time zone (select z from tz))::date + g as d from generate_series(0, greatest(1, least(coalesce(p_days, 14), 28)) - 1) g),
+  raw as (
+    select (dd.d + h.starts + make_interval(mins => i * h.slot_min)) at time zone (select z from tz) as st, h.slot_min::int as slot_min, h.how, h.location
+      from days dd
+      join public.office_hours h on h.teacher_id = p_teacher and h.weekday = extract(isodow from dd.d)::int
+      cross join lateral generate_series(0, (floor(extract(epoch from (h.ends - h.starts)) / 60 / h.slot_min))::int - 1) i)
+  select r.st, r.st + make_interval(mins => r.slot_min), r.how, r.location, r.slot_min
+    from raw r
+   where r.st > now() + interval '30 minutes'
+     and not exists (select 1 from public.office_bookings b where b.teacher_id = p_teacher and b.status = 'booked'
+                      and b.starts_at < r.st + make_interval(mins => r.slot_min) and b.ends_at > r.st)
+     and not exists (select 1 from public.sessions s where s.tutor_id = p_teacher and not s.cancelled
+                      and s.starts_at < r.st + make_interval(mins => r.slot_min) and s.starts_at + make_interval(mins => s.duration_min) > r.st)
+   order by r.st
+$$;
+-- A teacher sets their weekly office hours (they replace the ones before; times already booked stay)
+create or replace function public.save_office_hours(p_hours jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare x jsonb;
+begin
+  if public.my_role() <> 'tutor' or not public._tutor_active() then raise exception 'Teachers only.'; end if;
+  perform public._locked_check();
+  if jsonb_typeof(coalesce(p_hours, '[]'::jsonb)) <> 'array' or jsonb_array_length(coalesce(p_hours, '[]'::jsonb)) > 14 then
+    raise exception 'Up to 14 times a week.';
+  end if;
+  delete from public.office_hours where teacher_id = auth.uid();
+  for x in select * from jsonb_array_elements(coalesce(p_hours, '[]'::jsonb)) loop
+    begin
+      insert into public.office_hours (teacher_id, weekday, starts, ends, slot_min, how, location)
+      values (auth.uid(), (x ->> 'weekday')::int, (x ->> 'starts')::time, (x ->> 'ends')::time, coalesce((x ->> 'slot_min')::int, 15),
+              coalesce(nullif(x ->> 'how', ''), 'choice'), nullif(left(btrim(coalesce(x ->> 'location', '')), 80), ''));
+    exception when others then
+      raise exception 'Each time needs a day, a start before its end, and slots of 10, 15, 20, 30, 45 or 60 minutes.';
+    end;
+  end loop;
+  return public.office_hours_mine();
+end $$;
+-- A teacher's office hours and who has booked them
+create or replace function public.office_hours_mine() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'hours', (select coalesce(jsonb_agg(jsonb_build_object('id', h.id, 'weekday', h.weekday, 'starts', to_char(h.starts, 'HH24:MI'),
+                'ends', to_char(h.ends, 'HH24:MI'), 'slot_min', h.slot_min, 'how', h.how, 'location', h.location) order by h.weekday, h.starts), '[]')
+                from public.office_hours h where h.teacher_id = auth.uid()),
+    'bookings', (select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'learner_id', b.learner_id,
+                   'learner', (select display_name from public.profiles where id = b.learner_id), 'starts_at', b.starts_at, 'ends_at', b.ends_at,
+                   'how', b.how, 'note', b.note, 'session_id', b.session_id) order by b.starts_at), '[]')
+                   from public.office_bookings b where b.teacher_id = auth.uid() and b.status = 'booked' and b.ends_at > now()),
+    'timezone', public._tz_of(auth.uid()))
+$$;
+-- For a learner: their teachers who have office hours, and their own bookings
+create or replace function public.office_teachers() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'teachers', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.display_name) order by p.display_name), '[]')
+                   from public.profiles p
+                  where p.id in (select public._teachers_now(auth.uid()))
+                    and exists (select 1 from public.office_hours h where h.teacher_id = p.id)),
+    'bookings', (select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'teacher_id', b.teacher_id,
+                   'teacher', (select display_name from public.profiles where id = b.teacher_id), 'starts_at', b.starts_at, 'ends_at', b.ends_at,
+                   'how', b.how, 'note', b.note, 'session_id', b.session_id) order by b.starts_at), '[]')
+                   from public.office_bookings b where b.learner_id = auth.uid() and b.status = 'booked' and b.ends_at > now()))
+  where public.my_role() = 'learner'
+$$;
+-- A teacher's free times, for one of their learners
+create or replace function public.office_slots(p_teacher uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public.my_role() <> 'learner' or not public._teaches_now(p_teacher, auth.uid()) then raise exception 'You can only book your own teachers.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('starts_at', s.starts_at, 'ends_at', s.ends_at, 'how', s.how, 'location', s.location)
+                                    order by s.starts_at), '[]')
+            from public._office_slots(p_teacher, 14) s);
+end $$;
+-- A learner books one of those times: a lesson for just them, in person or by video (two booked with a teacher at a time)
+create or replace function public.book_office_hour(p_teacher uuid, p_starts timestamptz, p_how text default null, p_note text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  s record;
+  v_how text;
+  v_session uuid;
+  b public.office_bookings;
+  v_name text;
+begin
+  if public.my_role() <> 'learner' or not public._teaches_now(p_teacher, auth.uid()) then raise exception 'You can only book your own teachers.'; end if;
+  if public._paused_for(auth.uid(), p_teacher) or public._place_unpaid(p_teacher) then raise exception 'You can’t book this teacher just now.'; end if;
+  perform pg_advisory_xact_lock(hashtext('office:' || p_teacher::text));
+  select * into s from public._office_slots(p_teacher, 28) x where x.starts_at = p_starts limit 1;
+  if s.starts_at is null then raise exception 'That time has just gone. Pick another.'; end if;
+  v_how := case when s.how = 'choice' then coalesce(nullif(p_how, ''), 'video') else s.how end;
+  if v_how not in ('in_person', 'video') then raise exception 'In person or by video?'; end if;
+  if (select count(*) from public.office_bookings where learner_id = auth.uid() and teacher_id = p_teacher and status = 'booked' and starts_at > now()) >= 2 then
+    raise exception 'You already have two times booked with this teacher. Cancel one first.';
+  end if;
+  insert into public.sessions (tutor_id, title, starts_at, duration_min, learner_ids, in_person, location, office)
+  values (p_teacher, 'Office hours', s.starts_at, s.slot_min, array[auth.uid()], v_how = 'in_person', case when v_how = 'in_person' then s.location end, true)
+  returning id into v_session;
+  insert into public.office_bookings (teacher_id, learner_id, starts_at, ends_at, how, note, session_id)
+  values (p_teacher, auth.uid(), s.starts_at, s.ends_at, v_how, nullif(left(btrim(coalesce(p_note, '')), 500), ''), v_session) returning * into b;
+  select display_name into v_name from public.profiles where id = auth.uid();
+  perform public.notify_user(p_teacher, 'office', coalesce(v_name, 'A learner') || ' booked office hours',
+    to_char(s.starts_at at time zone public._tz_of(p_teacher), 'FMDy FMDD FMMon, HH24:MI') || case when v_how = 'video' then ', by video' else ', in person' end
+      || coalesce(': “' || b.note || '”', ''), jsonb_build_object('booking_id', b.id, 'session_id', v_session));
+  return jsonb_build_object('id', b.id, 'starts_at', b.starts_at, 'how', b.how, 'session_id', v_session);
+end $$;
+-- Either of them cancels; the other is told
+create or replace function public.cancel_office_booking(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  b public.office_bookings;
+  v_other uuid;
+  v_name text;
+begin
+  select * into b from public.office_bookings where id = p_id for update;
+  if b.id is null or auth.uid() not in (b.learner_id, b.teacher_id) then raise exception 'Not found.'; end if;
+  if b.status = 'cancelled' then return; end if;
+  update public.office_bookings set status = 'cancelled' where id = b.id;
+  update public.sessions set cancelled = true where id = b.session_id;
+  v_other := case when auth.uid() = b.learner_id then b.teacher_id else b.learner_id end;
+  select display_name into v_name from public.profiles where id = auth.uid();
+  perform public.notify_user(v_other, 'office', 'Office hours cancelled',
+    coalesce(v_name, 'Someone') || ' cancelled ' || to_char(b.starts_at at time zone public._tz_of(v_other), 'FMDy FMDD FMMon, HH24:MI') || '.',
+    jsonb_build_object('booking_id', b.id));
+end $$;
+
+revoke execute on function public._pool_pick(jsonb) from public, anon, authenticated;
+revoke execute on function public._formula_value(text, jsonb) from public, anon, authenticated;
+revoke execute on function public._resolved_key(jsonb, jsonb) from public, anon, authenticated;
+revoke execute on function public._pick_vars(jsonb) from public, anon, authenticated;
+revoke execute on function public._class_terms(uuid) from public, anon, authenticated;
+revoke execute on function public._class_marks_in(uuid, date, date, boolean) from public, anon, authenticated;
+revoke execute on function public._class_overall_in(uuid, date, date, boolean) from public, anon, authenticated;
+revoke execute on function public._office_slots(uuid, int) from public, anon, authenticated;
+do $$
+declare f text;
+begin
+  foreach f in array array['class_gradebook(uuid, int)', 'set_final_grade(uuid, uuid, int, text, text)', 'my_grades()', 'second_markers()',
+                           'second_mark_ask(uuid, uuid, int, uuid[])', 'second_mark_queue()', 'second_mark_detail(uuid)',
+                           'second_mark_save(uuid, jsonb, text, boolean)', 'second_mark_cancel(uuid)', 'second_mark_agree(uuid, jsonb)',
+                           'second_marks_for(uuid)', 'save_office_hours(jsonb)', 'office_hours_mine()', 'office_teachers()', 'office_slots(uuid)',
+                           'book_office_hour(uuid, timestamptz, text, text)', 'cancel_office_booking(uuid)'] loop
     execute format('revoke execute on function public.%s from public, anon', f);
     execute format('grant execute on function public.%s to authenticated', f);
   end loop;

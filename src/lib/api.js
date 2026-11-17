@@ -850,9 +850,15 @@ export async function duplicateAssignment(a) {
   const copy = await save('assignments', { ...rest, title: a.title + ' (copy)', visibility: 'hidden', draft: false });
   const qs = await listQuestions(id);
   const keys = await listKeys(qs.map((q) => q.id));
+  // reading passages go with it, each question pointing at the copy
+  const passages = {};
+  for (const p of await listPassages(id)) {
+    const { id: pid, created_at: _pc, assignment_id: _pa, ...pr } = p;
+    passages[pid] = (await save('question_passages', { ...pr, assignment_id: copy.id })).id;
+  }
   for (const q of qs) {
     const { id: qid, created_at: _c, assignment_id, ...qr } = q;
-    const nq = await save('questions', { ...qr, assignment_id: copy.id });
+    const nq = await save('questions', { ...qr, assignment_id: copy.id, passage_id: qr.passage_id ? passages[qr.passage_id] || null : null });
     const k = keys.find((x) => x.question_id === qid);
     if (k) await saveKey({ question_id: nq.id, answer: k.answer, mark_scheme_md: k.mark_scheme_md, solution_md: k.solution_md });
   }
@@ -1358,3 +1364,27 @@ export const copyClass = (classId, name, what = {}) => run(sb().rpc('copy_class'
 export const newYearInfo = () => run(sb().rpc('new_year_info'));
 export const moveUpYear = (putAway, again = false) => run(sb().rpc('move_up_year', { p_put_away: !!putAway, p_again: !!again }));
 export const undoMoveUp = (id) => run(sb().rpc('undo_move_up', { p_move: id }));
+
+// ---------------- Canvas gaps, part 2 (17 Nov 2026) ----------------
+// Reading passages several questions share
+export const listPassages = (assignmentId) => run(sb().from('question_passages').select('*').eq('assignment_id', assignmentId).order('position').order('created_at'));
+// The gradebook for the year (term null) or one term; final grades; what learners see
+export const classGradebookTerm = (classId, term) => run(sb().rpc('class_gradebook', term ? { p_class: classId, p_term: term } : { p_class: classId }));
+export const setFinalGrade = (classId, learnerId, term, grade, note) => run(sb().rpc('set_final_grade', { p_class: classId, p_learner: learnerId, p_term: term || 0, p_grade: grade, p_note: note || null }));
+export const myGrades = () => run(sb().rpc('my_grades'));
+// Second marking
+export const secondMarkers = () => run(sb().rpc('second_markers'));
+export const secondMarkAsk = (assignmentId, markerId, share = 100, attempts = null) => run(sb().rpc('second_mark_ask', { p_assignment: assignmentId, p_marker: markerId, p_share: share, p_attempts: attempts }));
+export const secondMarkQueue = () => run(sb().rpc('second_mark_queue'));
+export const secondMarkDetail = (id) => run(sb().rpc('second_mark_detail', { p_id: id }));
+export const secondMarkSave = (id, marks, note, done = false) => run(sb().rpc('second_mark_save', { p_id: id, p_marks: marks, p_note: note || null, p_done: done }));
+export const secondMarkCancel = (id) => run(sb().rpc('second_mark_cancel', { p_id: id }));
+export const secondMarkAgree = (id, take) => run(sb().rpc('second_mark_agree', { p_id: id, p_take: take }));
+export const secondMarksFor = (assignmentId) => run(sb().rpc('second_marks_for', { p_assignment: assignmentId }));
+// Office hours
+export const officeHoursMine = () => run(sb().rpc('office_hours_mine'));
+export const saveOfficeHours = (hours) => run(sb().rpc('save_office_hours', { p_hours: hours }));
+export const officeTeachers = () => run(sb().rpc('office_teachers'));
+export const officeSlots = (teacherId) => run(sb().rpc('office_slots', { p_teacher: teacherId }));
+export const bookOfficeHour = (teacherId, startsAt, how, note) => run(sb().rpc('book_office_hour', { p_teacher: teacherId, p_starts: startsAt, p_how: how || null, p_note: note || null }));
+export const cancelOfficeBooking = (id) => run(sb().rpc('cancel_office_booking', { p_id: id }));

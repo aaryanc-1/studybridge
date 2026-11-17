@@ -5672,3 +5672,198 @@ test('Canvas gaps, part 1: steps that open in order, group work, closing dates a
   assert.equal((await sql(`select archived from classes where id = $1`, [cls])).archived, false);
   await fails(as('GM', `select undo_move_up($1)`, [mv.id]), /undone already/);
 });
+
+test('Canvas gaps, part 2: question pools, random numbers and passages, a gradebook by term with drop lowest and final grades, what if, second marking, office hours', async () => {
+  const sql = async (q, p) => (await db.query(q, p)).rows[0];
+  const mk = async (k, email) => {
+    U[k] = (await db.query(`insert into auth.users (email, raw_user_meta_data) values ($1, $2) returning id`, [email, { name: k }])).rows[0].id;
+  };
+  for (const k of ['QM', 'QT', 'QS', 'QX']) {
+    await mk(k, k.toLowerCase() + '@canvas2.x');
+    await one(k, `select * from become_tutor($1, 'UTC')`, [k]);
+    await as('A', `select admin_set_status($1, 'active')`, [U[k]]);
+  }
+  const school = await val('QM', `select org_make_centre('Lake School')`);
+  await db.query(`update organisations set kind = 'school' where id = $1`, [school.id]);
+  for (const k of ['QT', 'QS']) await val(k, `select org_join($1)`, [school.code]);
+  for (const k of ['QA', 'QB', 'QC']) {
+    await mk(k, k.toLowerCase() + '@canvas2.x');
+    const code = await val('QT', `insert into invites (name) values ($1) returning code`, [k]);
+    await one(k, `select * from accept_invite($1, $2)`, [code, k]);
+  }
+  const subj = await val('QT', `insert into subjects (name) values ('Maths') returning id`);
+  const cls = await val('QT', `select save_class(null, 'Year 8 maths', $1, $2)`, [subj, [U.QA, U.QB, U.QC]]);
+  const work = async (title, extra = {}) => {
+    const cols = { title, kind: 'quiz', subject_id: subj, class_id: cls, visibility: 'visible', release_mode: 'on_submit', ...extra };
+    const keys = Object.keys(cols);
+    return val('QT', `insert into assignments (${keys.join(', ')}) values (${keys.map((_, i) => '$' + (i + 1)).join(', ')}) returning id`, Object.values(cols));
+  };
+  const numQ = async (aid, value, extra = {}) => {
+    const q = await val('QT', `insert into questions (assignment_id, type, prompt_md, marks, pool, options, position) values ($1, 'numeric', $2, $3, $4, $5, $6) returning id`,
+      [aid, extra.prompt || 'How many?', extra.marks ?? 1, extra.pool ?? null, JSON.stringify(extra.options ?? []), extra.position ?? 0]);
+    await as('QT', `insert into question_keys (question_id, answer) values ($1, $2)`, [q, typeof value === 'object' ? value : { value: String(value), tolerance: '0' }]);
+    return q;
+  };
+
+  // ---- question pools: two of four for each learner, and the questions they didn't get stay hidden ----
+  assert.deepEqual((await sql(`select public._pool_pick('{"1": "2", "x": 3, "2": 0, "3": 7}') p`)).p, { 1: 2, 3: 7 });
+  const pooled = await work('Pooled quiz', { pool_pick: { 1: 2 } });
+  const base = await numQ(pooled, 1, { position: 0 });
+  const pq = [];
+  for (let i = 1; i <= 4; i++) pq.push(await numQ(pooled, i + 10, { pool: 1, position: i }));
+  assert.deepEqual((await as('QA', `select id from questions where assignment_id = $1`, [pooled])).map((r) => r.id), [base], 'before starting: only the questions everyone gets');
+  const ta = await one('QA', `select * from start_attempt($1)`, [pooled]);
+  assert.equal(ta.question_ids.length, 3);
+  assert.equal(Number(ta.max_score), 3);
+  const mineQ = (await as('QA', `select id from questions where assignment_id = $1`, [pooled])).map((r) => r.id).sort();
+  assert.deepEqual(mineQ, [...ta.question_ids].sort());
+  for (const q of ta.question_ids) await as('QA', `select save_response($1, $2, $3)`, [ta.id, q, { value: q === base ? '1' : String(pq.indexOf(q) + 11) }]);
+  const handed = await one('QA', `select * from submit_attempt($1)`, [ta.id]);
+  assert.deepEqual([Number(handed.score), Number(handed.max_score)], [3, 3]);
+  assert.equal((await sql(`select count(*)::int n from responses where attempt_id = $1`, [ta.id])).n, 3, 'only the questions they got');
+
+  // ---- random numbers: each learner's own, marked against them ----
+  assert.equal(Number((await sql(`select public._formula_value('1/2*a + sqrt(b)', '{"a": 4, "b": 9}') v`)).v), 5);
+  assert.equal((await sql(`select public._formula_value('a*c', '{"a": 4}') v`)).v, null, 'letters it doesn’t have');
+  assert.equal((await sql(`select public._formula_value('1); select 1; --', '{}') v`)).v, null);
+  assert.equal((await sql(`select public._formula_value('a/0', '{"a": 4}') v`)).v, null);
+  const randomQuiz = await work('Random quiz');
+  const vars = { vars: [{ name: 'a', min: 2, max: 9 }, { name: 'b', min: 2, max: 9 }] };
+  await fails(numQ(randomQuiz, { formula: 'a*c', tolerance: '0' }, { options: vars }), /formula doesn’t work out/);
+  await db.query('delete from questions where assignment_id = $1', [randomQuiz]); // (the question whose key was refused)
+  await fails(as('QT', `insert into questions (assignment_id, type, prompt_md, marks, options) values ($1, 'numeric', 'x', 1, $2)`, [randomQuiz, JSON.stringify({ vars: [{ name: 'pi', min: 1, max: 2 }] })]), /one or two letters/);
+  await fails(as('QT', `insert into questions (assignment_id, type, prompt_md, marks, options) values ($1, 'numeric', 'x', 1, $2)`, [randomQuiz, JSON.stringify({ vars: [{ name: 'a', min: 9, max: 2 }] })]), /lowest and a highest/);
+  const rq = await numQ(randomQuiz, { formula: 'a*b', tolerance: '0' }, { options: vars, prompt: 'A box holds {a} rows of {b}. How many?' });
+  const tb = await one('QB', `select * from start_attempt($1)`, [randomQuiz]);
+  const v = tb.vars[rq];
+  assert.ok(v.a >= 2 && v.a <= 9 && v.b >= 2 && v.b <= 9 && Number.isInteger(v.a), 'their own whole numbers');
+  await as('QB', `select save_response($1, $2, $3)`, [tb.id, rq, { value: String(v.a * v.b) }]);
+  assert.equal(Number((await one('QB', `select * from submit_attempt($1)`, [tb.id])).score), 1, 'right for their numbers');
+  const tc = await one('QC', `select * from start_attempt($1)`, [randomQuiz]);
+  await as('QC', `select save_response($1, $2, $3)`, [tc.id, rq, { value: String(tc.vars[rq].a * tc.vars[rq].b + 1) }]);
+  assert.equal(Number((await one('QC', `select * from submit_attempt($1)`, [tc.id])).score), 0);
+  const det = await val('QT', `select attempt_detail($1)`, [tb.id]);
+  assert.equal(Number(det.keys[0].answer.value), v.a * v.b, 'the answer worked out for this learner');
+  assert.deepEqual(det.attempt.vars[rq], v);
+
+  // ---- reading passages: shared by questions, theirs only, readable when the questions are ----
+  const reading = await work('Reading', { kind: 'homework' });
+  const passage = await val('QT', `insert into question_passages (assignment_id, title, body_md) values ($1, 'The river', 'Once upon a time…') returning id`, [reading]);
+  await val('QT', `insert into questions (assignment_id, type, prompt_md, marks, passage_id) values ($1, 'short', 'Who?', 2, $2) returning id`, [reading, passage]);
+  const otherWork = await val('QX', `insert into assignments (title, kind, visibility) values ('Mine', 'homework', 'visible') returning id`);
+  await fails(as('QX', `insert into question_passages (assignment_id, title, body_md) values ($1, 'Sneaky', 'x')`, [reading]), /row-level security/);
+  const otherPassage = await val('QX', `insert into question_passages (assignment_id, title) values ($1, 'Theirs') returning id`, [otherWork]);
+  await fails(as('QT', `insert into questions (assignment_id, type, prompt_md, marks, passage_id) values ($1, 'short', 'x', 1, $2)`, [reading, otherPassage]), /belongs to other work/);
+  assert.deepEqual((await as('QA', `select title from question_passages where assignment_id = $1`, [reading])).map((r) => r.title), ['The river']);
+  assert.equal((await as('QA', `select id from question_passages where id = $1`, [otherPassage])).length, 0);
+
+  // ---- a gradebook by term, dropping the lowest test, and a final grade ----
+  await fails(as('QT', `select save_grading($1, $2)`, [cls, JSON.stringify({ categories: [{ name: 'Tests', weight: 60, drop_lowest: 6 }] })]), /0 to 5/);
+  const today = new Date();
+  const day = (d) => new Date(today.getTime() + d * 864e5).toISOString().slice(0, 10);
+  await as('QT', `select save_grading($1, $2)`, [cls, JSON.stringify({ categories: [{ name: 'Tests', weight: 60, drop_lowest: 1 }, { name: 'Homework', weight: 40 }],
+    terms: [{ name: 'Term 1', starts: day(-60), ends: day(20) }, { name: 'Term 2', starts: day(21), ends: day(120) }] })]);
+  const cats = await val('QT', `select class_categories($1)`, [cls]);
+  const catId = Object.fromEntries(cats.map((c) => [c.name, c.id]));
+  const graded = async (title, cat, pctRight) => {
+    const w = await work(title, { category_id: catId[cat], due_at: new Date(today.getTime() - 864e5) });
+    const qs = [];
+    for (let i = 0; i < 10; i++) qs.push(await numQ(w, 1, { position: i }));
+    const t = await one('QA', `select * from start_attempt($1)`, [w]);
+    for (let i = 0; i < 10; i++) await as('QA', `select save_response($1, $2, $3)`, [t.id, qs[i], { value: i < pctRight / 10 ? '1' : '2' }]);
+    await one('QA', `select * from submit_attempt($1)`, [t.id]);
+    return w;
+  };
+  await graded('Test 1', 'Tests', 50);
+  await graded('Test 2', 'Tests', 80);
+  await graded('Test 3', 'Tests', 90);
+  await graded('Homework 1', 'Homework', 100);
+  const gb = await val('QT', `select class_gradebook($1, 1)`, [cls]);
+  assert.deepEqual(gb.terms.map((t) => t.name), ['Term 1', 'Term 2']);
+  const qaRow = gb.learners.find((l) => l.id === U.QA);
+  assert.equal(Number(qaRow.overall), 91, 'tests 85 (the 50 left out) × 60% + homework 100 × 40%');
+  assert.equal(Number(qaRow.by_category[catId.Tests]), 85);
+  assert.equal((await val('QT', `select class_gradebook($1, 2)`, [cls])).work.length, 0, 'nothing due in term 2 yet');
+  await fails(as('QT', `select class_gradebook($1, 9)`, [cls]), /isn’t there/);
+  await fails(as('QX', `select set_final_grade($1, $2, 0, 'A')`, [cls, U.QA]), /Not your class/);
+  await as('QT', `select set_final_grade($1, $2, 0, 'A*', 'Moderated')`, [cls, U.QA]);
+  assert.equal((await val('QT', `select class_gradebook($1)`, [cls])).learners.find((l) => l.id === U.QA).final.grade, 'A*');
+  // what if: only once the teacher shows learners their running grade, and only marks given back
+  assert.deepEqual(await val('QA', `select my_grades()`), []);
+  await as('QT', `select save_grading($1, $2)`, [cls, JSON.stringify({ categories: cats.map((c) => ({ ...c, drop_lowest: c.name === 'Tests' ? 1 : 0 })), show_learners: true })]);
+  const mg = (await val('QA', `select my_grades()`))[0];
+  assert.deepEqual([mg.class, Number(mg.overall), mg.final], ['Year 8 maths', 91, 'A*']);
+  assert.equal(mg.categories.find((c) => c.name === 'Tests').drop_lowest, 1);
+  assert.equal(mg.work.filter((w) => w.pct != null).length, 5, 'the four, and the pooled quiz (no category, so it doesn’t count)');
+  assert.equal(JSON.stringify(await val('QB', `select my_grades()`)).includes('A*'), false, 'never someone else’s');
+  assert.equal((await val('QT', `select class_gradebook($1)`, [cls])).grading.show_learners, true, 'the terms stayed when left out');
+  assert.equal((await val('QT', `select class_gradebook($1)`, [cls])).terms.length, 2);
+
+  // ---- second marking: another teacher at the school, without the first marks or names ----
+  const essay = await work('Essay', { kind: 'homework', release_mode: 'manual' });
+  const eq = await val('QT', `insert into questions (assignment_id, type, prompt_md, marks) values ($1, 'short', 'Explain.', 4) returning id`, [essay]);
+  const ts = {};
+  for (const k of ['QA', 'QB']) {
+    ts[k] = await one(k, `select * from start_attempt($1)`, [essay]);
+    await as(k, `select save_response($1, $2, $3)`, [ts[k].id, eq, { text: k + ' writes about rivers.' }]);
+    await one(k, `select * from submit_attempt($1)`, [ts[k].id]);
+  }
+  assert.deepEqual((await val('QT', `select second_markers()`)).map((m) => m.name).sort(), ['QM', 'QS']);
+  await fails(as('QT', `select second_mark_ask($1, $2)`, [essay, U.QX]), /another teacher at your school/);
+  await fails(as('QS', `select second_mark_ask($1, $2)`, [essay, U.QT]), /Only whoever set it/);
+  assert.equal(await val('QT', `select second_mark_ask($1, $2, 50)`, [essay, U.QS]), 1, 'half of two, at random');
+  assert.equal(await val('QT', `select second_mark_ask($1, $2)`, [essay, U.QS]), 1, 'the rest');
+  assert.equal(await val('QS', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'second_mark'`), 2);
+  const queue = (await val('QS', `select second_mark_queue()`)).mine;
+  assert.equal(queue.length, 2);
+  const smA = (await sql(`select id from second_marks where attempt_id = $1`, [ts.QA.id])).id;
+  const sd = await val('QS', `select second_mark_detail($1)`, [smA]);
+  assert.equal(JSON.stringify(sd).includes('"QA"'), false, 'no name');
+  assert.deepEqual([sd.questions.length, sd.answers[0].answer.text, sd.marks], [1, 'QA writes about rivers.', {}]);
+  await fails(as('QX', `select second_mark_detail($1)`, [smA]), /Not found/);
+  assert.equal(await val('QS', `select public._second_file_ok($1)`, [`${U.QA}/${ts.QA.id}/essay.pdf`]), true);
+  assert.equal(await val('QX', `select public._second_file_ok($1)`, [`${U.QA}/${ts.QA.id}/essay.pdf`]), false);
+  // the first teacher marks 3; marks can't go back until the two agree
+  await as('QT', `update responses set marks = 3 where attempt_id = $1`, [ts.QA.id]);
+  await fails(as('QT', `select finish_marking($1, true, null, false)`, [ts.QA.id]), /second marking isn’t agreed/);
+  await fails(as('QS', `select second_mark_save($1, $2, null, true)`, [smA, JSON.stringify({ [eq]: 7 })]), /0 to 4/);
+  await as('QS', `select second_mark_save($1, $2, 'Strong reasons', true)`, [smA, JSON.stringify({ [eq]: 2 })]);
+  assert.equal(await val('QT', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'second_done'`), 1);
+  assert.deepEqual((await val('QT', `select attempt_detail($1)`, [ts.QA.id])).attempt.second.marks, { [eq]: 2 });
+  await as('QT', `select second_mark_agree($1, $2)`, [smA, JSON.stringify({ [eq]: 'second' })]);
+  const back = await one('QT', `select * from finish_marking($1, true, null, false)`, [ts.QA.id]);
+  assert.deepEqual([back.released, Number(back.score)], [true, 2], 'the second marker’s mark, agreed');
+  assert.equal(await val('QS', `select public._second_file_ok($1)`, [`${U.QA}/${ts.QA.id}/essay.pdf`]), false, 'not once it’s agreed');
+  const smB = (await sql(`select id from second_marks where attempt_id = $1`, [ts.QB.id])).id;
+  await as('QT', `select second_mark_cancel($1)`, [smB]);
+  await as('QT', `select finish_marking($1, true, null, false)`, [ts.QB.id]);
+
+  // ---- office hours: weekly times, learners book (a lesson just for them), two at a time, either can cancel ----
+  await fails(as('QA', `select save_office_hours('[]')`), /Teachers only/);
+  await fails(as('QT', `select save_office_hours($1)`, [JSON.stringify([{ weekday: 2, starts: '10:00', ends: '09:00' }])]), /start before its end/);
+  const hours = await val('QT', `select save_office_hours($1)`, [JSON.stringify([1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, starts: '09:00', ends: '10:00', slot_min: 30, how: 'choice', location: 'Room 4' })))]);
+  assert.equal(hours.hours.length, 7);
+  const ot = await val('QA', `select office_teachers()`);
+  assert.deepEqual(ot.teachers.map((t) => t.name), ['QT']);
+  const slots = await val('QA', `select office_slots($1)`, [U.QT]);
+  assert.ok(slots.length >= 20, `two a day for two weeks (${slots.length})`);
+  await fails(as('QA', `select office_slots($1)`, [U.QX]), /your own teachers/);
+  const b1 = await val('QA', `select book_office_hour($1, $2, 'video', 'Help with ratio')`, [U.QT, slots[0].starts_at]);
+  const s1 = await sql(`select office, in_person, learner_ids, title, cancelled from sessions where id = $1`, [b1.session_id]);
+  assert.deepEqual([s1.office, s1.in_person, s1.learner_ids, s1.title], [true, false, [U.QA], 'Office hours']);
+  assert.match(await val('QT', `select body from notifications where user_id = auth.uid() and kind = 'office' order by created_at desc limit 1`), /by video: “Help with ratio”/);
+  await fails(as('QB', `select book_office_hour($1, $2)`, [U.QT, slots[0].starts_at]), /just gone/);
+  assert.equal((await val('QB', `select office_slots($1)`, [U.QT])).some((x) => x.starts_at === slots[0].starts_at), false, 'taken');
+  await val('QA', `select book_office_hour($1, $2, 'in_person')`, [U.QT, slots[1].starts_at]);
+  await fails(as('QA', `select book_office_hour($1, $2)`, [U.QT, slots[2].starts_at]), /two times booked/);
+  assert.equal((await val('QT', `select office_hours_mine()`)).bookings.length, 2);
+  await fails(as('QB', `select cancel_office_booking($1)`, [b1.id]), /Not found/);
+  await as('QT', `select cancel_office_booking($1)`, [b1.id]);
+  assert.equal((await sql(`select cancelled from sessions where id = $1`, [b1.session_id])).cancelled, true);
+  assert.equal(await val('QA', `select count(*)::int from notifications where user_id = auth.uid() and kind = 'office' and title = 'Office hours cancelled'`), 1);
+  assert.equal((await val('QA', `select office_teachers()`)).bookings.length, 1);
+  // an office hour in the past never waits for a register
+  const past = (await sql(`select session_id from office_bookings where learner_id = $1 and status = 'booked'`, [U.QA])).session_id;
+  await db.query(`update sessions set starts_at = now() - interval '1 day' where id = $1`, [past]);
+  assert.equal((await val('QT', `select my_attendance()`)).not_taken.some((x) => x.id === past), false);
+});

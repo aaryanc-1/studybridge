@@ -18,6 +18,9 @@ import { RubricGrid, rubricMark } from '../shared/Rubric.jsx';
 import { band } from '../../lib/myp.js';
 import { FeedbackRecorder, PeerCard, SimilarLine, SimilarOverview, handInLabel } from './MarkingExtras.jsx';
 import { lateOff, lateRuleText } from './WorkRules.jsx';
+import { withVars } from '../../lib/randomq.js';
+import { PassageBox, passageStarts } from './QuestionExtras.jsx';
+import { AskSecondMarking, SecondMarkCard, SecondQueue, secondText, useSecondFor, useSecondMarkers, useSecondQueue } from './SecondMarking.jsx';
 import { LockAllCopies, TheirCopy } from '../shared/DriveUI.jsx';
 
 export default function Marking() {
@@ -25,8 +28,13 @@ export default function Marking() {
   const route = useRoute();
   const attempts = useQuery('attempts', api.listAttempts);
   const assignments = useQuery('assignments', api.listAssignments).data || [];
-  const [tab, setTab] = useState('submitted');
+  const [tab, setTab] = useState(route.query.get('tab') || 'submitted');
   const [extending, setExtending] = useState(null); // more time for one learner on one piece of work
+  const [asking, setAsking] = useState(false); // second marking
+  const second = useSecondFor(route.query.get('a'));
+  const queue = useSecondQueue().data;
+  const toSecond = (queue?.mine || []).filter((x) => x.status === 'asked').length;
+  const markers = useSecondMarkers(!!route.query.get('a')).data || [];
   const dueFor = useDueFor();
   const only = route.query.get('a');
   const aById = Object.fromEntries(assignments.map((a) => [a.id, a]));
@@ -65,6 +73,11 @@ export default function Marking() {
             <button className="btn" onClick={() => go(`/work-results/${only}`)}>
               <Icon name="chart" size={16} /> Results by question
             </button>
+            {markers.length > 0 && (
+              <button className="btn" onClick={() => setAsking(true)}>
+                <Icon name="users" size={16} /> Second marking
+              </button>
+            )}
             <button className="btn" onClick={() => go('/marking')}>
               Show all assignments
             </button>
@@ -81,8 +94,10 @@ export default function Marking() {
           { value: 'in_progress', label: `In progress (${groups.in_progress.length})` },
           { value: 'done', label: `Returned (${groups.done.length})` },
           { value: 'missing', label: `Not handed in (${missing.length})` },
+          ...((queue?.mine || []).length ? [{ value: 'second', label: `Second marking (${toSecond})` }] : []),
         ]}
       />
+      {asking && aById[only] && <AskSecondMarking assignment={aById[only]} onClose={() => setAsking(false)} />}
       {extending && <ExtendWork a={extending.a} l={extending.l} onClose={() => setExtending(null)} />}
       {only && aById[only] && (
         <>
@@ -90,7 +105,9 @@ export default function Marking() {
           <PeerCard assignment={aById[only]} />
         </>
       )}
-      {tab === 'missing' ? (
+      {tab === 'second' ? (
+        <SecondQueue />
+      ) : tab === 'missing' ? (
         missing.length === 0 ? (
           <Empty>Everyone has handed in{only ? ' this one' : ' everything that’s posted'}.</Empty>
         ) : (
@@ -186,6 +203,7 @@ export default function Marking() {
                         <StatusPill t={t} />
                         {late && <span className="pill bad">Late</span>}
                         {(t.lockdown_events || []).length > 0 && <span className="pill warn"><Icon name="alert" size={12} /> {t.lockdown_events.length}</span>}
+                        {second[t.id] && <span className={'pill ' + (second[t.id].status === 'done' ? 'warn' : '')}>{secondText(second[t.id])}</span>}
                       </div>
                     </td>
                     <td data-label="Score">{t.score != null ? `${Number(t.score)} / ${Number(t.max_score)}` : '—'}</td>
@@ -210,6 +228,7 @@ export function MarkAttempt({ id }) {
   const assignmentId = detail.data?.attempt.assignment_id;
   const assignment = useQuery(assignmentId ? `assignment:${assignmentId}` : null, () => api.getAssignment(assignmentId));
   const questions = useQuery(assignmentId ? `questions:${assignmentId}` : null, () => api.listQuestions(assignmentId));
+  const passages = useQuery(assignmentId ? `passages:${assignmentId}` : null, () => api.listPassages(assignmentId)).data || [];
   const comments = useQuery('comments', api.listComments).data || [];
   const attempts = useQuery('attempts', api.listAttempts).data || [];
   const dueFor = useDueFor();
@@ -221,7 +240,9 @@ export function MarkAttempt({ id }) {
 
   const d = detail.data;
   const a = assignment.data;
-  const qs = questions.data || [];
+  // the questions this try got (a pool's share), with this learner's own numbers in random-number questions
+  const qs = (questions.data || []).filter((q) => !d?.attempt.question_ids || d.attempt.question_ids.includes(q.id)).map((q) => withVars(q, d?.attempt.vars));
+  const starts = passageStarts(qs);
   const learner = d ? lk.learner(d.attempt.learner_id) : null;
   // reopen it (for example after a hand-in by accident): answers stay, marks are cleared, they hand it in again
   async function reopen() {
@@ -404,8 +425,9 @@ export function MarkAttempt({ id }) {
             const key = (d.keys || []).find((k) => k.question_id === q.id);
             const notes = comments.filter((c) => c.question_id === q.id && c.learner_id === d.attempt.learner_id);
             return (
+              <div key={q.id} className="stack">
+              {starts[q.id] && <PassageBox p={passages.find((p) => p.id === starts[q.id])} />}
               <MarkQuestion
-                key={q.id}
                 n={i + 1}
                 q={q}
                 r={r}
@@ -417,6 +439,7 @@ export function MarkAttempt({ id }) {
                 onEdit={(patch) => r && edit(r, patch)}
                 onAnnotate={(x) => setAnnotating(typeof x === 'string' ? { path: x, r, q } : { strokes: x.strokes, r, q })}
               />
+              </div>
             );
           })}
           <div className="mark-bar">
@@ -505,6 +528,16 @@ export function MarkAttempt({ id }) {
               </div>
             </div>
           )}
+          <SecondMarkCard
+            d={d}
+            attemptId={id}
+            qs={qs}
+            onAgreed={() => {
+              for (const t of Object.values(timers.current)) clearTimeout(t);
+              timers.current = {};
+              setLocal({});
+            }}
+          />
           <CriteriaCard id={id} d={d} />
           <TheirCopy assignment={a} learnerId={d.attempt.learner_id} />
           <PeerCard assignment={a} />

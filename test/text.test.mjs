@@ -137,3 +137,36 @@ test('question types: matching, ordering and labels build public options and a k
   assert.equal(answeredKind({ type: 'file' }, { links: [{ url: 'https://x' }] }), true);
   assert.equal(answeredKind({ type: 'mcq' }, {}), null);
 });
+
+test('random numbers: the preview works the formula out like the server, and each learner sees their own numbers', async () => {
+  const { evalFormula, fillVars, varsProblem } = await import('../src/lib/randomq.js');
+  assert.equal(evalFormula('a*b', { a: 7, b: 3 }), 21);
+  assert.equal(evalFormula('1/2*a + sqrt(b)', { a: 4, b: 9 }), 5, 'a half, not 0');
+  assert.equal(evalFormula('-2^2'), 4, 'a minus sign binds first, as in the database');
+  assert.equal(evalFormula('2^3^2'), 64, '^ goes left to right, as in the database');
+  assert.equal(evalFormula('a/0', { a: 1 }), null);
+  assert.equal(evalFormula('a*c', { a: 1 }), null, 'a letter it doesn’t have');
+  assert.equal(evalFormula('alert(1)'), null);
+  assert.equal(Math.round(evalFormula('2*pi*r', { r: 1 }) * 1000), 6283);
+  assert.equal(fillVars('A box holds {a} rows of {b}, so {c}?', { a: 7, b: 3.5 }), 'A box holds 7 rows of 3.5, so {c}?');
+  assert.equal(varsProblem([{ name: 'pi', min: 1, max: 2 }]), 'Name each random number with one or two letters, like a or b.');
+  assert.equal(varsProblem([{ name: 'a', min: 9, max: 2 }]), 'Give “a” a lowest and a highest number.');
+  assert.equal(varsProblem([{ name: 'a', min: 1, max: 9, step: 1 }]), null);
+});
+
+test('what if: the overall in the app is the gradebook’s sum (weights, and the lowest marks left out)', async () => {
+  const { overallOf } = await import('../src/lib/grading.js');
+  const cats = [{ id: 't', weight: 60, drop_lowest: 1 }, { id: 'h', weight: 40 }];
+  const work = [
+    { category_id: 't', counts: true, pct: 50 },
+    { category_id: 't', counts: true, pct: 80 },
+    { category_id: 't', counts: true, pct: 90 },
+    { category_id: 'h', counts: true, pct: 100 },
+    { category_id: null, counts: true, pct: 0 },
+    { category_id: 'h', counts: false, pct: 0 },
+  ];
+  assert.equal(overallOf(work, cats), 91, 'the same as the db test: tests 85 × 60% + homework 100 × 40%');
+  assert.equal(overallOf([{ category_id: 't', counts: true, pct: 50 }], cats), 50, 'one mark: nothing left out');
+  assert.equal(overallOf([{ counts: true, pct: 60 }, { counts: true, pct: 80 }], []), 70, 'no categories: the plain average');
+  assert.equal(overallOf([{ category_id: 't', counts: true, pct: null }], cats), null);
+});

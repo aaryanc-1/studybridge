@@ -44,3 +44,30 @@ export function scaleProblem(scale) {
 
 // "65%" or "65.5%" (one decimal only when it matters)
 export const pctText = (n) => (n == null ? '—' : `${Math.round(Number(n) * 10) / 10}%`);
+
+// A learner's overall in a class, the same sum as the server's _class_overall_in: each category's average (leaving out
+// its lowest few once there are more marks than that), weighted when any category has a weight; else the plain average
+// of everything that counts. `work`: [{ category_id, counts, pct }] (pct null: no mark yet). Used for "what if".
+export function overallOf(work, cats = []) {
+  const marks = work.filter((w) => w.counts && w.pct != null && w.pct !== '' && !isNaN(Number(w.pct))).map((w) => ({ ...w, pct: Number(w.pct) }));
+  const weighted = cats.some((c) => Number(c.weight) > 0);
+  const kept = [];
+  for (const c of [{ id: null }, ...cats]) {
+    const mine = marks.filter((m) => (m.category_id || null) === c.id).sort((a, b) => a.pct - b.pct);
+    const drop = Number(c.drop_lowest) || 0;
+    kept.push(...(drop && mine.length > drop ? mine.slice(drop) : mine));
+  }
+  if (!kept.length) return null;
+  const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
+  if (!weighted) return Math.round(avg(kept.map((m) => m.pct)) * 10) / 10;
+  let sum = 0;
+  let wsum = 0;
+  for (const c of cats) {
+    const w = Number(c.weight) || 0;
+    const xs = kept.filter((m) => m.category_id === c.id).map((m) => m.pct);
+    if (!w || !xs.length) continue;
+    sum += avg(xs) * w;
+    wsum += w;
+  }
+  return wsum ? Math.round((sum / wsum) * 10) / 10 : null;
+}

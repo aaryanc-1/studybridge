@@ -26,6 +26,8 @@ import { MyReports, PredictedGrades, TermReportPage, TranscriptPage } from '../s
 import { MyProjects, ProjectPage } from '../shared/Projects.jsx';
 import Portfolio from '../shared/Portfolio.jsx';
 import { ReviewPage } from '../shared/Peer.jsx';
+import { OfficeHoursLearner } from '../shared/OfficeHours.jsx';
+import { MyGrades } from './MyGrades.jsx';
 import { ErrorBoundary, Page, go } from '../../ui/kit.jsx';
 
 function notificationTarget(n) {
@@ -33,6 +35,7 @@ function notificationTarget(n) {
   if ((n.kind === 'marked' || n.kind === 'auto_submitted') && r.attempt_id) return `/results/${r.attempt_id}`;
   if (n.kind === 'group' && r.attempt_id) return `/results/${r.attempt_id}`; // someone handed in group work for them
   if (n.kind === 'step' && r.class_id) return `/classes/${r.class_id}`; // a step opened early for them
+  if (n.kind === 'office') return '/office-hours'; // office hours cancelled
   if (n.kind === 'attempt_cancelled') return '/work';
   if (n.kind === 'cards') return '/study';
   if (n.kind === 'feedback_reply') return '/settings?s=contact';
@@ -149,6 +152,7 @@ export default function LearnerApp() {
     page = (
       <Page title="My progress" subtitle="Time you’ve spent, how your work went, and which topics are strong or need more practice.">
         <MyReports />
+        <MyGrades />
         <PredictedGrades />
         <ProgressView learnerId={app.me.id} name={app.me.display_name} />
         <AttendanceCard learnerId={app.me.id} name={app.me.display_name} />
@@ -157,6 +161,7 @@ export default function LearnerApp() {
       </Page>
     );
   else if (a === 'messages') page = <Messages />;
+  else if (a === 'office-hours') page = <OfficeHoursLearner />;
   else if (a === 'portfolio')
     page = (
       <Page title="My portfolio">

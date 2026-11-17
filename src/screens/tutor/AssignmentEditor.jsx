@@ -19,6 +19,8 @@ import { PARTS, buildQuestion, byHand, editModel, kindProblem } from '../../lib/
 import { KindEditor } from './KindEditors.jsx';
 import { CopiesCard, LinksEditor } from '../shared/DriveUI.jsx';
 import { GroupFields, LateFields } from './WorkRules.jsx';
+import { PassagesCard, PoolsCard, QuestionPlace, RandomNumbers, cleanPick, poolsProblem } from './QuestionExtras.jsx';
+import { varsProblem } from '../../lib/randomq.js';
 
 let seq = 0;
 const k = () => 'q' + ++seq;
@@ -79,8 +81,14 @@ export function checkReady(a, qs) {
       const right = multi(q.options) ? q.key.answer?.choices || [] : [q.key.answer?.choice].filter((x) => x != null);
       if (!right.length) return `${n}: tick the correct answer.`;
     }
-    if (q.type === 'numeric' && !String(q.key.answer?.value ?? '').trim()) return `${n}: add the correct number.`;
+    if (q.type === 'numeric' && q.options?.vars) {
+      const vp = varsProblem(q.options.vars);
+      if (vp) return `${n}: ${vp}`;
+      if (!String(q.key.answer?.formula ?? '').trim()) return `${n}: add the formula for the answer.`;
+    } else if (q.type === 'numeric' && !String(q.key.answer?.value ?? '').trim()) return `${n}: add the correct number.`;
   }
+  const pp = poolsProblem(a, qs);
+  if (pp) return pp;
   if (a.visibility === 'scheduled' && !a.visible_from) return 'Choose the date it becomes visible.';
   return null;
 }
@@ -102,6 +110,7 @@ export default function AssignmentEditor({ id }) {
   const confirm = useConfirm();
   const discard = useDiscardDraft();
   const files = useQuery('files', api.listFiles).data || [];
+  const passages = useQuery(`passages:${id}`, () => api.listPassages(id)).data || []; // reading passages its questions share
   const [a, setA] = useState(null);
   const [qs, setQs] = useState([]);
   const [removed, setRemoved] = useState([]);
@@ -168,6 +177,7 @@ export default function AssignmentEditor({ id }) {
           file_refs: a.file_refs || [],
           links: a.links || [], // Google Drive, OneDrive and web links
           peer: a.class_id ? a.peer || null : null, // peer review (work set for a class)
+          pool_pick: cleanPick(a, qs), // question pools: how many of each a learner gets
           due_at: a.due_at || null,
           closes_at: a.closes_at || null, // hand-ins stop then
           late_rule: a.due_at ? a.late_rule || null : null, // marks off a day late (off unless switched on)
@@ -213,6 +223,8 @@ export default function AssignmentEditor({ id }) {
             marks: Number(q.marks) || 0,
             topic_id: q.topic_id || null,
             rubric_id: q.rubric_id || null,
+            pool: q.pool || null,
+            passage_id: q.passage_id || null,
           });
           await api.saveKey({ question_id: saved.id, answer: b.answer || {}, solution_md: q.key.solution_md || null, mark_scheme_md: q.key.mark_scheme_md || null });
           next.push({ ...q, id: saved.id, prompt_md: q.type === 'cloze' ? b.prompt_md : q.prompt_md, options: b.options, key: { ...q.key, answer: b.answer } });
@@ -380,6 +392,7 @@ export default function AssignmentEditor({ id }) {
               q={q}
               n={i + 1}
               total={qs.length}
+              passages={passages}
               onChange={(patch) => setQ(i, patch)}
               onMove={(d) => {
                 setQs((list) => {
@@ -606,6 +619,8 @@ export default function AssignmentEditor({ id }) {
             <LinksEditor links={a.links || []} onChange={(links) => setField({ links })} allowCopy dirty={dirty} />
           </div>
           <CopiesCard assignment={a} />
+          <PoolsCard a={a} qs={qs} setField={setField} />
+          <PassagesCard assignmentId={a.id} passages={passages} />
           <PeerFields a={a} setField={setField} live={live} />
           <GroupFields a={a} setField={setField} savedClassId={savedClass.current} />
           <div className="row">
@@ -637,7 +652,7 @@ const PLACEHOLDER = {
   file: 'e.g. Hand in your essay as a document or a link.',
 };
 
-function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, onAskProf }) {
+function QuestionEditor({ q, n, total, passages = [], onChange, onMove, onRemove, onDuplicate, onAskProf }) {
   const lk = useLookups();
   const toast = useToast();
   const [showKey, setShowKey] = useState(true);
@@ -731,6 +746,7 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
           }}
         />
         <span className="grow" />
+        <QuestionPlace q={q} n={n} onChange={onChange} passages={passages} />
         <select className="select" style={{ width: 'auto', minHeight: 34, fontSize: 14 }} value={q.topic_id || ''} onChange={(e) => onChange({ topic_id: e.target.value || null })} aria-label="Topic">
           <option value="">Topic: same as assignment</option>
           {lk.topics.map((t) => (
@@ -789,9 +805,15 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
 
       {q.type === 'numeric' && (
         <div className="grid g3" style={{ gap: 10 }}>
-          <Field label="Correct answer">
-            <input className="input" inputMode="decimal" value={q.key.answer?.value ?? ''} onChange={(e) => setAns({ value: e.target.value })} placeholder="e.g. 12.5" />
-          </Field>
+          {q.options?.vars ? (
+            <Field label="Correct answer">
+              <span className="small muted">Worked out from the formula below</span>
+            </Field>
+          ) : (
+            <Field label="Correct answer">
+              <input className="input" inputMode="decimal" value={q.key.answer?.value ?? ''} onChange={(e) => setAns({ value: e.target.value })} placeholder="e.g. 12.5" />
+            </Field>
+          )}
           <Field label="Allowed margin ±">
             <input className="input" inputMode="decimal" value={q.key.answer?.tolerance ?? '0'} onChange={(e) => setAns({ tolerance: e.target.value })} />
           </Field>
@@ -800,6 +822,7 @@ function QuestionEditor({ q, n, total, onChange, onMove, onRemove, onDuplicate, 
           </Field>
         </div>
       )}
+      {q.type === 'numeric' && <RandomNumbers q={q} onChange={onChange} setAns={setAns} />}
 
       <button className="linkbtn small" onClick={() => setShowKey((s) => !s)}>
         {showKey ? 'Hide' : 'Show'} answer & marking notes

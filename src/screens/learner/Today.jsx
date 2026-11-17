@@ -12,6 +12,7 @@ import { FromPlace, PausedPlaces } from '../shared/places.jsx';
 import { NewInClasses } from './Classes.jsx';
 import { TodayLessons } from '../shared/School.jsx';
 import { closedFor, useLocks } from './Steps.jsx';
+import { OfficeHoursCard } from '../shared/OfficeHours.jsx';
 
 export default function Today() {
   const app = useApp();
@@ -105,6 +106,7 @@ export default function Today() {
       <PausedPlaces />
       <TodayLessons />
       <NewInClasses />
+      <OfficeHoursCard />
       <CheckNudge />
       <SelfPlan />
       <StudyNudge />

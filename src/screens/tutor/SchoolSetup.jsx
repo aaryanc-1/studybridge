@@ -16,6 +16,7 @@ import { SessionForm } from '../shared/Live.jsx';
 import { AssessmentCalendar } from './Assessments.jsx';
 import { FamiliesToldUs, HomeroomRegisters } from '../shared/Office.jsx';
 import { MeetingsList } from '../shared/Meetings.jsx';
+import { OfficeHoursTeacher } from '../shared/OfficeHours.jsx';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const USUAL_DAY = [
@@ -1128,6 +1129,7 @@ const TT_TABS = [
   { value: 'attendance', label: 'Attendance' },
   { value: 'behaviour', label: 'Behaviour' },
   { value: 'meetings', label: 'Parents’ meetings' },
+  { value: 'office', label: 'Office hours' },
 ];
 
 export function TutorTimetable({ tab }) {
@@ -1156,6 +1158,8 @@ export function TutorTimetable({ tab }) {
         <TutorBehaviour />
       ) : shown === 'meetings' ? (
         <MeetingsList />
+      ) : shown === 'office' ? (
+        <OfficeHoursTeacher />
       ) : (
         <>
         <HomeroomRegisters />

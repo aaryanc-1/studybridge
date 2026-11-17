@@ -170,7 +170,8 @@ export function buildQuestion(q) {
   if (q.type === 'match') return { prompt_md: q.prompt_md, ...matchBuild(q.edit, prev) };
   if (q.type === 'order') return { prompt_md: q.prompt_md, ...orderBuild(q.edit, prev) };
   if (q.type === 'label') return { prompt_md: q.prompt_md, ...labelBuild(q.edit, prev) };
-  const options = q.type === 'mcq' ? q.options : q.type === 'record' ? { media: q.options?.media || 'audio', max: recordMax(q.options) } : q.type === 'short' && q.options?.words ? { words: q.options.words } : [];
+  // (a number question with random numbers keeps its letters: { vars: [{ name, min, max, step }] })
+  const options = q.type === 'mcq' ? q.options : q.type === 'record' ? { media: q.options?.media || 'audio', max: recordMax(q.options) } : q.type === 'short' && q.options?.words ? { words: q.options.words } : q.type === 'numeric' && q.options?.vars ? { vars: q.options.vars } : [];
   return { prompt_md: q.prompt_md, options, answer: q.key?.answer || {} };
 }
 
