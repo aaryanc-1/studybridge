@@ -896,7 +896,7 @@ shown apart; names and words only for work the teacher could open; teachers only
 src/screens/tutor/MarkingExtras.jsx (FeedbackRecorder, SimilarLine with Compare, SimilarOverview, PeerCard). Exports: `peer_reviews_written`,
 `peer_reviews_received`, `drive_email`. Website: features.html, tutors.html, schools.html "Classroom, complete", privacy.html (recordings,
 peer review, similar answers, Google and Microsoft); website.test.mjs checks nothing promises an internet or AI-writing check.
-Sign-in emails behind the wall (12 Nov 2026, from the step 6 review; not released yet). `profiles_read` gives the whole profile row,
+Sign-in emails behind the wall (12 Nov 2026, from the step 6 review; shipped in app 1.1.117). `profiles_read` gives the whole profile row,
 email included, only to the person, a learner's main tutor (`tutor_id = auth.uid()`) and a learner reading their own teachers. A
 learner's other teachers (a class teacher, a tutor they added with a code) read the same rows without the email from
 `teacher_learners()` (setof profiles; `api.listLearners` uses it), so never read other teachers' learners `from('profiles')`.
@@ -905,7 +905,7 @@ managers, head of year); `student_record` carries it as `learner.email`, shown o
 read `profiles` directly, so until they update a class teacher's list briefly misses learners who aren't their own (no crash).
 Compared with Canvas (16 Nov 2026): docs/MASTER.md "Compared with Canvas" (what we have, partly have, and lack). Aaryan put Canvas gaps
 part 1 before step 7 of the 4 Nov order, with the defaults agreed ("go").
-Canvas gaps, part 1 (16 Nov 2026, built, not released yet). All in one block near the end of setup.sql ("Canvas gaps, part 1"), which
+Canvas gaps, part 1 (16 Nov 2026, app 1.1.117; run 117 passed every job, the sweep too). All in one block near the end of setup.sql ("Canvas gaps, part 1"), which
 redefines `_hand_in`, `finish_marking`, `reopen_attempt`, `_auto_hand_in`, `my_attempts` and `attempt_detail`. Work settings (trigger
 `assignments_rules` → `_work_rules`): `assignments.closes_at` (on or after due_at), `late_rule` {per_day, max} (`_late_rule`; needs a due
 date), `anonymous`, `groups` (class work only; not with peer, lockdown/camera/watched, mocks or self-marking). Closing: `_closes_for(a, learner)`
